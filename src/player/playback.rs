@@ -132,6 +132,7 @@ impl Player {
         {
             let _moves = self.playlist_moves.lock();
             self.song_playing.store(true, Ordering::Relaxed);
+            self.past_last_entry.store(false, Ordering::Relaxed);
         }
         let started = self.start_locked(start_time, join).await;
         if join.is_none() {
@@ -354,6 +355,10 @@ impl Player {
                 });
                 if let Some(song) = moved {
                     player.emit_song_change(&song);
+                }
+                // The last song played to its end: the gap after it.
+                if succeeded && !loop_broken && playlist.entry().is_some_and(|e| Some(e) == from) {
+                    player.past_last_entry.store(true, Ordering::Relaxed);
                 }
 
                 {
@@ -886,8 +891,32 @@ impl Player {
             if dmx_engine.ambient_mode() != mode {
                 dmx_engine.set_ambient_mode(mode);
             }
-            dmx_engine.idle_ambient(self.get_playlist().ambient(), hold);
+            let ambient = self.waiting_ambient();
+            dmx_engine.idle_ambient(ambient.as_ref(), hold);
         }
+    }
+
+    /// The ambient light for the gap the player is in: the entry it waits
+    /// on's laid over the playlist's, or the playlist's after the last.
+    /// Notes whose settings they are, for the status.
+    fn waiting_ambient(&self) -> Option<crate::config::ambient::PlaylistAmbient> {
+        let playlist = self.get_playlist();
+        let entry = self.waiting_entry(&playlist);
+        *self.ambient_source.lock() = Some(playlist.ambient_source(entry));
+        playlist.ambient_before(entry)
+    }
+
+    /// The entry whose gap the player is in: the one it is on, but for
+    /// none after the last song has played to its end.
+    pub(super) fn waiting_entry(&self, playlist: &crate::playlist::Playlist) -> Option<usize> {
+        playlist
+            .entry()
+            .filter(|_| !self.past_last_entry.load(Ordering::Relaxed))
+    }
+
+    /// Whose settings the ambient light up plays, while one is.
+    pub fn ambient_source(&self) -> Option<crate::playlist::AmbientSource> {
+        *self.ambient_source.lock()
     }
 
     /// Sets ambient light's mode: `On` holds it up now, over any song;

@@ -138,6 +138,9 @@ export interface PlaybackState {
     mode: AmbientMode;
     show: string | null;
     state: "pending" | "playing" | "off" | "unavailable";
+    /** Whose settings are up: the profile's, the playlist's, or the
+     *  entry's (the song about to play). */
+    source?: AmbientSource;
   } | null;
   /** What comes after the current song and how it arrives; `song` is null
    *  at the end of the playlist. */
@@ -146,6 +149,9 @@ export interface PlaybackState {
    *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
   received_at: number;
 }
+
+/** Whose ambient light settings are up. */
+export type AmbientSource = "profile" | "playlist" | "entry" | null;
 
 /** Ambient light's mode: between songs, held on, or none. */
 export type AmbientMode = "auto" | "on" | "off";

@@ -124,10 +124,16 @@ impl PlayerServer {
         let report = tokio::task::spawn_blocking(move || dmx.ambient_report())
             .await
             .ok()?;
+        let source = report
+            .show
+            .as_ref()
+            .and(self.player.ambient_source())
+            .map(|source| source.as_str().to_string());
         Some(AmbientStatus {
             mode: report.mode.as_str().to_string(),
             state: report.state.to_string(),
             show: report.show.map(|show| show.display().to_string()),
+            source,
         })
     }
 

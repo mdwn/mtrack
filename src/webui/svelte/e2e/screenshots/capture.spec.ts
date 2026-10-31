@@ -191,6 +191,8 @@ test("playlist-auto-play", async ({ page }) => {
   });
   await page.goto("/#/playlists/setlist");
   await expect(page.getByTestId("playlist-ambient")).toBeVisible();
+  // Open the opener's transitions panel: its gap lives there.
+  await page.getByTestId("transitions-toggle").nth(2).click();
   await expect(page.getByTestId("auto-play-gap").first()).toBeVisible();
   await page.waitForTimeout(300);
   await page

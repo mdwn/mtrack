@@ -128,26 +128,29 @@ impl Player {
             }
             return current;
         }
-        let (playlist, (from, song)) = self.move_playlist(|playlist| {
+        let (playlist, (from, before, song)) = self.move_playlist(|playlist| {
             let from = playlist.entry();
+            let before = playlist.ambient_before(self.waiting_entry(playlist));
             // A paused song an edit took off the list after the last entry
             // has no entry to move on to: it stays paused, and current, as
             // at the end of the list, rather than losing its pause and
             // staying off the list (#576).
             if from.is_none() && !playlist.can_move(direction == PlaylistDirection::Prev) {
-                return (from, None);
+                return (from, before, None);
             }
             let song = match direction {
                 PlaylistDirection::Next => playlist.next(),
                 PlaylistDirection::Prev => playlist.prev(),
             };
-            (from, Some(song))
+            (from, before, Some(song))
         });
         let Some(song) = song else {
             info!("Nothing to go to {}: the paused song stays.", direction);
             return playlist.current();
         };
         let song = song?;
+        // A paused song holds its lights, which a navigation leaves held.
+        let paused = self.pending_start().is_some();
         self.clear_pending_start();
         self.emit_song_change(&song);
         // Navigating onto a song with `auto_play` starts it; navigating away
@@ -157,9 +160,18 @@ impl Player {
         // A song ending fades on out; the ambient light following it, now
         // this navigation's to bring.
         let ending = self.end_ending();
-        match playlist.auto_play().filter(|_| playlist.entry() != from) {
+        let moved = playlist.entry() != from;
+        if moved {
+            self.past_last_entry.store(false, Ordering::Relaxed);
+        }
+        // Stopped on another entry: the gap is now before it, and its
+        // ambient light, if that is another, comes up in place of the one
+        // before.
+        let ambient_changed =
+            !paused && playlist.ambient_before(self.waiting_entry(&playlist)) != before;
+        match playlist.auto_play().filter(|_| moved) {
             Some(gap) => self.schedule_auto_play(gap),
-            None if called_off || ending => self.idle_ambient(true),
+            None if called_off || ending || ambient_changed => self.idle_ambient(true),
             None => {}
         }
         // A pause called off here, or an ending forgotten, which then no
@@ -211,6 +223,7 @@ impl Player {
         // the entry that took its place.
         self.move_playlist(|playlist| playlist.settle());
         *self.active_playlist.write() = name.to_string();
+        self.past_last_entry.store(false, Ordering::Relaxed);
         self.clear_pending_start();
         self.cancel_auto_play();
         self.end_ending();

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ambient light per playlist entry** (#614): an entry's own `ambient:` sets the ambient light in
+  the gap before its song, while the player waits on it -- the next song after the one before ends,
+  or Next or Previous lands on it while stopped; the same song after a stop. It takes the playlist's
+  form: `false` for none, or `show`, `delay`, `fade_in` and `fade_out`, each overriding the
+  playlist's, which override the profile's. An entry naming a show plays it even under a
+  playlist's `ambient: false`. After the last song plays to its end, the playlist's ambient light
+  plays, not the last entry's. Next or Previous while stopped crosses into the new entry's light
+  when it is another. The status (dashboard, MCP `status`, gRPC `Status`) gives the ambient
+  light's `source`: `profile`, `playlist` or `entry`. In the web UI's playlist editor, each entry's
+  transitions panel holds what happens before its song (the auto play gap, ambient light, fade in)
+  and after it (fade out), and its button sums up what the entry sets.
+
 - **Section loops in every song**: a section now loops the same way whether the song does not
   loop, loops plainly, or loops with a `loop_crossfade`; `loop_section` used to refuse a song
   with a crossfade, and reactive looping offered none of its sections. An armed section always

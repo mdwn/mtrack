@@ -104,6 +104,7 @@ pub(super) async fn get_playlist_by_name(
             "auto_play": auto_play,
             "fades": pl.entry_fades(),
             "ambient": pl.ambient(),
+            "entry_ambient": pl.entry_ambient(),
             "available_songs": all_songs,
             "song_tracks": song_tracks,
         })),
@@ -132,6 +133,11 @@ pub(super) struct PlaylistBody {
     /// none; absent keeps each entry's as it was.
     #[serde(default)]
     fades: Option<Vec<config::EntryFades>>,
+    /// Each song's ambient light before it, in the order of `songs`: null
+    /// for the playlist's, `false` for none, a map overriding settings;
+    /// absent keeps each entry's as it was.
+    #[serde(default)]
+    entry_ambient: Option<Vec<Option<config::ambient::PlaylistAmbient>>>,
     /// The playlist's ambient light: absent keeps it, null removes it (the
     /// profile's plays), `false` turns it off, a map overrides settings.
     #[serde(default, deserialize_with = "present")]
@@ -204,6 +210,7 @@ pub(super) async fn put_playlist_by_name(
     let lengths = [
         ("auto_play", body.auto_play.as_ref().map(Vec::len)),
         ("fades", body.fades.as_ref().map(Vec::len)),
+        ("entry_ambient", body.entry_ambient.as_ref().map(Vec::len)),
     ];
     for (field, length) in lengths {
         if let Some(length) = length.filter(|&length| length != body.songs.len()) {
@@ -225,6 +232,10 @@ pub(super) async fn put_playlist_by_name(
     };
     let playlist_config = match &body.fades {
         Some(fades) => playlist_config.with_fades(fades),
+        None => playlist_config,
+    };
+    let playlist_config = match &body.entry_ambient {
+        Some(ambient) => playlist_config.with_entry_ambient(ambient),
         None => playlist_config,
     };
     let playlist_config = match body.ambient {
@@ -623,6 +634,58 @@ mod test {
             r#"{"songs": ["Song A"], "auto_play": ["soon"]}"#,
             r#"{"songs": ["Song A"], "ambient": {"show": "a.light", "delay": "later"}}"#,
             r#"{"songs": ["Song A"], "ambient": {"shw": "a.light"}}"#,
+        ] {
+            let (status, after) = put_body_over(existing, body).await;
+            assert!(status.is_client_error(), "{body}: {status}");
+            assert_eq!(after, existing, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn put_playlist_sets_each_entrys_ambient() {
+        let (status, after) = put_body_over(
+            "songs:\n- Song A\n- song: Song B\n  auto_play: true\n",
+            r#"{"songs": ["Song A", "Song B", "Song C"],
+                "entry_ambient": [null, false, {"show": "lighting/encore.light", "fade_in": "6s"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        let written = read(&after);
+        let own = config::ambient::PlaylistAmbient::On(config::ambient::Ambient::new(
+            Some("lighting/encore.light".to_string()),
+            None,
+            Some("6s".to_string()),
+            None,
+        ));
+        assert_eq!(
+            written.entry_ambient(),
+            vec![None, Some(config::ambient::PlaylistAmbient::Off), Some(own)]
+        );
+        // Song A sets nothing, and is written as its name alone; Song B
+        // keeps its auto play.
+        assert!(after.contains("- Song A\n"), "{after}");
+        assert!(after.contains("auto_play: true"), "{after}");
+
+        // Left out, each entry keeps its own, with its song.
+        let (status, again) = put_body_over(&after, r#"{"songs": ["Song C", "Song A"]}"#).await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        let kept = read(&again).entry_ambient();
+        assert!(
+            matches!(kept[0], Some(config::ambient::PlaylistAmbient::On(_))),
+            "{again}"
+        );
+        assert_eq!(kept[1], None, "{again}");
+    }
+
+    #[tokio::test]
+    async fn put_playlist_refuses_a_bad_entry_ambient() {
+        let existing = "songs:\n- Song A\n";
+        for body in [
+            r#"{"songs": ["Song A"], "entry_ambient": [false, null]}"#,
+            r#"{"songs": ["Song A"], "entry_ambient": [{"show": "a.light", "delay": "later"}]}"#,
+            r#"{"songs": ["Song A"], "entry_ambient": [{"shw": "a.light"}]}"#,
+            r#"{"songs": ["Song A"], "entry_ambient": [{"show": "../x.light"}]}"#,
+            r#"{"songs": ["Song A"], "entry_ambient": [{"show": "/etc/passwd"}]}"#,
         ] {
             let (status, after) = put_body_over(existing, body).await;
             assert!(status.is_client_error(), "{body}: {status}");

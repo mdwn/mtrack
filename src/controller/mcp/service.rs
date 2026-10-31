@@ -546,7 +546,9 @@ impl McpServer {
         `next` and `previous` would move to with its `fade_in` (each `null` \
         for none). `ambient` is the show the rig plays while no song is: its \
         `mode` (`auto`, `on` or `off`; see `set_ambient_mode`), `show` file \
-        (`null` for none) and `state` (`pending` while its delay runs, \
+        (`null` for none), `source` (whose settings the show plays: \
+        `profile`, `playlist`, or `entry` for the playlist entry waited on; \
+        `null` with no show) and `state` (`pending` while its delay runs, \
         `playing`, `off`, or `unavailable` when `on` has no show to play); \
         `null` without a DMX engine. `auto_play` is a song about to start \
         by itself (its playlist entry's `auto_play` gap running): its `song` \
@@ -1332,7 +1334,10 @@ impl McpServer {
         sets the playlist's ambient light, played while no song is: `false` \
         for none, or a map of `show` (a `.light` file, relative to the \
         project), `delay`, `fade_in` and `fade_out`, each overriding the \
-        profile's `dmx.lighting.ambient`."
+        profile's `dmx.lighting.ambient`. An entry's own `ambient:`, in the \
+        same form, sets the ambient light in the gap before its song, while \
+        the player waits on it, its settings overriding the playlist's one by \
+        one; one naming a `show` plays even under a playlist's `false`."
     )]
     async fn write_playlist(
         &self,
@@ -3698,6 +3703,7 @@ async fn ambient_json(player: &Player) -> Value {
     match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
         Ok(Ok(report)) => json!({
             "mode": report.mode.as_str(),
+            "source": report.show.as_ref().and(player.ambient_source()).map(|s| s.as_str()),
             "show": report.show.map(|show| show.display().to_string()),
             "state": report.state,
         }),

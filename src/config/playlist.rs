@@ -40,7 +40,7 @@ pub enum PlaylistEntry {
     /// The song's name.
     Song(String),
     /// The song's name with its transitions.
-    Configured(ConfiguredEntry),
+    Configured(Box<ConfiguredEntry>),
 }
 
 /// A playlist entry with its own transitions.
@@ -61,6 +61,10 @@ pub struct ConfiguredEntry {
     /// how long a gap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_play: Option<AutoPlayConfig>,
+    /// Ambient light in the gap before the song, while the player waits on
+    /// it: `false` for none, or settings overriding the playlist's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<super::ambient::PlaylistAmbient>,
 }
 
 /// An entry's `auto_play` as written: `true` (at once), `false`, or the gap
@@ -160,7 +164,7 @@ impl<'de> Deserialize<'de> for PlaylistEntry {
                 map: A,
             ) -> Result<Self::Value, A::Error> {
                 ConfiguredEntry::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-                    .map(PlaylistEntry::Configured)
+                    .map(|entry| PlaylistEntry::Configured(Box::new(entry)))
             }
         }
         deserializer.deserialize_any(EntryVisitor)
@@ -502,6 +506,29 @@ impl Playlist {
         })
     }
 
+    /// Each entry's ambient light as written, in order: `None` where the
+    /// entry sets none, and the playlist's plays.
+    pub fn entry_ambient(&self) -> Vec<Option<super::ambient::PlaylistAmbient>> {
+        self.songs
+            .iter()
+            .map(|entry| match entry {
+                PlaylistEntry::Song(_) => None,
+                PlaylistEntry::Configured(entry) => entry.ambient.clone(),
+            })
+            .collect()
+    }
+
+    /// This playlist with each entry's `ambient` set from `ambient`, in
+    /// entry order, as [`Playlist::with_auto_play`] sets auto play.
+    pub fn with_entry_ambient(
+        self,
+        ambient: &[Option<super::ambient::PlaylistAmbient>],
+    ) -> Playlist {
+        self.edit_entries(ambient, |configured, ambient| {
+            configured.ambient = ambient.clone();
+        })
+    }
+
     /// Applies `edit` to each entry with its value from `values`, in order,
     /// writing an entry left with no settings as its name alone.
     fn edit_entries<T>(
@@ -517,17 +544,19 @@ impl Playlist {
                     fade_out: None,
                     fade_in: None,
                     auto_play: None,
+                    ambient: None,
                 },
-                PlaylistEntry::Configured(configured) => configured,
+                PlaylistEntry::Configured(configured) => *configured,
             };
             edit(&mut configured, value);
             *entry = if configured.fade_out.is_none()
                 && configured.fade_in.is_none()
                 && configured.auto_play.is_none()
+                && configured.ambient.is_none()
             {
                 PlaylistEntry::Song(configured.song)
             } else {
-                PlaylistEntry::Configured(configured)
+                PlaylistEntry::Configured(Box::new(configured))
             };
         }
         self
@@ -632,6 +661,33 @@ songs: []
 
         let bad = read("songs:\n- song: A\n  auto_play: soon\n");
         assert!(bad.entry_transitions().unwrap_err().contains("auto_play"));
+    }
+
+    #[test]
+    fn an_entrys_ambient_reads_and_writes_back() {
+        let yaml = "songs:\n- song: A\n  ambient: false\n- song: B\n  ambient:\n    show: b.light\n    fade_in: 2s\n- C\n";
+        let playlist = parse(yaml).unwrap();
+        let ambient = playlist.entry_ambient();
+        assert_eq!(
+            ambient[0],
+            Some(super::super::ambient::PlaylistAmbient::Off)
+        );
+        assert!(matches!(
+            &ambient[1],
+            Some(super::super::ambient::PlaylistAmbient::On(a)) if a.show() == Some("b.light")
+        ));
+        assert_eq!(ambient[2], None);
+        let written = crate::util::to_yaml_string(&playlist).unwrap();
+        assert_eq!(parse(&written).unwrap(), playlist, "{written}");
+
+        // Cleared, an entry with nothing else is its name alone again.
+        let cleared = playlist.with_entry_ambient(&[None, None, None]);
+        assert_eq!(cleared.songs(), ["A", "B", "C"]);
+        assert!(cleared
+            .entries()
+            .iter()
+            .all(|e| matches!(e, PlaylistEntry::Song(_))));
+        assert!(parse("songs:\n- song: A\n  ambient:\n    shw: a.light\n").is_err());
     }
 
     #[test]

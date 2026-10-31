@@ -57,10 +57,14 @@ test.describe("Playlist editor: auto play and ambient light", () => {
     const bodies = await capturePlaylistPut(page);
     await playlists.selectPlaylist("setlist");
     const row = playlists.playlistSongs().first();
-    await expect(row.getByTestId("auto-play-gap")).toHaveCount(0);
+    // The gap lives in the transitions panel, shown only with auto play on.
+    await playlists.openTransitions(row);
+    await expect(playlists.autoPlayGap(row)).toHaveCount(0);
     await row.getByTestId("auto-play-toggle").check();
-    await row.getByTestId("auto-play-gap").fill("2s");
-    await row.getByTestId("auto-play-gap").press("Enter");
+    await playlists.autoPlayGap(row).fill("2s");
+    await playlists.autoPlayGap(row).press("Enter");
+    await playlists.transitionsToggle(row).click();
+    await expect(playlists.transitionsToggle(row)).toHaveText("2s gap");
     // A song added after keeps waiting for play.
     await playlists
       .availableSongs()
@@ -120,7 +124,8 @@ test.describe("Playlist editor: auto play and ambient light", () => {
     await playlists.selectPlaylist("setlist");
     const row = playlists.playlistSongs().first();
     await expect(row.getByTestId("auto-play-toggle")).toBeChecked();
-    await expect(row.getByTestId("auto-play-gap")).toHaveValue("3s");
+    await playlists.openTransitions(row);
+    await expect(playlists.autoPlayGap(row)).toHaveValue("3s");
     await expect(page.locator("#playlist-ambient-mode")).toHaveValue("custom");
     await expect(page.locator("#playlist-ambient-show")).toHaveValue(
       "lighting/walk_in.light",
@@ -154,6 +159,139 @@ test.describe("Playlist editor: auto play and ambient light", () => {
       show: "lighting/a.light",
       delay: "4s",
     });
+  });
+});
+
+test.describe("Playlist editor: an entry's ambient light", () => {
+  let playlists: PlaylistEditorPage;
+
+  test.beforeEach(async ({ page }) => {
+    playlists = new PlaylistEditorPage(page);
+    await playlists.goto();
+  });
+
+  test("an entry can have none, or its own, before it", async ({ page }) => {
+    const bodies = await capturePlaylistPut(page);
+    await playlists.selectPlaylist("setlist");
+    const row = playlists.playlistSongs().first();
+    await expect(playlists.transitionsToggle(row)).toHaveText("Transitions");
+    await playlists.openTransitions(row);
+    // Grouped by gap: the ambient light and fade in come before the song.
+    const before = playlists
+      .transitionsPanel(row)
+      .getByTestId("transitions-before");
+    await expect(before).toContainText("Before this song");
+    await expect(before.getByTestId("entry-ambient")).toBeVisible();
+    await expect(before.getByTestId("fade_in-fields")).toBeVisible();
+    await expect(
+      playlists
+        .transitionsPanel(row)
+        .getByTestId("transitions-after")
+        .getByTestId("fade_out-fields"),
+    ).toBeVisible();
+
+    const mode = playlists.entryAmbientMode(row);
+    await expect(mode).toHaveValue("playlist");
+    await expect(playlists.entryAmbientField(row, "show")).toHaveCount(0);
+    await mode.selectOption("off");
+    await expect(playlists.saveButton).toBeEnabled();
+    await playlists.transitionsToggle(row).click();
+    await expect(playlists.transitionsToggle(row)).toHaveText(
+      "no ambient before",
+    );
+
+    // A song added after inherits the playlist's.
+    await playlists
+      .availableSongs()
+      .first()
+      .locator('.btn-icon[title="Add"]')
+      .click();
+    await playlists.saveButton.click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0].entry_ambient).toEqual([false, null]);
+
+    await playlists.openTransitions(row);
+    await mode.selectOption("custom");
+    await playlists.entryAmbientField(row, "show").fill("lighting/b.light");
+    await playlists.entryAmbientField(row, "show").press("Enter");
+    await playlists.entryAmbientField(row, "delay").fill("1s");
+    await playlists.entryAmbientField(row, "delay").press("Enter");
+    // Each field left empty inherits.
+    await expect(playlists.entryAmbientField(row, "fade_in")).toHaveValue("");
+    await expect(playlists.entryAmbientField(row, "fade_in")).toHaveAttribute(
+      "placeholder",
+      "playlist's",
+    );
+    await playlists.transitionsToggle(row).click();
+    await expect(playlists.transitionsToggle(row)).toHaveText("own ambient");
+    await playlists.saveButton.click();
+    await expect.poll(() => bodies.length).toBe(2);
+    expect(bodies[1].entry_ambient).toEqual([
+      { show: "lighting/b.light", delay: "1s" },
+      null,
+    ]);
+  });
+
+  test("an entry's ambient light reads back and follows its song", async ({
+    page,
+  }) => {
+    const bodies = await capturePlaylistPut(page);
+    await page.route("**/api/playlists/setlist", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          name: "setlist",
+          songs: ["Test Song Alpha", "Test Song Beta", "Test Song Gamma"],
+          auto_play: [null, "2s", null],
+          fades: [
+            { fade_out: null, fade_in: null },
+            { fade_out: null, fade_in: "2measures" },
+            { fade_out: null, fade_in: null },
+          ],
+          entry_ambient: [null, false, { fade_in: "3s" }],
+          ambient: null,
+          available_songs: [],
+        }),
+      });
+    });
+    await playlists.selectPlaylist("setlist");
+    const rows = playlists.playlistSongs();
+    await expect(playlists.transitionsToggle(rows.nth(0))).toHaveText(
+      "Transitions",
+    );
+    await expect(playlists.transitionsToggle(rows.nth(1))).toHaveText(
+      "fade in 2 measures · 2s gap · no ambient before",
+    );
+    await expect(playlists.transitionsToggle(rows.nth(2))).toHaveText(
+      "own ambient",
+    );
+    await expect(playlists.saveButton).toBeDisabled();
+
+    await playlists.openTransitions(rows.nth(2));
+    await expect(playlists.entryAmbientMode(rows.nth(2))).toHaveValue("custom");
+    await expect(
+      playlists.entryAmbientField(rows.nth(2), "fade_in"),
+    ).toHaveValue("3s");
+    await expect(playlists.entryAmbientField(rows.nth(2), "show")).toHaveValue(
+      "",
+    );
+
+    // Up a place, then the first removed: each keeps its own.
+    await rows.nth(2).getByRole("button", { name: "Move up" }).click();
+    await expect(rows.nth(1)).toContainText("Test Song Gamma");
+    await rows.nth(0).getByRole("button", { name: "Remove" }).click();
+    await expect(rows).toHaveCount(2);
+    await expect(playlists.transitionsToggle(rows.nth(0))).toHaveText(
+      "own ambient",
+    );
+
+    await playlists.saveButton.click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0].songs).toEqual(["Test Song Gamma", "Test Song Beta"]);
+    expect(bodies[0].auto_play).toEqual([null, "2s"]);
+    expect(bodies[0].entry_ambient).toEqual([{ fade_in: "3s" }, false]);
   });
 });
 
@@ -242,6 +380,35 @@ test.describe("Dashboard: auto play and ambient light", () => {
     ).toBeEnabled();
     await expect(page.getByTestId("ambient-badge")).toContainText(
       "Ambient light",
+    );
+    // Without a source (an older server), the badge names none.
+    await expect(page.getByTestId("ambient-source")).toHaveCount(0);
+
+    // The entry's own settings are up: the badge says whose.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
+      ambient: {
+        mode: "auto",
+        show: "/p/lighting/entry.light",
+        state: "playing",
+        source: "entry",
+      },
+    });
+    await expect(page.getByTestId("ambient-badge")).toHaveText(
+      "Ambient light · this song's",
+    );
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ambient: {
+        mode: "auto",
+        show: "/p/lighting/walk_in.light",
+        state: "pending",
+        source: "playlist",
+      },
+    });
+    await expect(page.getByTestId("ambient-badge")).toHaveText(
+      "Ambient light soon · the playlist's",
     );
 
     await sendWsMessage(page, wsId, { ...frame, is_playing: true });

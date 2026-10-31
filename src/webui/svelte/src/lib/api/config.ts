@@ -1241,8 +1241,8 @@ export interface AmbientSettings {
   fade_out?: string;
 }
 
-/** A playlist's ambient light: `null` for the profile's, `false` for none,
- *  or settings of its own. */
+/** A playlist's (or an entry's) ambient light: `null` for the profile's (an
+ *  entry: the playlist's), `false` for none, or settings of its own. */
 export type PlaylistAmbient = null | false | AmbientSettings;
 
 export interface PlaylistData {
@@ -1252,6 +1252,10 @@ export interface PlaylistData {
   auto_play?: AutoPlay[];
   /** Each song's fades, in the order of `songs`. */
   fades?: EntryFades[];
+  /** Each song's ambient light before it, in the order of `songs`: `null`
+   *  for the playlist's, `false` for none, or settings of its own (each
+   *  field left out inherits the playlist's, then the profile's). */
+  entry_ambient?: PlaylistAmbient[];
   ambient?: PlaylistAmbient;
   available_songs: string[];
   /** Each song's track names, for the tracks a fade leaves out. */
@@ -1262,6 +1266,8 @@ export interface PlaylistData {
 export interface PlaylistSettings {
   auto_play?: AutoPlay[];
   fades?: EntryFades[];
+  /** One per song, as in `PlaylistData.entry_ambient`. */
+  entry_ambient?: PlaylistAmbient[];
   ambient?: PlaylistAmbient;
 }
 
