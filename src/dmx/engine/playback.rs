@@ -362,12 +362,11 @@ impl Engine {
                             // beginning, or from where a pass begun late
                             // joins, rather than sending everything before
                             // that in one frame.
-                            if jump.to.is_zero() {
+                            let join = dmx_engine.to_delayed_song_time(jump.to);
+                            if join.is_zero() {
                                 dmx_engine.rewind_midi_dmx_playbacks();
                             } else {
-                                dmx_engine.seek_midi_dmx_playbacks(
-                                    dmx_engine.to_delayed_song_time(jump.to),
-                                );
+                                dmx_engine.join_midi_dmx_playbacks(join);
                             }
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }

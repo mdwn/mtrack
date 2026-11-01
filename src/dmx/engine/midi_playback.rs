@@ -185,6 +185,19 @@ impl Engine {
     /// at every seek, #581), and the live loop dispatches nothing ahead of
     /// the clear for it to wipe.
     pub(super) fn seek_midi_dmx_playbacks(&self, from: Duration) {
+        self.move_midi_dmx_playbacks(from, true);
+    }
+
+    /// Moves every MIDI DMX playback to `from` (delayed song time) for a
+    /// crossfading song's pass begun late there: the channels the events
+    /// before it set are put back, as for a seek, but one they set only
+    /// later keeps what the outgoing pass left it, as the store carries it
+    /// into an on-time pass (see [`Self::rewind_midi_dmx_playbacks`]).
+    pub(super) fn join_midi_dmx_playbacks(&self, from: Duration) {
+        self.move_midi_dmx_playbacks(from, false);
+    }
+
+    fn move_midi_dmx_playbacks(&self, from: Duration, zero_unset: bool) {
         let mut playbacks = self.midi_dmx_playbacks.lock();
         for playback in playbacks.iter_mut() {
             let events = playback.precomputed.events();
@@ -202,7 +215,11 @@ impl Engine {
             // one the events write but had not by `from` goes back to 0 too
             // -- a section loop's second pass would otherwise start with
             // what the first set later on.
-            if let Some(universe) = self.universes.get(&playback.universe_id) {
+            if let Some(universe) = self
+                .universes
+                .get(&playback.universe_id)
+                .filter(|_| zero_unset)
+            {
                 let store = self.midi_dmx_store.read();
                 for channel in midi_dmx_channels(events, &playback.midi_channels) {
                     if !states.contains_key(&channel)

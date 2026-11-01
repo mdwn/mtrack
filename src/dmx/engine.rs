@@ -6777,6 +6777,21 @@ mod test {
                 "an unpatched channel held what the section set later on"
             );
 
+            // A crossfading pass begun late at 2 s joins there: the channel
+            // the events set only later (DMX 2, at 4 s) keeps what the
+            // outgoing pass left it.
+            engine
+                .get_universe(5)
+                .unwrap()
+                .update_channel_data(2, 200, false);
+            engine.join_midi_dmx_playbacks(Duration::from_secs(2));
+            assert_eq!(engine.midi_dmx_playbacks.lock()[0].cursor, 1);
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_target_value(1),
+                200.0,
+                "a late pass's join cut a channel the outgoing pass still lights"
+            );
+
             // A whole-song loop's crossfade rewinds it, at its rate too.
             engine.get_universe(5).unwrap().set_dim_rate(88.0);
             engine.rewind_midi_dmx_playbacks();
