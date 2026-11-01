@@ -195,6 +195,45 @@ songs:
 `ambient: false` turns it off for the playlist. Switching playlists while nothing plays crosses
 straight into the new playlist's ambient light, or fades the old one out.
 
+### Per entry
+
+An entry can set the ambient light for the gap before its song with an `ambient:` of its own, in
+the same form. Its settings override the playlist's one by one, which override the profile's:
+
+```yaml
+kind: playlist
+ambient:
+  show: lighting/house.light
+songs:
+- Opener
+- Shieldbrother
+- song: Drink to Glory
+  ambient: false            # no ambient light while waiting for the encore
+- song: The Old Mead Hall
+  ambient:
+    show: lighting/encore_wash.light
+    fade_in: 6s
+```
+
+- **Which gap.** The entry's ambient light plays while the player waits on it, the gap its
+  `auto_play` covers: after the song before it ends, or Next or Previous lands on it while stopped;
+  after a stop, the stopped song's own, since a stop never moves the playlist. After the last song
+  plays to its end, the playlist's ambient light plays, not the last entry's.
+- **Navigating while stopped** onto an entry with other ambient light crosses into it.
+- **`false`** turns it off for that gap: what the song before left holds, as with a playlist's
+  `ambient: false`. For a dark stage, give the entry a show of its own that lights nothing, or set
+  the mode to `off`.
+- **Turning it back on.** Under a playlist's `ambient: false`, an entry naming a `show` plays it,
+  with the profile's timings for any it leaves out. Timings alone leave it off.
+- **The mode still wins**: `on` holds the waiting entry's ambient light up over a song, and `off`
+  is dark between songs, whatever the entry says.
+- **Whose light is up.** The dashboard, the MCP `status` tool and the gRPC `Status` give the
+  ambient light's `source`: `profile`, `playlist` or `entry`.
+
+In the web UI's playlist editor, each entry's transitions button opens what happens **before this
+song** (the auto play gap, ambient light and fade in) and **after this song** (fade out). The
+button sums up what the entry sets; one that sets nothing reads **Transitions**.
+
 The ambient **mode** -- `auto`, `on` (hold it now, over any song) or `off` -- is set while the
 player runs, from the dashboard or a controller; see
 [Ambient mode](../lighting/configuration.md#ambient-mode). `on` with a playlist that has

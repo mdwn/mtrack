@@ -402,7 +402,7 @@ impl Engine {
                 state.ambient = Some(loaded);
             }
             (_, Phase::Playing, None) | (AmbientMode::On, _, None) => {
-                info!("Ambient light fades out: none for this playlist.");
+                info!("Ambient light fades out: none here.");
                 self.lower_overlay(&mut state, now);
                 state.phase = Phase::Off;
                 state.ambient = None;

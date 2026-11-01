@@ -53,6 +53,27 @@ struct Cursor {
     off_list: Option<Arc<Song>>,
 }
 
+/// Whose settings an ambient light plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmbientSource {
+    /// The profile's, under `dmx.lighting.ambient`.
+    Profile,
+    /// The playlist's own `ambient`.
+    Playlist,
+    /// The playlist entry's own `ambient`, before its song.
+    Entry,
+}
+
+impl AmbientSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AmbientSource::Profile => "profile",
+            AmbientSource::Playlist => "playlist",
+            AmbientSource::Entry => "entry",
+        }
+    }
+}
+
 /// Playlist is a playlist for use by a player.
 pub struct Playlist {
     /// The name of this playlist.
@@ -65,6 +86,9 @@ pub struct Playlist {
     fades: Vec<config::EntryFades>,
     /// Its ambient light, as written: overriding the player's.
     ambient: Option<config::ambient::PlaylistAmbient>,
+    /// Each entry's ambient light, as written: overriding the playlist's in
+    /// the gap before it.
+    entry_ambient: Vec<Option<config::ambient::PlaylistAmbient>>,
     /// The current position of the playlist.
     position: Arc<RwLock<Cursor>>,
     /// The song registry.
@@ -110,6 +134,7 @@ impl Playlist {
             transitions,
             fades: config.entry_fades(),
             ambient: config.ambient().cloned(),
+            entry_ambient: config.entry_ambient(),
             position: Arc::new(RwLock::new(Cursor::default())),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
@@ -124,6 +149,28 @@ impl Playlist {
     /// Its ambient light, as written: overriding the player's.
     pub fn ambient(&self) -> Option<&config::ambient::PlaylistAmbient> {
         self.ambient.as_ref()
+    }
+
+    /// The ambient light for the gap before `entry` -- the entry's own laid
+    /// over the playlist's -- or the playlist's for none.
+    pub fn ambient_before(&self, entry: Option<usize>) -> Option<config::ambient::PlaylistAmbient> {
+        let own = entry
+            .and_then(|i| self.entry_ambient.get(i))
+            .and_then(Option::as_ref);
+        config::ambient::layer(self.ambient.as_ref(), own)
+    }
+
+    /// Whose settings the ambient light before `entry` plays: the entry's,
+    /// the playlist's, or the player's.
+    pub fn ambient_source(&self, entry: Option<usize>) -> AmbientSource {
+        let own = entry
+            .and_then(|i| self.entry_ambient.get(i))
+            .and_then(Option::as_ref);
+        match (own, &self.ambient) {
+            (Some(_), _) => AmbientSource::Entry,
+            (None, Some(_)) => AmbientSource::Playlist,
+            (None, None) => AmbientSource::Profile,
+        }
     }
 
     /// Returns the current position in the playlist (0-indexed). Off the
@@ -358,6 +405,12 @@ impl Playlist {
         self.transitions.get(position).and_then(|t| t.auto_play)
     }
 
+    /// Each entry's ambient light, as written, in order: `None` where the
+    /// playlist's plays.
+    pub fn entry_ambient(&self) -> &[Option<config::ambient::PlaylistAmbient>] {
+        &self.entry_ambient
+    }
+
     /// Each entry's `auto_play` gap, in order: `None` where it waits for
     /// play.
     pub fn entry_auto_play(&self) -> Vec<Option<Duration>> {
@@ -407,6 +460,13 @@ pub fn validate_transitions(
     if let Some(ambient) = config.ambient() {
         ambient.validate().map_err(PlaylistError::InvalidAmbient)?;
     }
+    for (song_name, ambient) in config.songs().iter().zip(config.entry_ambient()) {
+        if let Some(ambient) = ambient {
+            ambient
+                .validate()
+                .map_err(|e| PlaylistError::InvalidAmbient(format!("song {song_name}: {e}")))?;
+        }
+    }
     let transitions = config
         .entry_transitions()
         .map_err(PlaylistError::InvalidTransition)?;
@@ -453,11 +513,16 @@ pub fn validate_for_write(
     {
         return Err(PlaylistError::SongNotFound(missing.clone()));
     }
-    let show = match config.ambient() {
-        Some(config::ambient::PlaylistAmbient::On(ambient)) => ambient.show(),
+    let own_show = |ambient: Option<&config::ambient::PlaylistAmbient>| match ambient {
+        Some(config::ambient::PlaylistAmbient::On(ambient)) => ambient.show().map(str::to_string),
         _ => None,
     };
-    if let Some(show) = show {
+    let entries = config.entry_ambient();
+    let shows = own_show(config.ambient())
+        .into_iter()
+        .chain(entries.iter().filter_map(|a| own_show(a.as_ref())));
+    for show in shows {
+        let show = show.as_str();
         let path = std::path::Path::new(show);
         let escapes = path.is_absolute()
             || path
@@ -578,6 +643,7 @@ mod test {
             transitions: vec![],
             fades: vec![],
             ambient: None,
+            entry_ambient: vec![],
             position: Default::default(),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),
@@ -707,6 +773,7 @@ mod test {
             transitions: vec![Default::default(); 2],
             fades: vec![Default::default(); 2],
             ambient: None,
+            entry_ambient: vec![None, None],
             position: Default::default(),
             registry,
             span: tracing::span!(tracing::Level::INFO, "test"),

@@ -25,13 +25,13 @@
     type AutoPlay,
     type EntryFades,
     type FadeConfig,
-    type AmbientSettings,
     type PlaylistAmbient,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
-  import { formatFadeLength } from "../lib/util/format";
+  import { entrySummary } from "../lib/playlistEntry";
   import FadeFields from "../components/playlists/FadeFields.svelte";
+  import AmbientFields from "../components/playlists/AmbientFields.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -58,6 +58,9 @@
   let editAutoPlay = $state<AutoPlay[]>([]);
   /** Each song's fades, kept in step with `editSongs`. */
   let editFades = $state<EntryFades[]>([]);
+  /** Each song's ambient light, kept in step with `editSongs`: null for the
+   *  playlist's, false for none, or its own. */
+  let editEntryAmbient = $state<PlaylistAmbient[]>([]);
   /** The slot whose transitions panel is open. */
   let openTransitions = $state<number | null>(null);
   let editAmbient = $state<PlaylistAmbient>(null);
@@ -130,6 +133,9 @@
         fade_out: fetched.fades?.[i]?.fade_out ?? null,
         fade_in: fetched.fades?.[i]?.fade_in ?? null,
       }));
+      editEntryAmbient = fetched.songs.map(
+        (_, i) => fetched.entry_ambient?.[i] ?? null,
+      );
       openTransitions = null;
       editAmbient = fetched.ambient ?? null;
       assignSlotIds(editSongs);
@@ -145,6 +151,7 @@
         editSongs = [];
         editAutoPlay = [];
         editFades = [];
+        editEntryAmbient = [];
         editAmbient = null;
         dirty = false;
       }
@@ -163,6 +170,7 @@
       await savePlaylist(selected, editSongs, {
         auto_play: editAutoPlay,
         fades: editFades,
+        entry_ambient: editEntryAmbient,
         ambient: editAmbient,
       });
       dirty = false;
@@ -200,6 +208,7 @@
         editSongs = [];
         editAutoPlay = [];
         editFades = [];
+        editEntryAmbient = [];
         editSlotIds = [];
       }
       confirmDelete = null;
@@ -232,6 +241,7 @@
     editSongs = [...editSongs, song];
     editAutoPlay = [...editAutoPlay, null];
     editFades = [...editFades, { fade_out: null, fade_in: null }];
+    editEntryAmbient = [...editEntryAmbient, null];
     editSlotIds = [...editSlotIds, slotIdCounter++];
     dirty = true;
   }
@@ -240,6 +250,7 @@
     editSongs = editSongs.filter((_, i) => i !== index);
     editAutoPlay = editAutoPlay.filter((_, i) => i !== index);
     editFades = editFades.filter((_, i) => i !== index);
+    editEntryAmbient = editEntryAmbient.filter((_, i) => i !== index);
     editSlotIds = editSlotIds.filter((_, i) => i !== index);
     dirty = true;
   }
@@ -250,18 +261,22 @@
     const ids = [...editSlotIds];
     const autoPlay = [...editAutoPlay];
     const fades = [...editFades];
+    const entryAmbient = [...editEntryAmbient];
     const [item] = songs.splice(from, 1);
     const [id] = ids.splice(from, 1);
     const [ap] = autoPlay.splice(from, 1);
     const [fade] = fades.splice(from, 1);
+    const [amb] = entryAmbient.splice(from, 1);
     songs.splice(to, 0, item);
     ids.splice(to, 0, id);
     autoPlay.splice(to, 0, ap);
     fades.splice(to, 0, fade);
+    entryAmbient.splice(to, 0, amb);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
     editFades = fades;
+    editEntryAmbient = entryAmbient;
     dirty = true;
   }
 
@@ -286,48 +301,30 @@
     dirty = true;
   }
 
-  function fadeLength(fade: FadeConfig | null): string | null {
-    if (fade === null) return null;
-    return formatFadeLength(typeof fade === "string" ? fade : fade.length);
-  }
-
-  /** A row's fades in short, for its closed transitions panel. */
-  function fadesSummary(fades: EntryFades | undefined): string {
-    const out = fadeLength(fades?.fade_out ?? null);
-    const fadeIn = fadeLength(fades?.fade_in ?? null);
-    return [
-      out && get(t)("playlists.fadeOutSummary", { values: { length: out } }),
-      fadeIn &&
-        get(t)("playlists.fadeInSummary", { values: { length: fadeIn } }),
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
-  type AmbientMode = "profile" | "off" | "custom";
-
-  let ambientMode = $derived<AmbientMode>(
-    editAmbient === null ? "profile" : editAmbient === false ? "off" : "custom",
-  );
-
-  function setAmbientMode(mode: AmbientMode) {
-    editAmbient = mode === "profile" ? null : mode === "off" ? false : {};
+  function setEntryAmbient(index: number, value: PlaylistAmbient) {
+    editEntryAmbient = editEntryAmbient.map((a, i) =>
+      i === index ? value : a,
+    );
     dirty = true;
   }
 
-  function setAmbientField(key: keyof AmbientSettings, value: string) {
-    const settings: AmbientSettings = { ...(editAmbient || {}) };
-    if (value) settings[key] = value;
-    else delete settings[key];
-    editAmbient = settings;
-    dirty = true;
+  /** A row's settings in short, for its closed transitions button. */
+  function rowSummary(i: number): string {
+    const tr = get(t);
+    return entrySummary(
+      {
+        fades: editFades[i],
+        autoPlay: editAutoPlay[i],
+        ambient: editEntryAmbient[i],
+      },
+      (key, values) => tr(key, values ? { values } : undefined),
+    );
   }
 
-  const ambientTimings: { key: keyof AmbientSettings; label: string }[] = [
-    { key: "delay", label: "lighting.ambientDelay" },
-    { key: "fade_in", label: "lighting.ambientFadeIn" },
-    { key: "fade_out", label: "lighting.ambientFadeOut" },
-  ];
+  function setPlaylistAmbient(value: PlaylistAmbient) {
+    editAmbient = value;
+    dirty = true;
+  }
 
   function handleDragStart(e: DragEvent, index: number) {
     dragIndex = index;
@@ -351,18 +348,22 @@
     const ids = [...editSlotIds];
     const autoPlay = [...editAutoPlay];
     const fades = [...editFades];
+    const entryAmbient = [...editEntryAmbient];
     const [moved] = songs.splice(dragIndex, 1);
     const [movedId] = ids.splice(dragIndex, 1);
     const [movedAp] = autoPlay.splice(dragIndex, 1);
     const [movedFade] = fades.splice(dragIndex, 1);
+    const [movedAmb] = entryAmbient.splice(dragIndex, 1);
     songs.splice(targetIndex, 0, moved);
     ids.splice(targetIndex, 0, movedId);
     autoPlay.splice(targetIndex, 0, movedAp);
     fades.splice(targetIndex, 0, movedFade);
+    entryAmbient.splice(targetIndex, 0, movedAmb);
     editSongs = songs;
     editSlotIds = ids;
     editAutoPlay = autoPlay;
     editFades = fades;
+    editEntryAmbient = entryAmbient;
     dirty = true;
     dragIndex = null;
     dragOverIndex = null;
@@ -538,66 +539,17 @@
       </div>
 
       <div class="ambient-settings" data-testid="playlist-ambient">
-        <div class="field">
-          <label for="playlist-ambient-mode">{$t("playlists.ambient")}</label>
-          <select
-            id="playlist-ambient-mode"
-            class="input"
-            value={ambientMode}
-            disabled={$playbackStore.locked}
-            onchange={(e) =>
-              setAmbientMode(
-                (e.target as HTMLSelectElement).value as AmbientMode,
-              )}
-          >
-            <option value="profile">{$t("playlists.ambientProfile")}</option>
-            <option value="off">{$t("playlists.ambientOff")}</option>
-            <option value="custom">{$t("playlists.ambientCustom")}</option>
-          </select>
-          <span class="field-hint">{$t("playlists.ambientHint")}</span>
-        </div>
-        {#if editAmbient}
-          <div class="field">
-            <label for="playlist-ambient-show"
-              >{$t("lighting.ambientShow")}</label
-            >
-            <input
-              id="playlist-ambient-show"
-              class="input"
-              type="text"
-              placeholder={$t("playlists.ambientInherit")}
-              value={editAmbient.show ?? ""}
-              disabled={$playbackStore.locked}
-              onchange={(e) =>
-                setAmbientField(
-                  "show",
-                  (e.target as HTMLInputElement).value.trim(),
-                )}
-            />
-          </div>
-          <div class="field-row-3">
-            {#each ambientTimings as timing (timing.key)}
-              <div class="field">
-                <label for={`playlist-ambient-${timing.key}`}
-                  >{$t(timing.label)}</label
-                >
-                <input
-                  id={`playlist-ambient-${timing.key}`}
-                  class="input"
-                  type="text"
-                  placeholder={$t("playlists.ambientInherit")}
-                  value={editAmbient[timing.key] ?? ""}
-                  disabled={$playbackStore.locked}
-                  onchange={(e) =>
-                    setAmbientField(
-                      timing.key,
-                      (e.target as HTMLInputElement).value.trim(),
-                    )}
-                />
-              </div>
-            {/each}
-          </div>
-        {/if}
+        <AmbientFields
+          value={editAmbient}
+          idPrefix="playlist-ambient"
+          label={$t("playlists.ambient")}
+          hint={$t("playlists.ambientHint")}
+          inheritLabel={$t("playlists.ambientProfile")}
+          inheritValue="profile"
+          inheritPlaceholder={$t("playlists.ambientInherit")}
+          disabled={$playbackStore.locked}
+          onchange={setPlaylistAmbient}
+        />
       </div>
 
       <div class="song-columns">
@@ -659,26 +611,6 @@
                     />
                     {$t("playlists.autoPlay")}
                   </label>
-                  {#if editAutoPlay[i] !== null}
-                    <input
-                      class="input auto-play-gap"
-                      type="text"
-                      data-testid="auto-play-gap"
-                      aria-label={$t("playlists.autoPlayGapLabel", {
-                        values: { song },
-                      })}
-                      placeholder={$t("playlists.autoPlayGapPlaceholder")}
-                      value={typeof editAutoPlay[i] === "string"
-                        ? editAutoPlay[i]
-                        : ""}
-                      disabled={$playbackStore.locked}
-                      onchange={(e) =>
-                        setAutoPlayGap(
-                          i,
-                          (e.target as HTMLInputElement).value.trim(),
-                        )}
-                    />
-                  {/if}
                   <button
                     class="transitions-toggle"
                     data-testid="transitions-toggle"
@@ -691,7 +623,7 @@
                           ? null
                           : editSlotIds[i])}
                   >
-                    {fadesSummary(editFades[i]) || $t("playlists.transitions")}
+                    {rowSummary(i) || $t("playlists.transitions")}
                   </button>
                   <button
                     class="btn-icon"
@@ -710,16 +642,77 @@
                       id={`transitions-${editSlotIds[i]}`}
                       data-testid="transitions-panel"
                     >
-                      {#each ["fade_out", "fade_in"] as const as kind (kind)}
+                      <section
+                        class="transitions-group"
+                        data-testid="transitions-before"
+                      >
+                        <h5>{$t("playlists.beforeThisSong")}</h5>
+                        {#if editAutoPlay[i] !== null}
+                          <div class="field">
+                            <label for={`transitions-${editSlotIds[i]}-gap`}
+                              >{$t("playlists.autoPlayGap")}</label
+                            >
+                            <input
+                              id={`transitions-${editSlotIds[i]}-gap`}
+                              class="input auto-play-gap"
+                              type="text"
+                              data-testid="auto-play-gap"
+                              aria-label={$t("playlists.autoPlayGapLabel", {
+                                values: { song },
+                              })}
+                              placeholder={$t(
+                                "playlists.autoPlayGapPlaceholder",
+                              )}
+                              value={typeof editAutoPlay[i] === "string"
+                                ? editAutoPlay[i]
+                                : ""}
+                              disabled={$playbackStore.locked}
+                              onchange={(e) =>
+                                setAutoPlayGap(
+                                  i,
+                                  (e.target as HTMLInputElement).value.trim(),
+                                )}
+                            />
+                          </div>
+                        {/if}
+                        <div class="entry-ambient" data-testid="entry-ambient">
+                          <AmbientFields
+                            value={editEntryAmbient[i] ?? null}
+                            idPrefix={`transitions-${editSlotIds[i]}-ambient`}
+                            label={$t("playlists.ambient")}
+                            hint={$t("playlists.entryAmbientHint")}
+                            inheritLabel={$t("playlists.entryAmbientPlaylist")}
+                            inheritValue="playlist"
+                            inheritPlaceholder={$t(
+                              "playlists.entryAmbientInherit",
+                            )}
+                            disabled={$playbackStore.locked}
+                            onchange={(value) => setEntryAmbient(i, value)}
+                          />
+                        </div>
                         <FadeFields
-                          {kind}
-                          value={editFades[i]?.[kind] ?? null}
+                          kind="fade_in"
+                          value={editFades[i]?.fade_in ?? null}
                           tracks={detail.song_tracks?.[song] ?? []}
                           disabled={$playbackStore.locked}
                           idPrefix={`transitions-${editSlotIds[i]}`}
-                          onchange={(value) => setFade(i, kind, value)}
+                          onchange={(value) => setFade(i, "fade_in", value)}
                         />
-                      {/each}
+                      </section>
+                      <section
+                        class="transitions-group"
+                        data-testid="transitions-after"
+                      >
+                        <h5>{$t("playlists.afterThisSong")}</h5>
+                        <FadeFields
+                          kind="fade_out"
+                          value={editFades[i]?.fade_out ?? null}
+                          tracks={detail.song_tracks?.[song] ?? []}
+                          disabled={$playbackStore.locked}
+                          idPrefix={`transitions-${editSlotIds[i]}`}
+                          onchange={(value) => setFade(i, "fade_out", value)}
+                        />
+                      </section>
                     </div>
                   {/if}
                 </li>
@@ -804,8 +797,7 @@
     white-space: nowrap;
   }
   .auto-play-gap {
-    width: 80px;
-    flex-shrink: 0;
+    max-width: 120px;
   }
   .song-list li.song-row {
     flex-wrap: wrap;
@@ -830,14 +822,39 @@
   .transitions-panel {
     flex-basis: 100%;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* Stacked: the song list is narrow, and side by side the groups'
+       fields were too small to read. */
+    grid-template-columns: 1fr;
     gap: 16px;
     padding: 10px 0 4px 34px;
     cursor: default;
   }
+  .transitions-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+  .transitions-group h5 {
+    margin: 0;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--nc-fg-3);
+  }
+  .entry-ambient {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  /* The timings wrap rather than shrink past reading. */
+  .entry-ambient :global(.field-row-3) {
+    grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  }
   @media (max-width: 720px) {
     .transitions-panel {
-      grid-template-columns: 1fr;
       padding-left: 0;
     }
   }

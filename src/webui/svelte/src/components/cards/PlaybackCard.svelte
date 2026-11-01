@@ -439,7 +439,14 @@
             ? $t("playback.ambientPlaying")
             : $playbackStore.ambient.state === "pending"
               ? $t("playback.ambientPending")
-              : $t("playback.ambientUnavailable")}</span
+              : $t(
+                  "playback.ambientUnavailable",
+                )}{#if $playbackStore.ambient.source && $playbackStore.ambient.state !== "unavailable"}<span
+              class="playback-card__ambient-source"
+              data-testid="ambient-source"
+            >
+              {` · ${$t(`playback.ambientSource.${$playbackStore.ambient.source}`)}`}</span
+            >{/if}</span
         >
       {/if}
       {#if $playbackStore.ambient}
@@ -796,6 +803,9 @@
   .playback-card__auto-play-hint {
     margin-left: 8px;
     color: var(--nc-fg-3);
+  }
+  .playback-card__ambient-source {
+    font-weight: 400;
   }
   .playback-card__ambient-mode {
     display: inline-flex;

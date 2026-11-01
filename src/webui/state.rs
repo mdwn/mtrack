@@ -335,6 +335,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             // With a DMX engine, whatever the mode, so the card can show it.
             "ambient": player.dmx_engine().map(|dmx| dmx.ambient_report()).map(|report| json!({
                 "mode": report.mode.as_str(),
+                "source": report.show.as_ref().and(player.ambient_source()).map(|s| s.as_str()),
                 "show": report.show.map(|show| show.display().to_string()),
                 "state": report.state,
             })),

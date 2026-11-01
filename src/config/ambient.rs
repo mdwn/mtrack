@@ -143,6 +143,37 @@ pub fn resolve(
     }))
 }
 
+/// A playlist entry's `ambient` laid over its playlist's: what plays in the
+/// gap before the entry, as a playlist's own would. The entry's settings win
+/// one by one; `false` turns it off. Under a playlist with none, an entry
+/// naming a show of its own turns it back on, its timings left out falling
+/// back to the player's.
+pub fn layer(
+    playlist: Option<&PlaylistAmbient>,
+    entry: Option<&PlaylistAmbient>,
+) -> Option<PlaylistAmbient> {
+    match (playlist, entry) {
+        (playlist, None) => playlist.cloned(),
+        (_, Some(PlaylistAmbient::Off)) => Some(PlaylistAmbient::Off),
+        (Some(PlaylistAmbient::Off), Some(PlaylistAmbient::On(entry))) => Some(match entry.show {
+            Some(_) => PlaylistAmbient::On(entry.clone()),
+            None => PlaylistAmbient::Off,
+        }),
+        (None, Some(entry)) => Some(entry.clone()),
+        (Some(PlaylistAmbient::On(playlist)), Some(PlaylistAmbient::On(entry))) => {
+            let pick = |get: fn(&Ambient) -> &Option<String>| {
+                get(entry).clone().or_else(|| get(playlist).clone())
+            };
+            Some(PlaylistAmbient::On(Ambient {
+                show: pick(|a| &a.show),
+                delay: pick(|a| &a.delay),
+                fade_in: pick(|a| &a.fade_in),
+                fade_out: pick(|a| &a.fade_out),
+            }))
+        }
+    }
+}
+
 impl Serialize for PlaylistAmbient {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -311,5 +342,57 @@ mod tests {
         let plain =
             crate::util::to_yaml_string(&super::super::Playlist::new(&["One".into()])).unwrap();
         assert!(!plain.contains("ambient"), "{plain}");
+    }
+
+    #[test]
+    fn an_entry_overrides_its_playlist_setting_by_setting() {
+        let player = ambient("show: a.light\ndelay: 3s");
+        let list = playlist("show: b.light\nfade_in: 4s");
+        let entry = playlist("fade_in: 500ms");
+        let layered = layer(Some(&list), Some(&entry));
+        let resolved = resolve(Some(&player), layered.as_ref()).unwrap().unwrap();
+        assert_eq!(resolved.show, "b.light");
+        assert_eq!(resolved.delay, Duration::from_secs(3));
+        assert_eq!(resolved.fade_in, Duration::from_millis(500));
+
+        let own = playlist("show: c.light");
+        let layered = layer(Some(&list), Some(&own));
+        let resolved = resolve(Some(&player), layered.as_ref()).unwrap().unwrap();
+        assert_eq!(resolved.show, "c.light");
+        assert_eq!(resolved.fade_in, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn an_entry_with_nothing_set_takes_its_playlists() {
+        let list = playlist("show: b.light");
+        assert_eq!(layer(Some(&list), None), Some(list.clone()));
+        assert_eq!(layer(None, None), None);
+        let off = playlist("false");
+        assert_eq!(layer(Some(&off), None), Some(PlaylistAmbient::Off));
+    }
+
+    #[test]
+    fn false_on_an_entry_turns_it_off() {
+        let player = ambient("show: a.light");
+        let off = playlist("false");
+        for list in [None, Some(playlist("show: b.light"))] {
+            let layered = layer(list.as_ref(), Some(&off));
+            assert_eq!(resolve(Some(&player), layered.as_ref()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn an_entry_with_a_show_turns_it_back_on_with_the_players_timings() {
+        let player = ambient("show: a.light\nfade_in: 6s");
+        let off = playlist("false");
+        let own = playlist("show: c.light");
+        let layered = layer(Some(&off), Some(&own));
+        let resolved = resolve(Some(&player), layered.as_ref()).unwrap().unwrap();
+        assert_eq!(resolved.show, "c.light");
+        assert_eq!(resolved.fade_in, Duration::from_secs(6));
+        // Timings alone name no show: it stays off.
+        let timings = playlist("fade_in: 1s");
+        let layered = layer(Some(&off), Some(&timings));
+        assert_eq!(resolve(Some(&player), layered.as_ref()).unwrap(), None);
     }
 }

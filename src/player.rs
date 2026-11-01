@@ -423,6 +423,12 @@ pub struct Player {
     /// Ambient light's mode, kept here so an engine a reload brings in
     /// takes it up.
     ambient_mode: Arc<parking_lot::Mutex<dmx::engine::AmbientMode>>,
+    /// The song at the playlist's entry played to its end with nowhere to
+    /// move on to: the gap is after the last entry, not before it, and the
+    /// playlist's ambient light plays rather than the entry's.
+    past_last_entry: Arc<AtomicBool>,
+    /// Whose settings the ambient light the player last brought up plays.
+    ambient_source: Arc<parking_lot::Mutex<Option<crate::playlist::AmbientSource>>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
     /// reads it to carry the fade across a loop boundary.
@@ -692,6 +698,8 @@ impl Player {
             ending: Arc::new(parking_lot::Mutex::new(EndingState::default())),
             auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
             ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
+            past_last_entry: Arc::new(AtomicBool::new(false)),
+            ambient_source: Arc::new(parking_lot::Mutex::new(None)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             fading_until: Arc::new(parking_lot::Mutex::new(None)),
@@ -2407,6 +2415,161 @@ mod test {
         // A stop is between songs.
         player.stop().await;
         eventually(|| state() == Some("playing"), "ambient after a stop");
+        Ok(())
+    }
+
+    /// A player on a playlist of half-second songs "One" and "Two", each
+    /// with a red show of its own, laid out by `songs` (the playlist's
+    /// `songs:` list, with `{green}` for the path of a green ambient show).
+    /// The profile's ambient light is blue.
+    async fn entry_ambient_player(
+        songs: &str,
+    ) -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let wash = |color: &str| {
+            format!(
+                "show \"s\" {{\n    @0.000\n    wash: static, color: \"{color}\", duration: 30s\n}}\n"
+            )
+        };
+        for name in ["One", "Two"] {
+            let song_dir = dir.path().join("songs").join(name);
+            fs::create_dir_all(&song_dir)?;
+            fs::copy("assets/1Channel44.1k.wav", song_dir.join("track.wav"))?;
+            fs::write(song_dir.join("show.light"), wash("red"))?;
+            fs::write(
+                song_dir.join("song.yaml"),
+                format!(
+                    "name: {name}\ntracks:\n- name: track\n  file: track.wav\n  file_channel: 1\nlighting:\n- file: show.light\n"
+                ),
+            )?;
+        }
+        let blue = dir.path().join("blue.light");
+        fs::write(&blue, wash("blue"))?;
+        let green = dir.path().join("green.light");
+        fs::write(&green, wash("green"))?;
+        let playlist_file = dir.path().join("playlist.yaml");
+        fs::write(
+            &playlist_file,
+            format!(
+                "songs:\n{}",
+                songs.replace("{green}", &green.display().to_string())
+            ),
+        )?;
+
+        let groups = HashMap::from([(
+            "wash".to_string(),
+            config::lighting::LogicalGroup::new("wash".to_string(), vec![]),
+        )]);
+        let lighting = config::Lighting::new(None, Some(groups), None).with_ambient(Some(
+            config::ambient::Ambient::new(Some(blue.display().to_string()), None, None, None),
+        ));
+        let dmx = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            Some(lighting),
+        );
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        assert!(songs.failures().is_empty(), "{:?}", songs.failures());
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_file)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                Some(dmx),
+                HashMap::new(),
+                "songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    /// The ambient show up, by its file's name, and whose it is.
+    fn ambient_up(player: &Player) -> (Option<String>, Option<&'static str>) {
+        let engine = player.dmx_engine().expect("DMX engine should be present");
+        let report = engine.ambient_report();
+        let show = report
+            .show
+            .filter(|_| report.state == "playing")
+            .and_then(|show| show.file_name().map(|f| f.to_string_lossy().into_owned()));
+        let source = show
+            .as_ref()
+            .and(player.ambient_source())
+            .map(|s| s.as_str());
+        (show, source)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_entrys_ambient_light_plays_in_the_gap_before_it() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) =
+            entry_ambient_player("- One\n- song: Two\n  ambient:\n    show: {green}\n").await?;
+        let up = |show: &str, source| (Some(show.to_string()), Some(source));
+        eventually(
+            || ambient_up(&player) == up("blue.light", "profile"),
+            "the profile's before One",
+        );
+
+        // Next while stopped: the gap is before Two now.
+        player.next().await;
+        eventually(
+            || ambient_up(&player) == up("green.light", "entry"),
+            "Two's own before it",
+        );
+        player.prev().await;
+        eventually(
+            || ambient_up(&player) == up("blue.light", "profile"),
+            "back to the profile's before One",
+        );
+
+        // One ends by itself: the player waits on Two, with its light.
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "One never started");
+        eventually(|| player.get_playlist().position() == 1, "One never ended");
+        eventually(
+            || ambient_up(&player) == up("green.light", "entry"),
+            "Two's own after One ends",
+        );
+
+        // Two, the last, ends by itself: the gap is after it, with the
+        // playlist's light, not Two's.
+        player.play().await?;
+        eventually(
+            || player.song_playing.load(Ordering::Relaxed),
+            "Two never started",
+        );
+        eventually(
+            || !player.song_playing.load(Ordering::Relaxed),
+            "Two never ended",
+        );
+        eventually(
+            || ambient_up(&player) == up("blue.light", "profile"),
+            "the profile's after the last song",
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_entry_can_turn_ambient_light_off_before_it() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = entry_ambient_player("- One\n- song: Two\n  ambient: false\n").await?;
+        eventually(|| ambient_up(&player).0.is_some(), "ambient before One");
+        player.next().await;
+        eventually(|| ambient_up(&player) == (None, None), "none before Two");
+        player.prev().await;
+        eventually(
+            || ambient_up(&player).0.is_some(),
+            "ambient before One again",
+        );
         Ok(())
     }
 

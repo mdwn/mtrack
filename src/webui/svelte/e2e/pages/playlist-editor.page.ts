@@ -62,4 +62,42 @@ export class PlaylistEditorPage {
   availableSongs(): Locator {
     return this.page.locator(".song-col:last-child .song-list li");
   }
+
+  /** A row's transitions button: its summary, or "Transitions". */
+  transitionsToggle(row: Locator): Locator {
+    return row.getByTestId("transitions-toggle");
+  }
+
+  /** A row's transitions panel (present only while open). */
+  transitionsPanel(row: Locator): Locator {
+    return row.getByTestId("transitions-panel");
+  }
+
+  /** Opens a row's transitions panel, if it is closed. */
+  async openTransitions(row: Locator): Promise<Locator> {
+    const toggle = this.transitionsToggle(row);
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+      await toggle.click();
+    }
+    return this.transitionsPanel(row);
+  }
+
+  /** The auto play gap, in an open transitions panel. */
+  autoPlayGap(row: Locator): Locator {
+    return this.transitionsPanel(row).getByTestId("auto-play-gap");
+  }
+
+  /** The entry's ambient light picker, in an open transitions panel. */
+  entryAmbient(row: Locator): Locator {
+    return this.transitionsPanel(row).getByTestId("entry-ambient");
+  }
+
+  entryAmbientMode(row: Locator): Locator {
+    return this.entryAmbient(row).locator("select");
+  }
+
+  /** One of the entry's own ambient fields: show, delay, fade_in, fade_out. */
+  entryAmbientField(row: Locator, key: string): Locator {
+    return this.entryAmbient(row).locator(`input[id$="-ambient-${key}"]`);
+  }
 }

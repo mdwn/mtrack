@@ -164,6 +164,10 @@ message AmbientStatus {
 
     // Show is the ambient show file, when there is one to play.
     optional string show = 3;
+
+    // Source is whose settings the show plays, when there is one: "profile",
+    // "playlist", or "entry" (the playlist entry the player waits on).
+    optional string source = 4;
 }
 
 // AutoPlayStatus is a song waiting to start by itself.
