@@ -359,8 +359,16 @@ impl Engine {
                             );
                             // The store carries the last pass's values into
                             // the crossfade; MIDI DMX starts over from the
-                            // beginning.
-                            dmx_engine.rewind_midi_dmx_playbacks();
+                            // beginning, or from where a pass begun late
+                            // joins, rather than sending everything before
+                            // that in one frame.
+                            if jump.to.is_zero() {
+                                dmx_engine.rewind_midi_dmx_playbacks();
+                            } else {
+                                dmx_engine.seek_midi_dmx_playbacks(
+                                    dmx_engine.to_delayed_song_time(jump.to),
+                                );
+                            }
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its

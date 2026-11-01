@@ -4124,6 +4124,64 @@ mod test {
             Ok(())
         }
 
+        /// With `dmx.playback_delay`, a late pass's crossfade begins that
+        /// long after the jump, as the lights' content does and as an
+        /// on-time pass's crossfade does.
+        #[test]
+        fn a_late_pass_crosses_over_after_the_playback_delay() -> Result<(), Box<dyn Error>> {
+            let config = config::Dmx::new(
+                Some(1.0),
+                Some("200ms".to_string()),
+                Some(9091),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = crate::dmx::ola_client::OlaClientFactory::create_mock_client();
+            let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 8s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            let mut at = 0.0;
+            while at < 6.5 {
+                frame_at(&engine, at);
+                at += 0.01;
+            }
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 8s\n}\n",
+                )),
+                Duration::from_millis(6_500),
+                Duration::from_millis(500),
+                Duration::from_millis(1_500),
+            );
+            frame_at(&engine, 0.5);
+            // 150ms after the jump, inside the 200ms delay: not crossing yet.
+            let held = frame_at(&engine, 0.65);
+            assert_eq!(held, (255.0, 0.0, 0.0), "crossing inside the delay");
+            // Half a second on, under way.
+            let crossing = frame_at(&engine, 1.0);
+            assert!(
+                crossing.2 > 0.0 && crossing.0 < 255.0,
+                "not crossing: {crossing:?}"
+            );
+            Ok(())
+        }
+
         /// A section's jump (no overlap) while a crossfading song's previous
         /// pass is still crossing out: the audio and MIDI let the outgoing
         /// pass play on, and so do the lights.

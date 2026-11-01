@@ -331,6 +331,9 @@ impl Engine {
         overlap: Duration,
     ) {
         let lead = from.saturating_sub(to);
+        // The timeline starts at `to` in the lights' delayed time base; the
+        // crossfade counts from `to` against that time, so it begins
+        // `dmx.playback_delay` after the audio's, as an on-time pass's does.
         let start = self.to_delayed_song_time(to);
         // A pass begun late starts from the state its cues before `to` leave,
         // as a seek does, rather than firing them all in its first frame.
@@ -379,7 +382,7 @@ impl Engine {
         *outgoing = Some(OutgoingPass {
             effect_engine: outgoing_engine,
             timeline,
-            clock: PassClock::Song { lead, start },
+            clock: PassClock::Song { lead, start: to },
             overlap,
             inner: None,
             hurry: None,

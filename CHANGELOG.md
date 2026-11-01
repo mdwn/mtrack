@@ -150,8 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where one begun on time would be by then. The audio, notes and beat clock did; the lights
   started that pass from the top and read its song time as time into the crossfade, so they
   began already part way crossed (or cut straight over), the outgoing pass ahead of the audio's,
-  and fired every cue before the join point in one frame. They now start the pass from its state
-  at the join point and cross over the overlap left, as the audio does.
+  and fired every cue (and every MIDI DMX event) before the join point in one frame. They now
+  start the pass from its state at the join point and cross over the overlap left, as the audio
+  does, `dmx.playback_delay` after it like the rest of the lights.
 - **A section going round during a crossfade keeps the outgoing lights**: a short section in a
   crossfading song that went round while the previous pass was still crossing out cut that
   pass's lights at once, while its audio and notes played on to the end of the crossfade. The
