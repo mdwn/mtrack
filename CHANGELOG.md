@@ -466,8 +466,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A stop forgets the section loop**: a section loop armed and then stopped stayed armed, so the
   next playback (the same song from the top, or another song after Next) looped that section, at
   the old song's bounds, once it got there, and the status showed it looping. A section loop, and
-  the reactive loop's offer, now go with the playback they were made in: a stop, pause, seek, or
-  the song ending forgets them, and every start begins with none.
+  the reactive loop's offer, now go with the playback they were made in: a stop, a seek, a move
+  to another song or playlist, or the song ending forgets them, and a fresh start begins with
+  none. A pause keeps them, and the resume loops on.
 - **A song ending by itself leaves nothing running**: each song that played to its end left its
   section boundary poller running, waking every 50 ms for as long as mtrack ran. It now ends with
   its song.

@@ -161,6 +161,8 @@ impl Player {
         // A paused song holds its lights, which a navigation leaves held.
         let paused = self.pending_start().is_some();
         self.clear_pending_start();
+        // A pause's section loop is not resumed after a navigation.
+        self.section_loop.reset();
         self.emit_song_change(&song);
         // Navigating onto a song with `auto_play` starts it; navigating away
         // from one waiting to start calls it off, and the lights go to
@@ -235,6 +237,7 @@ impl Player {
         *self.active_playlist.write() = name.to_string();
         self.past_last_entry.store(false, Ordering::Relaxed);
         self.clear_pending_start();
+        self.section_loop.reset();
         self.cancel_auto_play();
         self.end_ending();
         // As for a navigation: a reload waiting on a pause or an ending

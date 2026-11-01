@@ -474,10 +474,11 @@ pub enum TrackGainError {
 }
 
 /// A section loop's state: the section armed, a break asked of it, when it
-/// was armed, and the reactive loop's state. It belongs to one playback, and
-/// [`SectionLoop::reset`] forgets it as each starts and stops: kept, the next
-/// playback -- the same song from the top, or another song -- looped the old
-/// section, at the old song's bounds, once it reached the section's end.
+/// was armed, and the reactive loop's state. It belongs to one playback, or
+/// a paused song's, and [`SectionLoop::reset`] forgets it as each starts
+/// fresh and stops (a pause and its resume keep it): kept, the next playback
+/// -- the same song from the top, or another song -- looped the old section,
+/// at the old song's bounds, once it reached the section's end.
 #[derive(Clone, Default)]
 pub(crate) struct SectionLoop {
     /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
@@ -501,6 +502,15 @@ impl SectionLoop {
         self.break_requested.store(false, Ordering::Relaxed);
         *self.jumps_at_arm.lock() = 0;
         *self.reactive.write() = ReactiveLoopState::Idle;
+    }
+
+    /// Takes the section loop up in the playback resuming a paused song:
+    /// armed, offered, looping or breaking as the pause left it. A loop
+    /// armed and not yet round counts its jumps from none in the new
+    /// playback's log; counted from the old log's, it never read as
+    /// looping.
+    fn resume(&self) {
+        *self.jumps_at_arm.lock() = 0;
     }
 }
 
@@ -4350,12 +4360,10 @@ mod test {
         Ok(())
     }
 
-    /// A section loop armed, then Stop: the section is forgotten. Kept, the
-    /// next playback -- the same song from the top, or another song after
-    /// Next -- looped that section, at the old song's bounds, as soon as it
-    /// reached its end, and the status reported it looping.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn stop_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+    /// A player on a playlist of songs S and T, each with a section `a`
+    /// from 2 s to 4 s, on the mock audio device.
+    async fn two_section_songs_player() -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>>
+    {
         let dir = tempfile::tempdir()?;
         let songs_dir = dir.path().join("songs");
         for name in ["S", "T"] {
@@ -4393,6 +4401,16 @@ mod test {
             None,
         )?;
         player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    /// A section loop armed, then Stop: the section is forgotten. Kept, the
+    /// next playback -- the same song from the top, or another song after
+    /// Next -- looped that section, at the old song's bounds, as soon as it
+    /// reached its end, and the status reported it looping.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
         let device = player.audio_device().expect("audio device").to_mock()?;
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
@@ -4408,6 +4426,62 @@ mod test {
             armed.is_none(),
             "song T plays with song S's section still armed: {armed:?}"
         );
+        Ok(())
+    }
+
+    /// A section loop armed, then a pause and a resume: the operator paused
+    /// mid-loop, and the song loops on. A reactive arm (an ack) is kept with
+    /// it, and counts its jumps from the resumed playback's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_and_resume_keep_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        let armed = player.active_section().expect("the section armed");
+        // As an ack arms it in reactive looping.
+        *player.section_loop.reactive.write() = ReactiveLoopState::LoopArmed(armed.clone());
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        assert!(player.is_paused());
+        assert_eq!(player.active_section(), Some(armed.clone()), "kept paused");
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never resumed");
+        assert_eq!(player.active_section(), Some(armed.clone()), "kept resumed");
+        assert!(
+            matches!(player.reactive_loop_state(), ReactiveLoopState::LoopArmed(ref b) if *b == armed),
+            "{:?}",
+            player.reactive_loop_state()
+        );
+        assert_eq!(*player.section_loop.jumps_at_arm.lock(), 0);
+        // A stop then forgets it all.
+        player.stop().await;
+        assert!(player.active_section().is_none());
+        assert!(matches!(
+            player.reactive_loop_state(),
+            ReactiveLoopState::Idle
+        ));
+        Ok(())
+    }
+
+    /// A pause, then a navigation: the section loop kept for the resume is
+    /// forgotten with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_navigation_from_a_pause_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        player.next().await;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song T never started playing");
+        let armed = player.active_section();
+        player.stop().await;
+        assert!(armed.is_none(), "T plays with S's section armed: {armed:?}");
         Ok(())
     }
 

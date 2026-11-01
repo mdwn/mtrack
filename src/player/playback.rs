@@ -93,9 +93,12 @@ impl Player {
         // a hardware reload off by its position, and one that took the lock
         // after the position was taken found the player idle and reset the
         // hardware: the resume was refused, its position thrown away.
+        // Play with no position of its own on a paused song resumes it, and
+        // a section loop armed before the pause loops on.
+        let resume = start_time.is_none() && self.is_paused();
         let start_time =
             start_time.unwrap_or_else(|| self.take_pending_start().unwrap_or(Duration::ZERO));
-        self.play_from_locked(start_time, &mut join).await
+        self.start_playback(start_time, &mut join, resume).await
     }
 
     /// Plays the song at the current position, as [`Player::play`] does,
@@ -120,6 +123,17 @@ impl Player {
         start_time: Duration,
         join: &mut Option<PlayHandles>,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        self.start_playback(start_time, join, false).await
+    }
+
+    /// [`Player::play_from_locked`], as a fresh start, or as the resume of a
+    /// paused song (`resume`), which keeps the section loop it was in.
+    async fn start_playback(
+        &self,
+        start_time: Duration,
+        join: &mut Option<PlayHandles>,
+        resume: bool,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         // Asked again under the join lock: a hardware reload resets the
         // hardware under it, and one that ran since the caller asked would
         // have this start on hardware still being brought up.
@@ -134,7 +148,7 @@ impl Player {
             self.song_playing.store(true, Ordering::Relaxed);
             self.past_last_entry.store(false, Ordering::Relaxed);
         }
-        let started = self.start_locked(start_time, join).await;
+        let started = self.start_locked(start_time, join, resume).await;
         if join.is_none() {
             self.song_playing.store(false, Ordering::Relaxed);
             self.reload_deferred_hardware();
@@ -146,6 +160,7 @@ impl Player {
         &self,
         start_time: Duration,
         join: &mut Option<PlayHandles>,
+        resume: bool,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         let _enter = self.span.enter();
 
@@ -166,9 +181,15 @@ impl Player {
         // A song ending fades on out under this one, as under the song a
         // loop break moves to; ambient light no longer follows it.
         self.end_ending();
-        // A section loop belongs to the playback it was armed in, and the
-        // reactive loop starts over with the song.
-        self.section_loop.reset();
+        // A fresh start begins with no section loop, and the reactive loop
+        // over. A resume keeps the loop the pause left armed, offered or
+        // looping, as the operator left it; only its count of the jumps due
+        // when it was armed starts over, with the new playback's log.
+        if resume {
+            self.section_loop.resume();
+        } else {
+            self.section_loop.reset();
+        }
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
@@ -692,6 +713,9 @@ impl Player {
     pub(super) async fn cut_locked(&self, join: &mut Option<PlayHandles>) -> Option<Arc<Song>> {
         let ending = self.end_ending();
         let (song, _) = self.stop_locked(join).await;
+        // A section loop goes with the playback it was armed in, or the
+        // pause it was kept through.
+        self.section_loop.reset();
         self.song_playing.store(false, Ordering::Relaxed);
         // A song an edit took off the list is current only while it plays:
         // stopped, the playlist goes on to the entry that took its place, or
@@ -825,6 +849,11 @@ impl Player {
     /// playlist on to its target.
     pub(super) async fn stop_for_pause(&self, join: &mut Option<PlayHandles>) -> bool {
         let (_, moved) = self.stop_locked(join).await;
+        // Paused, the section loop is kept for the resume. Stopped on a loop
+        // break's target instead, there is nothing to resume it in.
+        if moved {
+            self.section_loop.reset();
+        }
         !moved
     }
 
@@ -995,8 +1024,6 @@ impl Player {
             }
         };
         let broken_to_prev = self.take_loop_break();
-        // A section loop goes with the playback it was armed in.
-        self.section_loop.reset();
 
         self.cut_break_fade();
         let song = match self.get_playlist().current() {

@@ -155,6 +155,8 @@ impl Player {
                 info!(song = song.name(), position = ?position, "Seek stored as pending start position");
                 // A seek while paused moves the paused song, which stays
                 // paused.
+                // It exits any section loop, as a seek while playing does.
+                self.section_loop.reset();
                 let mut pending = self.pending_start.lock();
                 let paused = pending.is_some_and(|p| p.paused);
                 *pending = Some(PendingStart { position, paused });
