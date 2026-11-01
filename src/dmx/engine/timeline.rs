@@ -91,8 +91,10 @@ fn next_pass_id() -> u64 {
 pub(crate) enum PassClock {
     /// The incoming pass's song time: a crossfade between passes of one
     /// looping song, the outgoing pass `lead` (a pass's length less the
-    /// overlap) ahead.
-    Song { lead: Duration },
+    /// overlap) ahead. The crossfade begins at the incoming pass's `start`:
+    /// 0, or part way in for a pass begun late, which joins the song's grid
+    /// where one begun on time would be by then.
+    Song { lead: Duration, start: Duration },
     /// The wall clock from a loop break (a playlist `fade_out`): the looping song
     /// fades out over the next song's start, whose song time is not running
     /// yet and has nothing to do with it. The outgoing pass plays on from
@@ -108,7 +110,7 @@ impl OutgoingPass {
     /// outgoing pass's own song time, given the incoming pass's.
     pub(super) fn timing(&self, song_time: Duration) -> (f64, Duration) {
         let (into, time) = match self.clock {
-            PassClock::Song { lead } => (song_time, song_time + lead),
+            PassClock::Song { lead, start } => (song_time.saturating_sub(start), song_time + lead),
             PassClock::Wall { started, from } => {
                 let elapsed = started.elapsed();
                 (elapsed, from + elapsed)
@@ -227,6 +229,21 @@ impl OutgoingPass {
         }
     }
 
+    /// Moves this pass off the incoming pass's song time onto the wall clock,
+    /// from where it is at the incoming `song_time`: the incoming pass is
+    /// about to go back (a section's jump) and would take this one with it.
+    fn keep_own_time(&mut self, song_time: Duration) {
+        if let PassClock::Song { lead, start } = self.clock {
+            let into = song_time.saturating_sub(start);
+            let now = std::time::Instant::now();
+            let started = now.checked_sub(into).unwrap_or(now);
+            self.clock = PassClock::Wall {
+                started,
+                from: (song_time + lead).saturating_sub(now - started),
+            };
+        }
+    }
+
     /// This pass as a loop break's fade that is already over, held at the
     /// last frame it rendered.
     fn shelved(mut self) -> OutgoingPass {
@@ -298,21 +315,42 @@ pub(crate) fn song_lighting_timeline(
 }
 
 impl Engine {
-    /// Begins the next pass of a song looping with a crossfade of `overlap`:
-    /// the running effects engine and timeline become the outgoing pass, `lead`
-    /// ahead in song time, and a fresh engine for the same rig starts `next`
-    /// (the song's timeline, from [`song_lighting_timeline`]) from the top.
+    /// Begins the next pass of a song looping with a crossfade of `overlap`,
+    /// the jump going back from song time `from` to `to`: the running effects
+    /// engine and timeline become the outgoing pass, `from - to` ahead in
+    /// song time, and a fresh engine for the same rig starts `next` (the
+    /// song's timeline, from [`song_lighting_timeline`]) at `to`. That is the
+    /// top, or part way in for a pass begun late (a start, seek or section
+    /// break inside the crossfade), which the audio starts there too.
     /// [`Engine::update_effects`] crosses the two over the overlap.
     pub fn begin_loop_crossfade(
         &self,
-        next: Option<crate::lighting::timeline::LightingTimeline>,
-        lead: Duration,
+        mut next: Option<crate::lighting::timeline::LightingTimeline>,
+        from: Duration,
+        to: Duration,
         overlap: Duration,
     ) {
+        let lead = from.saturating_sub(to);
+        let start = self.to_delayed_song_time(to);
+        // A pass begun late starts from the state its cues before `to` leave,
+        // as a seek does, rather than firing them all in its first frame.
+        // Groups are resolved here, with no lock held.
+        let mut history = None;
+        if let Some(timeline) = next.as_mut() {
+            if start.is_zero() {
+                timeline.start();
+            } else {
+                let heads = self.resolve_groups(timeline.move_groups());
+                let mut update = timeline
+                    .start_at_resolving(start, &mut |effect| resolved_fixtures(&heads, effect));
+                update.map_effects(|effect| self.resolve_effect_groups(effect));
+                history = Some(update);
+            }
+        }
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
         // crossfade before it began.
-        self.update_song_time(Duration::ZERO);
+        self.update_song_time(to);
         // The engines swap, the timelines with them, and the outgoing pass
         // is put aside, all under the engine's lock (taken in the effects
         // loop's order: engine, timeline, pass), so no frame renders the
@@ -321,19 +359,18 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+        if let Some(update) = history {
+            effect_engine.set_song_time(start);
+            for e in effect_engine.apply_timeline_update(update) {
+                error!("Failed to start lighting effect: {}", e);
+            }
+        }
         // What it drove the rig with until now: held as it is, should it go
         // before its first frame as a pass.
         let last = outgoing_engine.last_commands().to_vec();
         let timeline = {
             let mut current = self.current_song_timeline.lock();
-            std::mem::replace(
-                &mut *current,
-                next.map(|mut timeline| {
-                    timeline.start();
-                    timeline
-                }),
-            )
-            .map(free)
+            std::mem::replace(&mut *current, next).map(free)
         };
         let mut outgoing = self.outgoing_pass.lock();
         if let Some(pass) = outgoing.take() {
@@ -342,7 +379,7 @@ impl Engine {
         *outgoing = Some(OutgoingPass {
             effect_engine: outgoing_engine,
             timeline,
-            clock: PassClock::Song { lead },
+            clock: PassClock::Song { lead, start },
             overlap,
             inner: None,
             hurry: None,
@@ -565,10 +602,31 @@ impl Engine {
     /// [`Self::start_lighting_timeline_at`], starting the MIDI DMX
     /// playbacks at the same point as it clears the store (#583).
     pub(super) fn start_lighting_timeline_with(&self, start_time: Duration, midi: MidiDmxStart) {
-        let start_time = self.to_delayed_song_time(start_time);
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
+        self.restart_lighting_timeline(start_time, midi);
+    }
+
+    /// Before a section's jump with no overlap: a crossfade between passes
+    /// still in progress plays out on its own time, as the audio's and
+    /// MIDI's do, rather than going back with the song time.
+    pub(super) fn keep_crossfade_on_own_time(&self) {
+        let song_time = self.to_delayed_song_time(self.get_song_time());
+        if let Some(pass) = self.outgoing_pass.lock().as_mut() {
+            pass.keep_own_time(song_time);
+        }
+    }
+
+    /// A section's jump with no overlap, back to `start_time`: the timeline
+    /// restarts there as for a seek, keeping a crossfade in progress (see
+    /// [`Self::keep_crossfade_on_own_time`]).
+    pub(super) fn restart_section_at(&self, start_time: Duration) {
+        self.restart_lighting_timeline(start_time, MidiDmxStart::Seek);
+    }
+
+    fn restart_lighting_timeline(&self, start_time: Duration, midi: MidiDmxStart) {
+        let start_time = self.to_delayed_song_time(start_time);
 
         // A move takes its heads from another by the fixtures they share,
         // so the history needs its moves' groups resolved: here, with no

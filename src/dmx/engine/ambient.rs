@@ -1386,6 +1386,7 @@ mod tests {
         engine.begin_loop_crossfade(
             Some(timeline(GREEN)),
             Duration::from_secs(1),
+            Duration::ZERO,
             Duration::from_millis(100),
         );
         song_frame(&engine, 0.05);
@@ -1499,6 +1500,7 @@ mod tests {
             engine.begin_loop_crossfade(
                 Some(timeline(GREEN)),
                 Duration::from_secs(1),
+                Duration::ZERO,
                 Duration::from_millis(500),
             );
             assert_pan_glides(&engine, 0.15, 100.0);
@@ -1512,6 +1514,7 @@ mod tests {
                 "pass" => engine.begin_loop_crossfade(
                     Some(timeline(GREEN)),
                     Duration::from_secs(1),
+                    Duration::ZERO,
                     Duration::from_millis(500),
                 ),
                 "stop" => engine.stop_lighting_timeline(),
@@ -1547,12 +1550,14 @@ mod tests {
             engine.begin_loop_crossfade(
                 Some(timeline(GREEN)),
                 Duration::from_secs(1),
+                Duration::ZERO,
                 Duration::from_millis(500),
             );
             match next {
                 "pass" => engine.begin_loop_crossfade(
                     Some(timeline(GREEN)),
                     Duration::from_secs(1),
+                    Duration::ZERO,
                     Duration::from_millis(500),
                 ),
                 _ => engine.stop_lighting_timeline(),
@@ -1575,6 +1580,7 @@ mod tests {
         engine.begin_loop_crossfade(
             Some(timeline(GREEN)),
             Duration::from_secs(1),
+            Duration::ZERO,
             Duration::from_secs(1),
         );
         song_frame(&engine, 0.05);
@@ -1612,6 +1618,7 @@ mod tests {
             engine.begin_loop_crossfade(
                 Some(timeline(&next)),
                 Duration::from_secs(1),
+                Duration::ZERO,
                 Duration::from_millis(50),
             );
             song_frame(&engine, 0.01);
@@ -1706,6 +1713,7 @@ mod tests {
             engine.begin_loop_crossfade(
                 Some(timeline(GREEN)),
                 Duration::from_secs(1),
+                Duration::ZERO,
                 Duration::from_millis(50),
             );
             song_frame(&engine, 0.01);

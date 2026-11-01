@@ -3763,6 +3763,7 @@ mod test {
                     "show \"b\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 8s\n}\n",
                 )),
                 Duration::from_secs(6),
+                Duration::ZERO,
                 Duration::from_secs(2),
             );
             let mut seen = Vec::new();
@@ -3998,6 +3999,7 @@ mod test {
                     "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
                 )),
                 Duration::from_secs(6),
+                Duration::ZERO,
                 Duration::from_secs(2),
             );
             engine.apply_timeline_update(green, epoch)?;
@@ -4047,6 +4049,7 @@ mod test {
                     "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
                 )),
                 Duration::from_secs(6),
+                Duration::ZERO,
                 Duration::from_secs(2),
             );
             // The first frame of the new pass is still the old one.
@@ -4063,6 +4066,100 @@ mod test {
             assert_eq!(frame_at(&engine, 2.0), (0.0, 0.0, 255.0));
             assert!(engine.outgoing_pass.lock().is_none());
             assert_eq!(frame_at(&engine, 3.0), (0.0, 0.0, 255.0));
+            Ok(())
+        }
+
+        /// A pass begun late (a section broken inside the crossfade, or a
+        /// start or seek there) joins the song's grid part way in: for an 8s
+        /// song crossfading over 2s, the trigger gives from 6.5s, to 0.5s,
+        /// overlap 1.5s. The audio starts the new pass 0.5s in and crosses
+        /// over the 1.5s left; the lights do the same, the outgoing pass
+        /// where the audio's is.
+        #[test]
+        fn a_late_pass_crosses_the_lights_over_with_the_audio() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let mut channels = std::collections::HashMap::new();
+            for (name, offset) in [("red", 1), ("green", 2), ("blue", 3)] {
+                channels.insert(name.to_string(), offset);
+            }
+            engine.effect_engine.lock().register_fixture(
+                crate::lighting::effects::FixtureInfo::new(
+                    "wash".to_string(),
+                    5,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ),
+            );
+            // Red throughout the outgoing pass, green from 7s.
+            *engine.current_song_timeline.lock() = Some(timeline(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 7s\n    \
+                 @7.000\n    wash: static, color: \"green\", duration: 1s\n}\n",
+            ));
+            engine.start_lighting_timeline_at(Duration::ZERO);
+            let mut at = 0.0;
+            while at < 6.5 {
+                frame_at(&engine, at);
+                at += 0.01;
+            }
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_millis(6_500),
+                Duration::from_millis(500),
+                Duration::from_millis(1_500),
+            );
+            // The first frame of the late pass: the outgoing pass is at 6.5s
+            // (red) and has not begun crossing.
+            let first = frame_at(&engine, 0.5);
+            assert_eq!(first, (255.0, 0.0, 0.0), "first frame of the late pass");
+            // 1.1s into the 1.5s overlap (incoming 1.6s): still crossing, the
+            // outgoing pass (green, at 7.6s) still up.
+            let late = frame_at(&engine, 1.6);
+            assert!(late.1 > 0.0, "outgoing gone early: {late:?}");
+            // And the incoming pass started from its state at 0.5s: blue.
+            assert!(late.2 > 0.0, "incoming pass dark: {late:?}");
+            Ok(())
+        }
+
+        /// A section's jump (no overlap) while a crossfading song's previous
+        /// pass is still crossing out: the audio and MIDI let the outgoing
+        /// pass play on, and so do the lights.
+        #[test]
+        fn a_section_jump_inside_the_crossfade_keeps_the_outgoing_lights(
+        ) -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = wash_running(
+                "show \"a\" {\n    @0.000\n    wash: static, color: \"red\", duration: 20s\n}\n",
+            )?;
+            let mut at = 1.0;
+            while at < 6.0 {
+                frame_at(&engine, at);
+                at += 0.01;
+            }
+            // 8s song, 2s crossfade: the next pass begins at 6s.
+            engine.begin_loop_crossfade(
+                Some(timeline(
+                    "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
+                )),
+                Duration::from_secs(6),
+                Duration::ZERO,
+                Duration::from_secs(2),
+            );
+            frame_at(&engine, 0.0);
+            frame_at(&engine, 0.5);
+            // A section [0, 1] armed: it goes round at 1s, 1s into the 2s
+            // overlap, as the DMX follower does a jump with no overlap.
+            engine.update_song_time(Duration::from_secs(1));
+            engine.keep_crossfade_on_own_time();
+            engine.update_song_time(Duration::ZERO);
+            engine.restart_section_at(Duration::ZERO);
+            let (red, _, _) = frame_at(&engine, 0.01);
+            assert!(
+                red > 0.0,
+                "the outgoing pass's lights were cut half way through its crossfade"
+            );
             Ok(())
         }
 
@@ -4301,6 +4398,7 @@ mod test {
             engine.begin_loop_crossfade(
                 Some(timeline(red)),
                 Duration::from_secs(6),
+                Duration::ZERO,
                 Duration::from_secs(2),
             );
             assert_eq!(
@@ -4439,6 +4537,7 @@ mod test {
                     "show \"a\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 7s\n}\n",
                 )),
                 Duration::from_secs(6),
+                Duration::ZERO,
                 Duration::from_secs(2),
             );
             let before = frame_at(&engine, 1.0);
@@ -4543,12 +4642,22 @@ mod test {
         #[test]
         fn a_new_start_drops_a_crossfade_in_progress() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
-            engine.begin_loop_crossfade(None, Duration::from_secs(6), Duration::from_secs(2));
+            engine.begin_loop_crossfade(
+                None,
+                Duration::from_secs(6),
+                Duration::ZERO,
+                Duration::from_secs(2),
+            );
             assert!(engine.outgoing_pass.lock().is_some());
             engine.start_lighting_timeline_at(Duration::ZERO);
             assert!(engine.outgoing_pass.lock().is_none());
 
-            engine.begin_loop_crossfade(None, Duration::from_secs(6), Duration::from_secs(2));
+            engine.begin_loop_crossfade(
+                None,
+                Duration::from_secs(6),
+                Duration::ZERO,
+                Duration::from_secs(2),
+            );
             engine.stop_lighting_timeline();
             assert!(engine.outgoing_pass.lock().is_none());
             Ok(())

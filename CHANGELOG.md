@@ -145,6 +145,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A crossfading song's pass begun late crosses the lights over with the audio**: a start, seek
+  or section break inside a looping song's `loop_crossfade` begins the next pass part way in,
+  where one begun on time would be by then. The audio, notes and beat clock did; the lights
+  started that pass from the top and read its song time as time into the crossfade, so they
+  began already part way crossed (or cut straight over), the outgoing pass ahead of the audio's,
+  and fired every cue before the join point in one frame. They now start the pass from its state
+  at the join point and cross over the overlap left, as the audio does.
+- **A section going round during a crossfade keeps the outgoing lights**: a short section in a
+  crossfading song that went round while the previous pass was still crossing out cut that
+  pass's lights at once, while its audio and notes played on to the end of the crossfade. The
+  lights now play it out too.
+- **Song starts no longer spin two cores**: the MIDI and lighting threads busy-waited for the
+  other subsystems to be ready at every start and seek, taking CPU from the audio and lighting
+  preparation they were waiting for, most noticeably on a Raspberry Pi. They now sleep until
+  the start, then wait at most one audio buffer for its first sample, as before.
 - **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
   source's own envelope, so a break part way through a `loop_crossfade` held both passes where
   they stood and then cut the outgoing one dead where its crossfade would have ended, and a break
