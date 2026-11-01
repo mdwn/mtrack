@@ -167,7 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than 66s), and one before it could crash the parser. Changes are now taken in the order they
   fall, each reached through the tempo, and any ramp, of those before it; the beat grid and the
   clock likewise count a time-positioned change after an unfinished ramp through the ramp, so it
-  comes in at its own time.
+  comes in at its own time, and a time-positioned signature change after one governs from the bar
+  its position falls in. The bar and beat a time is reported at (the lint, show diffs and
+  analysis, the MCP tools) are counted the same way, through ramps and mid-bar signature changes.
 
 - **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
   source's own envelope, so a break part way through a `loop_crossfade` held both passes where
