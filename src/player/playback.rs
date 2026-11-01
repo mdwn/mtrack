@@ -184,10 +184,8 @@ impl Player {
         // A fresh start begins with no section loop, and the reactive loop
         // over. A resume keeps the loop the pause left armed, offered or
         // looping, as the operator left it; only its count of the jumps due
-        // when it was armed starts over, with the new playback's log.
-        if resume {
-            self.section_loop.resume();
-        } else {
+        // when it was armed starts over, as the new playback's log goes in.
+        if !resume {
             self.section_loop.reset();
         }
 
@@ -255,7 +253,16 @@ impl Player {
                     section_jumps: {
                         let log = Arc::new(crate::playsync::SectionJumpLog::default());
                         log.set_timeline(clock.clone(), start_time);
-                        *self.section_jumps.lock() = log.clone();
+                        // Under the log's lock, which an arm counts its jumps
+                        // under: one landing during the resume counts from
+                        // the old log or the new one, never the old log's
+                        // count kept against the new log, which read as not
+                        // yet looping for good.
+                        let mut jumps = self.section_jumps.lock();
+                        *jumps = log.clone();
+                        if resume {
+                            self.section_loop.resume();
+                        }
                         log
                     },
                 },
@@ -1146,11 +1153,13 @@ impl Player {
         })
     }
 
-    /// How many of the playing song's loop jumps have been committed, due
-    /// or not: a section armed now has looped once more than this have
-    /// fallen due, not a pass committed just before it.
-    fn section_jumps_committed(&self) -> usize {
-        self.section_jumps.lock().committed()
+    /// Notes how many of the playing song's loop jumps have been committed,
+    /// due or not, as a section loop is armed: it has looped once more than
+    /// this have fallen due, not a pass committed just before it. Under the
+    /// log's lock, which a resume installs its new log under.
+    fn note_arm(&self) {
+        let log = self.section_jumps.lock();
+        *self.section_loop.jumps_at_arm.lock() = log.committed();
     }
 
     /// Activates section looping for the named section in the current song.
@@ -1191,7 +1200,7 @@ impl Player {
             "Activating section loop"
         );
 
-        *self.section_loop.jumps_at_arm.lock() = self.section_jumps_committed();
+        self.note_arm();
         {
             let mut active = self.section_loop.active.write();
             *active = Some(super::SectionBounds {
@@ -1267,7 +1276,7 @@ impl Player {
                 *state = ReactiveLoopState::LoopArmed(bounds.clone());
 
                 // Set active_section to engage the existing loop machinery.
-                *self.section_loop.jumps_at_arm.lock() = self.section_jumps_committed();
+                self.note_arm();
                 {
                     let mut active = self.section_loop.active.write();
                     *active = Some(bounds);

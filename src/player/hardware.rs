@@ -1042,6 +1042,11 @@ impl Player {
             while !cancel.is_cancelled() {
                 {
                     let join = join.lock().await;
+                    // Cancelled while it waited for the lock: the round's
+                    // successor reports from here on.
+                    if cancel.is_cancelled() {
+                        break;
+                    }
 
                     let auto_play_waiting = auto_play.lock().waiting.is_some();
                     let emit_result: Result<(), Box<dyn Error>> = status_events

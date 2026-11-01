@@ -3055,6 +3055,43 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_reporting_cancelled_while_waiting_emits_nothing() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new("mock-midi", None)),
+            None,
+        )
+        .await?;
+        let midi = player.midi_device().expect("MIDI device").to_mock()?;
+        let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
+        let config: config::StatusEvents = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("off_events: {cc}\nidling_events: {cc}\nplaying_events: {cc}\n"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        let events = StatusEvents::new(Some(config))?.expect("status events");
+        let round = tokio_util::sync::CancellationToken::new();
+        // The loop waits for the join lock, as behind a song starting, while
+        // a reload cancels its round.
+        let join = player.join.lock().await;
+        midi.reset_emitted_event();
+        let reporting = player
+            .report_status(events, round.clone())
+            .expect("a MIDI device to report on");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        round.cancel();
+        drop(join);
+        tokio::time::timeout(Duration::from_secs(2), reporting)
+            .await
+            .expect("the status loop outlived its init round")?;
+        assert_eq!(midi.get_emitted_event(), None, "emitted for a round gone");
+        Ok(())
+    }
+
     // --- resolve_playback_outcome tests ---
 
     #[test]
@@ -4462,6 +4499,28 @@ mod test {
             player.reactive_loop_state(),
             ReactiveLoopState::Idle
         ));
+        Ok(())
+    }
+
+    /// A pause on the song's very end keeps nothing to resume, and leaves
+    /// the player stopped: the section loop goes with it, rather than the
+    /// status showing a loop while stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_on_the_very_end_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let song = player.get_playlist().current().expect("S");
+        let (start_time, end_time) = song.resolve_section("a").expect("section a");
+        *player.section_loop.active.write() = Some(SectionBounds {
+            name: "a".to_string(),
+            start_time,
+            end_time,
+        });
+        player.keep_paused_position(song.length());
+        assert!(!player.is_paused(), "nothing to resume");
+        assert!(
+            player.active_section().is_none(),
+            "stopped with a loop armed"
+        );
         Ok(())
     }
 

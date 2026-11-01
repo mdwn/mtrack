@@ -104,15 +104,18 @@ impl Player {
 
     /// Keeps `position` in the current song for the next play to resume
     /// from, and returns it as a position in the pass it is on.
-    fn keep_paused_position(&self, position: Duration) -> Duration {
+    pub(super) fn keep_paused_position(&self, position: Duration) -> Duration {
         let Some(song) = self.get_playlist().current() else {
+            self.section_loop.reset();
             return position;
         };
         // The position is already the place in the pass playing: the log's
         // passes put it back as they fell due.
         // Paused on the song's very end: there is nothing left to resume,
-        // so the next play starts it over.
+        // so the next play starts it over, and the player is stopped, not
+        // paused: the section loop kept for a resume goes, as at a stop.
         if check_start_position(&song, position, "").is_err() {
+            self.section_loop.reset();
             return position;
         }
         info!(song = song.name(), position = ?position, "Paused; play resumes here");
