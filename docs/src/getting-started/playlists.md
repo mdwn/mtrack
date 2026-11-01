@@ -169,11 +169,12 @@ songs:
   the player stays stopped on the song, and ambient light comes up as after a stop. It is the
   gRPC `CancelAutoPlay` RPC, the OSC address `/mtrack/auto_play/cancel`, a MIDI controller's
   `cancel_auto_play` event, and the MCP `cancel_auto_play` tool.
-- **In the web UI.** The playlist editor has an **Auto play** box on each song, with a gap field
-  beside it once ticked: empty starts the song at once.
+- **In the web UI.** The playlist editor has an **Auto play** box on each song. Once it is
+  ticked, the gap is set under **Before this song** in the song's transitions panel: empty
+  starts the song at once.
 
-![The playlist editor: two songs set to auto play, one after a 2s gap, and the playlist's own
-ambient show](../images/playlist-auto-play.png)
+![The playlist editor: two songs set to auto play, one with its transitions panel open on a 2s
+gap, and the playlist's own ambient show](../images/playlist-auto-play.png)
 
 ## Ambient light
 

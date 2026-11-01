@@ -464,6 +464,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and breaks such a looping song's loop onto that entry rather than ending it. The playback
   feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
 
+### Security
+
+- **Dependency advisories cleared**: Rust: `pulldown-cmark` 0.13.6 (RUSTSEC-2026-0414, exponential
+  event growth with wikilinks), which only the protobuf code generator uses at build time. Web
+  UI: `body-parser` (denial of service from trailing bytes after a compressed body) and its
+  neighbours, in the development server only. Two remain without a fix upstream: `deepmerge`
+  (prototype poisoning of merged objects), which `svelte-i18n` uses on the web UI's own bundled
+  locale files, and `minimatch` in `eslint`, a development tool. Nothing in the served bundle
+  changes.
+
 ## [0.17.4] - 2026-10-26
 
 ### Fixed
