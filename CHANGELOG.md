@@ -152,10 +152,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A mid-bar time signature change takes effect from the next bar everywhere**: a time
   signature change on a beat other than 1 governs from the next bar in the beat grid and the
-  beat clock, but the tempo map placed later bar-positioned changes as if it governed at once.
-  A tempo change a few bars after one (`@2/3 { time_signature: 3/4 }`, then `@4/1 { bpm: 60 }`)
-  came in at the wrong time for the show's tempo and metre lookups, out of step with the grid
-  and the clock. It now comes in on the bar the grid puts it on.
+  beat clock, but the tempo map placed later bar-positioned changes as if it governed at once,
+  and the show's time signature lookups (an `offset`, an effect's rate in measures) switched to
+  it at once too. A tempo change a few bars after one (`@2/3 { time_signature: 3/4 }`, then
+  `@4/1 { bpm: 60 }`) came in at the wrong time, out of step with the grid and the clock. Both
+  now follow the grid: the new signature from the next barline, the later change on the bar the
+  grid puts it on. Likewise, bar-positioned changes after a time-positioned signature change now
+  resolve where the grid puts them.
+
+- **Tempo changes resolve in time order, whichever way they are positioned**: a tempo map took
+  every time-positioned change (`@10.000`) ahead of every bar-positioned one (`@20/1`), and
+  counted the time before a time-positioned change at the tempo it changed to. A bar-positioned
+  change after one came in at the wrong time (bar 20 after `@10.000 { bpm: 60 }` at 76s rather
+  than 66s), and one before it could crash the parser. Changes are now taken in the order they
+  fall, each reached through the tempo, and any ramp, of those before it; the beat grid and the
+  clock likewise count a time-positioned change after an unfinished ramp through the ramp, so it
+  comes in at its own time.
 
 - **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
   source's own envelope, so a break part way through a `loop_crossfade` held both passes where
