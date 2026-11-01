@@ -2081,10 +2081,7 @@ pub(super) async fn evaluate_lighting(
     let times: Vec<std::time::Duration> = match request
         .times
         .iter()
-        .map(|t| match std::time::Duration::try_from_secs_f64(*t) {
-            Ok(d) if d <= MAX_EVALUATE_TIME => Some(d),
-            _ => None,
-        })
+        .map(|t| crate::util::duration_from_secs(*t).filter(|d| *d <= MAX_EVALUATE_TIME))
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,

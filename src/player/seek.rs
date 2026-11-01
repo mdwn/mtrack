@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use super::{Player, ReactiveLoopState};
+use super::Player;
 use crate::songs::Song;
 
 /// How long a seek waits for the previous playback to wind down before
@@ -55,6 +55,17 @@ impl Player {
         // could start the next song in between, and that song would be kept
         // at the one before's position.
         let mut join = self.join.lock().await;
+        // A looping song ending is one the operator has ended: there is
+        // nothing to resume, and a pause stops it as a stop does. Kept
+        // paused, the song was ending and paused at once, and the next play
+        // resumed it.
+        if (join.is_some() && self.loop_end.load(Ordering::Relaxed))
+            || self.ending_status().is_some()
+        {
+            info!("The song is ending: a pause stops it.");
+            self.cut_locked(&mut join).await;
+            return Ok(None);
+        }
         // A song just started has no start time yet: it is where it
         // started, which after a seek or a resume is not its beginning.
         let position = match (self.elapsed().await?, join.as_ref()) {
@@ -157,8 +168,7 @@ impl Player {
         info!(song = song.name(), position = ?position, "Seeking");
 
         // Seeking exits any section loop.
-        *self.active_section.write() = None;
-        *self.reactive_loop_state.write() = ReactiveLoopState::Idle;
+        self.section_loop.reset();
 
         // Fade the audio to avoid a click, then cancel playback. The cleanup
         // task observes the cancellation and takes the StopCancelled path,

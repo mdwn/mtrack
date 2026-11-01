@@ -55,16 +55,25 @@ impl Player {
             super::seek::check_start_position(&song, start_time, "play from")?;
         }
 
-        if self.get_playlist().navigate_to(song_name).is_none() {
+        // Moved as a navigation moves it, so that a reload cannot come
+        // between looking the playlist up and moving it and lose the move,
+        // and announced as a navigation announces it.
+        let (_, song) = self.move_playlist(|playlist| -> Result<Arc<Song>, String> {
+            if let Some(song) = playlist.navigate_to(song_name) {
+                return Ok(song);
+            }
             let all_songs = self
                 .get_all_songs_playlist()
-                .ok_or_else(|| -> Box<dyn Error> { "all_songs playlist not available".into() })?;
-            if all_songs.navigate_to(song_name).is_none() {
-                return Err(format!("Song '{}' not found", song_name).into());
-            }
+                .ok_or("all_songs playlist not available")?;
+            let song = all_songs
+                .navigate_to(song_name)
+                .ok_or_else(|| format!("Song '{}' not found", song_name))?;
             *self.active_playlist.write() = "all_songs".to_string();
-        }
+            Ok(song)
+        });
+        let song = song?;
         self.clear_pending_start();
+        self.emit_song_change(&song);
 
         // Start playback with the lock already held.
         self.play_from_locked(start_time, &mut join).await
@@ -197,17 +206,18 @@ impl Player {
     /// doesn't exist in the map or if the player is currently playing.
     /// Switching to "all_songs" is session-only (not persisted to config).
     pub async fn switch_to_playlist(&self, name: &str) -> Result<(), String> {
-        {
-            let join = self.join.lock().await;
-            if join.is_some() {
-                if let Some(current) = self.get_playlist().current() {
-                    info!(
-                        current_song = current.name(),
-                        "Can't switch to {}, player is active.", name
-                    );
-                }
-                return Err("Cannot switch playlist while playing".to_string());
+        // Held from the check through the switch: let go between them, a
+        // play could start a song from the playlist being left, which the
+        // switch then took out from under it.
+        let join = self.join.lock().await;
+        if join.is_some() {
+            if let Some(current) = self.get_playlist().current() {
+                info!(
+                    current_song = current.name(),
+                    "Can't switch to {}, player is active.", name
+                );
             }
+            return Err("Cannot switch playlist while playing".to_string());
         }
 
         // Validate the name exists.
@@ -230,6 +240,9 @@ impl Player {
         // As for a navigation: a reload waiting on a pause or an ending
         // looks again.
         self.reload_deferred_hardware();
+        // The switch is made: saving it to the config store need not hold
+        // up playback.
+        drop(join);
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {
@@ -349,7 +362,10 @@ impl Player {
         // step to a move of the active playlist's place, such as a song's
         // end advancing it: one made between the two would be made on the
         // old playlist, and lost.
-        let _moves = self.playlist_moves.lock();
+        let moves = self.playlist_moves.lock();
+        // The ambient light for the gap the player is in, as the edit finds
+        // it.
+        let ambient_before = self.gap_ambient();
 
         // Preserve active playlist name if it still exists; fall back to all_songs.
         let (was_active, active) = {
@@ -389,6 +405,58 @@ impl Player {
         }
 
         *self.playlists.write() = new_playlists;
+        drop(moves);
         info!("Reloaded song state");
+
+        let called_off = self.recheck_auto_play();
+        // Stopped, the gap's ambient light is the edited playlist's, as a
+        // navigation onto another entry brings that entry's: a new show, or
+        // another's settings. A song playing or paused holds its lights,
+        // and a song waiting to start by itself the one before's, as a segue.
+        let idle = !self.song_playing.load(Ordering::Relaxed)
+            && self.pending_start().is_none()
+            && self.auto_play_status().is_none();
+        if called_off || (idle && self.gap_ambient() != ambient_before) {
+            self.idle_ambient(true);
+        }
+    }
+
+    /// The ambient light for the gap the player is in, and whose settings
+    /// it plays, as [`Player::idle_ambient`] would bring it up.
+    fn gap_ambient(
+        &self,
+    ) -> (
+        Option<crate::config::ambient::PlaylistAmbient>,
+        playlist::AmbientSource,
+    ) {
+        let playlist = self.get_playlist();
+        let entry = self.waiting_entry(&playlist);
+        (
+            playlist.ambient_before(entry),
+            playlist.ambient_source(entry),
+        )
+    }
+
+    /// Calls off an auto play waiting out its gap that a playlist edit has
+    /// left with nothing to wait for: its song gone from the playlist's
+    /// place, or its entry no longer starting by itself. One still waited
+    /// for waits on, its gap as it was. Returns whether one was called off.
+    fn recheck_auto_play(&self) -> bool {
+        let Some((song, _)) = self.auto_play_status() else {
+            return false;
+        };
+        let playlist = self.get_playlist();
+        let still_waits = playlist.auto_play().is_some()
+            && playlist
+                .current()
+                .is_some_and(|current| current.name() == song);
+        if still_waits {
+            return false;
+        }
+        info!(
+            song,
+            "Auto play called off: the playlist edit took it away."
+        );
+        self.cancel_auto_play()
     }
 }

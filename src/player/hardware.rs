@@ -485,10 +485,7 @@ impl Player {
             };
 
             if let Some(status_events) = status_events {
-                let player = self.clone();
-                tokio::spawn(async move {
-                    player.report_status(status_events).await;
-                });
+                self.report_status(status_events, cancel.clone());
             }
         }
 
@@ -1019,8 +1016,15 @@ impl Player {
         self.hardware.write().song_change_notifiers.push(notifier);
     }
 
-    /// Reports status as MIDI events.
-    pub(super) async fn report_status(&self, status_events: StatusEvents) {
+    /// Reports status as MIDI events, until `cancel` -- the init round's --
+    /// is cancelled. The loop holds the round's MIDI device: one left running
+    /// past a hardware reload kept it open, and each reload added another
+    /// loop beside it, all of them emitting.
+    pub(super) fn report_status(
+        &self,
+        status_events: StatusEvents,
+        cancel: CancellationToken,
+    ) -> Option<tokio::task::JoinHandle<()>> {
         let _enter = self.span.enter();
         info!("Reporting status");
 
@@ -1028,15 +1032,14 @@ impl Player {
             Some(device) => device,
             None => {
                 warn!("MIDI device not present for status reporting; skipping");
-                return;
+                return None;
             }
         };
         let join = self.join.clone();
         let auto_play = self.auto_play.clone();
 
-        // This thread will run until the process is terminated.
-        let _join_handle = tokio::spawn(async move {
-            loop {
+        Some(tokio::spawn(async move {
+            while !cancel.is_cancelled() {
                 {
                     let join = join.lock().await;
 
@@ -1051,7 +1054,12 @@ impl Player {
                     }
                 }
 
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                // Cancelled while the status shows, the off events still go
+                // out, so nothing is left lit that no loop turns off.
+                let cancelled = tokio::select! {
+                    _ = cancel.cancelled() => true,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => false,
+                };
 
                 {
                     let status_event_emit_result: Result<(), Box<dyn Error>> = status_events
@@ -1064,9 +1072,15 @@ impl Player {
                     }
                 }
 
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                if cancelled {
+                    break;
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                }
             }
-        });
+        }))
     }
 }
 

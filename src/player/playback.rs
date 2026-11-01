@@ -166,6 +166,9 @@ impl Player {
         // A song ending fades on out under this one, as under the song a
         // loop break moves to; ambient light no longer follows it.
         self.end_ending();
+        // A section loop belongs to the playback it was armed in, and the
+        // reactive loop starts over with the song.
+        self.section_loop.reset();
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
@@ -223,8 +226,8 @@ impl Player {
                 play_start_time: play_start_time.clone(),
                 loop_control: crate::playsync::LoopControl {
                     loop_break: self.loop_break.clone(),
-                    active_section: self.active_section.clone(),
-                    section_loop_break: self.section_loop_break.clone(),
+                    active_section: self.section_loop.active.clone(),
+                    section_loop_break: self.section_loop.break_requested.clone(),
                     break_fade: self.break_fade.clone(),
                     break_fade_ids: self.break_fade_ids.clone(),
                     start_fade: self.start_fade.clone(),
@@ -246,16 +249,23 @@ impl Player {
             start_time,
         });
 
+        // The playback's cleanup cancels this as it goes, however it ends. A
+        // song that ends by itself is never cancelled, and the poller below,
+        // waiting on that alone, outlived it: one more for each song.
+        let playback_done = tokio_util::sync::CancellationToken::new();
+
         // Spawn section boundary polling task for reactive looping.
         {
             let player = self.clone();
             let cancel = cancel_handle.clone();
-            // Reset reactive state for new song.
-            *self.reactive_loop_state.write() = ReactiveLoopState::Idle;
+            let done = playback_done.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(50));
                 loop {
-                    interval.tick().await;
+                    tokio::select! {
+                        _ = done.cancelled() => break,
+                        _ = interval.tick() => {}
+                    }
                     if cancel.is_cancelled() {
                         break;
                     }
@@ -270,6 +280,7 @@ impl Player {
             let player = self.clone();
             let song = song.clone();
             tokio::spawn(async move {
+                let _poller = playback_done.drop_guard();
                 let result = match play_rx.await {
                     Ok(Ok(())) => PlaybackResult::Success,
                     Ok(Err(e)) => PlaybackResult::Failed(e),
@@ -314,6 +325,7 @@ impl Player {
                     // leaves it, while its fade plays out.
                     *player.play_start_time.lock().await = None;
                     *join = None;
+                    player.section_loop.reset();
                     player.song_playing.store(false, Ordering::Relaxed);
                     player.stop_run.store(false, Ordering::Relaxed);
                     *player.start_fade.lock() = None;
@@ -341,8 +353,9 @@ impl Player {
                 // The playlist as it is now, not as it was when the song
                 // started: an edit since replaces it, the place it had got to
                 // carried over (#576).
-                let (playlist, (from, moved)) = player.move_playlist(|playlist| {
+                let (playlist, (from, at_end, moved)) = player.move_playlist(|playlist| {
                     let from = playlist.entry();
+                    let at_end = !playlist.can_move(false);
                     let moved = if loop_broken && back {
                         playlist.prev()
                     } else {
@@ -351,13 +364,18 @@ impl Player {
                     // A song taken off the list ending after the last
                     // entry has nothing to move on to, but no longer plays.
                     playlist.settle();
-                    (from, moved.and_then(|_| playlist.current()))
+                    (from, at_end, moved.and_then(|_| playlist.current()))
                 });
                 if let Some(song) = moved {
                     player.emit_song_change(&song);
                 }
-                // The last song played to its end: the gap after it.
-                if succeeded && !loop_broken && playlist.entry().is_some_and(|e| Some(e) == from) {
+                // The last song played to its end: the gap after it. One an
+                // edit took off the list counts too, ending after the last
+                // entry: settled on that entry, the playlist read as having
+                // moved on to it, and the entry's auto play started a song
+                // already played.
+                let past_last = succeeded && !loop_broken && at_end;
+                if past_last {
                     player.past_last_entry.store(true, Ordering::Relaxed);
                 }
 
@@ -367,6 +385,8 @@ impl Player {
                 }
 
                 *join = None;
+                // A section loop goes with the playback it was armed in.
+                player.section_loop.reset();
                 player.song_playing.store(false, Ordering::Relaxed);
                 player.stop_run.store(false, Ordering::Relaxed);
                 let should_auto_play = action == CleanupAction::LoopBreakAndPlay;
@@ -376,7 +396,7 @@ impl Player {
                     // A song that ended by itself moves the playlist on: the
                     // song it reaches may start by itself (its `auto_play`).
                     // Otherwise, between songs: ambient light, after its delay.
-                    let auto_play = (succeeded && playlist.entry() != from)
+                    let auto_play = (succeeded && !past_last && playlist.entry() != from)
                         .then(|| playlist.auto_play())
                         .flatten();
 
@@ -975,6 +995,8 @@ impl Player {
             }
         };
         let broken_to_prev = self.take_loop_break();
+        // A section loop goes with the playback it was armed in.
+        self.section_loop.reset();
 
         self.cut_break_fade();
         let song = match self.get_playlist().current() {
@@ -1142,9 +1164,9 @@ impl Player {
             "Activating section loop"
         );
 
-        *self.jumps_at_arm.lock() = self.section_jumps_committed();
+        *self.section_loop.jumps_at_arm.lock() = self.section_jumps_committed();
         {
-            let mut active = self.active_section.write();
+            let mut active = self.section_loop.active.write();
             *active = Some(super::SectionBounds {
                 name: section_name.to_string(),
                 start_time,
@@ -1152,8 +1174,10 @@ impl Player {
             });
         }
 
-        // Reset section_loop_break so the loop runs.
-        self.section_loop_break.store(false, Ordering::Relaxed);
+        // Clear any break asked of a loop before, so this one runs.
+        self.section_loop
+            .break_requested
+            .store(false, Ordering::Relaxed);
 
         // Play confirmation tone.
         self.play_confirmation_tone();
@@ -1168,7 +1192,7 @@ impl Player {
 
         // Update reactive state machine.
         {
-            let mut state = self.reactive_loop_state.write();
+            let mut state = self.section_loop.reactive.write();
             match &*state {
                 ReactiveLoopState::Looping(_) | ReactiveLoopState::BreakRequested(_) => {
                     if let ReactiveLoopState::Looping(bounds) = state.clone() {
@@ -1186,20 +1210,22 @@ impl Player {
             }
         }
 
-        self.section_loop_break.store(true, Ordering::Relaxed);
+        self.section_loop
+            .break_requested
+            .store(true, Ordering::Relaxed);
         // Clear active section so the UI stops wrapping elapsed time
         // and shows normal playback state.
-        *self.active_section.write() = None;
+        *self.section_loop.active.write() = None;
     }
 
     /// Returns the currently active section bounds, if any.
     pub fn active_section(&self) -> Option<super::SectionBounds> {
-        self.active_section.read().clone()
+        self.section_loop.active.read().clone()
     }
 
     /// Returns the current reactive loop state.
     pub fn reactive_loop_state(&self) -> ReactiveLoopState {
-        self.reactive_loop_state.read().clone()
+        self.section_loop.reactive.read().clone()
     }
 
     /// Acknowledges the current section in reactive looping mode.
@@ -1207,19 +1233,21 @@ impl Player {
     /// When a section has been offered (state is `SectionOffered`), this
     /// arms the loop so it will engage at the section end.
     pub async fn section_ack(&self) -> Result<(), Box<dyn Error>> {
-        let mut state = self.reactive_loop_state.write();
+        let mut state = self.section_loop.reactive.write();
         match state.clone() {
             ReactiveLoopState::SectionOffered(bounds) => {
                 info!(section = bounds.name.as_str(), "Section loop armed via ack");
                 *state = ReactiveLoopState::LoopArmed(bounds.clone());
 
                 // Set active_section to engage the existing loop machinery.
-                *self.jumps_at_arm.lock() = self.section_jumps_committed();
+                *self.section_loop.jumps_at_arm.lock() = self.section_jumps_committed();
                 {
-                    let mut active = self.active_section.write();
+                    let mut active = self.section_loop.active.write();
                     *active = Some(bounds);
                 }
-                self.section_loop_break.store(false, Ordering::Relaxed);
+                self.section_loop
+                    .break_requested
+                    .store(false, Ordering::Relaxed);
                 drop(state);
 
                 self.play_notification(crate::notification::NotificationEvent::LoopArmed);
@@ -1265,7 +1293,7 @@ impl Player {
         };
         let current_section = section_at(elapsed).or_else(|| crossing_out.and_then(section_at));
 
-        let mut state = self.reactive_loop_state.write();
+        let mut state = self.section_loop.reactive.write();
 
         match (&*state, current_section) {
             // Idle + entered a section → offer it.
@@ -1339,7 +1367,7 @@ impl Player {
                 // own jumps due since it was armed (any before is an earlier
                 // loop's, and a whole-song pass committed as it was armed is
                 // not this section going round).
-                let armed_at = *self.jumps_at_arm.lock();
+                let armed_at = *self.section_loop.jumps_at_arm.lock();
                 let start = bounds.start_time;
                 let looped = self
                     .section_jumps
