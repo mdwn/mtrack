@@ -145,6 +145,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
+  had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.
+  It is now a parse error saying the change is before the start. A tempo map built some other
+  way counts such a change as at bar 1.
+
+- **A mid-bar time signature change takes effect from the next bar everywhere**: a time
+  signature change on a beat other than 1 governs from the next bar in the beat grid and the
+  beat clock, but the tempo map placed later bar-positioned changes as if it governed at once.
+  A tempo change a few bars after one (`@2/3 { time_signature: 3/4 }`, then `@4/1 { bpm: 60 }`)
+  came in at the wrong time for the show's tempo and metre lookups, out of step with the grid
+  and the clock. It now comes in on the bar the grid puts it on.
+
 - **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
   source's own envelope, so a break part way through a `loop_crossfade` held both passes where
   they stood and then cut the outgoing one dead where its crossfade would have ended, and a break

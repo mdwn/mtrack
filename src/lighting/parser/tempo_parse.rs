@@ -94,6 +94,20 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
         }
     }
 
+    // Bar 1 is at `start`, so a change timed before it has no bar to fall in.
+    for change in &changes {
+        if let TempoChangePosition::Time(t) = change.position {
+            if t < start_offset {
+                return Err(format!(
+                    "Tempo change at @{:.3} is before the tempo's start ({:.3}s)",
+                    t.as_secs_f64(),
+                    start_offset.as_secs_f64()
+                )
+                .into());
+            }
+        }
+    }
+
     Ok(TempoMap::new(start_offset, bpm, time_signature, changes))
 }
 

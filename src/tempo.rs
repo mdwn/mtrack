@@ -350,6 +350,9 @@ impl TempoMap {
         let mut current_time_sig = initial_time_signature;
         let mut accumulated_time = start_offset;
         let mut accumulated_beats = 0.0;
+        // The metre changes resolved so far, as the beat grid has them: a
+        // change anchored mid-bar governs from the next bar.
+        let mut ts_changes: Vec<(u32, f64, TimeSignature)> = Vec::new();
 
         // Sort changes by their position (approximate - measure/beat vs time)
         let mut sorted_changes = changes;
@@ -380,7 +383,7 @@ impl TempoMap {
                 }
                 TempoChangePosition::MeasureBeat(m, b) => {
                     let total_beats =
-                        (*m - 1) as f64 * current_time_sig.beats_per_measure() + (*b - 1.0);
+                        Self::compute_target_beats(initial_time_signature, &ts_changes, *m, *b);
                     let beats_from_last_change = total_beats - accumulated_beats;
                     let secs = segment_secs_for_beats(
                         current_ramp.as_ref(),
@@ -416,6 +419,21 @@ impl TempoMap {
             current_ramp = current_ramp.and_then(|ramp| ramp.advanced_by(advanced_secs));
             if let Some(new_ts) = change.time_signature {
                 current_time_sig = new_ts;
+                let (m, b) = match &change.position {
+                    TempoChangePosition::MeasureBeat(m, b) => (*m, *b),
+                    TempoChangePosition::Time(t) => Self::measure_beat_through(
+                        start_offset,
+                        initial_bpm,
+                        initial_time_signature,
+                        &resolved_changes[..resolved_changes.len() - 1],
+                        *t,
+                    ),
+                };
+                ts_changes.push((m, b, new_ts));
+                ts_changes.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                });
             }
             if let Some(new_bpm) = change.bpm {
                 match change.transition {
@@ -448,15 +466,19 @@ impl TempoMap {
             // Update accumulated position
             match &change.position {
                 TempoChangePosition::MeasureBeat(m, b) => {
+                    // A change's own metre does not move it: one at beat 1
+                    // governs from its bar on, one mid-bar from the next.
                     accumulated_beats =
-                        (m - 1) as f64 * current_time_sig.beats_per_measure() + (b - 1.0);
+                        Self::compute_target_beats(initial_time_signature, &ts_changes, *m, *b);
                     accumulated_time = absolute_time;
                 }
                 TempoChangePosition::Time(t) => {
-                    // Convert time back to beats for tracking
+                    // Convert time back to beats for tracking. A change
+                    // before bar 1 counts as at it, as the beat walks have it.
+                    let t = (*t).max(start_offset);
                     accumulated_beats =
                         (t.as_secs_f64() - start_offset.as_secs_f64()) * current_bpm / 60.0;
-                    accumulated_time = *t;
+                    accumulated_time = t;
                 }
             }
         }
@@ -547,14 +569,33 @@ impl TempoMap {
     /// Convert an absolute time to a (measure, beat) position by integrating through
     /// all tempo/time-signature changes that precede it.
     pub(crate) fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
+        Self::measure_beat_through(
+            self.start_offset,
+            self.initial_bpm,
+            self.initial_time_signature,
+            &self.changes,
+            target_time,
+        )
+    }
+
+    /// [`TempoMap::time_to_measure_beat`] through the given resolved changes,
+    /// so [`TempoMap::new`] can place a time-positioned metre change as the
+    /// finished map will.
+    fn measure_beat_through(
+        start_offset: Duration,
+        initial_bpm: f64,
+        initial_time_signature: TimeSignature,
+        changes: &[TempoChange],
+        target_time: Duration,
+    ) -> (u32, f64) {
         let mut m: u32 = 1;
         let mut b: f64 = 1.0;
-        let mut temp_time = self.start_offset;
-        let mut temp_bpm = self.initial_bpm;
-        let mut temp_ts = self.initial_time_signature;
+        let mut temp_time = start_offset;
+        let mut temp_bpm = initial_bpm;
+        let mut temp_ts = initial_time_signature;
 
         // Integrate through all changes before target_time
-        for prev_change in &self.changes {
+        for prev_change in changes {
             if let Some(prev_time) = prev_change.position.absolute_time() {
                 if prev_time >= target_time {
                     break;
@@ -701,16 +742,17 @@ impl TempoMap {
                     break;
                 }
 
-                let time_to_prev = prev_change_time - acc_time;
+                // A change before bar 1 counts as at it.
+                let time_to_prev = prev_change_time.saturating_sub(acc_time);
                 acc_beats += time_to_prev.as_secs_f64() * acc_bpm / 60.0;
-                acc_time = prev_change_time;
+                acc_time = acc_time.max(prev_change_time);
 
                 if let Some(new_bpm) = prev_change.bpm {
                     acc_bpm = new_bpm;
                 }
             }
 
-            let time_to_this = change_time - acc_time;
+            let time_to_this = change_time.saturating_sub(acc_time);
             Some(acc_beats + time_to_this.as_secs_f64() * acc_bpm / 60.0)
         }
     }
@@ -2081,5 +2123,78 @@ mod tests {
         assert!((bpm_5 - 60.0).abs() < f64::EPSILON);
         let bpm_9 = map.bpm_at_time(Duration::from_secs(9), 0.0);
         assert!((bpm_9 - 180.0).abs() < f64::EPSILON);
+    }
+
+    // ── Changes before bar 1 / mid-bar metre changes ─────────────────
+
+    fn snap_change(
+        position: TempoChangePosition,
+        bpm: Option<f64>,
+        time_signature: Option<TimeSignature>,
+    ) -> TempoChange {
+        TempoChange {
+            position,
+            original_measure_beat: None,
+            bpm,
+            time_signature,
+            transition: TempoTransition::Snap,
+        }
+    }
+
+    /// A time-positioned change before bar 1 counts as at bar 1, and the
+    /// beat walks do not panic on it.
+    #[test]
+    fn a_time_change_before_bar_one_counts_as_at_bar_one() {
+        let map = TempoMap::new(
+            Duration::from_secs(5),
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![snap_change(
+                TempoChangePosition::Time(Duration::from_secs(2)),
+                Some(140.0),
+                None,
+            )],
+        );
+        // Bar 2 is a bar of 140 BPM after bar 1 at 5s.
+        let bar2 = map.measure_to_time_with_offset(2, 1.0, 0, 0.0).unwrap();
+        assert!(
+            (bar2.as_secs_f64() - (5.0 + 4.0 * 60.0 / 140.0)).abs() < 1e-9,
+            "{bar2:?}"
+        );
+        assert!(!map.beat_clock_ticks(Duration::from_secs(10)).is_empty());
+    }
+
+    /// A metre change anchored mid-bar governs from the next bar (as the
+    /// beat grid, the clock and `time_signature_at_measure` have it). A
+    /// later tempo change then takes effect where the grid puts its bar,
+    /// for `bpm_at_time` too.
+    #[test]
+    fn bpm_at_time_agrees_with_the_grid_after_a_mid_bar_metre_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![
+                snap_change(
+                    TempoChangePosition::MeasureBeat(2, 3.0),
+                    None,
+                    Some(TimeSignature::new(3, 4)),
+                ),
+                snap_change(TempoChangePosition::MeasureBeat(4, 1.0), Some(60.0), None),
+            ],
+        );
+        // Bar 1 (4) + bar 2 (4, the change is mid-bar) + bar 3 (3) = 11 beats.
+        let bar4 = map.measure_to_time_with_offset(4, 1.0, 0, 0.0).unwrap();
+        assert!((bar4.as_secs_f64() - 5.5).abs() < 1e-9, "{bar4:?}");
+        // Clock pulses still at 120 just before bar 4.
+        let ticks = map.beat_clock_ticks(Duration::from_secs(7));
+        let gap = ticks
+            .windows(2)
+            .find(|w| w[1] > Duration::from_millis(5300))
+            .unwrap();
+        assert!(((gap[1] - gap[0]).as_secs_f64() - 0.5 / 24.0).abs() < 1e-6);
+        // ... and bpm_at_time agrees, either side of bar 4.
+        assert_eq!(map.bpm_at_time(Duration::from_millis(5250), 0.0), 120.0);
+        assert_eq!(map.bpm_at_time(Duration::from_millis(5600), 0.0), 60.0);
     }
 }

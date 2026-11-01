@@ -1496,6 +1496,27 @@ show "Negative Start Test" {
 }
 
 #[test]
+fn test_end_to_end_tempo_change_before_start_rejected() {
+    // Bar 1 is at `start`: a change timed before it is refused, not a panic.
+    let content = r#"tempo {
+    start: 5s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @2.000 { bpm: 140 }
+    ]
+}
+
+show "x" {
+    @2/1
+    front_wash: static color: "blue", duration: 1s
+}"#;
+
+    let error = parse_light_shows(content).unwrap_err().to_string();
+    assert!(error.contains("before the tempo's start"), "{error}");
+}
+
+#[test]
 fn test_t_end_to_end_very_high_measure_numbers() {
     // Test that very high measure numbers work correctly
     let content = r#"tempo {
