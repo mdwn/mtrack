@@ -851,63 +851,101 @@ struct NoteStreams<'a> {
     transport: Option<&'a AtomicBool>,
 }
 
-/// The clock a song's notes keep to: the playback clock, which on a rig with
-/// audio counts the interface's samples, so the notes keep to the audio
-/// however far its rate is off the computer's (a device resampling, say).
-/// That reads zero until the first audio buffer after the start and then
-/// moves a buffer at a time, its callbacks coming unevenly, at times two
-/// back to back; timed on it directly, the notes took that first buffer for
-/// their zero, a buffer behind, and went out only as it moved, up to a
-/// buffer late again.
+/// The clock a song's notes keep to: the audio's, on the beat clock's zero.
 ///
-/// So it is filtered with a delay-locked loop (Fons Adriaensen, "Using a DLL
-/// to filter time", as JACK does): each time the reading moves, when it
-/// moved (on the wall clock, the middle of the time since the read before,
-/// at most a period) is set against when the loop predicted it would, and
-/// the loop's phase and rate are corrected by that error. The phase is
-/// corrected continuously, so no offset persists; the bandwidth starts wide
-/// and narrows, so the rate is found in the first second and then held
-/// steady against the callbacks' jitter. An error of more than three
-/// periods (or 30ms) -- an xrun, the audio held up -- puts the phase back on
-/// the reading at once, keeping the rate. The clock never runs more than
-/// three periods (and a margin) past the reading, so it holds while the
-/// audio is held up, and never goes back: once the audio goes on, it holds
-/// until the audio passes it.
+/// On a rig with audio the playback clock counts the interface's samples. It
+/// reads zero until the first audio buffer after the start and then moves a
+/// period at a time, its callbacks coming unevenly; timed on it directly, the
+/// notes took that first buffer for their zero, a buffer behind the beat
+/// clock, and went out only as it moved, up to a buffer late again.
+///
+/// - **Calibration.** The beat clock runs on the wall clock from the
+///   playback clock's start (plus the delay). Over the first half second the
+///   counter's moves are set against the wall, and the offset between the two
+///   taken once, so the notes and the beat clock share a zero. Until then the
+///   notes run on the wall clock, so the first goes out with Start.
+/// - **Tracking.** A delay-locked loop (Fons Adriaensen, "Using a DLL to
+///   filter time", as JACK does) follows the counter's rate and phase: each
+///   move, when it came (between the reads either side of it, which are
+///   timed to fall just before and after each move due), is set against when
+///   the loop predicted it, and both corrected by the error.
+/// - **Bounds.** The clock runs no more than a period (the commonest move)
+///   past the counter's reading, so an xrun or a stall makes notes at most a
+///   period early; and it never goes back. A move that comes late as no
+///   ordinary jitter would (half a period and more since the last, or a
+///   period and a half without one) is the audio held up: the loop's phase
+///   is put on it, its rate kept, so the clock goes on from where the audio
+///   really is, and holds until the audio passes it. On a device whose moves
+///   come that far off as a rule, they are filtered like any other.
 struct NoteClock<'a> {
     wall: &'a PlaybackClock,
     /// The playback clock, if it is an audio device's; else the notes keep
     /// to `wall` alone.
     reference: Option<&'a PlaybackClock>,
-    /// The last reading, and when on `wall` it was last read, in seconds.
+    /// The last reading; when on `wall` it was last read, and when its last
+    /// move was seen; the earliest the last move can have come. In seconds.
     reading: f64,
     polled: f64,
-    /// The least the reading has moved at once: a period of the device.
-    step: Option<f64>,
-    /// Whether the loop has locked, and when (for its bandwidth).
+    moved_at: f64,
+    earliest: f64,
+    /// How often the reading has moved by each amount (in 0.1ms), for a
+    /// period: the commonest.
+    steps: Vec<(u32, u32)>,
+    /// Calibration: when the first move came, the moves since (as when
+    /// seen, reading), and the offset found: the counter's reading at the
+    /// wall's zero.
+    first: Option<f64>,
+    samples: Vec<(f64, f64)>,
+    offset: Option<f64>,
+    /// The loop: locked since `since`; the counter read `value` at `at` on
+    /// `wall`, and moves a second in `period` seconds of it. In seconds.
     locked: bool,
     since: f64,
-    /// The loop: the playback clock read `value` at `at` on `wall`, and
-    /// moves a second in `period` seconds of `wall`.
     at: f64,
     value: f64,
     period: f64,
+    /// Counter time lost to the audio held up, for calibrating across it.
+    slipped: f64,
+    /// Moves still to pull the phase in fast, after it was put on one.
+    fresh: u32,
+    /// How far off its prediction a move comes, as a rule (rms).
+    spread: f64,
     /// What it last gave.
     now: f64,
 }
 
 impl<'a> NoteClock<'a> {
-    /// The longest it sleeps while waiting with audio: how often it reads
-    /// the playback clock at least.
+    /// The longest it sleeps while waiting with audio.
     const SAMPLE: Duration = Duration::from_millis(10);
-    /// The loop's bandwidth: from this, while locking, narrowing with this
-    /// time constant, to this.
-    const BANDWIDTH_START: f64 = 2.0;
-    const BANDWIDTH_TAU: f64 = 0.6;
-    const BANDWIDTH: f64 = 0.2;
-    /// An error past this (or three periods) re-locks the phase.
-    const RELOCK: f64 = 0.03;
-    /// How far past three periods beyond the reading the clock may run.
-    const MARGIN: f64 = 0.005;
+    /// The loop's bandwidth: from this, narrowing with this time constant,
+    /// to this.
+    const BANDWIDTH_START: f64 = 3.0;
+    const BANDWIDTH_TAU: f64 = 0.25;
+    const BANDWIDTH: f64 = 0.5;
+    /// How long the offset is measured over, and the fewest moves it is
+    /// measured from when the audio is held up first.
+    const CALIBRATE: f64 = 0.5;
+    const CALIBRATE_LEAST: usize = 5;
+    /// A fit of the rate this near 1 over the calibration is taken for 1: a
+    /// sound card's is, to a few hundred ppm, and the fit is good only to a
+    /// percent or so.
+    const CALIBRATE_RATE: f64 = 0.02;
+    /// How far past a period beyond the reading the clock may run.
+    const MARGIN: f64 = 0.0015;
+    /// Periods without a move that make the audio held up; a move this late,
+    /// or this many periods off, too; and this many times the moves' spread.
+    const GAP: f64 = 1.5;
+    const LATE: f64 = 0.75;
+    const LATE_LEAST: f64 = 0.006;
+    const OFF: f64 = 3.0;
+    const SPREAD: f64 = 4.0;
+    /// After the phase is put on a move: this many moves pull it in by this
+    /// share of their error.
+    const FRESH: u32 = 6;
+    const FRESH_GAIN: f64 = 0.5;
+    /// The reads timed about each move due: this long before and after.
+    const BEFORE: f64 = 0.002;
+    const AFTER: f64 = 0.001;
     /// A period, before one is known.
     const DEFAULT_STEP: f64 = 0.02;
 
@@ -917,14 +955,30 @@ impl<'a> NoteClock<'a> {
             reference,
             reading: 0.0,
             polled: 0.0,
-            step: None,
+            moved_at: 0.0,
+            earliest: 0.0,
+            steps: Vec::new(),
+            first: None,
+            samples: Vec::new(),
+            offset: None,
             locked: false,
             since: 0.0,
             at: 0.0,
             value: 0.0,
             period: 1.0,
+            slipped: 0.0,
+            fresh: 0,
+            spread: 0.001,
             now: 0.0,
         }
+    }
+
+    /// The commonest move of the reading, in counter seconds: a period.
+    fn step(&self) -> f64 {
+        self.steps
+            .iter()
+            .max_by_key(|(size, count)| (*count, std::cmp::Reverse(*size)))
+            .map_or(Self::DEFAULT_STEP, |(size, _)| f64::from(*size) / 10_000.0)
     }
 
     /// The time now, in seconds from the playback clock's start.
@@ -940,35 +994,97 @@ impl<'a> NoteClock<'a> {
         if reading != self.reading {
             let moved = reading - self.reading;
             let first = self.reading == 0.0;
-            if !first && moved > 0.0 {
-                self.step = Some(self.step.map_or(moved, |step| step.min(moved)));
+            if !first {
+                let size = (moved * 10_000.0).round().clamp(0.0, f64::from(u32::MAX)) as u32;
+                match self.steps.iter_mut().find(|(known, _)| *known == size) {
+                    Some((_, count)) => *count += 1,
+                    None => self.steps.push((size, 1)),
+                }
             }
             // It moved since the read before: in the middle of that, or of
             // the last period, if shorter.
-            let window = (wall - self.polled).min(
-                self.step
-                    .map_or(Self::DEFAULT_STEP, |step| step * self.period),
-            );
+            let window = (wall - self.polled).min(self.step() * self.period);
+            let seen = wall - window / 2.0;
+            self.earliest = wall - window;
+            // How long it surely went without moving.
+            let gap = self.polled - self.moved_at;
             self.reading = reading;
-            // The first move says only that the audio has begun, some time
-            // since the read before: the loop locks from the next.
-            if reading > 0.0 && !first {
-                self.observe(wall - window / 2.0, reading);
+            self.moved_at = wall;
+            if first {
+                // That says only that the audio has begun: the loop locks
+                // from the next.
+                self.first = Some(wall);
+            } else {
+                self.observe(seen, reading, gap);
+                if self.offset.is_none()
+                    && self.locked
+                    && gap <= Self::GAP * self.step() * self.period
+                {
+                    self.samples.push((seen, reading + self.slipped));
+                }
             }
         }
+        if self.offset.is_none()
+            && !self.samples.is_empty()
+            && self
+                .first
+                .is_some_and(|first| wall - first >= Self::CALIBRATE)
+        {
+            self.calibrate();
+        }
         self.polled = wall;
-        let estimate = if self.locked {
-            let ahead = 3.0 * self.step.unwrap_or(Self::DEFAULT_STEP) + Self::MARGIN;
-            (self.value + (wall - self.at) / self.period).min(self.reading + ahead)
-        } else {
-            wall
+        let ahead = self.reading + self.step() + Self::MARGIN;
+        let estimate = match self.offset.filter(|_| self.locked) {
+            Some(offset) => {
+                let line = self.value + (wall - self.at) / self.period;
+                line.min(ahead) - offset
+            }
+            None => {
+                let mut estimate = wall - self.slipped;
+                if !self.samples.is_empty() {
+                    let lead = self
+                        .samples
+                        .iter()
+                        .map(|(at, value)| value - at)
+                        .sum::<f64>()
+                        / self.samples.len() as f64;
+                    estimate = estimate.min(ahead - lead);
+                }
+                estimate
+            }
         };
         self.now = self.now.max(estimate);
         self.now
     }
 
-    /// The playback clock read `value`, which it reached `at` on the wall.
-    fn observe(&mut self, at: f64, value: f64) {
+    /// Takes the offset from the moves so far: where the counter's line over
+    /// them, by least squares, crosses the wall's zero.
+    fn calibrate(&mut self) {
+        let n = self.samples.len() as f64;
+        let (mean_at, mean_value) = self.samples.iter().fold((0.0, 0.0), |(a, v), (at, value)| {
+            (a + at / n, v + value / n)
+        });
+        let (covariance, variance) = self.samples.iter().fold((0.0, 0.0), |(c, v), (at, value)| {
+            (
+                c + (at - mean_at) * (value - mean_value),
+                v + (at - mean_at) * (at - mean_at),
+            )
+        });
+        let mut rate = if variance > 0.0 && self.samples.len() >= 3 {
+            covariance / variance
+        } else {
+            1.0
+        };
+        if (rate - 1.0).abs() < Self::CALIBRATE_RATE {
+            rate = 1.0;
+        }
+        self.offset = Some(mean_value - rate * mean_at);
+        self.samples.clear();
+    }
+
+    /// The reading moved to `value`, which it reached about `at` on the
+    /// wall, `gap` after the move before at least.
+    fn observe(&mut self, at: f64, value: f64, gap: f64) {
         if !self.locked {
             self.locked = true;
             self.since = at;
@@ -979,12 +1095,37 @@ impl<'a> NoteClock<'a> {
         let moved = value - self.value;
         let predicted = self.at + moved * self.period;
         let error = at - predicted;
-        let period = self.step.unwrap_or(Self::DEFAULT_STEP) * self.period;
-        if error.abs() > Self::RELOCK.max(3.0 * period) || moved <= 0.0 {
+        let period = self.step() * self.period;
+        let held = gap > Self::GAP * period
+            || error > (Self::LATE * period).max(Self::LATE_LEAST)
+            || error.abs() > Self::OFF * period;
+        if held && error.abs() > Self::SPREAD * self.spread || moved <= 0.0 {
+            // The audio held up: the phase put on it, the rate kept -- on the
+            // earliest it can have come, the next moves pulling it in.
+            let at = self.earliest;
+            self.slipped += (at - predicted) / self.period;
+            if self.offset.is_none() {
+                // Calibrated from before it, or afresh after it.
+                if self.samples.len() >= Self::CALIBRATE_LEAST {
+                    self.calibrate();
+                } else {
+                    self.samples.clear();
+                    self.first = Some(at);
+                }
+            }
             self.at = at;
             self.value = value;
+            self.fresh = Self::FRESH;
             return;
         }
+        if self.fresh > 0 {
+            self.fresh -= 1;
+            self.at = predicted + Self::FRESH_GAIN * error;
+            self.value = value;
+            self.slipped += Self::FRESH_GAIN * error / self.period;
+            return;
+        }
+        self.spread = (0.98 * self.spread * self.spread + 0.02 * error * error).sqrt();
         let bandwidth = Self::BANDWIDTH
             .max(Self::BANDWIDTH_START * (-(at - self.since) / Self::BANDWIDTH_TAU).exp());
         let omega = (2.0 * std::f64::consts::PI * bandwidth * moved * self.period).min(0.5);
@@ -993,13 +1134,39 @@ impl<'a> NoteClock<'a> {
         self.period = (self.period + omega * omega * error / moved).clamp(0.5, 2.0);
     }
 
+    /// When next to read the counter, to see its next move closely: just
+    /// before and just after it is due (or the one after, none seen).
+    fn next_read(&self, wall: f64) -> Option<f64> {
+        if !self.locked {
+            return None;
+        }
+        let period = self.step() * self.period;
+        let soon = wall + 0.0002;
+        let mut due = self.at + (self.reading + self.step() - self.value) * self.period;
+        if due + Self::AFTER <= soon && period > 0.0 {
+            due += ((soon - due - Self::AFTER) / period).ceil() * period;
+        }
+        [due - Self::BEFORE, due + Self::AFTER]
+            .into_iter()
+            .find(|at| *at > soon)
+    }
+
     /// Sleeps for about `length` of its time: with audio, no longer than
-    /// [`NoteClock::SAMPLE`], to read the playback clock.
+    /// [`NoteClock::SAMPLE`], nor past the next read timed about a move.
     fn sleep(&self, length: Duration) {
-        if self.reference.is_some() {
-            spin_sleep::sleep(length.mul_f64(self.period).min(Self::SAMPLE));
-        } else {
+        let Some(_) = self.reference else {
             spin_sleep::sleep(length);
+            return;
+        };
+        let wait = length.mul_f64(self.period).min(Self::SAMPLE);
+        let wall = self.wall.elapsed().as_secs_f64();
+        match self
+            .next_read(wall)
+            .map(|at| Duration::from_secs_f64((at - wall).max(0.0)))
+        {
+            // Woken to read, not to send: no need to spin for it.
+            Some(read) if read < wait => thread::sleep(read),
+            _ => spin_sleep::sleep(wait),
         }
     }
 }
@@ -4749,13 +4916,13 @@ mod test {
 
         /// When an audio device's callbacks come, in seconds from the start,
         /// for one taking `frames` a time at 48kHz and running at `rate`
-        /// against the wall clock: on time, or each up to a period early or
-        /// late (`jitter`), one in ten held back to come with the next
+        /// against the wall clock: on time, or each up to `jitter` seconds
+        /// early or late, one in ten held back to come with the next
         /// (`pairs`), and the first `first_late` late.
         fn callbacks(
             rate: f64,
             frames: u64,
-            jitter: bool,
+            jitter: f64,
             pairs: bool,
             first_late: f64,
             until: f64,
@@ -4776,9 +4943,7 @@ mod test {
                 if at > until {
                     break;
                 }
-                if jitter {
-                    at += (random() * 2.0 - 1.0) * period;
-                }
+                at += (random() * 2.0 - 1.0) * jitter;
                 if pairs && random() < 0.1 {
                     at = (k + 1) as f64 * period;
                 }
@@ -4895,7 +5060,7 @@ mod test {
         fn notes_keep_time_between_audio_buffers() {
             // 2048 frames at 48kHz: a buffer every 42.7ms.
             let times = [0, 10, 20, 30, 60, 100];
-            let callbacks = callbacks(1.0, 2048, false, false, 0.0, 1.0);
+            let callbacks = callbacks(1.0, 2048, 0.0, false, 0.0, 1.0);
             let (started, sent) = play_on_audio(callbacks, 2048, &times, None, passes(&[], 0, 0));
             assert_eq!(sent.len(), times.len());
             for (sent, ms) in sent.iter().zip(times) {
@@ -4910,50 +5075,156 @@ mod test {
             }
         }
 
-        /// An audio device whose clock runs well off the computer's (one
-        /// resampling, say, 10% slow or fast), its callbacks coming up to a
-        /// period early or late and at times two together, is followed at
-        /// its own rate, the notes steady between them: once the clock has
-        /// found the audio's rate, each note goes out when the audio reaches
-        /// it (on the wall clock they would be 450ms off by the end), and
-        /// they are evenly spaced, not a period (11ms) this way or that with
-        /// the callbacks. And the notes' clock reads the playback clock as they
-        /// wake, not every millisecond.
+        /// A sound card as most are -- callbacks within a millisecond of
+        /// their time, its clock the computer's to a few hundred ppm -- with
+        /// periods of 256, 1024 or 2048 frames: the first note goes out with
+        /// the beat clock's Start, and every note on the beat clock's grid,
+        /// evenly spaced.
         #[test]
-        fn notes_follow_an_irregular_audio_clock_running_slow_or_fast() {
+        fn notes_keep_to_a_sound_cards_clock_on_the_beat_clocks_grid() {
+            let times: Vec<u64> = (0..=30).map(|k| k * 100).collect();
+            for frames in [256, 1024, 2048] {
+                let callbacks = callbacks(1.0, frames, 0.001, false, 0.0, 3.5);
+                let (started, sent) =
+                    play_on_audio(callbacks, frames, &times, None, passes(&[], 0, 0));
+                assert_eq!(sent.len(), times.len());
+                let first = off(sent[0], started + Duration::from_millis(20));
+                assert!(
+                    first < Duration::from_millis(2),
+                    "{frames}: first note {first:?} off"
+                );
+                for (sent, ms) in sent.iter().zip(&times) {
+                    let off = off(*sent, started + Duration::from_millis(20 + ms));
+                    assert!(
+                        off < Duration::from_millis(4),
+                        "{frames}: {ms}ms note {off:?} off the grid"
+                    );
+                }
+                for (k, pair) in sent.windows(2).enumerate() {
+                    let jitter = off(pair[0] + Duration::from_millis(100), pair[1]);
+                    assert!(
+                        jitter < Duration::from_millis(3),
+                        "{frames}: note {} {jitter:?} off its spacing",
+                        k + 1
+                    );
+                }
+            }
+        }
+
+        /// Xruns on a sound card (a period lost at 0.6s, three at 2s): the
+        /// notes never run more than a period ahead of the audio, and are
+        /// back on it within a second, not late past it.
+        #[test]
+        fn notes_go_on_with_the_audio_after_an_xrun() {
+            let frames = 1024;
+            let period = frames as f64 / 48_000.0;
+            let stalls = [(0.6, period), (2.0, 3.0 * period)];
+            let mut feed = callbacks(1.0, frames, 0.001, false, 0.0, 4.0);
+            for (at, lost) in stalls {
+                feed = stalled(feed, at, lost);
+            }
+            // Where the audio holds: at the first period's end at or after
+            // each xrun, what was written before it played out.
+            let held: Vec<(f64, f64)> = stalls
+                .iter()
+                .map(|&(at, lost)| ((at / period).ceil() * period, lost))
+                .collect();
+            let truth = |audio: f64| {
+                let mut wall = audio;
+                for &(at, lost) in &held {
+                    if wall >= at {
+                        wall += lost;
+                    }
+                }
+                wall
+            };
+            let position = |wall: f64| {
+                let mut lost_before = 0.0;
+                for &(at, lost) in &held {
+                    let at = at + lost_before;
+                    if wall >= at + lost {
+                        lost_before += lost;
+                    } else if wall >= at {
+                        return at - lost_before;
+                    }
+                }
+                wall - lost_before
+            };
+            let times: Vec<u64> = (0..=70).map(|k| k * 50).collect();
+            let (started, sent) = play_on_audio(feed, frames, &times, None, passes(&[], 0, 0));
+            assert_eq!(sent.len(), times.len());
+            for (sent, ms) in sent.iter().zip(&times) {
+                let audio = (20 + ms) as f64 / 1000.0;
+                let fired = (*sent - started).as_secs_f64();
+                // Ahead of the audio by no more than a period (and a little).
+                assert!(
+                    position(fired) >= audio - period - 0.003,
+                    "{ms}ms note {:.1}ms ahead of the audio",
+                    (audio - position(fired)) * 1000.0
+                );
+                let due = truth(audio);
+                let late = fired - due;
+                assert!(late < 0.004, "{ms}ms note {:.1}ms late", late * 1000.0);
+                let settled = held
+                    .iter()
+                    .all(|&(at, lost)| due < at || due > at + lost + 1.0);
+                if settled {
+                    assert!(
+                        late.abs() < 0.004,
+                        "{ms}ms note {:.1}ms off the audio",
+                        late * 1000.0
+                    );
+                }
+            }
+        }
+
+        /// A device far from any sound card (one resampling, 10% slow or
+        /// fast, its callbacks up to a period early or late and one in ten
+        /// held back to come with the next): the notes follow it at its own
+        /// rate within a few periods, and do not drift off it. And the notes'
+        /// clock reads the playback clock as they wake and about each move
+        /// due, not every millisecond.
+        #[test]
+        fn notes_follow_a_jittery_audio_clock_running_slow_or_fast() {
             let times: Vec<u64> = (0..=18).map(|k| k * 250).collect();
             for rate in [0.9, 1.1] {
-                let callbacks = callbacks(rate, 512, true, true, 0.0, 6.0);
+                let period = 512.0 / 48_000.0 / rate;
+                let callbacks = callbacks(rate, 512, period, true, 0.0, 6.0);
                 NOTE_CLOCK_READS.with(|reads| reads.set(0));
                 let (started, sent) =
                     play_on_audio(callbacks, 512, &times, None, passes(&[], 0, 0));
                 let reads = NOTE_CLOCK_READS.with(|reads| reads.get());
                 assert_eq!(sent.len(), times.len());
                 // When the audio has played the delay and the note's time.
-                let due =
-                    |ms: u64| started + Duration::from_secs_f64((20 + ms) as f64 / 1000.0 / rate);
-                for (sent, ms) in sent.iter().zip(&times) {
-                    let off = off(*sent, due(*ms));
+                let error = |sent: &std::time::Instant, ms: u64| {
+                    (*sent - started).as_secs_f64() - (20 + ms) as f64 / 1000.0 / rate
+                };
+                let errors: Vec<(u64, f64)> = sent
+                    .iter()
+                    .zip(&times)
+                    .map(|(sent, ms)| (*ms, error(sent, *ms)))
+                    .collect();
+                for &(ms, error) in errors.iter().filter(|(ms, _)| *ms >= 1_500) {
                     assert!(
-                        off < Duration::from_millis(15),
-                        "{rate}x: {ms}ms note {off:?} off the audio"
-                    );
-                    if *ms >= 2_500 {
-                        assert!(
-                            off < Duration::from_millis(6),
-                            "{rate}x: {ms}ms note {off:?} off the audio"
-                        );
-                    }
-                }
-                let spacing = Duration::from_secs_f64(0.25 / rate);
-                for (k, pair) in sent.windows(2).enumerate().skip(10) {
-                    let jitter = off(pair[0] + spacing, pair[1]);
-                    assert!(
-                        jitter < Duration::from_millis(3),
-                        "{rate}x: note {} {jitter:?} off its spacing",
-                        k + 1
+                        error.abs() < 4.0 * period,
+                        "{rate}x: {ms}ms note {:.1}ms off the audio",
+                        error * 1000.0
                     );
                 }
+                let mean = |from: u64, to: u64| {
+                    let span: Vec<f64> = errors
+                        .iter()
+                        .filter(|(ms, _)| (from..to).contains(ms))
+                        .map(|(_, error)| *error)
+                        .collect();
+                    span.iter().sum::<f64>() / span.len() as f64
+                };
+                let drift = mean(3_500, 4_600) - mean(1_500, 2_600);
+                assert!(
+                    drift.abs() < 0.005,
+                    "{rate}x: drifted {:.1}ms",
+                    drift * 1000.0
+                );
                 // 4.5s of notes: reading every millisecond would be 4,500.
                 assert!(reads < 1_500, "{rate}x: {reads} reads");
             }
@@ -4965,7 +5236,7 @@ mod test {
         #[test]
         fn a_late_first_callback_does_not_put_the_notes_off() {
             let times: Vec<u64> = (0..=12).map(|k| k * 250).collect();
-            let callbacks = callbacks(1.0, 512, false, false, 0.03, 4.0);
+            let callbacks = callbacks(1.0, 512, 0.001, false, 0.03, 4.0);
             let (started, sent) = play_on_audio(callbacks, 512, &times, None, passes(&[], 0, 0));
             assert_eq!(sent.len(), times.len());
             for (sent, ms) in sent.iter().zip(&times) {
@@ -4995,7 +5266,7 @@ mod test {
                     log.close();
                 }
             });
-            let callbacks = callbacks(rate, 512, true, false, 0.0, 5.0);
+            let callbacks = callbacks(rate, 512, 0.001, false, 0.0, 5.0);
             let (started, sent) = play_on_audio(callbacks, 512, &[0, 100], None, log);
             pusher.join().unwrap();
             assert_eq!(sent.len(), 4);
@@ -5008,7 +5279,7 @@ mod test {
         }
 
         /// The audio stalling (here 300ms, a second in) holds the notes: the
-        /// clock runs on no further than a few periods past the audio, holds,
+        /// clock runs on no further than a period past the audio, holds,
         /// and once the audio goes on, waits for it and goes on with it, the
         /// stall not baked into the rest of the song, and no notes bunched.
         /// So too a hiccup (80ms, at 1.5s, on a device 10% slow).
@@ -5016,7 +5287,7 @@ mod test {
         fn notes_hold_through_an_audio_stall_and_go_on_with_it() {
             let times: Vec<u64> = (0..=30).map(|k| k * 100).collect();
             for (rate, frames, at, lost) in [(1.0, 1024, 1.0, 0.3), (0.9, 512, 1.5, 0.08)] {
-                let callbacks = stalled(callbacks(rate, frames, false, false, 0.0, 4.0), at, lost);
+                let callbacks = stalled(callbacks(rate, frames, 0.001, false, 0.0, 4.0), at, lost);
                 let (started, sent) =
                     play_on_audio(callbacks, frames, &times, None, passes(&[], 0, 0));
                 assert_eq!(sent.len(), times.len());
@@ -5042,7 +5313,9 @@ mod test {
                     );
                 }
                 let spacing = Duration::from_secs_f64(0.1 / rate);
-                for (k, pair) in sent.windows(2).enumerate() {
+                // From the notes' clock having measured the audio's against
+                // the beat clock's (until then they go on the wall clock).
+                for (k, pair) in sent.windows(2).enumerate().skip(7) {
                     assert!(
                         pair[1] - pair[0] + Duration::from_millis(5) >= spacing,
                         "{rate}x: notes {k} and {} bunched: {:?}",
@@ -5060,7 +5333,7 @@ mod test {
         fn a_long_delay_on_a_fast_device_starts_on_the_audio() {
             let rate = 1.1;
             let times: Vec<u64> = (0..=10).map(|k| k * 100).collect();
-            let callbacks = callbacks(rate, 1024, false, false, 0.0, 4.0);
+            let callbacks = callbacks(rate, 1024, 0.001, false, 0.0, 4.0);
             let (started, sent) =
                 play_on_audio_after(2_000, callbacks, 1024, &times, None, passes(&[], 0, 0));
             assert_eq!(sent.len(), times.len());
@@ -5118,7 +5391,7 @@ mod test {
                     transport.store(true, Ordering::Release);
                 }
             });
-            let callbacks = callbacks(1.0, 1024, false, false, 0.0, 1.0);
+            let callbacks = callbacks(1.0, 1024, 0.0, false, 0.0, 1.0);
             let (_, sent) = play_on_audio(
                 callbacks,
                 1024,

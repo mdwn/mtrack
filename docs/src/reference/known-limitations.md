@@ -55,10 +55,15 @@ BPM); past that it is clamped.
 The beat clock is timed on the computer's clock and steered gently onto the audio's, by at most
 250 ppm, so that gear following it sees a steady tempo. An audio device whose clock runs further
 off than that (one resampling, say) leaves the beat clock drifting from the audio over a song;
-the notes, which follow the audio at its own rate, do not drift. The notes keep to the audio
-clock itself, which runs ahead of the computer's from the start by up to one audio period (where
-in its period the device was when the song started), so they may lead the beat clock by up to
-that much.
+the notes, which follow the audio at its own rate, do not drift.
+
+The notes share the beat clock's zero, measured against the audio over a song's first half
+second; until then they go on the computer's clock, which on a device far off it (10%, say)
+puts them that far off the audio for that half second. On a sound card, whose callbacks come
+within a millisecond or so of their time, the notes keep within a few milliseconds of the beat
+clock's grid. An xrun or a stall can put them up to one audio period ahead of the audio (what
+was due before the audio stopped); they then hold until it catches up. On a device whose
+callbacks come periods early or late as a rule, they keep within a few periods of the audio.
 
 Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded down to whole quarter notes);
 any leftover before them has no pulses, in the first pass or later ones.
