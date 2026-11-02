@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.18.0] - 2026-11-02
+
+Upgrade notes:
+
+- A tempo ramp now lasts exactly the beats it is written over. A song or show with a ramp has
+  everything after the ramp move: the click, the beat clock, the beat grid and `@bar/beat` cues.
+  Check the timing of shows after a ramp.
+- Lock mode now holds over gRPC and MCP as well as the web UI. A script that changes the player
+  while it is locked gets an error.
+- MCP tools refuse arguments they do not take, instead of ignoring them.
+- `midi.midi_to_dmx` is gone; a profile that still has it loads, and the key is ignored.
 
 ### Added
 
