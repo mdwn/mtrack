@@ -215,15 +215,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A sequence without a `tempo` block of its own is now timed at the file's starting tempo and time
   signature throughout, and its cues and pass length are counted in beats -- through its own tempo
   map when it has one -- and placed in beats where it is played. A sequence played inside another
-  now follows the outer sequence's tempo map rather than its starting tempo, and an inline loop's
-  passes follow a tempo change or ramp inside them rather than keeping a fixed length in seconds;
-  its effects' durations in beats or measures are resolved where each pass plays, as a sequence's
-  are. A sequence (or loop) with no effect at all now lasts until its last cue rather than no time.
+  now follows the outer sequence's tempo map rather than its starting tempo. An inline loop's body
+  is timed at the tempo and time signature in effect where the loop starts (so a body written in
+  seconds keeps its seconds there), and its passes are counted in beats from there: a pass that
+  reaches a later tempo change or ramp follows it, where passes used to keep a fixed length in
+  seconds. A loop's effects have their durations in beats or measures, and their tempo-aware
+  rates, read where each pass plays, as a sequence's are. A sequence with no effect at all now
+  lasts until its last cue, as an inline loop always has, rather than no time.
 - **The web UI's timeline is timed by the player's own tempo map**: the lighting timeline had a
   TypeScript copy of the tempo map, cue offsets and sequence expansion, and its sequences were
   laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,
   compiled to WebAssembly, so its bars, ramps, offsets and sequences are where the player puts
-  them, sequences through a tempo change included.
+  them, sequences through a tempo change included. The module loads only with the views that need
+  it (the lighting timeline and the song's section timeline); in a browser without WebAssembly
+  those say why they cannot open, and the rest of the UI works as before.
 - **A song editor's time signature at a bar** (#628): a time signature change written on a bar's
   later beat was taken to govern that bar in the song editors (bar lengths, metronome chips, the
   tempo marker dialog's accent pattern); the player applies it from the next downbeat, and so do

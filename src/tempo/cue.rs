@@ -114,7 +114,7 @@ impl CueClock {
                     _ => self
                         .last_time
                         .map(|t| {
-                            t.saturating_sub(Duration::from_secs_f64(applied))
+                            t.saturating_sub(super::duration_from_secs(applied))
                                 .saturating_sub(tm.start_offset)
                         })
                         .unwrap_or(Duration::ZERO),
@@ -126,7 +126,7 @@ impl CueClock {
             }
         }
 
-        let time = score_time + Duration::from_secs_f64(applied);
+        let time = score_time.saturating_add(super::duration_from_secs(applied));
         self.last_time = Some(time);
         Ok(PlacedCue {
             time,

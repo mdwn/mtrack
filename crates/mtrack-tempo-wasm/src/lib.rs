@@ -93,6 +93,45 @@ fn remove<T>(slab: &RefCell<Vec<Option<T>>>, handle: u32) {
     }
 }
 
+/// The largest time, in seconds either side of 0, a call takes: about 11
+/// days, far past any song, and small enough that every walk through bars
+/// and beats from there is quick.
+const MAX_SECS: f64 = 1.0e6;
+/// The largest beat position or count a call takes.
+const MAX_BEATS: f64 = 1.0e7;
+/// The largest bar (or count of bars) a call takes.
+const MAX_MEASURES: f64 = 1.0e6;
+
+/// Every call checks its numbers before any reaches the tempo map, so
+/// nothing past here can panic -- which in WebAssembly is a trap that would
+/// leave a map or clock borrowed for good. A call given one it does not take
+/// answers NaN (0 for a handle or a status).
+fn ok_secs(secs: f64) -> bool {
+    secs.is_finite() && secs.abs() <= MAX_SECS
+}
+
+/// An offset: a time, never negative.
+fn ok_offset(secs: f64) -> bool {
+    ok_secs(secs) && secs >= 0.0
+}
+
+fn ok_beats(beats: f64) -> bool {
+    beats.is_finite() && beats.abs() <= MAX_BEATS
+}
+
+fn ok_measures(measures: f64) -> bool {
+    measures.is_finite() && measures.abs() <= MAX_MEASURES
+}
+
+/// A bar and beat: a bar from 1, a beat from 1 within reach.
+fn ok_position(measure: f64, beat: f64) -> bool {
+    ok_measures(measure) && measure >= 1.0 && ok_beats(beat) && beat >= 1.0
+}
+
+fn ok_bpm(bpm: f64) -> bool {
+    bpm.is_finite() && bpm > 0.0 && bpm <= 1.0e4
+}
+
 /// Runs `f` on the map `handle` names; NaN for none.
 fn with_map(handle: u32, f: impl FnOnce(&TempoMap) -> f64) -> f64 {
     MAPS.with(|maps| {
@@ -128,13 +167,27 @@ pub const CHANGE_LEN: usize = 8;
 /// starting one), and so is a transition that is not.
 pub fn read_map(input: &[f64]) -> Option<TempoMap> {
     let header = input.get(..5)?;
-    let positive = |bpm: f64| (bpm.is_finite() && bpm > 0.0).then_some(bpm);
+    if !(ok_offset(header[0]) && header[4].is_finite() && header[4] >= 0.0) {
+        return None;
+    }
+    let positive = |bpm: f64| ok_bpm(bpm).then_some(bpm);
     let signature = |num: f64, den: f64| {
-        (num >= 1.0 && den >= 1.0).then(|| TimeSignature::new(num as u32, den as u32))
+        (num >= 1.0 && den >= 1.0 && num <= 1024.0 && den <= 1024.0)
+            .then(|| TimeSignature::new(num as u32, den as u32))
     };
-    let count = header[4].max(0.0) as usize;
+    let count = header[4] as usize;
+    let end = count.checked_mul(CHANGE_LEN)?.checked_add(5)?;
     let mut changes = Vec::with_capacity(count);
-    for change in input.get(5..5 + count * CHANGE_LEN)?.chunks(CHANGE_LEN) {
+    for change in input.get(5..end)?.chunks(CHANGE_LEN) {
+        let at_ok = if change[0] == 0.0 {
+            ok_offset(change[1])
+        } else {
+            ok_position(change[1], change[2])
+        };
+        let length_ok = change[6] == 0.0 || (change[7].is_finite() && change[7] <= MAX_MEASURES);
+        if !at_ok || !length_ok {
+            return None;
+        }
         let position = if change[0] == 0.0 {
             TempoChangePosition::Time(time(change[1]))
         } else {
@@ -192,6 +245,9 @@ pub extern "C" fn tm_start(map: u32) -> f64 {
 /// offset. Before bar 1 (and before 0), at the starting tempo.
 #[no_mangle]
 pub extern "C" fn tm_time_at_beats(map: u32, beats: f64, offset: f64) -> f64 {
+    if !(ok_beats(beats) && ok_offset(offset)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         if beats < 0.0 {
             secs(tm.start_offset) + beats * 60.0 / tm.initial_bpm
@@ -205,6 +261,9 @@ pub extern "C" fn tm_time_at_beats(map: u32, beats: f64, offset: f64) -> f64 {
 /// of [`tm_time_at_beats`].
 #[no_mangle]
 pub extern "C" fn tm_beats_at(map: u32, at: f64, offset: f64) -> f64 {
+    if !(ok_secs(at) && ok_offset(offset)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         if at < 0.0 {
             tm.beats_at(Duration::ZERO, 0.0) + at * tm.initial_bpm / 60.0
@@ -217,6 +276,9 @@ pub extern "C" fn tm_beats_at(map: u32, at: f64, offset: f64) -> f64 {
 /// The quarter-note beat position of a bar and (quarter-note) beat.
 #[no_mangle]
 pub extern "C" fn tm_beats_at_position(map: u32, measure: f64, beat: f64) -> f64 {
+    if !(ok_position(measure, beat)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         tm.beats_at_position(measure.max(1.0) as u32, beat)
     })
@@ -225,6 +287,9 @@ pub extern "C" fn tm_beats_at_position(map: u32, measure: f64, beat: f64) -> f64
 /// The bar of a quarter-note beat position; output `[bar, beat]`.
 #[no_mangle]
 pub extern "C" fn tm_position_at_beats(map: u32, beats: f64) -> f64 {
+    if !(ok_beats(beats)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         let (measure, beat) = tm.position_at_beats(beats);
         set_output(&[f64::from(measure), beat]);
@@ -235,12 +300,18 @@ pub extern "C" fn tm_position_at_beats(map: u32, beats: f64) -> f64 {
 /// Measures elapsed (0 at bar 1 beat 1) at a quarter-note beat position.
 #[no_mangle]
 pub extern "C" fn tm_measures_at_beats(map: u32, beats: f64) -> f64 {
+    if !(ok_beats(beats)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| tm.measures_elapsed_at_beats(beats))
 }
 
 /// The quarter-note beat position at a number of measures elapsed.
 #[no_mangle]
 pub extern "C" fn tm_beats_at_measures(map: u32, measures: f64) -> f64 {
+    if !(ok_measures(measures)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| tm.beats_at_measures_elapsed(measures))
 }
 
@@ -248,6 +319,9 @@ pub extern "C" fn tm_beats_at_measures(map: u32, measures: f64) -> f64 {
 /// denominator]`.
 #[no_mangle]
 pub extern "C" fn tm_signature(map: u32, measure: f64) -> f64 {
+    if !(ok_position(measure, 1.0)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         let ts = tm.time_signature_in_measure(measure.max(1.0) as u32);
         set_output(&[f64::from(ts.numerator), f64::from(ts.denominator)]);
@@ -258,6 +332,9 @@ pub extern "C" fn tm_signature(map: u32, measure: f64) -> f64 {
 /// The tempo at a time (mid-ramp, the ramp's), under an offset.
 #[no_mangle]
 pub extern "C" fn tm_bpm_at(map: u32, at: f64, offset: f64) -> f64 {
+    if !(ok_secs(at) && ok_offset(offset)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| tm.bpm_at_time(time(at), offset))
 }
 
@@ -265,6 +342,9 @@ pub extern "C" fn tm_bpm_at(map: u32, at: f64, offset: f64) -> f64 {
 /// tempo is steady there.
 #[no_mangle]
 pub extern "C" fn tm_ramp_target(map: u32, at: f64) -> f64 {
+    if !(ok_secs(at)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| tm.ramp_target_at(time(at)).unwrap_or(f64::NAN))
 }
 
@@ -272,12 +352,18 @@ pub extern "C" fn tm_ramp_target(map: u32, at: f64) -> f64 {
 /// lasts.
 #[no_mangle]
 pub extern "C" fn ramp_duration(old_bpm: f64, new_bpm: f64, beats: f64) -> f64 {
+    if !(ok_bpm(old_bpm) && ok_bpm(new_bpm) && ok_beats(beats)) {
+        return f64::NAN;
+    }
     TransitionCurve::Linear.duration_for_beats(old_bpm, new_bpm, beats)
 }
 
 /// How long `beats` beats from `at` last, under an offset.
 #[no_mangle]
 pub extern "C" fn tm_beats_to_duration(map: u32, beats: f64, at: f64, offset: f64) -> f64 {
+    if !(ok_beats(beats) && ok_secs(at) && ok_offset(offset)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         secs(tm.beats_to_duration(beats, time(at), offset))
     })
@@ -286,6 +372,9 @@ pub extern "C" fn tm_beats_to_duration(map: u32, beats: f64, at: f64, offset: f6
 /// How long `measures` measures from `at` last, under an offset.
 #[no_mangle]
 pub extern "C" fn tm_measures_to_duration(map: u32, measures: f64, at: f64, offset: f64) -> f64 {
+    if !(ok_measures(measures) && ok_secs(at) && ok_offset(offset)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| {
         secs(tm.measures_to_duration(measures, time(at), offset))
     })
@@ -294,6 +383,9 @@ pub extern "C" fn tm_measures_to_duration(map: u32, measures: f64, at: f64, offs
 /// How long an `offset N measures` issued at `anchor` lasts.
 #[no_mangle]
 pub extern "C" fn tm_offset_duration(map: u32, measures: f64, anchor: f64) -> f64 {
+    if !(ok_measures(measures) && measures >= 0.0 && ok_secs(anchor)) {
+        return f64::NAN;
+    }
     with_map(map, |tm| secs(tm.offset_duration(measures, time(anchor))))
 }
 
@@ -334,6 +426,14 @@ pub extern "C" fn clock_place(
     offsets: u32,
     reset: u32,
 ) -> u32 {
+    let valid = if kind == 0 {
+        ok_offset(a)
+    } else {
+        ok_position(a, b)
+    };
+    if !valid || f64::from(offset_measures) > MAX_MEASURES {
+        return 0;
+    }
     let at = if kind == 0 {
         CuePosition::Time(time(a))
     } else {
@@ -374,6 +474,9 @@ pub extern "C" fn clock_place(
 /// Records that the cue just placed reaches on to `at`.
 #[no_mangle]
 pub extern "C" fn clock_reached(clock: u32, at: f64) {
+    if !ok_offset(at) {
+        return;
+    }
     CLOCKS.with(|clocks: &RefCell<Vec<Option<CueClock>>>| {
         let mut clocks = clocks.borrow_mut();
         if let Some(clock) = (clock as usize)
@@ -426,5 +529,77 @@ mod tests {
     fn a_bad_map_is_none() {
         input_buffer(3);
         assert_eq!(tm_new(3), 0);
+    }
+
+    #[test]
+    fn bad_numbers_are_refused_and_leave_the_module_working() {
+        let map = steady(120.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
+            assert!(tm_time_at_beats(map, bad, 0.0).is_nan());
+            assert!(tm_time_at_beats(map, 4.0, bad).is_nan());
+            assert!(tm_beats_at(map, bad, 0.0).is_nan());
+            assert!(tm_beats_at_position(map, bad, 1.0).is_nan());
+            assert!(tm_beats_at_position(map, 2.0, bad).is_nan());
+            assert!(tm_position_at_beats(map, bad).is_nan());
+            assert!(tm_measures_at_beats(map, bad).is_nan());
+            assert!(tm_beats_at_measures(map, bad).is_nan());
+            assert!(tm_signature(map, bad).is_nan());
+            assert!(tm_bpm_at(map, bad, 0.0).is_nan());
+            assert!(tm_bpm_at(map, 1.0, bad).is_nan());
+            assert!(tm_ramp_target(map, bad).is_nan());
+            assert!(ramp_duration(bad, 120.0, 4.0).is_nan());
+            assert!(tm_beats_to_duration(map, 4.0, 0.0, bad).is_nan());
+            assert!(tm_measures_to_duration(map, bad, 0.0, 0.0).is_nan());
+            assert!(tm_offset_duration(map, bad, 0.0).is_nan());
+        }
+        // A negative offset, a bar 0 and a beat before 1 are not positions.
+        assert!(tm_time_at_beats(map, 4.0, -1.0).is_nan());
+        assert!(tm_beats_at_position(map, 0.0, 1.0).is_nan());
+        assert!(tm_beats_at_position(map, 2.0, 0.5).is_nan());
+        assert!(ramp_duration(0.0, 120.0, 4.0).is_nan());
+        let clock = clock_new();
+        assert_eq!(clock_place(clock, map, 0, f64::NAN, 1.0, 0, 0, 0), 0);
+        assert_eq!(clock_place(clock, map, 1, 2.0, f64::INFINITY, 0, 0, 0), 0);
+        clock_reached(clock, f64::NAN);
+        // Nothing was left borrowed: every call still answers.
+        assert!((tm_time_at_beats(map, 8.0, 0.0) - 4.0).abs() < 1e-9);
+        assert_eq!(clock_place(clock, map, 1, 2.0, 1.0, 0, 0, 0), 1);
+        clock_free(clock);
+        tm_free(map);
+    }
+
+    #[test]
+    fn a_map_with_numbers_out_of_reach_is_none() {
+        let bad_maps: [&[f64]; 5] = [
+            &[f64::NAN, 120.0, 4.0, 4.0, 0.0],
+            &[0.0, 120.0, 4.0, 4.0, f64::INFINITY],
+            &[0.0, 120.0, 4.0, 4.0, 1e300],
+            // A change at bar four billion.
+            &[
+                0.0, 120.0, 4.0, 4.0, 1.0, 1.0, 4e9, 1.0, 60.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            // A change at a time that is not one.
+            &[
+                0.0,
+                120.0,
+                4.0,
+                4.0,
+                1.0,
+                0.0,
+                f64::NAN,
+                1.0,
+                60.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+        ];
+        for input in bad_maps {
+            let ptr = input_buffer(input.len());
+            // SAFETY: the buffer holds `input.len()` numbers.
+            unsafe { std::ptr::copy_nonoverlapping(input.as_ptr(), ptr, input.len()) };
+            assert_eq!(tm_new(input.len()), 0, "{input:?}");
+        }
     }
 }

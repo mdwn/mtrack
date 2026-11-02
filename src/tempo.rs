@@ -597,6 +597,18 @@ impl TempoMap {
         }
     }
 
+    /// One steady tempo throughout, at the tempo and time signature in
+    /// effect at `time` under an offset of `offset_secs` (mid-ramp, the
+    /// ramp's tempo there), from this map's start.
+    pub fn steady_at(&self, time: Duration, offset_secs: f64) -> TempoMap {
+        TempoMap {
+            start_offset: self.start_offset,
+            initial_bpm: self.bpm_at_time(time, offset_secs),
+            initial_time_signature: self.time_signature_at_time(time, offset_secs),
+            changes: Vec::new(),
+        }
+    }
+
     /// Convert a measure/beat position to absolute time with an offset.
     /// The offset is applied to both the target position and tempo change positions.
     pub fn measure_to_time_with_offset(
@@ -616,7 +628,7 @@ impl TempoMap {
             return None;
         }
 
-        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let offset_duration = duration_from_secs(offset_secs);
 
         // Build sorted list of time signature changes in (measure, beat, TimeSignature) form
         let ts_changes = self.build_time_signature_changes();
@@ -1046,7 +1058,7 @@ impl TempoMap {
     /// Get BPM at a given time (accounting for tempo changes)
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
     pub fn bpm_at_time(&self, time: Duration, offset_secs: f64) -> f64 {
-        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let offset_duration = duration_from_secs(offset_secs);
         let start = self.start_offset.saturating_add(offset_duration);
 
         /// The tempo from a change on: steady, or a ramp from its start.
@@ -1150,7 +1162,7 @@ impl TempoMap {
     /// As the beat grid has it: a change anchored mid-bar governs from the
     /// next bar.
     pub fn time_signature_at_time(&self, time: Duration, offset_secs: f64) -> TimeSignature {
-        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let offset_duration = duration_from_secs(offset_secs);
         let mut ts = self.initial_time_signature;
 
         for change in &self.changes {
@@ -1208,7 +1220,7 @@ impl TempoMap {
     /// `offset_secs` shifts the tempo map the way it shifts cue times.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
         let ts_changes = self.build_time_signature_changes();
-        let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
+        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
         let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
         let end_beats = snap_beats(start_beats + beats);
         self.score_time_at_beats(end_beats, &ts_changes)
@@ -1231,7 +1243,7 @@ impl TempoMap {
         offset_secs: f64,
     ) -> Duration {
         let ts_changes = self.build_time_signature_changes();
-        let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
+        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
         let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
         let end_measures = self.measures_at_beats(start_beats, &ts_changes) + measures;
         let end_beats = snap_beats(self.beats_at_measures(end_measures, &ts_changes));
@@ -1268,7 +1280,7 @@ impl TempoMap {
         if offset_secs <= 0.0 || time < self.start_offset {
             return self.score_beats_at(time, &ts_changes);
         }
-        let offset = Duration::from_secs_f64(offset_secs);
+        let offset = duration_from_secs(offset_secs);
         let mut current_bpm = self.initial_bpm;
         let mut accumulated_time = self.start_offset;
         let mut accumulated_beats = 0.0;
@@ -1319,7 +1331,7 @@ impl TempoMap {
         if beats < 0.0 || offset_secs <= 0.0 {
             return self.score_time_at_beats(beats, &ts_changes);
         }
-        self.integrate_through_segments(beats, &ts_changes, Duration::from_secs_f64(offset_secs))
+        self.integrate_through_segments(beats, &ts_changes, duration_from_secs(offset_secs))
             .unwrap_or(self.start_offset)
     }
 
@@ -1448,7 +1460,7 @@ impl TempoMap {
         for k in (1..=lead).rev() {
             let at = (start - k as f64 * interval).max(0.0);
             if at < until.as_secs_f64() {
-                ticks.push(Duration::from_secs_f64(at));
+                ticks.push(duration_from_secs(at));
             }
         }
 

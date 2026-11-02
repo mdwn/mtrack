@@ -778,11 +778,16 @@ fn parse_inline_loop(
         }
     }
 
-    // The body is timed from its own start, with offsets of its own.
+    // The body is timed from its own start, with offsets of its own, at
+    // the one tempo and time signature in effect where the loop is: as a
+    // named sequence is timed at one tempo, so a body in seconds keeps its
+    // seconds there. Its passes are then laid out in beats from the loop,
+    // following any tempo change they reach.
+    let body_tempo = tempo_map.as_ref().map(|tm| tm.steady_at(at, offset_secs));
     let mut clock = CueClock::new();
     let mut body = Vec::new();
     for loop_cue_pair in loop_cue_pairs {
-        for cue in parse_cue(loop_cue_pair, tempo_map, &mut clock)? {
+        for cue in parse_cue(loop_cue_pair, &body_tempo, &mut clock)? {
             body.push(Cue {
                 time: cue.time,
                 effects: cue.effects,
@@ -798,7 +803,7 @@ fn parse_inline_loop(
     body.sort_by_key(|c| c.time);
     let sequence = Sequence {
         cues: body,
-        tempo_map: tempo_map.clone(),
+        tempo_map: body_tempo,
         length: None,
     };
     Ok(expand_sequence_call(

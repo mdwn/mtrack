@@ -1476,3 +1476,89 @@ show "Show" {
 "#;
     assert_eq!(cue_secs(content, "Show"), vec![0.0, 1.0, 2.0, 4.0]);
 }
+
+#[test]
+fn an_inline_loop_in_seconds_keeps_its_seconds_after_a_tempo_change() {
+    // The song slows to 60 at bar 9 (16s); bar 10 is at 20s. A loop there
+    // written in seconds is timed at the tempo where it is (60), so its
+    // cues stay half a second apart and a pass lasts its second. Timed
+    // through the song's map from its bar 1 it came out a second apart.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @9/1 { bpm: 60 }
+    ]
+}
+
+show "Show" {
+    @10/1
+    loop {
+        @0.000
+        front_wash: static, color: "red", duration: 500ms
+        @0.500
+        front_wash: static, color: "blue", duration: 500ms
+    }, repeats: 2
+}
+"#;
+    assert_eq!(cue_secs(content, "Show"), vec![20.0, 20.5, 21.0, 21.5]);
+}
+
+#[test]
+fn an_inline_loop_in_seconds_after_an_early_change_keeps_its_seconds() {
+    // The song slows to 60 at bar 2; bar 5 is at 2s + 12s. The body's
+    // seconds are seconds at 60: a second apart, four a pass.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @2/1 { bpm: 60 }
+    ]
+}
+
+show "Show" {
+    @5/1
+    loop {
+        @0.000
+        front_wash: static, color: "red", duration: 1s
+        @1.000
+        front_wash: static, color: "blue", duration: 1s
+        @2.000
+        front_wash: static, color: "red", duration: 1s
+        @3.000
+        front_wash: static, color: "blue", duration: 1s
+    }, repeats: 2
+}
+"#;
+    assert_eq!(
+        cue_secs(content, "Show"),
+        vec![14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0]
+    );
+}
+
+#[test]
+fn an_inline_loop_in_beats_follows_the_map_where_each_pass_plays() {
+    // Two beats a pass from bar 2 (2s), at 120 until the song slows to 60
+    // at bar 3 (4s): the fourth pass, from beat 10, starts 2s after the
+    // third.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+show "Show" {
+    @2/1
+    loop {
+        @1/1
+        front_wash: static, color: "red", duration: 2beats
+    }, repeats: 4
+}
+"#;
+    assert_eq!(cue_secs(content, "Show"), vec![2.0, 3.0, 4.0, 6.0]);
+}
