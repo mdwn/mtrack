@@ -12,7 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+//! The tempo map: where bars, beats and tempo changes fall in time.
+//!
+//! Pure arithmetic with no dependencies beyond `std`, so the web UI runs this
+//! very code, compiled to WebAssembly (`crates/mtrack-tempo-wasm`), rather than a copy.
+
 use std::time::Duration;
+
+mod cue;
+pub use cue::{CueClock, CuePosition, PlacedCue};
 
 /// Default BPM used when no tempo map is available.
 pub const DEFAULT_BPM: f64 = 120.0;
@@ -285,7 +293,7 @@ fn duration_from_secs(secs: f64) -> Duration {
 /// downbeat" leaves a nanosecond gap before it (#534). A millionth of a beat
 /// is far below that noise's reach yet far finer than anything musical --
 /// 0.2 µs at 300 BPM -- so snapping removes the noise and nothing else.
-pub(crate) fn snap_beats(beats: f64) -> f64 {
+pub fn snap_beats(beats: f64) -> f64 {
     (beats * 1e6).round() / 1e6
 }
 
@@ -572,6 +580,17 @@ impl TempoMap {
             initial_bpm,
             initial_time_signature,
             changes: resolved_changes,
+        }
+    }
+
+    /// This map's start, starting tempo and time signature, with none of its
+    /// changes: one steady tempo throughout.
+    pub fn steady(&self) -> TempoMap {
+        TempoMap {
+            start_offset: self.start_offset,
+            initial_bpm: self.initial_bpm,
+            initial_time_signature: self.initial_time_signature,
+            changes: Vec::new(),
         }
     }
 
@@ -1202,6 +1221,69 @@ impl TempoMap {
         let start_measures = self.measures_at_beats(end_beats, &ts_changes) - measures;
         let start_beats = snap_beats(self.beats_at_measures(start_measures, &ts_changes));
         end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
+    }
+
+    /// The quarter-note beat position (0 at bar 1 beat 1) of a time, under
+    /// an offset of `offset_secs`: the inverse of
+    /// [`TempoMap::time_at_beats`], walking the changes as cue positions do,
+    /// with those positioned in time taken `offset_secs` later. Negative
+    /// before bar 1, counted at the starting tempo.
+    pub fn beats_at(&self, time: Duration, offset_secs: f64) -> f64 {
+        let ts_changes = self.build_time_signature_changes();
+        if offset_secs <= 0.0 || time < self.start_offset {
+            return self.score_beats_at(time, &ts_changes);
+        }
+        let offset = Duration::from_secs_f64(offset_secs);
+        let mut current_bpm = self.initial_bpm;
+        let mut accumulated_time = self.start_offset;
+        let mut accumulated_beats = 0.0;
+        let mut current_ramp: Option<SegmentRamp> = None;
+        for change in &self.changes {
+            let Some(change_time) = change.position.absolute_time() else {
+                break;
+            };
+            let Some(change_beats) =
+                self.compute_change_beats(change, change_time.saturating_add(offset), &ts_changes)
+            else {
+                break;
+            };
+            // A change behind the walk is never reached by it.
+            if change_beats < accumulated_beats {
+                break;
+            }
+            let advanced_secs = segment_secs_for_beats(
+                current_ramp.as_ref(),
+                current_bpm,
+                change_beats - accumulated_beats,
+            );
+            let reached = accumulated_time.saturating_add(duration_from_secs(advanced_secs));
+            if reached > time {
+                break;
+            }
+            accumulated_time = reached;
+            accumulated_beats = change_beats;
+            let bpm_at_change = match current_ramp.as_ref() {
+                Some(ramp) => ramp.bpm_after_secs(advanced_secs),
+                None => current_bpm,
+            };
+            current_ramp = current_ramp.and_then(|ramp| ramp.advanced_by(advanced_secs));
+            if let Some(new_bpm) = change.bpm {
+                current_ramp = self.ramp_started_by(change, new_bpm, bpm_at_change);
+                current_bpm = new_bpm;
+            }
+        }
+        let secs = time.saturating_sub(accumulated_time).as_secs_f64();
+        accumulated_beats + segment_beats_in_secs(current_ramp.as_ref(), current_bpm, secs)
+    }
+
+    /// How long an `offset N measures` issued at `anchor` lasts: N bars at
+    /// the one tempo and time signature in effect at the anchor, not
+    /// following any change or ramp inside them. Once a tempo has changed,
+    /// an offset going forward does not undo it.
+    pub fn offset_duration(&self, measures: f64, anchor: Duration) -> Duration {
+        let bpm = self.bpm_at_time(anchor, 0.0);
+        let ts = self.time_signature_at_time(anchor, 0.0);
+        duration_from_secs(measures * ts.beats_per_measure() * 60.0 / bpm)
     }
 
     /// The times of a MIDI beat clock's pulses, 24 to the quarter note, from

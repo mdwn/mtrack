@@ -208,6 +208,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sequences and inline loops through tempo changes**: a sequence's own bars were timed through
+  the song's tempo changes as though it started at the song's bar 1, then read back at its starting
+  tempo, so a cue past the song's first change landed in the wrong place wherever the sequence was
+  played (a sequence's bar 3, with the song slowing to 60 at bar 2, came 12 beats in instead of 8).
+  A sequence without a `tempo` block of its own is now timed at the file's starting tempo and time
+  signature throughout, and its cues and pass length are counted in beats -- through its own tempo
+  map when it has one -- and placed in beats where it is played. A sequence played inside another
+  now follows the outer sequence's tempo map rather than its starting tempo, and an inline loop's
+  passes follow a tempo change or ramp inside them rather than keeping a fixed length in seconds;
+  its effects' durations in beats or measures are resolved where each pass plays, as a sequence's
+  are. A sequence (or loop) with no effect at all now lasts until its last cue rather than no time.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status

@@ -60,7 +60,11 @@ type Bindings = BTreeMap<String, String>;
 /// Every sequence a file defines, expanded per distinct set of arguments.
 pub(crate) struct SequenceLibrary {
     templates: HashMap<String, SequenceTemplate>,
-    global_tempo: Option<TempoMap>,
+    /// The tempo a sequence without a `tempo` block of its own is timed at:
+    /// the file's, at its starting tempo and time signature. A sequence is
+    /// played anywhere in a song, so the song's changes, which fall at bars
+    /// of the song, do not happen inside it.
+    sequence_tempo: Option<TempoMap>,
     instances: RefCell<HashMap<(String, Bindings), Rc<Sequence>>>,
     /// The sequences being expanded, outermost first, to catch cycles.
     expanding: RefCell<Vec<String>>,
@@ -73,7 +77,7 @@ impl SequenceLibrary {
     pub(crate) fn empty() -> Self {
         SequenceLibrary {
             templates: HashMap::new(),
-            global_tempo: None,
+            sequence_tempo: None,
             instances: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
@@ -83,7 +87,7 @@ impl SequenceLibrary {
     /// A library for a file whose shows run under `global_tempo`.
     pub(crate) fn new(global_tempo: &Option<TempoMap>) -> Self {
         SequenceLibrary {
-            global_tempo: global_tempo.clone(),
+            sequence_tempo: global_tempo.as_ref().map(TempoMap::steady),
             ..SequenceLibrary::empty()
         }
     }
@@ -276,11 +280,11 @@ impl SequenceLibrary {
             .and_then(|source| source.into_inner().find(|p| p.as_rule() == Rule::sequence))
             .ok_or("Sequence definition did not parse (internal error)")?;
 
-        let definition = parse_sequence_structure(pair, &self.global_tempo)?;
+        let definition = parse_sequence_structure(pair, &self.sequence_tempo)?;
         let tempo = definition
             .tempo_map
             .clone()
-            .or_else(|| self.global_tempo.clone());
+            .or_else(|| self.sequence_tempo.clone());
         let length = definition.declared_length(tempo.as_ref())?;
         let mut cues = Vec::new();
         for cue in definition.cues {
@@ -288,10 +292,7 @@ impl SequenceLibrary {
         }
         Ok(Sequence {
             cues,
-            bpm: tempo
-                .as_ref()
-                .map(|tm| tm.initial_bpm)
-                .unwrap_or(crate::lighting::tempo::DEFAULT_BPM),
+            tempo_map: tempo,
             length,
         })
     }

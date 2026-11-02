@@ -1367,3 +1367,112 @@ show "Test" {
     let err = parse_light_shows(&musical).expect_err("musical length needs a tempo");
     assert!(err.to_string().contains("tempo"), "{err}");
 }
+
+/// The times of a show's cues, in seconds, rounded to the millisecond.
+fn cue_secs(content: &str, show: &str) -> Vec<f64> {
+    let shows = parse_light_shows(content).unwrap();
+    shows[show]
+        .cues
+        .iter()
+        .map(|c| (c.time.as_secs_f64() * 1000.0).round() / 1000.0)
+        .collect()
+}
+
+#[test]
+fn a_sequence_counts_its_bars_at_one_tempo_whatever_the_songs_changes() {
+    // The song slows to 60 at bar 2. A sequence is played anywhere, so its
+    // own bar 3 is 8 beats after its bar 1 -- not wherever the song's bar 3
+    // falls. Played from the song's bar 1 those 8 beats are 4 at 120 (2s) and
+    // 4 at 60 (4s). The sequence's bar 3 used to be timed through the song's
+    // change and read back at 120 as 12 beats, putting it at 10s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @2/1 { bpm: 60 }
+    ]
+}
+
+sequence "s" {
+    @1/1
+    front_wash: static, color: "red", duration: 1beat
+
+    @3/1
+    front_wash: static, color: "blue", duration: 1beat
+}
+
+show "Show" {
+    @1/1
+    sequence "s"
+}
+"#;
+    assert_eq!(cue_secs(content, "Show"), vec![0.0, 6.0]);
+}
+
+#[test]
+fn a_nested_sequence_follows_the_tempo_map_of_the_sequence_it_is_in() {
+    // "outer" slows to 60 at its own bar 2 and plays "inner" (4 beats a
+    // pass) twice from its bar 3: at its beats 8 and 12. Played in a show at
+    // a steady 120 those are 4s and 6s. The nested passes used to be laid
+    // end to end at the outer sequence's starting tempo, and read back
+    // through its slower bars as beats 12 and 16 (6s and 8s).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    front_wash: static, color: "red", duration: 4beats
+}
+
+sequence "outer" {
+    tempo {
+        bpm: 120
+        time_signature: 4/4
+        changes: [
+            @2/1 { bpm: 60 }
+        ]
+    }
+
+    @1/1
+    back_wash: static, color: "blue", duration: 1beat
+
+    @3/1
+    sequence "inner", loop: 2
+}
+
+show "Show" {
+    @1/1
+    sequence "outer"
+}
+"#;
+    assert_eq!(cue_secs(content, "Show"), vec![0.0, 4.0, 6.0]);
+}
+
+#[test]
+fn an_inline_loop_follows_a_tempo_change_inside_it() {
+    // Two beats a pass from bar 1, which is at 120; the song slows to 60 at
+    // bar 2, so the third and fourth passes take a second a beat. The passes
+    // used to be a fixed length in seconds: 0, 1, 2 and 3s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @2/1 { bpm: 60 }
+    ]
+}
+
+show "Show" {
+    @1/1
+    loop {
+        @1/1
+        front_wash: static, color: "red", duration: 2beats
+    }, repeats: 4
+}
+"#;
+    assert_eq!(cue_secs(content, "Show"), vec![0.0, 1.0, 2.0, 4.0]);
+}

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use super::super::effects::{BlendMode, EffectLayer, EffectType};
-use super::super::tempo::TempoMap;
+use super::super::tempo::{snap_beats, TempoMap, DEFAULT_BPM};
 
 /// Bundles the per-cue context that flows through the parsing pipeline,
 /// replacing the 5-7 individual parameters previously threaded through
@@ -45,9 +45,10 @@ pub struct LightShow {
 #[derive(Debug, Clone)]
 pub struct Sequence {
     pub cues: Vec<Cue>,
-    /// The effective BPM used when parsing this sequence's internal cue timing.
-    /// Used to rescale cue times when the sequence is expanded at a different tempo.
-    pub bpm: f64,
+    /// The tempo map the sequence's cues were placed through: its own
+    /// `tempo` block, or the file's. Its positions are counted in beats
+    /// through it, and placed in beats where it is played.
+    pub tempo_map: Option<TempoMap>,
     /// How long one pass lasts, from the first cue, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
@@ -75,6 +76,45 @@ impl Sequence {
 
         max_completion_time
     }
+
+    /// When the sequence starts: its earliest cue.
+    pub(crate) fn start_time(&self) -> Duration {
+        self.cues.iter().map(|c| c.time).min().unwrap_or_default()
+    }
+
+    /// When one pass ends: its declared `length:` from the start; else when
+    /// its last effect ends; else, with no effect at all, when its last cue
+    /// starts.
+    pub(crate) fn pass_end(&self) -> Duration {
+        let start = self.start_time();
+        if let Some(length) = self.length {
+            return start + length;
+        }
+        if self.cues.iter().any(|c| !c.effects.is_empty()) {
+            return self.duration().max(start);
+        }
+        self.cues.iter().map(|c| c.time).max().unwrap_or(start)
+    }
+
+    /// How long one pass lasts in the sequence's own time.
+    pub(crate) fn pass_length(&self) -> Duration {
+        self.pass_end().saturating_sub(self.start_time())
+    }
+
+    /// The beats from the sequence's start to `time`, through its tempo map
+    /// (at the default tempo without one).
+    pub(crate) fn beats_from_start(&self, time: Duration) -> f64 {
+        let start = self.start_time();
+        snap_beats(match &self.tempo_map {
+            Some(tm) => tm.beats_at(time, 0.0) - tm.beats_at(start, 0.0),
+            None => time.saturating_sub(start).as_secs_f64() * DEFAULT_BPM / 60.0,
+        })
+    }
+
+    /// How many beats one pass lasts.
+    pub(crate) fn pass_beats(&self) -> f64 {
+        self.beats_from_start(self.pass_end())
+    }
 }
 
 /// Loop mode for sequence references
@@ -91,6 +131,9 @@ pub(crate) enum SequenceLoop {
 #[derive(Debug, Clone)]
 pub(crate) struct UnexpandedSequenceCue {
     pub time: Duration,
+    /// The offset in force at the cue, in seconds: a sequence played from it
+    /// is placed under it.
+    pub offset_secs: f64,
     pub effects: Vec<Effect>,
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>,
@@ -486,7 +529,7 @@ mod tests {
     fn sequence_empty() {
         let seq = Sequence {
             cues: vec![],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         assert_eq!(seq.duration(), Duration::ZERO);
@@ -502,7 +545,7 @@ mod tests {
                 stop_sequences: vec![],
                 start_sequences: vec![],
             }],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         // cue_time(2) + effect_duration(3) = 5
@@ -528,7 +571,7 @@ mod tests {
                     start_sequences: vec![],
                 },
             ],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         // max(0+3, 5+10) = 15
@@ -548,7 +591,7 @@ mod tests {
                 stop_sequences: vec![],
                 start_sequences: vec![],
             }],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         assert_eq!(seq.duration(), Duration::from_secs(5));
