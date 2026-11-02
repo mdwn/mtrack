@@ -125,12 +125,19 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             continue;
         }
 
-        let is_playing = player.is_playing().await;
-        let playlist = player.get_playlist();
+        // The player's one status, its DMX reads bounded: the ambient
+        // light was read here on a runtime worker, unbounded, and a wedged
+        // effects loop stalled the dashboard's every update with it.
+        let status = player.status_snapshot().await;
+        let is_playing = status.playing;
+        let playlist = status.playlist.clone();
 
-        let raw_elapsed_ms = player
-            .elapsed()
-            .await
+        // The player's position is the song's: every loop jump, a section's
+        // or a looping song's pass, has put it back as it fell due, so a
+        // position in an armed section is already inside it.
+        let elapsed_ms = status
+            .elapsed
+            .clone()
             .ok()
             .flatten()
             .map(|d| d.as_millis() as u64)
@@ -151,7 +158,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             looping,
             available_sections,
             pilot_hints,
-        ) = if let Some(current_song) = playlist.current() {
+        ) = if let Some(current_song) = status.current_song.as_ref() {
             let mappings = player.track_mappings();
             let track_gains: std::collections::HashMap<String, f32> = player
                 .get_track_gains()
@@ -240,7 +247,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let persisted_playlist_name = player.persisted_playlist_name();
 
         // Get active section loop info.
-        let active_section = player.active_section().map(|s| {
+        let active_section = status.active_section.as_ref().map(|s| {
             json!({
                 "name": s.name,
                 "start_ms": s.start_time.as_millis() as u64,
@@ -251,8 +258,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         // Get reactive loop state info.
         let reactive_loop_state = {
             use crate::player::ReactiveLoopState;
-            let state = player.reactive_loop_state();
-            match &state {
+            match &status.reactive_loop_state {
                 ReactiveLoopState::Idle => json!({"state": "idle"}),
                 ReactiveLoopState::SectionOffered(b) => json!({
                     "state": "section_offered",
@@ -272,26 +278,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 }),
             }
         };
-        // The player's position is the song's: every loop jump, a section's
-        // or a looping song's pass, has put it back as it fell due. Wrapped
-        // within an armed section all the same, which leaves a position
-        // inside it as it is.
-        let elapsed_ms = if let Some(ref section) = player.active_section() {
-            let start_ms = section.start_time.as_millis() as u64;
-            let end_ms = section.end_time.as_millis() as u64;
-            let section_duration = end_ms.saturating_sub(start_ms);
-            if section_duration > 0 && raw_elapsed_ms >= start_ms {
-                (raw_elapsed_ms - start_ms) % section_duration + start_ms
-            } else {
-                raw_elapsed_ms
-            }
-        } else {
-            raw_elapsed_ms
-        };
-
         // Current tempo and meter from the song's tempo map, sampled at the
         // playhead so tempo changes show live.
-        let tempo = playlist.current().and_then(|song| {
+        let tempo = status.current_song.as_ref().and_then(|song| {
             song.tempo_map().map(|map| {
                 let at = Duration::from_millis(elapsed_ms);
                 let time_signature = map.time_signature_at_time(at, 0.0);
@@ -315,30 +304,34 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "tracks": tracks,
             "available_playlists": available_playlists,
             "persisted_playlist_name": persisted_playlist_name,
-            "locked": player.is_locked(),
+            "locked": status.locked,
             "beat_grid": beat_grid,
             "available_sections": available_sections,
             "active_section": active_section,
             "looping": looping,
             "reactive_loop_state": reactive_loop_state,
-            "pending_start_ms": player.pending_start().map(|d| d.as_millis() as u64),
+            "pending_start_ms": status.pending_start.map(|d| d.as_millis() as u64),
             "pilot_hints": pilot_hints,
             "tempo": tempo,
-            "auto_play": player.auto_play_status().map(|(song, starts_in)| json!({
+            "auto_play": status.auto_play.as_ref().map(|(song, starts_in)| json!({
                 "song": song,
                 "starts_in_ms": starts_in.as_millis() as u64,
             })),
-            "ending": player.ending_status().map(|(song, remaining)| json!({
+            "ending": status.ending.as_ref().map(|(song, remaining)| json!({
                 "song": song,
                 "remaining_ms": remaining.as_millis() as u64,
             })),
-            // With a DMX engine, whatever the mode, so the card can show it.
-            "ambient": player.dmx_engine().map(|dmx| dmx.ambient_report()).map(|report| json!({
-                "mode": report.mode.as_str(),
-                "source": report.show.as_ref().and(player.ambient_source()).map(|s| s.as_str()),
-                "show": report.show.map(|show| show.display().to_string()),
-                "state": report.state,
-            })),
+            // With a DMX engine, whatever the mode, so the card can show it;
+            // left out, as without one, when the read did not answer.
+            "ambient": match &status.ambient {
+                Some(crate::player::DmxRead::Read(ambient)) => json!({
+                    "mode": ambient.report.mode.as_str(),
+                    "source": ambient.source.map(|s| s.as_str()),
+                    "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
+                    "state": ambient.report.state,
+                }),
+                _ => serde_json::Value::Null,
+            },
             "next": next_json(&playlist, is_playing),
         });
 

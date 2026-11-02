@@ -15,8 +15,10 @@ mod hardware;
 mod navigation;
 mod playback;
 mod seek;
+mod status;
 
 pub use hardware::{ConfigApply, HardwareReload};
+pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -923,31 +925,13 @@ impl Player {
         self.transport_tx.subscribe()
     }
 
-    /// Computes the current transport snapshot from live player state.
+    /// Computes the current transport snapshot from live player state: the
+    /// player's status, without its DMX reads.
     ///
     /// `is_playing()` briefly acquires the play-join lock, so this should
     /// not be called from contexts that hold that lock.
     pub async fn compute_transport_snapshot(&self) -> TransportSnapshot {
-        let playlist = self.get_playlist();
-        let playlist_name = playlist.name().to_string();
-        let current_song = playlist.current().map(|s| s.name().to_string());
-        let playing = self.is_playing().await;
-        let section_loop = self
-            .section_loop
-            .active
-            .read()
-            .as_ref()
-            .map(|b| b.name.clone());
-        let reactive_loop_state = ReactiveLoopStateKind::from(&*self.section_loop.reactive.read());
-        let locked = self.is_locked();
-        TransportSnapshot {
-            playlist_name,
-            current_song,
-            playing,
-            section_loop,
-            reactive_loop_state,
-            locked,
-        }
+        self.transport_status().await.transport()
     }
 
     /// Recomputes the transport snapshot and broadcasts it iff it differs
@@ -2625,6 +2609,39 @@ mod test {
         // A stop is between songs.
         player.stop().await;
         eventually(|| state() == Some("playing"), "ambient after a stop");
+        Ok(())
+    }
+
+    /// The status reads the DMX engine, its ambient light and the song's
+    /// lighting, as every surface shows them, and agrees with the transport
+    /// snapshot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_status_reads_the_lights_and_agrees_with_the_transport(
+    ) -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ambient_player().await?;
+        eventually(
+            || {
+                player
+                    .dmx_engine()
+                    .and_then(|engine| engine.ambient_status())
+                    .is_some_and(|s| s.state == "playing")
+            },
+            "ambient at startup",
+        );
+        let status = player.status_snapshot().await;
+        match &status.ambient {
+            Some(DmxRead::Read(ambient)) => {
+                assert_eq!(ambient.report.state, "playing");
+                assert!(ambient.source.is_some(), "a show plays someone's settings");
+            }
+            other => panic!("the ambient light was not read: {other:?}"),
+        }
+        assert!(matches!(status.lighting, Some(DmxRead::Read(_))));
+        assert!(!status.playing);
+        assert_eq!(
+            status.transport(),
+            player.compute_transport_snapshot().await
+        );
         Ok(())
     }
 

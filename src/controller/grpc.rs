@@ -116,27 +116,6 @@ impl PlayerServer {
         }
     }
 
-    /// Ambient light's mode and state, without a DMX engine `None`. Read on
-    /// the blocking pool: the effects loop holds the ambient lock while it
-    /// starts the show.
-    async fn ambient_status(&self) -> Option<AmbientStatus> {
-        let dmx = self.player.dmx_engine()?;
-        let report = tokio::task::spawn_blocking(move || dmx.ambient_report())
-            .await
-            .ok()?;
-        let source = report
-            .show
-            .as_ref()
-            .and(self.player.ambient_source())
-            .map(|source| source.as_str().to_string());
-        Some(AmbientStatus {
-            mode: report.mode.as_str().to_string(),
-            state: report.state.to_string(),
-            show: report.show.map(|show| show.display().to_string()),
-            source,
-        })
-    }
-
     /// Converts a play/play_from result into a gRPC response.
     ///
     /// `Ok(None)` means the player declined to start, and it declines for more
@@ -219,6 +198,33 @@ impl PlayerServer {
     }
 }
 
+/// A playback position a request sent, the start of the song when it sent
+/// none. A negative one is turned down, as every surface turns it down.
+#[allow(clippy::result_large_err)]
+fn position_arg(position: Option<prost_types::Duration>) -> Result<std::time::Duration, Status> {
+    position
+        .map(std::time::Duration::try_from)
+        .transpose()
+        .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))
+        .map(Option::unwrap_or_default)
+}
+
+/// Ambient light's mode and state, as the player's status read it: absent
+/// without a DMX engine, or with a read that did not answer in time.
+fn ambient_to_proto(
+    ambient: Option<crate::player::DmxRead<crate::player::AmbientStatus>>,
+) -> Option<AmbientStatus> {
+    match ambient? {
+        crate::player::DmxRead::Read(ambient) => Some(AmbientStatus {
+            mode: ambient.report.mode.as_str().to_string(),
+            state: ambient.report.state.to_string(),
+            show: ambient.report.show.map(|show| show.display().to_string()),
+            source: ambient.source.map(|source| source.as_str().to_string()),
+        }),
+        _ => None,
+    }
+}
+
 /// Converts a ConfigError to a gRPC Status.
 fn config_error_to_status(e: config::ConfigError) -> Status {
     match e {
@@ -257,13 +263,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<PlayFromRequest>,
     ) -> Result<Response<PlayResponse>, Status> {
-        let start_time = request
-            .into_inner()
-            .start_time
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let start_time = position_arg(request.into_inner().start_time)?;
 
         self.play_response(
             self.player
@@ -279,12 +279,7 @@ impl PlayerService for PlayerServer {
         request: Request<PlaySongFromRequest>,
     ) -> Result<Response<PlayResponse>, Status> {
         let req = request.into_inner();
-        let start_time = req
-            .start_time
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let start_time = position_arg(req.start_time)?;
 
         self.play_response(
             self.player
@@ -296,13 +291,7 @@ impl PlayerService for PlayerServer {
     }
 
     async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
-        let position = request
-            .into_inner()
-            .position
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let position = position_arg(request.into_inner().position)?;
 
         self.player
             .seek_to(position)
@@ -404,29 +393,23 @@ impl PlayerService for PlayerServer {
     }
 
     async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
-        let playlist_name = self.player.get_playlist().name().to_string();
+        // The player's one status, its DMX reads bounded: a wedged effects
+        // loop leaves the ambient light out rather than hanging the call.
+        let status = self.player.status_snapshot().await;
 
-        let elapsed = {
-            let elapsed = self.player.elapsed().await;
-            match elapsed {
-                Ok(play_start_time) => match play_start_time {
-                    Some(play_start_time) => match prost_types::Duration::try_from(play_start_time)
-                    {
-                        Ok(play_start_time) => Some(play_start_time),
-                        Err(e) => return Err(Status::from_error(Box::new(e))),
-                    },
-                    None => None,
-                },
-                Err(e) => return Err(Status::internal(e.to_string())),
-            }
+        let elapsed = match status.elapsed {
+            Ok(Some(elapsed)) => Some(
+                prost_types::Duration::try_from(elapsed)
+                    .map_err(|e| Status::from_error(Box::new(e)))?,
+            ),
+            Ok(None) => None,
+            Err(e) => return Err(Status::internal(e)),
         };
 
-        let current_song = match self.player.get_playlist().current() {
+        let current_song = match &status.current_song {
             Some(song) => Some(song.to_proto()?),
             None => None,
         };
-
-        let playing = self.player.is_playing().await;
 
         // Hardware health travels with playback state so a remote monitor can
         // tell "silent because nothing is playing" from "silent and it should
@@ -444,7 +427,7 @@ impl PlayerService for PlayerServer {
                 last_error: h.last_error,
             });
 
-        let auto_play = match self.player.auto_play_status() {
+        let auto_play = match status.auto_play {
             Some((song, starts_in)) => Some(AutoPlayStatus {
                 song,
                 starts_in: Some(
@@ -455,13 +438,15 @@ impl PlayerService for PlayerServer {
             None => None,
         };
 
+        let ambient = ambient_to_proto(status.ambient);
+
         Ok(Response::new(StatusResponse {
-            playlist_name: playlist_name.to_string(),
+            playlist_name: status.playlist.name().to_string(),
             current_song,
-            playing,
+            playing: status.playing,
             elapsed,
             audio_health,
-            ambient: self.ambient_status().await,
+            ambient,
             auto_play,
         }))
     }
@@ -742,7 +727,7 @@ impl PlayerService for PlayerServer {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(SetAmbientModeResponse {
-            ambient: self.ambient_status().await,
+            ambient: ambient_to_proto(self.player.ambient_status().await),
         }))
     }
 

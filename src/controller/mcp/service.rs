@@ -892,7 +892,7 @@ impl McpServer {
             .await
             .map_err(internal_err)?;
         Ok(ok_json(
-            json!({ "ambient": ambient_json(&self.player).await }),
+            json!({ "ambient": ambient_json(self.player.ambient_status().await.as_ref()) }),
         ))
     }
 
@@ -3599,48 +3599,11 @@ pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
     })
 }
 
-/// Parses an `mm:ss.mmm` or `Ns` / `N.Ns` time string into a [`Duration`].
+/// Parses an `mm:ss.mmm` or `Ns` / `N.Ns` time string into a [`Duration`],
+/// as every surface parses a playback position (see
+/// [`crate::util::parse_position`]).
 pub(crate) fn parse_duration(value: &str) -> Result<std::time::Duration, McpError> {
-    let trimmed = value.trim();
-    let seconds = if let Some(stripped) = trimmed
-        .strip_suffix('s')
-        .or_else(|| trimmed.strip_suffix('S'))
-    {
-        if stripped.contains(':') {
-            parse_mm_ss(stripped)?
-        } else {
-            stripped
-                .parse::<f64>()
-                .map_err(|e| McpError::invalid_params(format!("invalid seconds: {e}"), None))?
-        }
-    } else if trimmed.contains(':') {
-        parse_mm_ss(trimmed)?
-    } else {
-        trimmed
-            .parse::<f64>()
-            .map_err(|e| McpError::invalid_params(format!("invalid duration: {e}"), None))?
-    };
-    // Too large a number is turned down with the rest: converting it
-    // panicked, failing the request with no answer.
-    crate::util::duration_from_secs(seconds).ok_or_else(|| {
-        McpError::invalid_params(
-            "duration must be a finite, non-negative number of seconds in range",
-            None,
-        )
-    })
-}
-
-fn parse_mm_ss(s: &str) -> Result<f64, McpError> {
-    let (mm, ss) = s
-        .split_once(':')
-        .ok_or_else(|| McpError::invalid_params("expected mm:ss.mmm", None))?;
-    let minutes: u64 = mm
-        .parse()
-        .map_err(|e| McpError::invalid_params(format!("invalid minutes: {e}"), None))?;
-    let seconds: f64 = ss
-        .parse()
-        .map_err(|e| McpError::invalid_params(format!("invalid seconds: {e}"), None))?;
-    Ok((minutes as f64) * 60.0 + seconds)
+    crate::util::parse_position(value).map_err(|e| McpError::invalid_params(e, None))
 }
 
 /// Wraps a domain error into [`McpError::internal_error`].
@@ -3715,86 +3678,71 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
 /// reference cycle through `subscriptions` → `SubscriptionHandle` →
 /// `AbortHandle` and silently defeat abort-on-Drop).
 async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
-    let playlist = player.get_playlist();
-    let current = playlist.current();
-    let playing = player.is_playing().await;
-    let elapsed = player
-        .elapsed()
-        .await
+    // The player's one status, its DMX reads bounded: `status` is the
+    // diagnostic of last resort, and must answer if the effects loop wedges
+    // holding the timeline lock.
+    let status = player.status_snapshot().await;
+    let elapsed = status
+        .elapsed
+        .clone()
         .map_err(internal_err)?
         .unwrap_or_default();
     // Whether the lighting will actually fire, answerable here rather than by
-    // polling for effects and inferring from their absence (#332).
-    //
-    // The timeline mutex is shared with the effects loop thread, so this reads
-    // it on the blocking pool rather than parking a tokio worker on it.
-    let lighting = match player.dmx_engine() {
-        Some(dmx) => {
-            // Bounded, because this is the diagnostic of last resort: if the
-            // effects loop wedges holding the timeline mutex, `status` must
-            // still answer rather than hang alongside it. A timeout or a
-            // panicked task is reported as such, not silently flattened into
-            // "no show loaded" — that is the one field meant to tell those
-            // apart.
-            let read = tokio::task::spawn_blocking(move || dmx.lighting_arming_state());
-            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
-                Ok(Ok(Some((armed, total, remaining, next)))) => Some(json!({
-                    "armed": armed,
-                    "cues_total": total,
-                    "cues_remaining": remaining,
-                    "next_cue_seconds": next.map(|t| t.as_secs_f64()),
-                })),
-                Ok(Ok(None)) => None,
-                Ok(Err(e)) => Some(json!({
-                    "available": false,
-                    "reason": format!("lighting state read failed: {e}"),
-                })),
-                Err(_) => Some(json!({
-                    "available": false,
-                    "reason": "timed out reading lighting state — the effects \
-                               loop may be stalled holding the timeline lock",
-                })),
-            }
-        }
-        None => None,
+    // polling for effects and inferring from their absence (#332). A timeout
+    // or a panicked read is reported as such, not silently flattened into
+    // "no show loaded" -- that is the one field meant to tell those apart.
+    let lighting = match &status.lighting {
+        Some(crate::player::DmxRead::Read(Some(lighting))) => Some(json!({
+            "armed": lighting.armed,
+            "cues_total": lighting.cues_total,
+            "cues_remaining": lighting.cues_remaining,
+            "next_cue_seconds": lighting.next_cue.map(|t| t.as_secs_f64()),
+        })),
+        Some(crate::player::DmxRead::Read(None)) | None => None,
+        Some(crate::player::DmxRead::Failed(e)) => Some(json!({
+            "available": false,
+            "reason": format!("lighting state read failed: {e}"),
+        })),
+        Some(crate::player::DmxRead::TimedOut) => Some(json!({
+            "available": false,
+            "reason": "timed out reading lighting state — the effects \
+                       loop may be stalled holding the timeline lock",
+        })),
     };
-    let ambient = ambient_json(player).await;
+    let playlist = &status.playlist;
 
     Ok(json!({
         "playlist_name": playlist.name(),
-        "current_song": current.as_ref().map(|s| song_summary(s)),
-        "playing": playing,
+        "current_song": status.current_song.as_ref().map(|s| song_summary(s)),
+        "playing": status.playing,
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
-        "ambient": ambient,
-        "auto_play": player.auto_play_status().map(|(song, starts_in)| json!({
+        "ambient": ambient_json(status.ambient.as_ref()),
+        "auto_play": status.auto_play.as_ref().map(|(song, starts_in)| json!({
             "song": song,
             "starts_in_seconds": starts_in.as_secs_f64(),
         })),
-        "ending": player.ending_status().map(|(song, remaining)| json!({
+        "ending": status.ending.as_ref().map(|(song, remaining)| json!({
             "song": song,
             "remaining_seconds": remaining.as_secs_f64(),
         })),
-        "transitions": transitions_json(&playlist),
+        "transitions": transitions_json(playlist),
     }))
 }
 
 /// Ambient light's mode and state for `status`, `null` without a DMX
-/// engine. Bounded on the blocking pool: the effects loop holds the ambient
-/// lock while it starts the show.
-async fn ambient_json(player: &Player) -> Value {
-    let Some(dmx) = player.dmx_engine() else {
-        return Value::Null;
-    };
-    let read = tokio::task::spawn_blocking(move || dmx.ambient_report());
-    match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
-        Ok(Ok(report)) => json!({
-            "mode": report.mode.as_str(),
-            "source": report.show.as_ref().and(player.ambient_source()).map(|s| s.as_str()),
-            "show": report.show.map(|show| show.display().to_string()),
-            "state": report.state,
+/// engine, as the player's status read it (bounded on the blocking pool:
+/// the effects loop holds the ambient lock while it starts the show).
+fn ambient_json(ambient: Option<&crate::player::DmxRead<crate::player::AmbientStatus>>) -> Value {
+    match ambient {
+        None => Value::Null,
+        Some(crate::player::DmxRead::Read(ambient)) => json!({
+            "mode": ambient.report.mode.as_str(),
+            "source": ambient.source.map(|s| s.as_str()),
+            "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
+            "state": ambient.report.state,
         }),
-        _ => json!({
+        Some(_) => json!({
             "available": false,
             "reason": "could not read the ambient light's state",
         }),

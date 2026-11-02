@@ -174,6 +174,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
+  playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
+  effects loop wedged holding its lock hung them too. Every surface now reads the player's status
+  one way, its reads of the lights bounded at 500 ms as MCP's `status` already was: a read that
+  does not answer leaves the ambient light out (gRPC, web UI) or says so (MCP). The web UI's
+  position no longer wraps within an armed section on its own: the position every surface reports
+  is already the song's, every loop jump put back as it falls due.
+
 - **A tempo of 0 or a ramp of no length is refused in a lighting show**: the `tempo` block took
   `bpm: 0` and `transition: 0` (or `0m`). A ramp of no length gave the beat walks no number, and
   a tempo of 0 put every later beat infinitely far away. The show now fails to parse, with the
