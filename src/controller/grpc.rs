@@ -240,7 +240,7 @@ fn config_error_to_status(e: config::ConfigError) -> Status {
 #[allow(clippy::result_large_err)]
 fn snapshot_to_update_response(
     snapshot: config::store::ConfigSnapshot,
-    outcome: crate::player::ConfigApply,
+    outcome: crate::player::ConfigChange,
 ) -> Result<Response<UpdateConfigResponse>, Status> {
     let yaml = crate::util::to_yaml_string(&snapshot.config)
         .map_err(|e| Status::internal(format!("serialization error: {}", e)))?;
@@ -1487,7 +1487,7 @@ mod test {
         };
         let reply = super::snapshot_to_update_response(
             snapshot,
-            crate::player::ConfigApply::Failed("no store".into()),
+            crate::player::ConfigApply::Failed("no store".into()).into(),
         )
         .unwrap()
         .into_inner();

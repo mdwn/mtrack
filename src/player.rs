@@ -17,7 +17,7 @@ mod playback;
 mod seek;
 mod status;
 
-pub use hardware::{ConfigApply, HardwareReload};
+pub use hardware::{ConfigApply, ConfigChange, HardwareReload};
 pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;
@@ -405,6 +405,11 @@ pub struct Player {
     /// waited, which runs once the player is idle. Refusing it instead left
     /// a config save acknowledged while the rig kept the old config (#578).
     hardware_reload_pending: Arc<AtomicBool>,
+    /// The init round of a reload that had been deferred is under way: the
+    /// deferral is over, the reload not yet.
+    deferred_round_running: Arc<AtomicBool>,
+    /// Why the last hardware reload failed, if it did.
+    hardware_reload_error: Arc<parking_lot::Mutex<Option<String>>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -744,6 +749,8 @@ impl Player {
             init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
+            deferred_round_running: Arc::new(AtomicBool::new(false)),
+            hardware_reload_error: Arc::new(parking_lot::Mutex::new(None)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -1018,6 +1025,13 @@ impl Player {
             store.path(),
             self.cli_playlist.read().as_deref(),
         ))
+    }
+
+    /// [`SongSources::prepare`] for a config about to be saved to this
+    /// player's config store, with the command line's playlist.
+    pub fn prepare_song_sources(&self, config: &config::Player) -> Result<(), String> {
+        let store = self.config_store().ok_or("No config store available")?;
+        SongSources::prepare(config, store.path(), self.cli_playlist.read().as_deref()).map(|_| ())
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -1428,6 +1442,37 @@ pub struct SongSources {
 }
 
 impl SongSources {
+    /// Checks the songs and playlists `config` names can be used, before a
+    /// config naming them is saved, and makes the songs directory where
+    /// startup would (inside the project): a config whose songs cannot be
+    /// read is refused, rather than saved with the player left on songs
+    /// from somewhere else. Returns the sources, resolved.
+    pub fn prepare(
+        config: &config::Player,
+        config_path: &Path,
+        cli_playlist: Option<&Path>,
+    ) -> Result<SongSources, String> {
+        let mut sources = SongSources::resolve(config, config_path, cli_playlist);
+        let project = crate::util::project_dir_of(config_path);
+        let created = crate::util::create_dir_within(&sources.songs, &project)
+            .map_err(|e| format!("songs: {e}"))?;
+        std::fs::read_dir(created.as_path())
+            .map_err(|e| format!("songs: {}: {e}", created.as_path().display()))?;
+        sources.songs = crate::util::resolved_dir(created.as_path());
+        if let Some(dir) = &sources.playlists_dir {
+            if dir.exists() {
+                std::fs::read_dir(dir)
+                    .map_err(|e| format!("playlists_dir: {}: {e}", dir.display()))?;
+            }
+        }
+        if let Some(file) = &sources.legacy_playlist {
+            if file.exists() && !file.is_file() {
+                return Err(format!("playlist: {} is not a file", file.display()));
+            }
+        }
+        Ok(sources)
+    }
+
     /// Resolves the sources from `config`, read from `config_path`: the
     /// songs directory it names, resolved as far as the filesystem allows,
     /// and the playlist named on the command line, if one is, over the
@@ -3926,6 +3971,39 @@ mod test {
         Ok(())
     }
 
+    /// A deferred reload stays pending until its round has run, and one
+    /// that fails is not cleared as though applied: the status keeps why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_is_pending_until_it_has_run_and_says_if_it_failed(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _dir = set_store_without_audio(&player)?;
+        player.play().await?;
+        player.reload_hardware().await?;
+        assert!(player.hardware_reload_pending());
+        player.stop().await;
+        eventually(
+            || !player.hardware_reload_pending(),
+            "the deferred reload never finished",
+        );
+        assert_eq!(player.hardware_reload_error(), None);
+
+        // Deferred again, with nothing to reload from by the time it runs.
+        player.play().await?;
+        player.reload_hardware().await?;
+        *player.config_store.lock() = None;
+        player.stop().await;
+        eventually(
+            || player.hardware_reload_error().is_some(),
+            "the failed reload was not kept",
+        );
+        assert!(!player.hardware_reload_pending());
+        assert!(player
+            .hardware_reload_error()
+            .is_some_and(|e| e.contains("config store")));
+        Ok(())
+    }
+
     /// The deferred reload runs when a song ends by itself, too.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_deferred_reload_runs_when_the_song_ends() -> Result<(), Box<dyn Error>> {
@@ -4036,14 +4114,108 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn apply_config_change_says_what_became_of_it() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
-        match player.apply_config_change().await {
+        match player.apply_config_change().await.hardware {
             ConfigApply::Failed(e) => assert!(e.contains("config store"), "{e}"),
             other => panic!("applied with no store: {other:?}"),
         }
         let _store = set_store_without_audio(&player)?;
-        assert_eq!(player.apply_config_change().await, ConfigApply::Applied);
+        assert_eq!(
+            player.apply_config_change().await.hardware,
+            ConfigApply::Applied
+        );
         player.await_hardware_ready().await;
         Ok(())
+    }
+
+    /// Two rescans overlapping across a change to `songs:` both read the
+    /// config as it is when each scans, under the scan lock, and take their
+    /// sources up under it too: the songs and the sources the player ends
+    /// with are the same set, the newest config's. Resolved before the lock,
+    /// the first could swap in the old set last, or leave the songs of one
+    /// and the sources of the other.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlapping_rescans_end_on_the_newest_configs_songs() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        for (set, song) in [("songs_a", "Song A"), ("songs_b", "Song B")] {
+            let song_dir = dir.path().join(set).join("one");
+            fs::create_dir_all(&song_dir)?;
+            crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)?;
+            fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: {song}\ntracks:\n- name: kick\n  file: kick.wav\n"),
+            )?;
+        }
+        let path = dir.path().join("mtrack.yaml");
+        fs::write(&path, "songs: songs_a\n")?;
+        let player = Arc::new(make_bare_player()?);
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path.clone(),
+        )));
+
+        // The scan lock held while both rescans are asked for, and the
+        // config changed between them.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (locked, is_locked) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let scans = player.song_scans.clone();
+            std::thread::spawn(move || {
+                let _scan = scans.lock();
+                locked.send(()).unwrap();
+                held.recv().unwrap();
+            })
+        };
+        is_locked.recv()?;
+        let first = {
+            let player = player.clone();
+            tokio::spawn(async move { player.reload_songs().await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        fs::write(&path, "songs: songs_b\n")?;
+        let store = player.config_store().expect("a store");
+        store.lock_for_disk_write().await.reload().await?;
+        let second = {
+            let player = player.clone();
+            tokio::spawn(async move { player.reload_songs().await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        release.send(())?;
+        holder.join().unwrap();
+        first.await??;
+        second.await??;
+
+        let sources = player.song_sources().expect("sources");
+        assert!(sources.songs.ends_with("songs_b"), "{:?}", sources.songs);
+        assert!(player.songs().get("Song B").is_ok(), "the newest set");
+        assert!(
+            player.songs().get("Song A").is_err(),
+            "the old set swapped in"
+        );
+        Ok(())
+    }
+
+    /// A song reload that fails beside a hardware reload is carried with
+    /// it: neither hides the other.
+    #[test]
+    fn a_config_change_carries_the_songs_beside_the_hardware() {
+        let change = ConfigChange {
+            hardware: ConfigApply::Deferred,
+            songs_error: Some("unreadable".into()),
+        };
+        assert!(!change.applied());
+        assert_eq!(change.kind(), "deferred");
+        let message = change.message().unwrap();
+        assert!(
+            message.contains("idle") && message.contains("unreadable"),
+            "{message}"
+        );
+        let change = ConfigChange {
+            hardware: ConfigApply::Applied,
+            songs_error: Some("unreadable".into()),
+        };
+        assert!(!change.applied());
+        assert!(change.message().unwrap().contains("unreadable"));
+        assert!(ConfigChange::from(ConfigApply::Applied).applied());
     }
 
     /// While a song plays, a config change is deferred until it stops.
@@ -4052,7 +4224,10 @@ mod test {
         let player = make_test_player().await?;
         let _store = set_store_without_audio(&player)?;
         player.play().await?;
-        assert_eq!(player.apply_config_change().await, ConfigApply::Deferred);
+        assert_eq!(
+            player.apply_config_change().await.hardware,
+            ConfigApply::Deferred
+        );
         assert!(player.audio_device().is_some(), "reset under the song");
         player.stop().await;
         crate::testutil::eventually(

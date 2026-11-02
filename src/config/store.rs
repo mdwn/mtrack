@@ -156,6 +156,12 @@ impl ConfigStore {
         self.inner.try_read().ok().map(|guard| guard.clone())
     }
 
+    /// A clone of the current config, for a blocking thread (never one of
+    /// the runtime's workers, where it panics).
+    pub fn blocking_read_config(&self) -> Player {
+        self.inner.blocking_read().clone()
+    }
+
     /// Returns a clone of the current config.
     pub async fn read_config(&self) -> Player {
         self.inner.read().await.clone()

@@ -4104,7 +4104,7 @@ impl McpServer {
 /// checksum, and whether the change has been applied to the hardware.
 pub(crate) fn snapshot_response(
     snapshot: &crate::config::store::ConfigSnapshot,
-    outcome: &crate::player::ConfigApply,
+    outcome: &crate::player::ConfigChange,
 ) -> CallToolResult {
     let mut response = json!({
         "yaml": snapshot.yaml,
@@ -4113,6 +4113,9 @@ pub(crate) fn snapshot_response(
     });
     if let Some(message) = outcome.message() {
         response["message"] = json!(message);
+    }
+    if let Some(songs_error) = &outcome.songs_error {
+        response["songs_error"] = json!(songs_error);
     }
     ok_json(response)
 }
@@ -4468,7 +4471,8 @@ mod snapshot_response_tests {
             yaml: "songs: songs\n".to_string(),
             checksum: "abc".to_string(),
         };
-        let result = serde_json::to_value(super::snapshot_response(&snapshot, &outcome)).unwrap();
+        let result =
+            serde_json::to_value(super::snapshot_response(&snapshot, &outcome.into())).unwrap();
         let text = result["content"][0]["text"].as_str().unwrap().to_string();
         serde_json::from_str(&text).unwrap()
     }

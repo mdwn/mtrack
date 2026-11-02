@@ -71,6 +71,28 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     if let Err(errors) = config_io::validate_player_config(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
+    // Where the songs and playlists live is checked before the save, and the
+    // songs directory made where startup would: a config whose songs cannot
+    // be read is refused, leaving the config, the song paths and the songs
+    // as they were, rather than saved with the player on songs from
+    // somewhere else.
+    if state.player.config_store().is_some() {
+        let player = state.player.clone();
+        let yaml = body.clone();
+        let checked = tokio::task::spawn_blocking(move || {
+            let config = config::Player::deserialize_from_str(&yaml).map_err(|e| e.to_string())?;
+            player.prepare_song_sources(&config)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(e) = checked {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("the songs or playlists cannot be used: {e}")})),
+            )
+                .into_response();
+        }
+    }
 
     // The store persists its own copy of this file on every mutation: the
     // copy is read back from the save before any mutation can land, or the
@@ -209,7 +231,7 @@ pub(super) async fn apply_config_change(
 
 /// The reply's fields for what became of a saved config change.
 fn config_apply_fields(
-    outcome: &crate::player::ConfigApply,
+    outcome: &crate::player::ConfigChange,
 ) -> serde_json::Map<String, serde_json::Value> {
     // The reload brings the controllers in line with the config itself,
     // restarting only those it changed, or whose MIDI device it reopened.
@@ -222,6 +244,11 @@ fn config_apply_fields(
     fields.insert("reload".into(), json!(outcome.kind()));
     if let Some(message) = outcome.message() {
         fields.insert("message".into(), json!(message));
+    }
+    // A song reload that failed beside it, carried rather than hiding the
+    // hardware's outcome.
+    if let Some(songs_error) = &outcome.songs_error {
+        fields.insert("songs_error".into(), json!(songs_error));
     }
     fields
 }
@@ -520,18 +547,18 @@ pub(super) async fn put_config_metronome(
     let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
-            let mut reload = apply_config_change(&state).await;
+            let mut change = state.player.apply_config_change().await;
             // The default-on flag is applied at song load; refresh both. A
             // reload that fails is answered with the save, its new checksum
-            // included, and the reason, as any save's failed reload is: a
-            // 500 left the UI the old checksum of a config already saved.
+            // included, and the reason beside the hardware's outcome, as any
+            // save's failed reload is: a 500 left the UI the old checksum of
+            // a config already saved.
             state.player.set_default_metronome(default_enabled);
             if let Err(e) = state.player.reload_songs().await {
                 warn!("Reloading songs after a metronome change failed: {}", e);
-                reload =
-                    config_apply_fields(&crate::player::ConfigApply::SongsFailed(e.to_string()));
+                change.songs_error = Some(e.to_string());
             }
-            config_snapshot_response(snapshot, StatusCode::OK, reload)
+            config_snapshot_response(snapshot, StatusCode::OK, config_apply_fields(&change))
         }
         Err(e) => config_store_error_response(e),
     }
@@ -1472,15 +1499,19 @@ mod test {
         assert!(state.songs_path().ends_with("newdir"));
     }
 
-    /// A `songs:` the songs cannot be reloaded from (outside the project and
-    /// not there) leaves the player, and its song paths, as they were, and
-    /// the save says so: it used to say applied, with every song path after
-    /// it pointing at the missing directory.
+    /// A `songs:` that cannot be used (outside the project and not there)
+    /// is refused before the save: the config, the song paths and the songs
+    /// are left as they were. It used to be saved, said applied, with every
+    /// song path after it pointing at the missing directory.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_runtime_songs_change_that_cannot_reload_keeps_the_songs_and_says_so() {
+    async fn a_songs_location_that_cannot_be_used_is_refused_before_the_save() {
         let (state, dir) = test_state();
         set_store(&state);
+        let store = state.player.config_store().unwrap();
+        let (_, checksum) = store.read_yaml().await.unwrap();
+        let file = std::fs::read_to_string(&state.config_path).unwrap();
         let before = state.songs_path();
+        let songs = state.player.songs().len();
         let missing = dir
             .path()
             .parent()
@@ -1488,15 +1519,13 @@ mod test {
             .join("mtrack-no-such-songs-dir");
         let (status, body) =
             put_whole_config(&state, &format!("songs: {}\n", missing.display())).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
-        assert_eq!(body["reload"], "failed");
-        assert!(
-            body["message"].as_str().unwrap().contains("songs"),
-            "{body}"
-        );
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("songs"), "{body}");
         assert!(!missing.exists());
+        assert_eq!(std::fs::read_to_string(&state.config_path).unwrap(), file);
+        assert_eq!(store.read_yaml().await.unwrap().1, checksum);
         assert_eq!(state.songs_path(), before, "the song paths moved");
+        assert_eq!(state.player.songs().len(), songs);
     }
 
     /// A metronome save whose song reload fails is still answered with the
@@ -1534,7 +1563,9 @@ mod test {
         assert_eq!(body["checksum"], serde_json::json!(now), "{body}");
         assert_ne!(now, checksum);
         assert_eq!(body["applied"], serde_json::json!(false));
-        assert_eq!(body["reload"], "failed");
+        // The hardware's outcome is carried beside the songs', not hidden.
+        assert_eq!(body["reload"], "applied");
+        assert!(body["songs_error"].is_string(), "{body}");
     }
 
     /// A runtime change to `songs:` takes effect without a restart: the save
@@ -1586,14 +1617,14 @@ mod test {
     #[test]
     fn a_saves_reply_says_what_became_of_it() {
         use crate::player::ConfigApply;
-        let applied = super::config_apply_fields(&ConfigApply::Applied);
+        let applied = super::config_apply_fields(&ConfigApply::Applied.into());
         assert_eq!(applied["applied"], serde_json::json!(true));
         assert!(!applied.contains_key("message"));
-        let deferred = super::config_apply_fields(&ConfigApply::Deferred);
+        let deferred = super::config_apply_fields(&ConfigApply::Deferred.into());
         assert_eq!(deferred["applied"], serde_json::json!(false));
         assert_eq!(deferred["reload"], "deferred");
         assert!(deferred["message"].as_str().unwrap().contains("idle"));
-        let failed = super::config_apply_fields(&ConfigApply::Failed("no store".into()));
+        let failed = super::config_apply_fields(&ConfigApply::Failed("no store".into()).into());
         assert_eq!(failed["applied"], serde_json::json!(false));
         assert_eq!(failed["reload"], "failed");
         let message = failed["message"].as_str().unwrap();

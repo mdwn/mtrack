@@ -24,6 +24,8 @@ export interface ConfigReload {
   applied?: boolean;
   reload?: "applied" | "deferred" | "failed";
   message?: string;
+  /** A song reload beside it that failed: the player keeps its songs. */
+  songs_error?: string;
 }
 
 /** A save's notice beside "Saved": the reload waiting for playback to stop,
@@ -39,7 +41,7 @@ export function reloadNotice(
   reply: ConfigReload | null | undefined,
 ): ReloadNotice | null {
   if (!reply || reply.applied !== false) return null;
-  if (reply.reload === "failed") {
+  if (reply.reload === "failed" || reply.songs_error) {
     return {
       kind: "failed",
       text:
@@ -57,25 +59,47 @@ export function reloadNotice(
   };
 }
 
-/** Clears a deferred notice once its hardware reload has run: told by the
- *  playback updates' `hardware_reload_pending`, seen set and then clear
- *  again. Feed it each update; it answers whether the reload is over. */
+/** What became of a deferred reload, once it has run: done, or failed and
+ *  why. */
+export type DeferredOutcome =
+  | { failed: false }
+  | { failed: true; reason: string };
+
+/** Follows a deferred notice's hardware reload through the playback
+ *  updates: `hardware_reload_pending` seen set and then clear again is the
+ *  reload over, and `hardware_reload_failed` then says whether it failed.
+ *  Feed it each update. */
 export class DeferredReloadWatch {
   private seenPending = false;
 
-  /** Whether the reload a deferred notice waits on has run, given the
-   *  latest `pending`, while one is shown (`showing`). */
-  ran(showing: boolean, pending: boolean): boolean {
+  /** The deferred reload's outcome, once it has run, while a deferred
+   *  notice is shown (`showing`); null until then. */
+  settle(
+    showing: boolean,
+    pending: boolean,
+    failed: string | null,
+  ): DeferredOutcome | null {
     if (!showing) {
       this.seenPending = false;
-      return false;
+      return null;
     }
     if (pending) {
       this.seenPending = true;
-      return false;
+      return null;
     }
-    const ran = this.seenPending;
+    if (!this.seenPending) return null;
     this.seenPending = false;
-    return ran;
+    return failed ? { failed: true, reason: failed } : { failed: false };
   }
+}
+
+/** The notice for a deferred reload that has failed. */
+export function deferredFailedNotice(reason: string): ReloadNotice {
+  return {
+    kind: "failed",
+    text: get(t)("config.reloadFailedLater", {
+      values: { reason },
+      default: `The hardware reload failed: ${reason}`,
+    }),
+  };
 }

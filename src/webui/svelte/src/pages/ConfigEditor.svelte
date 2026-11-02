@@ -45,6 +45,7 @@
   import { playbackStore } from "../lib/ws/stores";
   import {
     DeferredReloadWatch,
+    deferredFailedNotice,
     reloadNotice,
     type ReloadNotice,
   } from "../lib/configReload";
@@ -106,10 +107,19 @@
       deferred(saveNotice) ||
       deferred(samplesNotice) ||
       deferred(metronomeNotice);
-    if (deferredWatch.ran(showing, $playbackStore.hardware_reload_pending)) {
-      if (deferred(saveNotice)) saveNotice = null;
-      if (deferred(samplesNotice)) samplesNotice = null;
-      if (deferred(metronomeNotice)) metronomeNotice = null;
+    const outcome = deferredWatch.settle(
+      showing,
+      $playbackStore.hardware_reload_pending,
+      $playbackStore.hardware_reload_failed,
+    );
+    if (outcome) {
+      // Done: the notice goes. Failed: it says so, and why.
+      const after = outcome.failed
+        ? deferredFailedNotice(outcome.reason)
+        : null;
+      if (deferred(saveNotice)) saveNotice = after;
+      if (deferred(samplesNotice)) samplesNotice = after;
+      if (deferred(metronomeNotice)) metronomeNotice = after;
     }
   });
   let dirty = $state(false);

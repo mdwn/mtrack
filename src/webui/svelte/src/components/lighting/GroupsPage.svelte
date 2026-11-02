@@ -16,6 +16,7 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     DeferredReloadWatch,
+    deferredFailedNotice,
     reloadNotice,
     type ReloadNotice,
   } from "../../lib/configReload";
@@ -63,8 +64,14 @@
   const deferredWatch = new DeferredReloadWatch();
   $effect(() => {
     const showing = saveNotice?.kind === "deferred";
-    if (deferredWatch.ran(showing, $playbackStore.hardware_reload_pending)) {
-      saveNotice = null;
+    const outcome = deferredWatch.settle(
+      showing,
+      $playbackStore.hardware_reload_pending,
+      $playbackStore.hardware_reload_failed,
+    );
+    if (outcome) {
+      // Done: the notice goes. Failed: it says so, and why.
+      saveNotice = outcome.failed ? deferredFailedNotice(outcome.reason) : null;
     }
   });
   let selectEl: HTMLSelectElement | undefined = $state();

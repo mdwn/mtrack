@@ -115,6 +115,8 @@ export interface PlaybackState {
   locked: boolean;
   /** A config save's hardware reload waiting for the player to be idle. */
   hardware_reload_pending: boolean;
+  /** Why the last hardware reload failed, if it did. */
+  hardware_reload_failed: string | null;
   beat_grid: BeatGrid | null;
   looping: boolean;
   available_sections: SectionInfo[];
@@ -245,6 +247,7 @@ export const playbackStore = writable<PlaybackState>({
   persisted_playlist_name: "",
   locked: true,
   hardware_reload_pending: false,
+  hardware_reload_failed: null,
   beat_grid: null,
   looping: false,
   available_sections: [],
@@ -320,6 +323,7 @@ on("playback", (msg) => {
     persisted_playlist_name: m.persisted_playlist_name ?? "",
     locked: m.locked ?? true,
     hardware_reload_pending: m.hardware_reload_pending ?? false,
+    hardware_reload_failed: m.hardware_reload_failed ?? null,
     beat_grid: m.beat_grid ?? null,
     looping: m.looping ?? false,
     available_sections: m.available_sections ?? [],

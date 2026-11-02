@@ -97,10 +97,6 @@ pub enum ConfigApply {
     /// The reload could not run, and the change takes effect at the next
     /// reload or restart.
     Failed(String),
-    /// The change moved the songs or playlists, and they could not be
-    /// reloaded from where it moved them: the player keeps the songs, and
-    /// the song paths, it had.
-    SongsFailed(String),
 }
 
 impl ConfigApply {
@@ -115,7 +111,7 @@ impl ConfigApply {
         match self {
             ConfigApply::Applied => "applied",
             ConfigApply::Deferred => "deferred",
-            ConfigApply::Failed(_) | ConfigApply::SongsFailed(_) => "failed",
+            ConfigApply::Failed(_) => "failed",
         }
     }
 
@@ -129,10 +125,56 @@ impl ConfigApply {
                 "The config was saved, but the hardware reload failed, so the change takes \
                  effect at the next reload or restart: {e}"
             )),
-            ConfigApply::SongsFailed(e) => Some(format!(
-                "The config was saved, but the songs could not be reloaded from where it \
-                 points, so the player keeps the songs it had: {e}"
-            )),
+        }
+    }
+}
+
+/// What became of a saved config change: its hardware reload, and, when the
+/// change moved the songs or playlists, or asks for them to be reloaded (a
+/// metronome default), a song reload that failed. Both are carried, so one
+/// does not hide the other. The surfaces map it to `applied`, `reload` (the
+/// hardware's), `message`, and, from the web UI and MCP, `songs_error`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigChange {
+    pub hardware: ConfigApply,
+    /// Why the songs could not be reloaded, when they could not: the player
+    /// keeps the songs, and the song paths, it had.
+    pub songs_error: Option<String>,
+}
+
+impl From<ConfigApply> for ConfigChange {
+    fn from(hardware: ConfigApply) -> Self {
+        ConfigChange {
+            hardware,
+            songs_error: None,
+        }
+    }
+}
+
+impl ConfigChange {
+    /// Whether the change has been taken up in full: the hardware applied,
+    /// and the songs, if they were reloaded, reloaded.
+    pub fn applied(&self) -> bool {
+        self.hardware.applied() && self.songs_error.is_none()
+    }
+
+    /// The hardware reload's kind (see [`ConfigApply::kind`]).
+    pub fn kind(&self) -> &'static str {
+        self.hardware.kind()
+    }
+
+    /// What the reply says, when the change is not taken up in full: the
+    /// hardware's, then the songs'.
+    pub fn message(&self) -> Option<String> {
+        let songs = self.songs_error.as_ref().map(|e| {
+            format!(
+                "The config was saved, but the songs could not be reloaded, so the player \
+                 keeps the songs it had: {e}"
+            )
+        });
+        match (self.hardware.message(), songs) {
+            (Some(hardware), Some(songs)) => Some(format!("{hardware} {songs}")),
+            (hardware, songs) => hardware.or(songs),
         }
     }
 }
@@ -763,8 +805,12 @@ impl Player {
             info!("Hardware reload deferred until playback ends");
             return Ok(HardwareReload::Deferred);
         }
-        // This reload covers one deferred before it.
-        self.hardware_reload_pending.store(false, Ordering::Relaxed);
+        // This reload covers one deferred before it: the deferral is over,
+        // and the round below says once it is done how the reload went.
+        if self.hardware_reload_pending.swap(false, Ordering::Relaxed) {
+            self.deferred_round_running.store(true, Ordering::Relaxed);
+        }
+        *self.hardware_reload_error.lock() = None;
 
         // Cancel the previous init round and take the replacement token here,
         // so the round spawned below carries it from the start.
@@ -821,12 +867,48 @@ impl Player {
         let init_player = self.clone();
         let bp = self.base_path.clone();
         spawn_after(&self.init_round, async move {
+            let round = cancel.clone();
             init_player.init_hardware_async(config, bp, cancel).await;
+            // A round a later reload cancelled leaves the saying to that
+            // one's. One that ran to its end says whether the hardware came
+            // up: a subsystem that gave up is a reload that failed, kept for
+            // the status, rather than one that reads as applied.
+            if !round.is_cancelled() {
+                let failed = {
+                    let hw = init_player.hardware.read();
+                    let mut errors: Vec<String> = hw
+                        .init_errors
+                        .iter()
+                        .map(|(subsystem, why)| format!("{subsystem}: {why}"))
+                        .collect();
+                    errors.sort();
+                    (!errors.is_empty()).then(|| errors.join("; "))
+                };
+                *init_player.hardware_reload_error.lock() = failed;
+                init_player
+                    .deferred_round_running
+                    .store(false, Ordering::Relaxed);
+            }
         });
         drop(join);
 
         info!("Hardware reload initiated");
         Ok(HardwareReload::Applied)
+    }
+
+    /// Whether a hardware reload a config change asked for is still to
+    /// finish: deferred until the player is idle, or its init round under
+    /// way. The status shows it, so a surface can say when it is over.
+    pub fn hardware_reload_pending(&self) -> bool {
+        self.hardware_reload_pending.load(Ordering::Relaxed)
+            || self.deferred_round_running.load(Ordering::Relaxed)
+    }
+
+    /// Why the last hardware reload failed, if it did: one that could not
+    /// run, or a round that ended with a subsystem given up. Cleared by the
+    /// next reload.
+    pub fn hardware_reload_error(&self) -> Option<String> {
+        self.hardware_reload_error.lock().clone()
     }
 
     /// Applies a config change already saved to the config store to the
@@ -837,19 +919,22 @@ impl Player {
     /// [`Player::reload_hardware`]). The controllers are restarted only by
     /// a change to them, so a surface's own transport survives a change
     /// made over it.
-    pub async fn apply_config_change(self: &Arc<Self>) -> ConfigApply {
+    pub async fn apply_config_change(self: &Arc<Self>) -> ConfigChange {
         // A change to where songs or playlists live is taken up at once, as
-        // a song edit's reload would take it up: the songs directory made
-        // as startup makes it, inside the project, and the new sources the
-        // player's only once the songs reload from them. A reload that
-        // fails leaves the player, and every surface's song paths, as they
-        // were, and the reply says why.
-        let songs_failure = match self.moved_song_sources().await {
-            Ok(()) => None,
-            Err(e) => {
-                warn!("Reloading songs after a config change failed: {}", e);
-                Some(e)
+        // a song edit's reload would take it up. Where they live was checked
+        // before the save ([`crate::player::SongSources::prepare`]); a reload that fails all
+        // the same (a scan error) leaves the player, and every surface's song
+        // paths, as they were, and the reply carries it beside the
+        // hardware's outcome.
+        let songs_error = match self.resolve_song_sources().await {
+            Some(sources) if Some(&sources) != self.song_sources().as_ref() => {
+                info!("The songs or playlists moved: reloading them");
+                self.reload_songs().await.err().map(|e| {
+                    warn!("Reloading songs after a config change failed: {}", e);
+                    e.to_string()
+                })
             }
+            _ => None,
         };
         // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
         // await this.
@@ -861,36 +946,10 @@ impl Player {
                 ConfigApply::Failed(e)
             }
         };
-        match songs_failure {
-            Some(e) => ConfigApply::SongsFailed(e),
-            None => hardware,
+        ConfigChange {
+            hardware,
+            songs_error,
         }
-    }
-
-    /// Takes up the song sources the config now names, if they are not the
-    /// player's: makes the songs directory where startup would (inside the
-    /// project), reloads the songs from them, and keeps them once that
-    /// succeeds.
-    async fn moved_song_sources(&self) -> Result<(), String> {
-        let Some(mut sources) = self.resolve_song_sources().await else {
-            return Ok(());
-        };
-        if Some(&sources) == self.song_sources().as_ref() {
-            return Ok(());
-        }
-        info!("The songs or playlists moved: reloading them");
-        if let Some(store) = self.config_store() {
-            let project = crate::util::project_dir_of(store.path());
-            let created = crate::util::create_dir_within_async(sources.songs.clone(), project)
-                .await
-                .map_err(|e| e.to_string())?;
-            // Resolved as the next resolve will find it, so the sources
-            // compare equal to those the config names from now on.
-            sources.songs = crate::util::resolved_dir(&created.into_path_buf());
-        }
-        self.reload_songs_into(sources)
-            .await
-            .map_err(|e| e.to_string())
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now
@@ -912,8 +971,14 @@ impl Player {
                 return;
             }
             info!("Playback has ended: running the deferred hardware reload");
-            if let Err(e) = player.reload_hardware().await {
+            if let Err(e) = player.reload_hardware().await.map_err(|e| e.to_string()) {
                 warn!("Deferred hardware reload failed: {}", e);
+                // Nothing will make it run now: it is over, failed, and the
+                // status says so.
+                player
+                    .hardware_reload_pending
+                    .store(false, Ordering::Relaxed);
+                *player.hardware_reload_error.lock() = Some(e);
             }
         });
     }

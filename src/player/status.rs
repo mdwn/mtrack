@@ -76,8 +76,10 @@ pub struct PlayerStatus {
     /// The looping song ending, and how long until its fade is over.
     pub ending: Option<(String, Duration)>,
     /// A hardware reload a config change asked for, waiting for the player
-    /// to be idle: cleared once it has run.
+    /// to be idle or under way: cleared once it has run, well or not.
     pub hardware_reload_pending: bool,
+    /// Why the last hardware reload failed, if it did.
+    pub hardware_reload_error: Option<String>,
     /// Ambient light, `None` without a DMX engine.
     pub ambient: Option<DmxRead<AmbientStatus>>,
     /// The current song's lighting, `None` without a DMX engine;
@@ -105,7 +107,10 @@ impl PlayerStatus {
 /// a second, and the blocking pool's limit was reached in minutes, after
 /// which every `spawn_blocking` in the process queued behind them.
 pub(super) struct InflightRead<T: Clone> {
-    pending: parking_lot::Mutex<Option<SharedRead<T>>>,
+    /// The read outstanding, with whether it has finished: a finished read
+    /// no waiter polled to its end still looks pending to its future, and
+    /// handed to a later request it answered with what was so back then.
+    pending: parking_lot::Mutex<Option<(SharedRead<T>, Arc<std::sync::atomic::AtomicBool>)>>,
 }
 
 type SharedRead<T> =
@@ -131,13 +136,27 @@ impl<T: Clone + Send + Sync + 'static> InflightRead<T> {
         let shared = {
             let mut pending = self.pending.lock();
             match pending.as_ref() {
-                Some(outstanding) if outstanding.peek().is_none() => outstanding.clone(),
+                Some((outstanding, done)) if !done.load(std::sync::atomic::Ordering::Acquire) => {
+                    outstanding.clone()
+                }
                 _ => {
-                    let started = tokio::task::spawn_blocking(read)
-                        .map(|done| done.map_err(|e| e.to_string()))
-                        .boxed()
-                        .shared();
-                    *pending = Some(started.clone());
+                    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let finished = done.clone();
+                    let started = tokio::task::spawn_blocking(move || {
+                        // Set however the read ends, a panic included.
+                        struct Finished(Arc<std::sync::atomic::AtomicBool>);
+                        impl Drop for Finished {
+                            fn drop(&mut self) {
+                                self.0.store(true, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                        let _finished = Finished(finished);
+                        read()
+                    })
+                    .map(|done| done.map_err(|e| e.to_string()))
+                    .boxed()
+                    .shared();
+                    *pending = Some((started.clone(), done));
                     started
                 }
             }
@@ -257,9 +276,8 @@ impl Player {
             locked: self.is_locked(),
             auto_play,
             ending,
-            hardware_reload_pending: self
-                .hardware_reload_pending
-                .load(std::sync::atomic::Ordering::Relaxed),
+            hardware_reload_pending: self.hardware_reload_pending(),
+            hardware_reload_error: self.hardware_reload_error(),
             ambient: None,
             lighting: None,
         }
@@ -308,9 +326,46 @@ mod tests {
             reads.read(|| (), Duration::from_millis(500)).await,
             DmxRead::Read(())
         );
+    }
+
+    /// A read every waiter gave up on, finished since, is not handed to a
+    /// later request as its answer: that one reads afresh.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_read_finished_after_its_waiters_left_is_not_answered_later() {
+        let reads = InflightRead::<u32>::default();
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = released.clone();
+        let read = reads
+            .read(
+                move || {
+                    while !gate.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    1
+                },
+                Duration::from_millis(5),
+            )
+            .await;
+        assert!(matches!(read, DmxRead::TimedOut));
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The read finishes with nobody waiting on it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !reads
+            .pending
+            .lock()
+            .as_ref()
+            .is_some_and(|(_, done)| done.load(std::sync::atomic::Ordering::Acquire))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never finished"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(
-            reads.read(|| (), Duration::from_millis(500)).await,
-            DmxRead::Read(())
+            reads.read(|| 2, Duration::from_millis(500)).await,
+            DmxRead::Read(2),
+            "answered with the stale read"
         );
     }
 

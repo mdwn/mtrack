@@ -308,6 +308,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             // A config save's hardware reload waiting for the player to be
             // idle, so the config page can say when it has run.
             "hardware_reload_pending": status.hardware_reload_pending,
+            // Why it failed, once it has, for the notice to say so.
+            "hardware_reload_failed": status.hardware_reload_error,
             "beat_grid": beat_grid,
             "available_sections": available_sections,
             "active_section": active_section,
