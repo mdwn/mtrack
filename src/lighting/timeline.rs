@@ -1017,6 +1017,15 @@ impl LightingTimeline {
         self.tempo_map.as_ref()
     }
 
+    /// The tempo the show's effects run on: its own tempo block's, else
+    /// `song`'s (song.yaml `tempo:`, or its beat grid).
+    pub fn tempo_map_or(
+        &self,
+        song: Option<&crate::lighting::tempo::TempoMap>,
+    ) -> Option<crate::lighting::tempo::TempoMap> {
+        self.tempo_map.as_ref().or(song).cloned()
+    }
+
     /// Sorts cues by time, stably: same-time cues keep the order they came
     /// in, their shows' file order and their place in each, and fire in it
     /// the same way at every build of the timeline (#597).
