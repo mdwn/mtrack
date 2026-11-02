@@ -25,7 +25,6 @@
     timestampToMs,
     msToPixel,
     computeAdjustedCuePositions,
-    offsetMeasuresToMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import TimelineToolbar from "./TimelineToolbar.svelte";
@@ -234,15 +233,9 @@
       const show = lightFile.shows[si];
       const adjusted = computeAdjustedCuePositions(show.cues, lightFile.tempo);
       for (const ap of adjusted) {
-        const rawMs = timestampToMs(ap.cue.timestamp, lightFile.tempo);
+        const rawMs = ap.rawMs;
         if (ap.cue.offset_measures !== undefined) {
-          const durationMs = lightFile.tempo
-            ? offsetMeasuresToMs(
-                ap.cue.offset_measures,
-                ap.adjustedMs,
-                lightFile.tempo,
-              )
-            : 0;
+          const durationMs = ap.offsetMs;
           markers.push({
             ms: ap.adjustedMs,
             rawMs,
@@ -276,13 +269,7 @@
       for (const ap of adjusted) {
         let end = ap.adjustedMs;
         // Include the offset duration after the last cue
-        if (ap.cue.offset_measures && ap.cue.offset_measures > 0 && lf.tempo) {
-          end += offsetMeasuresToMs(
-            ap.cue.offset_measures,
-            ap.adjustedMs,
-            lf.tempo,
-          );
-        }
+        end += ap.offsetMs;
         max = Math.max(max, end);
       }
     }

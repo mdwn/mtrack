@@ -163,7 +163,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change as a snap, so after a ramp its grid, its `@bar/beat` positions and its snapping disagreed
   with the player. It now sizes and follows each ramp as the server does. It also counts beats in
   quarter notes, as the `tempo` block does, so a bar of 6/8 holds three. It places bars after a
-  time signature change in the new signature, and a change mid-bar from the next bar.
+  time signature change in the new signature, and a change mid-bar from the next bar. A
+  signature change written past its bar's end governs from the bar it falls in, as the server
+  has it. The tempo lane marks a signature change from the barline it governs from, and labels
+  a stretch inside a ramp with the tempo there.
+
+- **The lighting timeline places offsets as the player does**: an `offset` lasts its bars at
+  the tempo where its cue sits, before any earlier offset. The timeline used the cue's shifted
+  position, so an offset issued before a tempo change could take the later tempo. A
+  `reset_measures` now drops the offset for the cues after it, and effect durations are timed
+  from the cue's own place in the tempo map, as the server times them.
 
 - **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
   had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.

@@ -16,8 +16,8 @@
   import { t } from "svelte-i18n";
   import type { TempoSection } from "../../../lib/lighting/types";
   import {
-    buildTempoSegments,
     msToPixel,
+    tempoLaneSpans,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import { effectiveTheme } from "../../../lib/theme";
@@ -76,26 +76,26 @@
       ? "rgba(94, 202, 234, 0.3)"
       : "rgba(31, 143, 175, 0.4)"; // cyan-600
 
-    const segments = buildTempoSegments(tempo);
+    const spans = tempoLaneSpans(tempo);
     const colors = ["rgba(94, 202, 234, 0.12)", "rgba(139, 92, 246, 0.12)"];
 
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
+    for (let i = 0; i < spans.length; i++) {
+      const span = spans[i];
       const rawNextMs =
-        i < segments.length - 1 ? segments[i + 1].startMs : totalDurationMs;
-      const adjustedStart = seg.startMs + cumulativeOffsetAt(seg.startMs);
+        i < spans.length - 1 ? spans[i + 1].startMs : totalDurationMs;
+      const adjustedStart = span.startMs + cumulativeOffsetAt(span.startMs);
       const adjustedEnd = rawNextMs + cumulativeOffsetAt(rawNextMs);
       const x1 = msToPixel(adjustedStart, pixelsPerMs) - scrollLeft;
       const x2 = msToPixel(adjustedEnd, pixelsPerMs) - scrollLeft;
 
-      // Skip segments entirely outside viewport
+      // Skip spans entirely outside viewport
       if (x2 < 0 || x1 > w) continue;
 
-      // Draw segment block
+      // Draw span block
       ctx.fillStyle = colors[i % 2];
       ctx.fillRect(Math.max(0, x1), 0, Math.min(x2, w) - Math.max(0, x1), h);
 
-      // Segment border
+      // Span border
       if (x1 >= 0 && x1 <= w) {
         ctx.strokeStyle = borderColor;
         ctx.lineWidth = 1;
@@ -108,24 +108,13 @@
       // Label
       const labelX = Math.max(x1 + 6, 4);
       if (labelX < x2 - 20 && labelX < w) {
-        const ts = seg.beatsPerMeasure + "/" + seg.beatValue;
-        // A segment starting a ramp shows where it goes from and to.
-        const bpm =
-          seg.ramp && seg.ramp.elapsedMs === 0
-            ? `${round(seg.ramp.fromBpm)} → ${seg.bpm}`
-            : `${seg.bpm}`;
-        const label = `${bpm} BPM, ${ts}`;
         ctx.fillStyle = labelColor;
         ctx.font = "12px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(label, labelX, h / 2);
+        ctx.fillText(span.label, labelX, h / 2);
       }
     }
-  }
-
-  function round(bpm: number): number {
-    return Math.round(bpm * 100) / 100;
   }
 
   $effect(() => {

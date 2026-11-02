@@ -19,18 +19,27 @@
 import { test, expect } from "@playwright/test";
 import {
   beatsToMs,
+  computeAdjustedCuePositions,
+  expandSequencesIntoCues,
+  offsetToMs,
+  tempoLaneSpans,
   getGridLines,
   getTempoAtMs,
   msToDurationString,
   msToTimestamp,
-  offsetMeasuresToMs,
+  measuresToMs,
   rampDurationMs,
   snapToNearestGrid,
   timestampToMs,
 } from "../../src/lib/lighting/timeline-state";
-import type { TempoChange, TempoSection } from "../../src/lib/lighting/types";
+import type {
+  Cue,
+  TempoChange,
+  TempoSection,
+} from "../../src/lib/lighting/types";
 import {
   absoluteTimestamp,
+  emptyCue,
   measureBeatTimestamp,
 } from "../../src/lib/lighting/types";
 
@@ -122,7 +131,7 @@ test("a ramp over N measures ends on the barline N bars on", () => {
     close(bar(t, 3), bar3, `${sig} bar 3`);
     close(bar(t, 5), bar5, `${sig} bar 5`);
     close(bar(t, 6), bar5 + (quarters * 60000) / 180, `${sig} bar 6`);
-    close(offsetMeasuresToMs(2, bar3, t), bar5 - bar3, `${sig} 2 measures`);
+    close(measuresToMs(2, bar3, t), bar5 - bar3, `${sig} 2 measures`);
     expect(msToDurationString(bar5 - bar3, t, bar3)).toBe("2measures");
   }
 });
@@ -213,4 +222,143 @@ test("snapping lands on the grid through a ramp", () => {
     close(snapToNearestGrid(ms + 20, t, "beat"), ms, `beat ${beat}`);
   }
   close(snapToNearestGrid(bar(t, 5) - 30, t, "measure"), bar(t, 5));
+});
+
+const cueAt = (
+  measure: number,
+  beat: number,
+  extra: Partial<Cue> = {},
+): Cue => ({
+  ...emptyCue(measureBeatTimestamp(measure, beat)),
+  ...extra,
+});
+
+test("an offset lasts its bars at the one tempo where it is issued", () => {
+  // As the player sizes it: the change at bar 3 inside the offset's two
+  // bars does not stretch them.
+  const t = tempo(120, [4, 4], [at(3, 1, { bpm: 60 })]);
+  close(offsetToMs(2, 2000, t), 4000);
+  const cues = [cueAt(2, 1, { offset_measures: 2 }), cueAt(4, 1)];
+  const [first, second] = computeAdjustedCuePositions(cues, t);
+  close(first.offsetMs, 4000);
+  close(second.rawMs, 8000);
+  close(second.adjustedMs, 12000);
+});
+
+test("an offset is sized where its cue sits before any offset", () => {
+  // The second offset is issued at bar 4 beat 3 (7s), at 120: shifted by
+  // the first offset it would be at 11s, past the change to 60 at bar 5.
+  const t = tempo(120, [4, 4], [at(5, 1, { bpm: 60 })]);
+  const cues = [
+    cueAt(4, 1, { offset_measures: 2 }),
+    cueAt(4, 3, { offset_measures: 1 }),
+    cueAt(6, 1),
+  ];
+  const positions = computeAdjustedCuePositions(cues, t);
+  close(positions[0].offsetMs, 4000);
+  close(positions[1].offsetMs, 2000);
+  close(positions[2].adjustedMs, 12000 + 6000);
+});
+
+test("a reset drops the offset for the cues after it", () => {
+  const t = tempo(120, [4, 4], []);
+  const cues = [
+    cueAt(1, 2, { offset_measures: 1 }),
+    cueAt(2, 1, { reset_measures: true }),
+    cueAt(3, 1),
+  ];
+  const positions = computeAdjustedCuePositions(cues, t);
+  close(positions[1].adjustedMs, 2000 + 2000);
+  close(positions[2].adjustedMs, 4000);
+});
+
+test("a signature change written past its bar's end governs from the next bar", () => {
+  // Written @4/6 in 4/4: the server governs from bar 5, the bar the
+  // position falls in, not the one after it.
+  const t = tempo(120, [4, 4], [at(4, 6, { time_signature: [3, 4] })]);
+  close(bar(t, 5), 8000);
+  close(bar(t, 6), 9500);
+});
+
+test("a ramp in measures counts a signature set beside it by time or by bar", () => {
+  const barredRamp = at(5, 1, { bpm: 100, transition: "2m" });
+  const timedMetre: TempoChange = {
+    timestamp: absoluteTimestamp(8000),
+    time_signature: [3, 4],
+  };
+  const timedRamp: TempoChange = {
+    timestamp: absoluteTimestamp(8000),
+    bpm: 100,
+    transition: "2m",
+  };
+  const barredMetre = at(5, 1, { time_signature: [3, 4] });
+  for (const changes of [
+    [barredRamp, timedMetre],
+    [timedMetre, barredRamp],
+    [timedRamp, barredMetre],
+    [barredMetre, timedRamp],
+  ]) {
+    const t = tempo(120, [4, 4], changes);
+    close(bar(t, 7), 8000 + 36000 / 11, JSON.stringify(changes));
+  }
+});
+
+test("the tempo lane labels each stretch as it is", () => {
+  const t = tempo(
+    120,
+    [4, 4],
+    [
+      at(3, 1, { bpm: 180, transition: "8" }),
+      at(4, 1, { time_signature: [3, 4] }),
+      at(6, 3, { time_signature: [2, 4] }),
+    ],
+  );
+  const bar4 = bar(t, 4);
+  const mid = Math.round(getTempoAtMs(bar4, t) * 100) / 100;
+  const spans = tempoLaneSpans(t);
+  expect(spans.map((s) => s.label)).toEqual([
+    "120 BPM, 4/4",
+    "120 → 180 BPM, 4/4",
+    `${mid} → 180 BPM, 3/4`,
+    "180 BPM, 3/4",
+    "180 BPM, 2/4",
+  ]);
+  close(spans[1].startMs, 4000);
+  close(spans[2].startMs, bar4);
+  close(spans[3].startMs, 7200);
+  // The mid-bar change shows from the next barline.
+  close(spans[4].startMs, bar(t, 7));
+});
+
+test("an edit to the tempo in place is seen at once", () => {
+  const t = tempo(120, [4, 4], [at(3, 1, { bpm: 60 })]);
+  close(bar(t, 4), 8000);
+  t.changes[0].bpm = 120;
+  close(bar(t, 4), 6000);
+  t.changes.push(at(4, 1, { bpm: 60 }));
+  close(bar(t, 5), 6000 + 4000);
+});
+
+test("a long show with many tempo changes lays out quickly", () => {
+  const changes: TempoChange[] = [];
+  for (let m = 2; m <= 301; m++) {
+    changes.push(
+      at(m, 1, {
+        bpm: 100 + (m % 7) * 10,
+        transition: m % 3 === 0 ? "1m" : m % 3 === 1 ? "2" : undefined,
+        time_signature: m % 50 === 0 ? [3, 4] : undefined,
+      }),
+    );
+  }
+  const t = tempo(120, [4, 4], changes);
+  const cues: Cue[] = [];
+  for (let m = 1; m <= 500; m++) {
+    cues.push(cueAt(m, 1, m % 25 === 0 ? { offset_measures: 1 } : {}));
+  }
+  const started = performance.now();
+  computeAdjustedCuePositions(cues, t);
+  expandSequencesIntoCues(cues, [], t);
+  getGridLines(t, 0, 600000);
+  // Was ~13s; a generous bound well clear of a slow machine.
+  expect(performance.now() - started).toBeLessThan(3000);
 });
