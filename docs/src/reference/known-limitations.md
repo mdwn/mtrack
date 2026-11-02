@@ -58,8 +58,9 @@ off than that (one resampling, say) leaves the beat clock drifting from the audi
 the notes, which follow the audio at its own rate, do not drift.
 
 The notes share the beat clock's zero, measured against the audio over a song's first half
-second; until then they go on the computer's clock, which on a device far off it (10%, say)
-puts them that far off the audio for that half second. On a sound card, whose callbacks come
+second; until then they go on the computer's clock alone, which on a device far off it (10%,
+say) puts them that far off the audio for that half second, and an xrun in it does not hold
+them. On a sound card, whose callbacks come
 within a millisecond or so of their time, the notes keep within a few milliseconds of the beat
 clock's grid. An xrun or a stall can put them up to one audio period ahead of the audio (what
 was due before the audio stopped); they then hold until it catches up. On a device whose
