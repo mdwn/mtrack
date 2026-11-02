@@ -335,11 +335,12 @@ impl Engine {
         // as a seek does, rather than firing them all in its first frame.
         // Groups are resolved and the history replayed here, with no lock
         // held but the engine's for a moment, to take its rig and pose
-        // memory, as the fresh engine below does.
+        // memory; the install into the fresh engine below takes the pose
+        // memory as of the swap.
         let prepared = next.as_mut().map(|timeline| {
             let mut history = timeline.start_at(start);
             history.map_effects(|effect| self.resolve_effect_groups(effect));
-            let scratch = self.effect_engine.lock().sibling();
+            let scratch = self.effect_engine.lock().scratch(StopScope::Nothing);
             scratch.prepare(history)
         });
         // Song time first: a frame rendered between the swap and the reset
@@ -355,7 +356,7 @@ impl Engine {
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
         if let Some(prepared) = prepared {
-            for e in effect_engine.install(prepared, StopScope::Nothing) {
+            for e in effect_engine.install(prepared) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
@@ -663,7 +664,7 @@ impl Engine {
         let scratch = self.effect_engine.lock().scratch(StopScope::All);
         let prepared = scratch.prepare(history);
         let mut effect_engine = self.effect_engine.lock();
-        for e in effect_engine.install(prepared, StopScope::All) {
+        for e in effect_engine.install(prepared) {
             error!("Failed to start lighting effect: {}", e);
         }
         match midi {

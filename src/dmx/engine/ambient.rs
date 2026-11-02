@@ -264,7 +264,7 @@ impl Overlay {
                 Restart::Ready(prepared) => *prepared,
             });
             if let Some(prepared) = restart {
-                for e in self.engine.install(prepared, StopScope::Show) {
+                for e in self.engine.install(prepared) {
                     error!("Failed to start ambient effect: {}", e);
                 }
             }

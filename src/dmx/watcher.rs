@@ -294,7 +294,7 @@ pub(super) fn reload_timeline(
         engine.set_tempo_map(tempo_map);
         // The show's effects only: the MIDI DMX store goes on as MIDI set
         // it, which nothing would put back mid-song (#583).
-        for e in engine.install(prepared, crate::lighting::engine::StopScope::Show) {
+        for e in engine.install(prepared) {
             error!("Failed to start lighting effect: {}", e);
         }
         info!("Watcher releasing effect_engine lock.");
