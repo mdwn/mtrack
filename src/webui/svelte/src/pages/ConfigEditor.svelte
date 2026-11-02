@@ -103,6 +103,7 @@
     const reloads = {
       started: $playbackStore.hardware_reload_started,
       refused: $playbackStore.hardware_reload_refused,
+      process: $playbackStore.process_id,
     };
     saveNotice = settleNotice(saveNotice, reloads);
     samplesNotice = settleNotice(samplesNotice, reloads);

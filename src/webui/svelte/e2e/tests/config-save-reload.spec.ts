@@ -249,13 +249,15 @@ async function sendReloads(
   page: Page,
   wsId: string,
   started: number,
-  refused: { generation: number; error: string } | null = null,
+  refused: { generation: number; error: string }[] = [],
+  processId = "process-a",
 ) {
   await page.request.post("http://127.0.0.1:3111/test/send-ws", {
     data: {
       ...PLAYBACK_STATE,
       hardware_reload_started: started,
       hardware_reload_refused: refused,
+      process_id: processId,
       _wsId: wsId,
     },
   });
@@ -283,6 +285,7 @@ async function openDeferredSave(
           applied: false,
           reload: "deferred",
           awaits_reload: awaits,
+          awaits_process: "process-a",
           ...extra,
         }),
       });
@@ -329,10 +332,9 @@ test.describe("Config save deferred under playback", () => {
   // A reload that could not start at all is known at once, and said.
   test("a deferred reload that could not start says why", async ({ page }) => {
     const wsId = await openDeferredSave(page, 1);
-    await sendReloads(page, wsId, 1, {
-      generation: 1,
-      error: "No config store available",
-    });
+    await sendReloads(page, wsId, 1, [
+      { generation: 1, error: "No config store available" },
+    ]);
     const failed = page.locator(".save-msg.save-error");
     await expect(failed).toContainText("could not start");
     await expect(failed).toContainText("No config store available");
@@ -347,10 +349,9 @@ test.describe("Config save deferred under playback", () => {
     const notice = page.locator(".save-msg.save-notice");
     await expect(notice).toContainText("reloads when playback stops");
     await expect(notice).toContainText("songs could not be reloaded");
-    await sendReloads(page, wsId, 1, {
-      generation: 1,
-      error: "No config store available",
-    });
+    await sendReloads(page, wsId, 1, [
+      { generation: 1, error: "No config store available" },
+    ]);
     await expect(notice).toHaveCount(0);
     const failed = page.locator(".save-msg.save-error");
     await expect(failed).toContainText("could not start");
@@ -385,5 +386,30 @@ test.describe("Config save deferred under playback", () => {
     await expect(page.locator(".save-msg.save-error")).toContainText(
       "songs could not be reloaded",
     );
+  });
+
+  // mtrack restarted under the page: its count starts over, so the notice
+  // is told by the process id that it was issued under another process,
+  // which the restarted one replaced, loading the saved config.
+  test("a restart clears the deferred notice", async ({ page }) => {
+    const wsId = await openDeferredSave(page, 3);
+    const notice = page.locator(".save-msg.save-notice");
+    await expect(notice).toBeVisible();
+    await sendReloads(page, wsId, 0, [], "process-a");
+    await page.waitForTimeout(300);
+    await expect(notice).toBeVisible();
+    await sendReloads(page, wsId, 0, [], "process-b");
+    await expect(notice).toHaveCount(0);
+    await expect(page.locator(".save-msg.save-error")).toHaveCount(0);
+  });
+
+  // A refusal of a later reload is not blamed on this save.
+  test("a later reload's refusal is not this save's", async ({ page }) => {
+    const wsId = await openDeferredSave(page, 1);
+    await sendReloads(page, wsId, 2, [
+      { generation: 2, error: "No config store available" },
+    ]);
+    await expect(page.locator(".save-msg.save-notice")).toHaveCount(0);
+    await expect(page.locator(".save-msg.save-error")).toHaveCount(0);
   });
 });

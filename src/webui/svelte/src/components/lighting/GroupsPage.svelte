@@ -63,6 +63,7 @@
     settleNotice(savedNotice, {
       started: $playbackStore.hardware_reload_started,
       refused: $playbackStore.hardware_reload_refused,
+      process: $playbackStore.process_id,
     }),
   );
   let selectEl: HTMLSelectElement | undefined = $state();

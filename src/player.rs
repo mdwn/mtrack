@@ -17,7 +17,7 @@ mod playback;
 mod seek;
 mod status;
 
-pub use hardware::{ConfigApply, ConfigChange, DeferredReloads, HardwareReload};
+pub use hardware::{process_id, ConfigApply, ConfigChange, DeferredReloads, HardwareReload};
 pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;
@@ -4001,7 +4001,7 @@ mod test {
             || player.deferred_reloads().started >= 1,
             "the deferred reload never started",
         );
-        assert_eq!(player.deferred_reloads().refused, None);
+        assert!(player.deferred_reloads().refused.is_empty());
         player.await_hardware_ready().await;
 
         // Deferred again, with nothing to reload from by the time it runs.
@@ -4013,10 +4013,17 @@ mod test {
             || player.deferred_reloads().started >= 2,
             "the refused reload was not counted",
         );
-        let (generation, why) = player.deferred_reloads().refused.expect("refused");
+        let (generation, why) = player
+            .deferred_reloads()
+            .refused
+            .back()
+            .cloned()
+            .expect("refused");
         assert_eq!(generation, 2);
         assert!(why.contains("config store"), "{why}");
         assert!(!player.hardware_reload_pending());
+        // The generations are this process's, named by an id that holds.
+        assert_eq!(process_id(), process_id());
         Ok(())
     }
 

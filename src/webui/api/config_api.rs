@@ -271,6 +271,10 @@ fn config_apply_fields(
     // to clear its notice once the playback updates' started reaches it.
     if let Some(awaits) = outcome.awaits {
         fields.insert("awaits_reload".into(), json!(awaits));
+        fields.insert(
+            "awaits_process".into(),
+            json!(crate::player::process_id().to_string()),
+        );
     }
     fields
 }
@@ -1455,6 +1459,10 @@ mod test {
         // The deferred reload generation the save waits for, for the web
         // UI to clear its notice by.
         assert_eq!(body["awaits_reload"], serde_json::json!(1), "{body}");
+        assert_eq!(
+            body["awaits_process"],
+            serde_json::json!(crate::player::process_id().to_string())
+        );
         assert!(state.player.is_paused(), "the pause was kept");
         assert!(
             state.player.audio_device().is_some(),

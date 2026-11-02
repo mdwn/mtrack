@@ -163,12 +163,34 @@ impl From<ConfigApply> for ConfigChange {
 /// `started` reaches it, whatever it saw in between. What the reload's round
 /// then makes of each device is the hardware status's to say, per
 /// subsystem, not this.
+///
+/// The count starts over with the process: a surface holding a generation
+/// from before a restart tells by [`process_id`] that the wait is over (the
+/// restarted process loaded the saved config).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeferredReloads {
     /// The last generation started or refused.
     pub started: u64,
-    /// The last refused, with its generation and why.
-    pub refused: Option<(u64, String)>,
+    /// The recent refusals, oldest first, each with its generation and why:
+    /// a save is told of its own, not of one that came after it.
+    pub refused: std::collections::VecDeque<(u64, String)>,
+}
+
+/// How many refusals [`DeferredReloads`] keeps.
+const REFUSALS_KEPT: usize = 8;
+
+/// This process's id, the same for its whole life and another for the next:
+/// a deferred reload generation is this process's, and one from another
+/// process names nothing still to wait for.
+pub fn process_id() -> u64 {
+    static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or_default();
+        nanos ^ (u64::from(std::process::id()) << 32)
+    })
 }
 
 impl ConfigChange {
@@ -1006,15 +1028,24 @@ impl Player {
             if let Err(e) = player.reload_hardware().await.map_err(|e| e.to_string()) {
                 warn!("Deferred hardware reload failed: {}", e);
                 // Nothing will make it run now: the generation is over,
-                // refused, and the status says why.
+                // refused, and the status says why. Under the reload and join
+                // locks a deferral and a start are made under, so a deferral
+                // in between is not wiped, and one already covered is not
+                // counted twice.
+                let _reload = player.reload_lock.clone().lock_owned().await;
+                let _join = player.join.lock().await;
+                if player
+                    .hardware_reload_pending
+                    .swap(false, Ordering::Relaxed)
                 {
                     let mut reloads = player.deferred_reloads.lock();
                     reloads.started += 1;
-                    reloads.refused = Some((reloads.started, e));
+                    let generation = reloads.started;
+                    reloads.refused.push_back((generation, e));
+                    while reloads.refused.len() > REFUSALS_KEPT {
+                        reloads.refused.pop_front();
+                    }
                 }
-                player
-                    .hardware_reload_pending
-                    .store(false, Ordering::Relaxed);
             }
         });
     }

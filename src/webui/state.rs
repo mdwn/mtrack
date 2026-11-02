@@ -310,9 +310,16 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             // reply named. What each device then does is the hardware
             // status's to say.
             "hardware_reload_started": status.deferred_reloads.started,
-            "hardware_reload_refused": status.deferred_reloads.refused.as_ref().map(
-                |(generation, error)| json!({"generation": generation, "error": error})
-            ),
+            "hardware_reload_refused": status
+                .deferred_reloads
+                .refused
+                .iter()
+                .map(|(generation, error)| json!({"generation": generation, "error": error}))
+                .collect::<Vec<_>>(),
+            // Which process the generations are this one's: a restart counts
+            // from none again. A string, as it is more than a JSON number
+            // holds exactly.
+            "process_id": crate::player::process_id().to_string(),
             "beat_grid": beat_grid,
             "available_sections": available_sections,
             "active_section": active_section,

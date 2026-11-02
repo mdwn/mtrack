@@ -157,7 +157,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page's next update. The notice covers the wait for playback to stop and nothing after it: how
   each device then comes up, a failure arriving late included, is shown per subsystem on the
   status page, as for any reload. A reload that cannot start at all is known at once
-  (`hardware_reload_refused`) and turns the notice into its reason. A failed hardware or song
+  (`hardware_reload_refused`, the recent ones by generation) and turns that save's notice into its
+  reason. The generations are the process's (`process_id`, `awaits_process`): after a restart,
+  which loads the saved config, the notice goes. A failed hardware or song
   reload is said, both when there are both. A
   reload that fails after the save is answered the same way on all three, with the new checksum
   and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,

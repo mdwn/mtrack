@@ -29,6 +29,9 @@ export interface ConfigReload {
   /** For a deferred reload, the deferred reload generation it waits for:
    *  its wait is over once the playback updates' started reaches it. */
   awaits_reload?: number;
+  /** The process whose generation that is: a restarted mtrack counts its
+   *  reloads from none, and has loaded the saved config. */
+  awaits_process?: string;
 }
 
 /** A save's notice beside "Saved": the reload waiting for playback to stop,
@@ -41,6 +44,8 @@ export interface ReloadNotice {
   songsError?: string;
   /** For a deferred notice, the deferred reload generation it waits for. */
   awaits?: number;
+  /** The process that generation is counted by. */
+  process?: string;
 }
 
 /** The notice a save's reply calls for, or null when its change is in
@@ -65,6 +70,7 @@ export function reloadNotice(
       })} ${songsError}`,
       songsError,
       awaits: reply.awaits_reload,
+      process: reply.awaits_process,
     };
   }
   if (reply.reload === "failed" || reply.songs_error) {
@@ -83,6 +89,7 @@ export function reloadNotice(
       default: "Saved. The hardware reloads when playback stops.",
     }),
     awaits: reply.awaits_reload,
+    process: reply.awaits_process,
   };
 }
 
@@ -90,7 +97,10 @@ export function reloadNotice(
  *  last generation started (or refused), and the last refused, with why. */
 export interface DeferredReloads {
   started: number;
-  refused: { generation: number; error: string } | null;
+  /** The recent refusals, each with its generation. */
+  refused: { generation: number; error: string }[];
+  /** The process the playback updates come from. */
+  process?: string;
 }
 
 /** What a deferred notice becomes, given the deferred reloads: the same
@@ -105,13 +115,23 @@ export function settleNotice(
   reloads: DeferredReloads,
 ): ReloadNotice | null {
   if (notice?.kind !== "deferred" || notice.awaits === undefined) return notice;
-  if (reloads.started < notice.awaits) return notice;
+  // Another process: mtrack restarted, and loaded the saved config as it
+  // started. Its count is its own.
+  const restarted =
+    reloads.process !== undefined &&
+    notice.process !== undefined &&
+    reloads.process !== notice.process;
+  if (!restarted && reloads.started < notice.awaits) return notice;
   const failures: string[] = [];
-  if (reloads.refused && reloads.refused.generation >= notice.awaits) {
+  // Only this save's own reload's refusal, not a later one's.
+  const refused = restarted
+    ? undefined
+    : reloads.refused.find((r) => r.generation === notice.awaits);
+  if (refused) {
     failures.push(
       get(t)("config.reloadRefused", {
-        values: { reason: reloads.refused.error },
-        default: `The hardware reload could not start: ${reloads.refused.error}`,
+        values: { reason: refused.error },
+        default: `The hardware reload could not start: ${refused.error}`,
       }),
     );
   }
