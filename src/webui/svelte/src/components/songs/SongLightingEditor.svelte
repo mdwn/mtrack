@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import TempoMapGate from "../TempoMapGate.svelte";
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     fetchLightingFile,
@@ -633,23 +634,25 @@
           {venueGroupsError}
         </div>
       {/if}
-      <TimelineEditor
-        lightFile={mergedLightFile}
-        groups={venueGroups}
-        {sequenceNames}
-        songDurationMs={song.duration_ms}
-        {waveformTracks}
-        songName={song.name}
-        hasBeatGrid={!!song.beat_grid}
-        hasMidi={song.has_midi}
-        songTempo={songTempo ? configToSection(songTempo) : null}
-        {initialCursorMs}
-        {isPlaying}
-        {playheadMs}
-        onchange={onTimelineChange}
-        onplay={playFromMs}
-        onstop={stopPlayback}
-      />
+      <TempoMapGate>
+        <TimelineEditor
+          lightFile={mergedLightFile}
+          groups={venueGroups}
+          {sequenceNames}
+          songDurationMs={song.duration_ms}
+          {waveformTracks}
+          songName={song.name}
+          hasBeatGrid={!!song.beat_grid}
+          hasMidi={song.has_midi}
+          songTempo={songTempo ? configToSection(songTempo) : null}
+          {initialCursorMs}
+          {isPlaying}
+          {playheadMs}
+          onchange={onTimelineChange}
+          onplay={playFromMs}
+          onstop={stopPlayback}
+        />
+      </TempoMapGate>
     {/if}
   {:else if tab === "raw"}
     <div class="raw-editor">

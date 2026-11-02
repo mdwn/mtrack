@@ -16,12 +16,16 @@
 // the player's, through its tempo map.
 
 import { test, expect } from "@playwright/test";
+import { loadTempoMap } from "../../src/lib/tempo-wasm";
 import type { TempoConfig } from "../../src/lib/api/songs";
 import {
   beatsInMeasure,
   parseTimeSignature,
   sigAtMeasure,
 } from "../../src/lib/util/tempo";
+
+// The tempo map runs as WebAssembly, loaded once before any of these.
+test.beforeAll(loadTempoMap);
 
 test("a signature change mid-bar governs from the next downbeat (#628)", () => {
   const tempo: TempoConfig = {

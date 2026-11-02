@@ -17,11 +17,12 @@
 // ramps and offsets fall, computed by the very code the player runs. Times
 // here are in seconds, as the player has them.
 //
-// The module is generated into src/gen by `make gen-wasm` (or `node
-// scripts/build-tempo-wasm.mjs`), and instantiated once, when this module is
-// first imported.
-
-import { TEMPO_WASM } from "../gen/tempo-wasm";
+// The module is generated into src/gen by `make gen-wasm` (or `npm run
+// gen:wasm`). It is loaded on demand, by `loadTempoMap()`, only by the views
+// that need it (the lighting timeline and the song's section editor), so a
+// browser without WebAssembly still has the dashboard and the playback
+// controls; those views say why they cannot open. Everything here throws
+// until it has loaded.
 
 interface TempoExports {
   memory: WebAssembly.Memory;
@@ -69,14 +70,44 @@ interface TempoExports {
   clock_reached(clock: number, at: number): void;
 }
 
-const bytes = Uint8Array.from(atob(TEMPO_WASM), (c) => c.charCodeAt(0));
-const { instance } = await WebAssembly.instantiate(bytes);
-const wasm = instance.exports as unknown as TempoExports;
+let loaded: TempoExports | undefined;
+let loading: Promise<void> | undefined;
+
+/** Loads the module, once: resolves when it is ready, rejects (and may be
+ *  asked again) when it cannot be. */
+export function loadTempoMap(): Promise<void> {
+  loading ??= (async () => {
+    if (typeof WebAssembly === "undefined") {
+      throw new Error("this browser does not run WebAssembly");
+    }
+    // Its own chunk: the base64 module is downloaded only when needed.
+    const { TEMPO_WASM } = await import("../gen/tempo-wasm");
+    const bytes = Uint8Array.from(atob(TEMPO_WASM), (c) => c.charCodeAt(0));
+    const { instance } = await WebAssembly.instantiate(bytes);
+    loaded = instance.exports as unknown as TempoExports;
+  })().catch((e: unknown) => {
+    loading = undefined;
+    throw e instanceof Error ? e : new Error(String(e));
+  });
+  return loading;
+}
+
+/** Whether the module has loaded. */
+export function tempoMapLoaded(): boolean {
+  return loaded !== undefined;
+}
+
+function api(): TempoExports {
+  if (!loaded) {
+    throw new Error("the tempo map is not loaded: await loadTempoMap() first");
+  }
+  return loaded;
+}
 
 /** The first `count` numbers the last list-returning call left. */
 function output(count: number): number[] {
   return Array.from(
-    new Float64Array(wasm.memory.buffer, wasm.output_buffer(), count),
+    new Float64Array(api().memory.buffer, api().output_buffer(), count),
   );
 }
 
@@ -107,7 +138,7 @@ export interface TempoMapInput {
 
 const CHANGE_LEN = 8;
 
-const maps = new FinalizationRegistry<number>((map) => wasm.tm_free(map));
+const maps = new FinalizationRegistry<number>((map) => loaded?.tm_free(map));
 
 /** A tempo map, resolved as the player resolves one (`TempoMap::new`). */
 export class TempoMap {
@@ -135,78 +166,78 @@ export class TempoMap {
       );
     }
     console.assert(values.length === 5 + input.changes.length * CHANGE_LEN);
-    const ptr = wasm.input_buffer(values.length);
-    new Float64Array(wasm.memory.buffer, ptr, values.length).set(values);
-    this.handle = wasm.tm_new(values.length);
+    const ptr = api().input_buffer(values.length);
+    new Float64Array(api().memory.buffer, ptr, values.length).set(values);
+    this.handle = api().tm_new(values.length);
     maps.register(this, this.handle);
   }
 
   /** When bar 1 starts. */
   get startSecs(): number {
-    return wasm.tm_start(this.handle);
+    return api().tm_start(this.handle);
   }
 
   /** The time of a quarter-note beat position (0 at bar 1 beat 1), under
    *  an offset; before bar 1, at the starting tempo. */
   timeAtBeats(beats: number, offsetSecs = 0): number {
-    return wasm.tm_time_at_beats(this.handle, beats, offsetSecs);
+    return api().tm_time_at_beats(this.handle, beats, offsetSecs);
   }
 
   /** The quarter-note beat position of a time, under an offset. */
   beatsAt(secs: number, offsetSecs = 0): number {
-    return wasm.tm_beats_at(this.handle, secs, offsetSecs);
+    return api().tm_beats_at(this.handle, secs, offsetSecs);
   }
 
   /** The quarter-note beat position of a bar and (quarter-note) beat. */
   beatsAtPosition(measure: number, beat: number): number {
-    return wasm.tm_beats_at_position(this.handle, measure, beat);
+    return api().tm_beats_at_position(this.handle, measure, beat);
   }
 
   /** The bar and (quarter-note) beat of a beat position; bar 1 for one
    *  before it. */
   positionAtBeats(beats: number): { measure: number; beat: number } {
-    wasm.tm_position_at_beats(this.handle, beats);
+    api().tm_position_at_beats(this.handle, beats);
     const [measure, beat] = output(2);
     return { measure, beat };
   }
 
   /** Measures elapsed (0 at bar 1 beat 1) at a beat position. */
   measuresAtBeats(beats: number): number {
-    return wasm.tm_measures_at_beats(this.handle, beats);
+    return api().tm_measures_at_beats(this.handle, beats);
   }
 
   /** The beat position at a number of measures elapsed. */
   beatsAtMeasures(measures: number): number {
-    return wasm.tm_beats_at_measures(this.handle, measures);
+    return api().tm_beats_at_measures(this.handle, measures);
   }
 
   /** The time signature bar `measure` is in: a change written mid-bar
    *  governs from the next downbeat. */
   signatureInMeasure(measure: number): [number, number] {
-    wasm.tm_signature(this.handle, measure);
+    api().tm_signature(this.handle, measure);
     const [numerator, denominator] = output(2);
     return [numerator, denominator];
   }
 
   /** The tempo at a time (mid-ramp, the ramp's), under an offset. */
   bpmAt(secs: number, offsetSecs = 0): number {
-    return wasm.tm_bpm_at(this.handle, secs, offsetSecs);
+    return api().tm_bpm_at(this.handle, secs, offsetSecs);
   }
 
   /** The tempo the ramp in progress at a time heads for, if one is. */
   rampTargetAt(secs: number): number | undefined {
-    const target = wasm.tm_ramp_target(this.handle, secs);
+    const target = api().tm_ramp_target(this.handle, secs);
     return Number.isNaN(target) ? undefined : target;
   }
 
   /** How long `beats` beats from `atSecs` last, under an offset. */
   beatsToDuration(beats: number, atSecs: number, offsetSecs = 0): number {
-    return wasm.tm_beats_to_duration(this.handle, beats, atSecs, offsetSecs);
+    return api().tm_beats_to_duration(this.handle, beats, atSecs, offsetSecs);
   }
 
   /** How long `measures` measures from `atSecs` last, under an offset. */
   measuresToDuration(measures: number, atSecs: number, offsetSecs = 0): number {
-    return wasm.tm_measures_to_duration(
+    return api().tm_measures_to_duration(
       this.handle,
       measures,
       atSecs,
@@ -216,12 +247,12 @@ export class TempoMap {
 
   /** How long an `offset N measures` issued at `anchorSecs` lasts. */
   offsetDuration(measures: number, anchorSecs: number): number {
-    return wasm.tm_offset_duration(this.handle, measures, anchorSecs);
+    return api().tm_offset_duration(this.handle, measures, anchorSecs);
   }
 
   /** The times the tempo or the time signature in effect changes. */
   boundaries(): number[] {
-    return output(wasm.tm_boundaries(this.handle));
+    return output(api().tm_boundaries(this.handle));
   }
 }
 
@@ -232,7 +263,7 @@ export function rampDuration(
   newBpm: number,
   beats: number,
 ): number {
-  return wasm.ramp_duration(oldBpm, newBpm, beats);
+  return api().ramp_duration(oldBpm, newBpm, beats);
 }
 
 /** Where a cue plays, as `CueClock::place` resolves it. Seconds. */
@@ -250,13 +281,13 @@ export interface PlacedCue {
 }
 
 const clocks = new FinalizationRegistry<number>((clock) =>
-  wasm.clock_free(clock),
+  loaded?.clock_free(clock),
 );
 
 /** The running offset of a list of cues, placing each in turn, as the
  *  player places a show's cues (`CueClock`). */
 export class CueClock {
-  readonly handle = wasm.clock_new();
+  readonly handle = api().clock_new();
 
   constructor() {
     clocks.register(this, this.handle);
@@ -272,7 +303,7 @@ export class CueClock {
     offsets: boolean,
     reset: boolean,
   ): PlacedCue | undefined {
-    const placed = wasm.clock_place(
+    const placed = api().clock_place(
       this.handle,
       map?.handle ?? 0,
       "secs" in at ? 0 : 1,
@@ -295,6 +326,6 @@ export class CueClock {
 
   /** Records that the cue just placed reaches on to `secs`. */
   reached(secs: number): void {
-    wasm.clock_reached(this.handle, secs);
+    api().clock_reached(this.handle, secs);
   }
 }

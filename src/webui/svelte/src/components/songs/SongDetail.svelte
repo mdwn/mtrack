@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import TempoMapGate from "../TempoMapGate.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import YAML from "yaml";
@@ -1222,22 +1223,24 @@
         />
       {:else if activeTab === "sections"}
         {#if song}
-          <SectionTimelineEditor
-            {song}
-            {waveformTracks}
-            bind:sections
-            bind:dirty={sectionsDirty}
-            tempo={tempoConfig}
-            pilot={pilotConfig}
-            metronome={metronomeConfig}
-            {songName}
-            hasMidi={song.has_midi}
-            {songFiles}
-            {lightShowTempos}
-            ontempochange={onTempoChange}
-            onpilotchange={onPilotChange}
-            onmetronomechange={onMetronomeChange}
-          />
+          <TempoMapGate>
+            <SectionTimelineEditor
+              {song}
+              {waveformTracks}
+              bind:sections
+              bind:dirty={sectionsDirty}
+              tempo={tempoConfig}
+              pilot={pilotConfig}
+              metronome={metronomeConfig}
+              {songName}
+              hasMidi={song.has_midi}
+              {songFiles}
+              {lightShowTempos}
+              ontempochange={onTempoChange}
+              onpilotchange={onPilotChange}
+              onmetronomechange={onMetronomeChange}
+            />
+          </TempoMapGate>
           <div class="tempo-editor-wrap">
             <SongMetronomeEditor
               metronome={metronomeConfig}

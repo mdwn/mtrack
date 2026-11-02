@@ -17,6 +17,7 @@
 // spans exactly N beats, linear in time.
 
 import { test, expect } from "@playwright/test";
+import { loadTempoMap } from "../../src/lib/tempo-wasm";
 import {
   beatsToMs,
   computeAdjustedCuePositions,
@@ -49,6 +50,9 @@ import {
   emptyCue,
   measureBeatTimestamp,
 } from "../../src/lib/lighting/types";
+
+// The tempo map runs as WebAssembly, loaded once before any of these.
+test.beforeAll(loadTempoMap);
 
 function tempo(
   bpm: number,
