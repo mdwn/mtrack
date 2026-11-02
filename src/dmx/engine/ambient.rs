@@ -107,11 +107,28 @@ pub(super) struct AmbientState {
     ambient: Option<LoadedAmbient>,
     phase: Phase,
     mode: AmbientMode,
-    /// A song with lights of its own is playing (or paused) under ambient.
-    song_lit: bool,
-    /// Between songs, what ambient covers -- the last song's frame -- is
-    /// gone, so ambient fading out leaves the stage dark.
-    under_dark: bool,
+    stage: Stage,
+}
+
+/// What is under ambient light: what it covers, and what it leaves as it
+/// goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Stage {
+    /// Between songs, the last song's frame, as it was left.
+    #[default]
+    LastFrame,
+    /// Between songs, the last song's frame gone: ambient fading out leaves
+    /// the stage dark.
+    Dark,
+    /// A song with lights of its own, playing (or paused).
+    Song,
+}
+
+/// Ambient light's `fade_out`, or the default with none to play.
+fn fade_out(ambient: Option<&LoadedAmbient>) -> Duration {
+    ambient.map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+        a.settings.fade_out
+    })
 }
 
 /// What ambient light is doing, for status.
@@ -370,7 +387,9 @@ impl Engine {
     pub fn idle_ambient(&self, playlist: Option<&PlaylistAmbient>, hold: bool) {
         let loaded = self.load_ambient(playlist);
         let mut state = self.ambient.lock();
-        state.song_lit = false;
+        if state.stage == Stage::Song {
+            state.stage = Stage::LastFrame;
+        }
         let now = Instant::now();
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
@@ -379,19 +398,7 @@ impl Engine {
                 // out over it -- a graceful ending's, or a vamp's under the
                 // song stopped -- goes on at its own length (#571), since it
                 // crosses out over everything after it.
-                let fade = loaded
-                    .as_ref()
-                    .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                        a.settings.fade_out
-                    });
-                if state.under_dark {
-                    // Already dark under: what ambient at full left as it
-                    // was, if anything, goes now.
-                    self.fade_out_stale(fade);
-                } else {
-                    self.darken_under(fade, true);
-                    state.under_dark = true;
-                }
+                self.darken_stage(&mut state, fade_out(loaded.as_ref()));
                 state.phase = Phase::Off;
                 state.ambient = loaded;
             }
@@ -433,14 +440,7 @@ impl Engine {
     /// if that is sooner, rather than holding what they lit that nothing
     /// after them does (#572).
     pub fn cut_break_fade_lights(&self) {
-        let fade = self
-            .ambient
-            .lock()
-            .ambient
-            .as_ref()
-            .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                a.settings.fade_out
-            });
+        let fade = fade_out(self.ambient.lock().ambient.as_ref());
         self.hurry_break_fade(fade);
     }
 
@@ -450,8 +450,7 @@ impl Engine {
     /// Returns whether ambient was playing.
     pub(super) fn leave_ambient(&self) -> bool {
         let mut state = self.ambient.lock();
-        state.song_lit = true;
-        state.under_dark = false;
+        state.stage = Stage::Song;
         let was_playing = state.phase == Phase::Playing;
         if state.mode == AmbientMode::On {
             return was_playing;
@@ -481,23 +480,16 @@ impl Engine {
                 }
             }
             AmbientMode::Off => {
-                self.lower_overlay(&mut state, now);
                 // Between songs with no ambient up -- still waiting out its
-                // delay, or none to play -- the last song's frame goes dark
-                // too, as Off is.
-                if !state.song_lit && !state.under_dark {
-                    let fade = state
-                        .ambient
-                        .as_ref()
-                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                            a.settings.fade_out
-                        });
-                    self.darken_under(fade, true);
-                    state.under_dark = true;
+                // delay, or none to play -- the stage goes dark too, as Off
+                // is.
+                if !self.lower_overlay(&mut state, now) {
+                    let fade = fade_out(state.ambient.as_ref());
+                    self.darken_stage(&mut state, fade);
                 }
                 state.phase = Phase::Off;
             }
-            AmbientMode::Auto if state.song_lit => {
+            AmbientMode::Auto if state.stage == Stage::Song => {
                 self.lower_overlay(&mut state, now);
                 state.phase = Phase::Off;
             }
@@ -513,7 +505,7 @@ impl Engine {
     /// Whether the stage has gone dark between songs.
     #[cfg(test)]
     pub(crate) fn gone_dark(&self) -> bool {
-        self.ambient.lock().under_dark
+        self.ambient.lock().stage == Stage::Dark
     }
 
     /// Ambient light's mode.
@@ -575,7 +567,7 @@ impl Engine {
             }
         }
         self.advance_overlay(now);
-        if state.phase == Phase::Playing && !state.song_lit && !state.under_dark {
+        if state.phase == Phase::Playing && state.stage == Stage::LastFrame {
             let full = self
                 .ambient_overlay
                 .lock()
@@ -585,8 +577,11 @@ impl Engine {
                 // A loop break's fade going out goes on at its own length:
                 // ambient covers only what it lights, and what it does not
                 // is still fading in view.
-                self.darken_under(Duration::ZERO, false);
-                state.under_dark = true;
+                self.release_song(super::playback::Release::Dark {
+                    fade: Duration::ZERO,
+                    floor: false,
+                });
+                state.stage = Stage::Dark;
             }
         }
     }
@@ -662,36 +657,37 @@ impl Engine {
     }
 
     /// Fades ambient out from where it is, over its `fade_out`. Between
-    /// songs, a last song's frame still under it fades to dark with it.
-    fn lower_overlay(&self, state: &mut AmbientState, now: Instant) {
+    /// songs, the stage goes dark with it. Returns whether there was
+    /// ambient to fade.
+    fn lower_overlay(&self, state: &mut AmbientState, now: Instant) -> bool {
         let fade = {
             let mut overlay = self.ambient_overlay.lock();
             let Some(o) = overlay.as_mut() else {
-                return;
+                return false;
             };
             let fade = o.ambient.settings.fade_out;
             o.level.toward(now, 0.0, fade);
             fade
         };
-        if !state.song_lit {
-            if state.under_dark {
-                // Ambient at full left what it does not light as it was;
-                // with ambient going, that goes too.
-                self.fade_out_stale(fade);
-            } else {
-                self.darken_under(fade, true);
-                state.under_dark = true;
-            }
-        }
+        self.darken_stage(state, fade);
+        true
     }
 
-    /// Fades the main engine to dark over `fade`: whatever the last song
-    /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
-    fn darken_under(&self, fade: Duration, to_dark: bool) {
-        self.release_song(super::playback::Release::Dark {
-            fade,
-            floor: to_dark,
-        });
+    /// Between songs, takes the stage dark over `fade`. The last song's
+    /// frame still under goes, with whatever that song left -- its show,
+    /// file watcher, MIDI DMX and tempo -- and what the rig holds lit that
+    /// nothing writes. A stage already dark has only the last of those to
+    /// lose: what ambient at full left as it was, where it does not light.
+    /// A song's show stays.
+    fn darken_stage(&self, state: &mut AmbientState, fade: Duration) {
+        match state.stage {
+            Stage::Song => {}
+            Stage::Dark => self.fade_out_stale(fade),
+            Stage::LastFrame => {
+                self.release_song(super::playback::Release::Dark { fade, floor: true });
+                state.stage = Stage::Dark;
+            }
+        }
     }
 
     /// Fades out over `fade` what the rig holds lit that nothing writes any
@@ -2225,6 +2221,31 @@ mod tests {
             frames += 1;
         }
         assert!(frames <= 50, "dark in {frames} frames");
+        Ok(())
+    }
+
+    #[test]
+    fn off_over_a_dark_stage_takes_what_is_lit_since_out() -> Result<(), Box<dyn Error>> {
+        // Off set over a stage already dark, with no ambient up, did
+        // nothing, where going idle while Off -- and ambient leaving --
+        // took out what the rig held lit that nothing writes. Off is dark
+        // between songs either way now.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        engine.idle_ambient(None, true);
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        assert!(engine.gone_dark());
+        // Lit by what no frame writes, straight to the universe.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(1, 255)]);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0));
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        tick(&engine);
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
         Ok(())
     }
 
