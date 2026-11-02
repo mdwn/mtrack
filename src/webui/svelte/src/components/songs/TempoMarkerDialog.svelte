@@ -24,6 +24,7 @@
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import {
     beatsInMeasure,
+    parseTimeSignature,
     positionTaken,
     sigAtMeasure,
     sortTempoChanges,
@@ -93,12 +94,6 @@
   const SIG_DENOMS = [1, 2, 4, 8, 16, 32];
   const SUBDIVISIONS: SubdivisionValue[] = [1, 2, 3, 4, 6, "son", "rumba"];
 
-  function parseSig(raw: string | undefined): [number, number] {
-    const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-    if (!match) return [4, 4];
-    return [parseInt(match[1]), parseInt(match[2])];
-  }
-
   // --- Entry lookup ---
 
   let tChangeIndex = $derived(
@@ -125,24 +120,13 @@
 
   // --- What's in effect at this marker ---
 
-  let baseSig = $derived(parseSig(tempo.time_signature));
+  let baseSig = $derived(parseTimeSignature(tempo.time_signature));
 
-  /** Signature in effect at the target (including its own sig change). */
-  let effectiveSig = $derived.by(() => {
-    if (target === "start") return baseSig;
-    let sig = baseSig;
-    const sorted = [...(tempo.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
-    );
-    for (const c of sorted) {
-      const atOrBefore =
-        c.measure < target.measure ||
-        (c.measure === target.measure && (c.beat ?? 1) <= target.beat);
-      if (!atOrBefore) break;
-      if (c.time_signature) sig = parseSig(c.time_signature);
-    }
-    return sig;
-  });
+  /** The signature of the target's bar, as the player has it: a change
+   *  written mid-bar governs from the next downbeat (#628). */
+  let effectiveSig = $derived(
+    target === "start" ? baseSig : sigAtMeasure(tempo, target.measure),
+  );
   let numerator = $derived(effectiveSig[0]);
 
   function defaultPattern(count: number): number[] {
@@ -802,7 +786,7 @@
         <span class="section-label">{$t("tempo.timeSignature")}</span>
       </label>
       {#if sigOn && tChange?.time_signature}
-        {@render sigSteppers(parseSig(tChange.time_signature))}
+        {@render sigSteppers(parseTimeSignature(tChange.time_signature))}
       {/if}
     </div>
 

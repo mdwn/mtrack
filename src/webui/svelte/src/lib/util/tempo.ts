@@ -13,6 +13,7 @@
 //
 
 import type { TempoChangeConfig, TempoConfig } from "../api/songs";
+import { TempoMap } from "../tempo-wasm";
 
 /** The beat a tempo change sits on; absent means the downbeat. */
 export function changeBeat(change: TempoChangeConfig): number {
@@ -20,23 +21,49 @@ export function changeBeat(change: TempoChangeConfig): number {
 }
 
 /** `[numerator, denominator]` of a `4/4`-style string, 4/4 when unparsable. */
-export function parseSig(raw: string | undefined): [number, number] {
+export function parseTimeSignature(raw: string | undefined): [number, number] {
   const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
   return match ? [parseInt(match[1]), parseInt(match[2])] : [4, 4];
 }
 
-/** The time signature in effect at a measure: the base plus every change
- * at or before it. */
+/** Resolved maps by tempo config, kept with what they were resolved from:
+ *  a config is edited in place. */
+const configMaps = new WeakMap<TempoConfig, { key: string; map: TempoMap }>();
+const noTempo: TempoConfig = { bpm: 120 };
+
+/** The song's tempo map, as the player resolves its `tempo:` block. */
+export function configTempoMap(
+  tempo: TempoConfig | null | undefined,
+): TempoMap {
+  const config = tempo ?? noTempo;
+  const key = JSON.stringify(config);
+  const hit = configMaps.get(config);
+  if (hit && hit.key === key) return hit.map;
+  const map = new TempoMap({
+    startSecs: config.start ?? 0,
+    bpm: config.bpm,
+    signature: parseTimeSignature(config.time_signature),
+    changes: (config.changes ?? []).map((c) => ({
+      at: { measure: c.measure, beat: changeBeat(c) },
+      bpm: c.bpm,
+      signature: c.time_signature
+        ? parseTimeSignature(c.time_signature)
+        : undefined,
+      transition: c.transition,
+    })),
+  });
+  configMaps.set(config, { key, map });
+  return map;
+}
+
+/** The time signature measure `measure` is in, as the player has it: a
+ *  change written on a bar's downbeat governs from that bar, one written
+ *  mid-bar from the next (#628). */
 export function sigAtMeasure(
   tempo: TempoConfig | null | undefined,
   measure: number,
 ): [number, number] {
-  let sig = parseSig(tempo?.time_signature);
-  for (const c of sortTempoChanges(tempo?.changes ?? [])) {
-    if (c.measure > measure) break;
-    if (c.time_signature) sig = parseSig(c.time_signature);
-  }
-  return sig;
+  return configTempoMap(tempo).signatureInMeasure(measure);
 }
 
 /** Beats in a measure — its meter's numerator. */

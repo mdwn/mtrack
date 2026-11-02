@@ -17,13 +17,7 @@
 
 import type { TempoConfig, TempoChangeConfig } from "./api/songs";
 import type { TempoSection, TempoChange } from "./lighting/types";
-import { orderTempoChanges } from "./util/tempo";
-
-export function parseTimeSignature(raw: string | undefined): [number, number] {
-  const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-  if (!match) return [4, 4];
-  return [parseInt(match[1]), parseInt(match[2])];
-}
+import { orderTempoChanges, parseTimeSignature } from "./util/tempo";
 
 /** song.yaml tempo config -> the lighting TempoEditor's data model. */
 export function configToSection(config: TempoConfig): TempoSection {

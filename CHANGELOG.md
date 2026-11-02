@@ -224,6 +224,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,
   compiled to WebAssembly, so its bars, ramps, offsets and sequences are where the player puts
   them, sequences through a tempo change included.
+- **A song editor's time signature at a bar** (#628): a time signature change written on a bar's
+  later beat was taken to govern that bar in the song editors (bar lengths, metronome chips, the
+  tempo marker dialog's accent pattern); the player applies it from the next downbeat, and so do
+  they now.
 - **The tempo through many ramps**: reading the tempo at a time read the tempo before each ramp
   again from the top, doubling the work with every ramp before it, so an `offset` late in a show
   with a few dozen ramps could stall the parser. It is now one walk over the changes.
