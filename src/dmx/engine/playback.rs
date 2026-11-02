@@ -29,6 +29,26 @@ use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{Engine, MidiDmxPlayback};
 
+/// How much of a song [`Engine::release_song`] lets go of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Release {
+    /// Its playback is over: its MIDI DMX playbacks go and its timeline
+    /// stops, kept for status. Its effects run on to their own ends, at its
+    /// tempo, until the next song starts (or the stage goes dark); the show
+    /// file watcher stays for a live edit.
+    Ended,
+    /// The next song has no show of its own: the timeline and tempo go too,
+    /// or it would answer status with the last song's cues and inherit its
+    /// tempo, and the watcher, whose reload would put the last song's show
+    /// back under it.
+    Replaced,
+    /// The stage goes dark between songs: everything the song left fades
+    /// out over `fade` as a loop break's fade, and with `floor` what the
+    /// rig holds lit that nothing writes any more too (#573) -- left as it
+    /// is under ambient at full, still in view where ambient does not light.
+    Dark { fade: Duration, floor: bool },
+}
+
 /// The lighting timeline of the pass a crossfading loop jump starts (see
 /// [`super::timeline::song_lighting_timeline`]), built ahead of the jump.
 #[derive(Default)]
@@ -119,14 +139,7 @@ impl Engine {
             // A song with no lighting at all still has to evict the previous
             // song's state, or `status.lighting` and `get_timeline_cues()` keep
             // answering with that song's cues.
-            {
-                let mut effect_engine = dmx_engine.effect_engine.lock();
-                effect_engine.set_tempo_map(None);
-            }
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock();
-                *current_timeline = None;
-            }
+            dmx_engine.release_song(Release::Replaced);
             ready_tx.send();
             return Ok(());
         }
@@ -176,14 +189,7 @@ impl Engine {
         } else {
             // Clear lighting state from previous song so MIDI DMX songs
             // don't inherit a stale tempo map or timeline.
-            {
-                let mut effect_engine = dmx_engine.effect_engine.lock();
-                effect_engine.set_tempo_map(None);
-            }
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock();
-                *current_timeline = None;
-            }
+            dmx_engine.release_song(Release::Replaced);
         }
 
         // Reset song time to start time for new song BEFORE starting timeline
@@ -519,12 +525,44 @@ impl Engine {
         }
 
         // Final cleanup.
-        dmx_engine.stop_lighting_timeline();
-        dmx_engine.midi_dmx_playbacks.lock().clear();
+        dmx_engine.release_song(Release::Ended);
 
         info!("DMX playback stopped.");
 
         Ok(())
+    }
+
+    /// Lets go of what a song left driving the lights, as far as `scope`
+    /// says (see [`Release`]).
+    pub(super) fn release_song(&self, scope: Release) {
+        // What writes the rig on its own goes first, so nothing it writes
+        // after relights what fades: MIDI DMX playback, and -- the song done
+        // with -- the show file watcher, whose reload would put its show back.
+        self.midi_dmx_playbacks.lock().clear();
+        if scope != Release::Ended {
+            self.watcher_handle.lock().take();
+        }
+        match scope {
+            Release::Ended => self.stop_lighting_timeline(),
+            Release::Replaced => *self.current_song_timeline.lock() = None,
+            Release::Dark { fade, floor } => {
+                // Nothing lit, nothing to fade: a fade over nothing would
+                // only cross the next song in from black.
+                let floor = if floor {
+                    self.dark_floor(fade)
+                } else {
+                    Vec::new()
+                };
+                let lit = !self.effect_engine.lock().last_commands().is_empty();
+                if lit || !floor.is_empty() {
+                    self.begin_break_fade_over(fade, floor);
+                }
+            }
+        }
+        // The tempo last: a fade just begun keeps the song's in its engine.
+        if scope != Release::Ended {
+            self.effect_engine.lock().set_tempo_map(None);
+        }
     }
 
     /// Waits for the lighting timeline to finish, with a heartbeat check to detect

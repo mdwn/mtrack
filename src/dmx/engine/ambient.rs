@@ -688,26 +688,10 @@ impl Engine {
     /// Fades the main engine to dark over `fade`: whatever the last song
     /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
     fn darken_under(&self, fade: Duration, to_dark: bool) {
-        // Going dark, what the rig holds lit that the last frame did not
-        // write -- left by effects that ended, which nothing writes again --
-        // fades out with the rest (#573). Under ambient at full it stays as
-        // it was, what ambient does not light still in view.
-        // MIDI DMX playback stops first, so nothing it writes after
-        // relights what fades.
-        self.watcher_handle.lock().take();
-        self.midi_dmx_playbacks.lock().clear();
-        let floor = if to_dark {
-            self.dark_floor(fade)
-        } else {
-            Vec::new()
-        };
-        // Nothing lit, nothing to fade: a fade over nothing would only cross
-        // the next song in from black.
-        let lit = !self.effect_engine.lock().last_commands().is_empty();
-        if lit || !floor.is_empty() {
-            self.begin_break_fade_over(fade, floor);
-        }
-        self.effect_engine.lock().set_tempo_map(None);
+        self.release_song(super::playback::Release::Dark {
+            fade,
+            floor: to_dark,
+        });
     }
 
     /// Fades out over `fade` what the rig holds lit that nothing writes any
@@ -725,7 +709,7 @@ impl Engine {
     /// rather than taking it dark, so it would only come back as stale
     /// again. What MIDI DMX holds through the store fades in the store
     /// itself, over the same `fade`.
-    fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
+    pub(super) fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
         let written = self.last_written.lock().clone();
         let positions = self.effect_engine.lock().position_channels();
         let floor = self

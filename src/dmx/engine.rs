@@ -1954,6 +1954,65 @@ mod test {
     }
 
     #[test]
+    fn a_song_without_a_show_stops_the_last_songs_watcher() -> Result<(), Box<dyn Error>> {
+        // A song with no show of its own dropped the last song's timeline
+        // and tempo but left its file watcher running, whose reload on an
+        // edit put the last song's show back under this one. Going dark
+        // between songs dropped it; now a song's release does either way.
+        let (engine, cancel_handle) = create_engine()?;
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("last.light");
+        std::fs::write(
+            &dsl_path,
+            "show \"last\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+        )?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            vec![dsl_path],
+            engine.effect_engine.clone(),
+            engine.current_song_timeline.clone(),
+            engine.current_song_time.clone(),
+            engine.playback_delay,
+            None,
+            None,
+            None,
+            tx,
+        )?);
+
+        let song_config = crate::config::Song::new(
+            "No lights",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            engine.watcher_handle.lock().is_none(),
+            "the last song's show watcher outlived it"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_midi_dmx_mirrors_to_effect_engine() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
