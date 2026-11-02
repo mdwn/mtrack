@@ -406,24 +406,16 @@ impl Engine {
                         } else {
                             // The outgoing pass is `from - to` ahead of the
                             // new one in song time, and fades out over the
-                            // overlap as the new one fades in.
-                            dmx_engine.begin_loop_crossfade(
+                            // overlap as the new one fades in. The store
+                            // carries the last pass's values into the
+                            // crossfade, MIDI DMX joining the new pass.
+                            dmx_engine.begin_loop_crossfade_with(
                                 next_pass.take(&song, &jump),
                                 jump.from,
                                 jump.to,
                                 jump.overlap,
+                                super::timeline::MidiDmxStart::Join,
                             );
-                            // The store carries the last pass's values into
-                            // the crossfade; MIDI DMX starts over from the
-                            // beginning, or from where a pass begun late
-                            // joins, rather than sending everything before
-                            // that in one frame.
-                            let join = dmx_engine.to_delayed_song_time(jump.to);
-                            if join.is_zero() {
-                                dmx_engine.rewind_midi_dmx_playbacks();
-                            } else {
-                                dmx_engine.join_midi_dmx_playbacks(join);
-                            }
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its

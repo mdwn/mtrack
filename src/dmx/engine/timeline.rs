@@ -79,6 +79,13 @@ pub(super) enum MidiDmxStart {
     Install(Vec<super::MidiDmxPlayback>),
     /// Moves the ones there to the start point (a section loop's restart).
     Seek,
+    /// Moves the ones there to where a crossfading loop's pass starts,
+    /// leaving the store as the outgoing pass had it: from the beginning,
+    /// or for a pass begun late from where it joins, the channels the
+    /// events before it set put back but one they set only later kept as
+    /// the store carries it into the crossfade -- rather than sending
+    /// everything before that in one frame.
+    Join,
 }
 
 /// A new pass's id.
@@ -320,10 +327,23 @@ impl Engine {
     /// [`Engine::update_effects`] crosses the two over the overlap.
     pub fn begin_loop_crossfade(
         &self,
+        next: Option<crate::lighting::timeline::LightingTimeline>,
+        from: Duration,
+        to: Duration,
+        overlap: Duration,
+    ) {
+        self.begin_loop_crossfade_with(next, from, to, overlap, MidiDmxStart::Leave);
+    }
+
+    /// [`Self::begin_loop_crossfade`], moving the MIDI DMX playbacks to the
+    /// new pass's start as its history goes in (see [`MidiDmxStart`]).
+    pub(super) fn begin_loop_crossfade_with(
+        &self,
         mut next: Option<crate::lighting::timeline::LightingTimeline>,
         from: Duration,
         to: Duration,
         overlap: Duration,
+        midi: MidiDmxStart,
     ) {
         let lead = from.saturating_sub(to);
         // The timeline starts at `to` in the lights' delayed time base; the
@@ -363,6 +383,7 @@ impl Engine {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
+        self.start_midi_dmx(midi, start);
         // What it drove the rig with until now: held as it is, should it go
         // before its first frame as a pass.
         let last = outgoing_engine.last_commands().to_vec();
@@ -686,14 +707,7 @@ impl Engine {
         // A freeze in the history holds at the start point, where the
         // effects it replays are started from.
         effect_engine.set_song_time(start_time);
-        match midi {
-            MidiDmxStart::Leave => {}
-            MidiDmxStart::Install(playbacks) => {
-                *self.midi_dmx_playbacks.lock() = playbacks;
-                self.seek_midi_dmx_playbacks(start_time);
-            }
-            MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(start_time),
-        }
+        self.start_midi_dmx(midi, start_time);
         if start_time > Duration::ZERO {
             for e in effect_engine.apply_timeline_update(timeline_update) {
                 error!("Failed to start lighting effect: {}", e);
@@ -703,6 +717,22 @@ impl Engine {
         // Now its cues -- one at the start point too -- fire over that.
         if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
             timeline.hold(false);
+        }
+    }
+
+    /// Does what `midi` says with the MIDI DMX playbacks for a show
+    /// starting at `at` (delayed song time). Called under the engine's
+    /// lock, with the show's start state going in.
+    fn start_midi_dmx(&self, midi: MidiDmxStart, at: Duration) {
+        match midi {
+            MidiDmxStart::Leave => {}
+            MidiDmxStart::Install(playbacks) => {
+                *self.midi_dmx_playbacks.lock() = playbacks;
+                self.seek_midi_dmx_playbacks(at);
+            }
+            MidiDmxStart::Seek => self.seek_midi_dmx_playbacks(at),
+            MidiDmxStart::Join if at.is_zero() => self.rewind_midi_dmx_playbacks(),
+            MidiDmxStart::Join => self.join_midi_dmx_playbacks(at),
         }
     }
 
