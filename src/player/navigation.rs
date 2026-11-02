@@ -24,7 +24,7 @@ use crate::{
     songs::{self, Song, Songs},
 };
 
-use super::{Player, PlaylistDirection};
+use super::{LoopExit, Player, PlaylistDirection};
 
 impl Player {
     /// Plays a specific song by name, starting from the given time.
@@ -38,15 +38,15 @@ impl Player {
         song_name: &str,
         start_time: Duration,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        // Reject playback if hardware hasn't finished initializing.
-        if !*self.init_done_tx.borrow() {
-            return Err("Hardware is still initializing".into());
-        }
-
         let mut join = self.join.lock().await;
         if join.is_some() {
             info!("Player is already playing a song.");
             return Ok(None);
+        }
+        // Asked before the playlist moves, so a start turned down leaves it
+        // where it was; the start asks again, as every start does.
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
         }
 
         // A start the song cannot play from is turned down before the
@@ -89,7 +89,7 @@ impl Player {
         let mut join = self.join.lock().await;
         if join.is_some() {
             // A looping song ending: stopped a moment from now.
-            if self.loop_end.load(Ordering::Relaxed) {
+            if self.loop_exit() == LoopExit::End {
                 info!("The song is ending; {} once it has.", direction);
                 return self.get_playlist().current();
             }
@@ -110,23 +110,7 @@ impl Player {
             // one still fading out (#545).
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop via {} navigation.", direction);
-                // Between the playback's loop jumps: one already scheduled
-                // is made under the fade, and none is after it.
-                let jumps = join.as_ref().map(|handles| handles.cancel.hold_jumps());
-                let target = join.as_ref().and_then(|handles| {
-                    self.fade_out_for_loop_break(
-                        &handles.cancel,
-                        direction == PlaylistDirection::Prev,
-                    )
-                });
-                self.loop_break_to_prev
-                    .store(direction == PlaylistDirection::Prev, Ordering::Relaxed);
-                self.loop_break.store(true, Ordering::Relaxed);
-                if let Some(ref handles) = *join {
-                    handles.cancel.cancel();
-                }
-                drop(jumps);
-                return target;
+                return self.break_loop(&join, back);
             }
             let current = self.get_playlist().current();
             if let Some(ref song) = current {
@@ -173,7 +157,7 @@ impl Player {
         let ending = self.end_ending();
         let moved = playlist.entry() != from;
         if moved {
-            self.past_last_entry.store(false, Ordering::Relaxed);
+            self.transport.lock().past_last_entry = false;
         }
         // Stopped on another entry: the gap is now before it, and its
         // ambient light, if that is another, comes up in place of the one
@@ -235,7 +219,7 @@ impl Player {
         // the entry that took its place.
         self.move_playlist(|playlist| playlist.settle());
         *self.active_playlist.write() = name.to_string();
-        self.past_last_entry.store(false, Ordering::Relaxed);
+        self.transport.lock().past_last_entry = false;
         self.clear_pending_start();
         self.section_loop.reset();
         self.cancel_auto_play();

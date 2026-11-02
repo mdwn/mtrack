@@ -404,41 +404,40 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
-    /// Signal to break out of a song loop gracefully (not a hard cancel).
-    /// Set by play()/next() when the current song is looping. The playback
-    /// loop checks this flag and exits cleanly, allowing the cleanup task
-    /// to advance the playlist and start the next song.
+    /// The transport's state machine, behind one lock: what a loop break
+    /// asked of the looping song does, a looping song ending, an auto play
+    /// waiting out its gap, the position kept for the next play, whether
+    /// the last entry has played out, and when a song fading out is out.
+    /// Read and changed together, they cannot be seen half changed.
+    ///
+    /// Lock ordering: this lock is taken after `join`, `play_start_time`,
+    /// `reload_lock` and `playlist_moves` when they are held, never before
+    /// them, and nothing awaits while it is held. Only
+    /// [`Player::set_ambient_mode`] holds it across another call, into the
+    /// ambient light (the hardware, ambient mode, playlist and ambient source
+    /// locks, and the DMX engine), none of which takes it in turn.
+    transport: Arc<parking_lot::Mutex<TransportState>>,
+    /// The engines' copy of whether a loop break is asked of the song
+    /// playing: the audio, MIDI and DMX threads poll it through the
+    /// playback's `LoopControl`, so it is an atomic of its own rather than a
+    /// read of `transport`. Set and cleared only with
+    /// `TransportState::loop_exit`, under the transport lock, so the two
+    /// always agree.
     loop_break: Arc<AtomicBool>,
-    /// Set with `loop_break` when the break came from previous rather than
-    /// next or play, so the cleanup moves the playlist back, not on.
-    loop_break_to_prev: Arc<AtomicBool>,
-    /// Set with `loop_break` when the break ends the song rather than moving
-    /// on (a stop, or next or previous at the end of the list): the cleanup
-    /// leaves the playlist where it is and starts nothing.
-    loop_end: Arc<AtomicBool>,
-    /// A looping song ending, fading out with nothing after it, if one is.
-    ending: Arc<parking_lot::Mutex<EndingState>>,
-    /// A playlist entry's `auto_play` waiting out its gap, if one is.
-    auto_play: Arc<parking_lot::Mutex<AutoPlayState>>,
     /// Ambient light's mode, kept here so an engine a reload brings in
     /// takes it up.
     ambient_mode: Arc<parking_lot::Mutex<dmx::engine::AmbientMode>>,
-    /// The song at the playlist's entry played to its end with nowhere to
-    /// move on to: the gap is after the last entry, not before it, and the
-    /// playlist's ambient light plays rather than the entry's.
-    past_last_entry: Arc<AtomicBool>,
     /// Whose settings the ambient light the player last brought up plays.
     ambient_source: Arc<parking_lot::Mutex<Option<crate::playlist::AmbientSource>>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
-    /// reads it to carry the fade across a loop boundary.
+    /// reads it to carry the fade across a loop boundary. Shared with the
+    /// audio threads through the playback's `LoopControl`, so it is not part
+    /// of `transport`, as are `break_fade_ids` and `start_fade`.
     break_fade: Arc<parking_lot::Mutex<Option<crate::playsync::BreakFade>>>,
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
-    /// When a song fading out after a loop break, or as it ends, is out,
-    /// audio and lights both. A hardware reload waits for it.
-    fading_until: Arc<parking_lot::Mutex<Option<std::time::Instant>>>,
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
     start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
@@ -448,10 +447,6 @@ pub struct Player {
     /// The playing song's section loop jumps (its playback's log): the
     /// position counts them as they fall due, exactly.
     section_jumps: Arc<parking_lot::Mutex<Arc<crate::playsync::SectionJumpLog>>>,
-    /// Start position for the next play(), set by a pause or by seeking
-    /// while stopped.
-    /// Cleared when the playlist position changes.
-    pending_start: Arc<parking_lot::Mutex<Option<seek::PendingStart>>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
     /// Pending debounced task persisting track gains to the config store.
@@ -522,8 +517,9 @@ pub struct LockedError;
 
 /// Bounds of an active section loop.
 ///
-/// Used together with `section_loop_break: Arc<AtomicBool>` to form a
-/// state machine shared by the audio, MIDI, and DMX engine threads:
+/// Used together with the section loop's break flag to form a state machine
+/// shared by the audio, MIDI, and DMX engine threads, which see the two as
+/// `LoopControl::active_section` and `LoopControl::section_loop_break`:
 ///
 /// | State    | `active_section`  | `section_loop_break` |
 /// |----------|-------------------|----------------------|
@@ -532,9 +528,10 @@ pub struct LockedError;
 /// | Breaking | `Some(bounds)`*   | `true`               |
 ///
 /// Transitions:
-///   - `start_section_loop()`: Idle → Looping (sets `active_section`,
-///     clears `section_loop_break`)
-///   - `stop_section_loop()`: Looping → Breaking → Idle (sets
+///   - [`Player::loop_section`], or [`Player::section_ack`] on a section
+///     offered: Idle → Looping (sets `active_section`, clears
+///     `section_loop_break`)
+///   - [`Player::stop_section_loop`]: Looping → Breaking → Idle (sets
 ///     `section_loop_break` first, then clears `active_section`)
 ///   - Each engine thread detects the break and exits its loop
 ///
@@ -731,21 +728,15 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
+            transport: Arc::new(parking_lot::Mutex::new(TransportState::default())),
             loop_break: Arc::new(AtomicBool::new(false)),
-            loop_break_to_prev: Arc::new(AtomicBool::new(false)),
-            loop_end: Arc::new(AtomicBool::new(false)),
-            ending: Arc::new(parking_lot::Mutex::new(EndingState::default())),
-            auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
             ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
-            past_last_entry: Arc::new(AtomicBool::new(false)),
             ambient_source: Arc::new(parking_lot::Mutex::new(None)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            fading_until: Arc::new(parking_lot::Mutex::new(None)),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             section_loop: SectionLoop::default(),
             section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
-            pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
                 44100,
             )),
@@ -1192,9 +1183,87 @@ impl StatusEvents {
 #[derive(Default)]
 struct AutoPlayState {
     generation: u64,
-    pending: bool,
     /// The song waiting and when it starts, while one is.
     waiting: Option<(String, std::time::Instant)>,
+}
+
+/// What a loop break asked of the looping song playing does once its loop
+/// lets go: nothing asked, move on to the next entry, move back to the one
+/// before, or end the song where it is (a stop, or next or previous at the
+/// end of the list), starting nothing. One value, so a break cannot be both
+/// an ending and a move back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LoopExit {
+    #[default]
+    None,
+    Next,
+    Prev,
+    End,
+}
+
+/// The transport's state machine, kept behind the player's one transport
+/// lock (see `Player::transport` for the lock ordering).
+#[derive(Default)]
+struct TransportState {
+    /// What a loop break asked of the song playing does. Mirrored into
+    /// `Player::loop_break` for the engines.
+    loop_exit: LoopExit,
+    /// A looping song ending, fading out with nothing after it, if one is.
+    ending: EndingState,
+    /// A playlist entry's `auto_play` waiting out its gap, if one is.
+    auto_play: AutoPlayState,
+    /// Start position for the next play(), set by a pause or by seeking
+    /// while stopped. Cleared when the playlist position changes.
+    pending_start: Option<seek::PendingStart>,
+    /// The song at the playlist's entry played to its end with nowhere to
+    /// move on to: the gap is after the last entry, not before it, and the
+    /// playlist's ambient light plays rather than the entry's.
+    past_last_entry: bool,
+    /// When a song fading out after a loop break, or as it ends, is out,
+    /// audio and lights both. A hardware reload waits for it.
+    fading_until: Option<std::time::Instant>,
+}
+
+impl TransportState {
+    /// The looping song ending, and how long until its fade is over, while
+    /// one is.
+    fn ending_status(&self) -> Option<(String, Duration)> {
+        self.ending.fading.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+    }
+
+    /// The song an auto play is waiting to start, and how long until it
+    /// does, while one is.
+    fn auto_play_status(&self) -> Option<(String, Duration)> {
+        self.auto_play.waiting.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+    }
+
+    /// Whether a song is paused: stopped by a pause, with a position to
+    /// resume from.
+    fn is_paused(&self) -> bool {
+        self.pending_start.is_some_and(|p| p.paused)
+    }
+
+    /// How long until a song fading out is out, while one is: a looping
+    /// song ending, or one a loop break moved on from. A hardware reload
+    /// waits for it, as the reset would cut it short.
+    fn fading_out(&self) -> Option<Duration> {
+        let ending = self.ending_status().map(|(_, left)| left);
+        let fading = self
+            .fading_until
+            .map(|until| until.saturating_duration_since(std::time::Instant::now()))
+            .filter(|left| !left.is_zero());
+        ending.max(fading)
+    }
 }
 
 /// A looping song ending: each ending takes the next generation, and one
@@ -5543,7 +5612,7 @@ mod test {
             // As pause() does it, under the lock.
             let mut join = hold_join_over_a_songs_own_end(&player).await?;
             player.stop_for_pause(&mut join).await;
-            *player.pending_start.lock() = Some(seek::PendingStart {
+            player.transport.lock().pending_start = Some(seek::PendingStart {
                 position: paused_at,
                 paused: true,
             });
@@ -5732,7 +5801,7 @@ mod test {
         let pause = {
             let join = player.join.lock().await;
             // Next's break, as navigate asks it.
-            player.loop_break.store(true, Ordering::Relaxed);
+            player.set_loop_exit(LoopExit::Next);
             join.as_ref().unwrap().cancel.cancel();
             drop(join);
             // B winds down, so its cleanup queues on the lock first...
@@ -5846,7 +5915,8 @@ mod test {
     async fn a_deferred_reload_waits_for_a_loop_breaks_fade() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let _store = set_store_without_audio(&player)?;
-        *player.fading_until.lock() = Some(std::time::Instant::now() + Duration::from_millis(800));
+        player.transport.lock().fading_until =
+            Some(std::time::Instant::now() + Duration::from_millis(800));
         player.reload_hardware().await?;
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(

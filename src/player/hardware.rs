@@ -684,14 +684,20 @@ impl Player {
         // So does a paused song: a show in progress, its lights held, which
         // must resume at once. A position cued by a seek while stopped is
         // not: nothing plays, and nothing is held.
-        let playing = join.is_some() || self.auto_play_status().is_some() || self.is_paused();
-        let fading = self.fading_out();
+        let (playing, fading, ending) = {
+            let transport = self.transport.lock();
+            (
+                join.is_some() || transport.auto_play.waiting.is_some() || transport.is_paused(),
+                transport.fading_out(),
+                transport.ending.fading.is_some(),
+            )
+        };
         if playing || fading.is_some() {
             self.hardware_reload_pending.store(true, Ordering::Relaxed);
             // An ending runs the reload once its fade is over. A loop break's
             // fade outlasting the song it moved to has nothing that would,
             // with the player idle: a timer does.
-            if let (false, Some(left), None) = (playing, fading, self.ending_status()) {
+            if let (false, Some(left), false) = (playing, fading, ending) {
                 let player = self.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(left).await;
@@ -1036,7 +1042,7 @@ impl Player {
             }
         };
         let join = self.join.clone();
-        let auto_play = self.auto_play.clone();
+        let transport = self.transport.clone();
 
         Some(tokio::spawn(async move {
             while !cancel.is_cancelled() {
@@ -1048,7 +1054,7 @@ impl Player {
                         break;
                     }
 
-                    let auto_play_waiting = auto_play.lock().waiting.is_some();
+                    let auto_play_waiting = transport.lock().auto_play.waiting.is_some();
                     let emit_result: Result<(), Box<dyn Error>> = status_events
                         .current(join.is_some(), auto_play_waiting)
                         .iter()
