@@ -359,8 +359,7 @@ pub fn loop_boundary_sample(
     sample_rate: u32,
 ) -> u64 {
     let remaining = trigger_time.saturating_sub(elapsed);
-    let samples_until = (remaining.as_secs_f64() * sample_rate as f64).round() as u64;
-    now_sample.saturating_add(samples_until)
+    now_sample.saturating_add(crate::audio::duration_to_samples(remaining, sample_rate))
 }
 
 /// Result of polling a [`SectionLoopMonitor`].

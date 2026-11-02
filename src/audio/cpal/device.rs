@@ -833,10 +833,10 @@ impl Device {
         let start_sample =
             crate::section_loop::loop_boundary_sample(now_sample, timing.now, timing.target, rate)
                 .saturating_add(timing.skew_samples)
-                .max(now_sample + (timing.lookahead.as_secs_f64() * rate as f64 / 2.0) as u64);
+                .max(now_sample + crate::audio::duration_to_samples(timing.lookahead / 2, rate));
         let crossover = PassCrossover {
             start_sample,
-            overlap_samples: (overlap.as_secs_f64() * rate as f64).round() as u64,
+            overlap_samples: crate::audio::duration_to_samples(overlap, rate),
             crossfade_samples: timing.crossfade_samples,
         };
 
@@ -1564,8 +1564,7 @@ impl AudioDevice for Device {
         // `fade_in`: everything but its excluded tracks fades in over it, each
         // source on an envelope of its own.
         let start_fade_samples = start_fade.as_ref().map(|fade| {
-            (fade.length.as_secs_f64() * self.output_manager.mixer.sample_rate() as f64).round()
-                as u64
+            crate::audio::duration_to_samples(fade.length, self.output_manager.mixer.sample_rate())
         });
         for (source, group) in channel_mapped_sources.into_iter() {
             let envelope = match (&start_fade, start_fade_samples) {
@@ -1616,9 +1615,10 @@ impl AudioDevice for Device {
         // inherit the same alignment, so all handoffs — first included — stay
         // seamless. (The resampler group delay is symmetric between the outgoing
         // and incoming sources and cancels, so it needs no correction.)
-        let audio_clock_skew_samples = (clock.elapsed().as_secs_f64()
-            * self.output_manager.mixer.sample_rate() as f64)
-            .round() as u64;
+        let audio_clock_skew_samples = crate::audio::duration_to_samples(
+            clock.elapsed(),
+            self.output_manager.mixer.sample_rate(),
+        );
         debug!(
             audio_clock_skew_samples,
             skew_us = clock.elapsed().as_micros() as u64,
@@ -2137,8 +2137,7 @@ impl AudioDevice for Device {
         // the song does not fall silent part way through.
         let fade = break_fade.lock().clone();
         if let (true, Some(fade)) = (loop_break.load(Ordering::Relaxed), fade) {
-            let rate = mixer_sample_rate as f64;
-            let samples = |d: Duration| (d.as_secs_f64() * rate).round() as u64;
+            let samples = |d: Duration| crate::audio::duration_to_samples(d, mixer_sample_rate);
             let now_sample = self.output_manager.mixer.current_sample();
             let break_sample = now_sample.saturating_sub(samples(fade.started.elapsed()));
             // The pass playing out, and its sources: the latest, a jump
