@@ -193,8 +193,7 @@ impl SectionJumpLog {
         let due = self.put_back_by(now).1;
         let jumps = self.jumps.lock();
         let latest = jumps.get(..due)?.last()?;
-        let into = now.checked_sub(latest.at)?;
-        (latest.pass && into < latest.overlap).then(|| latest.from + into)
+        latest.outgoing_position(now).filter(|_| latest.pass)
     }
 
     /// Whether a jump committed at or after `index` that `pick` picks has
@@ -244,6 +243,8 @@ pub struct JumpCursor {
     log: Arc<SectionJumpLog>,
     next: usize,
     consumed: Duration,
+    /// The latest jump passed, which the song position is counted from.
+    last: Option<crate::section_loop::SectionJump>,
 }
 
 impl JumpCursor {
@@ -252,6 +253,7 @@ impl JumpCursor {
             log,
             next: 0,
             consumed: Duration::ZERO,
+            last: None,
         }
     }
 
@@ -266,7 +268,17 @@ impl JumpCursor {
         let jump = self.peek().filter(|jump| jump.at <= at)?;
         self.next += 1;
         self.consumed += jump.amount();
+        self.last = Some(jump.clone());
         Some(jump)
+    }
+
+    /// Where in the song playback is at `at` on the playback timeline, by
+    /// the jumps passed: `at` itself before any, and from the latest's
+    /// target on after one ([`SectionJump::song_position`]).
+    ///
+    /// [`SectionJump::song_position`]: crate::section_loop::SectionJump::song_position
+    pub fn song_position(&self, at: Duration) -> Duration {
+        self.last.as_ref().map_or(at, |jump| jump.song_position(at))
     }
 
     /// The time the jumps passed have put back: playback time less this is

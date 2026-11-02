@@ -323,7 +323,7 @@ impl Engine {
                         break;
                     }
                     while let Some(jump) = jumps.due(elapsed).filter(|_| ours()) {
-                        let position = elapsed.saturating_sub(jumps.consumed());
+                        let position = jumps.song_position(elapsed);
                         info!(
                             from = ?jump.from,
                             to = ?jump.to,
@@ -379,7 +379,7 @@ impl Engine {
                             dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
                         }
                     }
-                    let position = elapsed.saturating_sub(jumps.consumed());
+                    let position = jumps.song_position(elapsed);
                     if let Some(next) = jumps.peek() {
                         // A jump committed and coming: this takes the time
                         // from the tracker now, not once the jump falls due.

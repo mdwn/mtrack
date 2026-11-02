@@ -713,19 +713,17 @@ impl Device {
             .map(|took| took * 3 / 2 + lookahead)
             .unwrap_or_default();
         trigger.join_ahead_by(needs);
-        let end = section.bounds.end_time;
-        let join_of = |from: Duration, consumed: Duration| end + from + consumed;
         let target = trigger.arm(effective, elapsed)?;
-        let planned = target
-            .saturating_sub(trigger.consumed())
-            .saturating_sub(end);
+        let planned = trigger.past_end(target);
         match Self::pass_from(song_loop) {
             // Only a pass begun late: one on time builds from the top.
             Some(built)
                 if !planned.is_zero()
                     && built != planned
                     && built <= section.overlap
-                    && join_of(built, trigger.consumed()) >= elapsed + lookahead =>
+                    && trigger
+                        .join_time(built)
+                        .is_some_and(|join| join >= elapsed + lookahead) =>
             {
                 trigger.join_from(built);
             }
@@ -1897,9 +1895,7 @@ impl AudioDevice for Device {
                         target,
                         overlap: section.overlap,
                         // Begun late, a pass joins the grid part way in.
-                        from: target
-                            .saturating_sub(section_trigger.consumed())
-                            .saturating_sub(section.bounds.end_time),
+                        from: section_trigger.past_end(target),
                         lookahead: loop_trigger_lookahead,
                         skew_samples: audio_clock_skew_samples,
                         crossfade_samples,
@@ -1973,7 +1969,6 @@ impl AudioDevice for Device {
                 if let Some(jump) =
                     section_trigger.jump_effective(Some(section), elapsed, loop_trigger_lookahead)
                 {
-                    let trigger_time = jump.at;
                     let pending = match pending_sources.take() {
                         Some((_, srcs)) => srcs,
                         None => {
@@ -2004,13 +1999,9 @@ impl AudioDevice for Device {
                     // audio content, not the clock epoch (see where
                     // `audio_clock_skew_samples` is captured). The shift is a
                     // constant, so inter-boundary spacing is unchanged.
-                    let loop_sample = crate::section_loop::loop_boundary_sample(
-                        now_sample,
-                        elapsed,
-                        trigger_time,
-                        mixer_sample_rate,
-                    )
-                    .saturating_add(audio_clock_skew_samples);
+                    let loop_sample = jump
+                        .boundary_sample(now_sample, elapsed, mixer_sample_rate)
+                        .saturating_add(audio_clock_skew_samples);
                     // At a section-loop boundary the loop-point content
                     // coincides on both sources: the section's `end_time` on
                     // the outgoing source is the same musical moment as its
