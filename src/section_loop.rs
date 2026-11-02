@@ -525,17 +525,29 @@ pub fn publish_jumps(publisher: JumpPublisher) {
     }
     // Where the song ends, read again every so often: a show edited while
     // it plays (hot reload) moves the end of a song with no audio, and the
-    // loop point with it.
+    // loop point with it. Read on a thread of its own after the first: a
+    // read may parse the song's show (or MIDI) file, which is not to hold up
+    // a jump.
     const REREAD: Duration = Duration::from_millis(250);
-    let read_end = || {
-        let end = song.as_deref().map(end_without_audio);
-        let whole_song = song
-            .as_deref()
-            .and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
+    let read_end = |song: Option<&crate::songs::Song>| {
+        let end = song.map(end_without_audio);
+        let whole_song = song.and_then(|song| WholeSongLoop::of(song, end.unwrap_or_default()));
         (end, whole_song)
     };
-    let (mut end, mut whole_song) = read_end();
-    let mut read_at = std::time::Instant::now();
+    let (mut end, mut whole_song) = read_end(song.as_deref());
+    let (reads_tx, reads) = std::sync::mpsc::channel();
+    {
+        let song = song.clone();
+        // It stops once this has, its next read having nowhere to go.
+        let _ = std::thread::Builder::new()
+            .name("mtrack-jump-publisher-reread".into())
+            .spawn(move || loop {
+                std::thread::sleep(REREAD);
+                if reads_tx.send(read_end(song.as_deref())).is_err() {
+                    return;
+                }
+            });
+    }
     // A new end is taken up once two reads in a row agree on it, and never
     // nothing: a show caught part way through being written (emptied, or
     // short) is not the show it is becoming.
@@ -545,8 +557,7 @@ pub fn publish_jumps(publisher: JumpPublisher) {
     let mut settled = !end.is_some_and(|end| end.is_zero());
     let mut trigger = SectionLoopTrigger::new();
     while !finished() {
-        if read_at.elapsed() >= REREAD {
-            let (read, read_whole) = read_end();
+        for (read, read_whole) in reads.try_iter() {
             if read == seen {
                 if read != end && (read.is_some_and(|end| !end.is_zero()) || !settled) {
                     (end, whole_song) = (read, read_whole);
@@ -554,7 +565,6 @@ pub fn publish_jumps(publisher: JumpPublisher) {
                 settled = true;
             }
             seen = read;
-            read_at = std::time::Instant::now();
         }
         let elapsed = start_time + clock.elapsed();
         let effective = effective_section(
