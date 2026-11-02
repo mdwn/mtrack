@@ -213,27 +213,42 @@ export function beamLength(
   return { length: options.skyLength, onDeck: false };
 }
 
+/** The channels a fixture's look is read from. */
+export interface LookChannels {
+  red?: number;
+  green?: number;
+  blue?: number;
+  dimmer?: number;
+  strobe?: number;
+  white?: number;
+}
+
+/** What a fixture shows: its colour scaled by its level (0-1 a
+ *  component), how bright that is, and whether a strobe has it lit now. */
+export interface Look {
+  rgb: [number, number, number];
+  intensity: number;
+  strobeOn: boolean;
+}
+
 /**
- * The colour and level a fixture's channels show, as the 2D view reads
- * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
- * white by `dimmer` alone. A CMY fixture's state carries the engine's RGB
- * (its flags take the complement at output), so it shows its colour here
- * too. A colour wheel is not read: the engine sends it no colour, and the
- * fixture shows as a dimmer-only white.
- * `undefined` (nothing reported for the fixture) is dark, not full.
+ * The colour and level a fixture's channels show, as every stage view
+ * reads them (the 2D plot, its beams, the 3D scene): `red`/`green`/`blue`
+ * (+ `white`) mixed by `dimmer`, or a warm white by `dimmer` alone. A CMY
+ * fixture's state carries the engine's RGB (its flags take the complement
+ * at output), so it shows its colour here too. A colour wheel is not read:
+ * the engine sends it no colour, and the fixture shows as a dimmer-only
+ * white. `undefined` (nothing reported for the fixture) is dark, not full.
+ *
+ * `strobeHz` is the rate the server reads back from the fixture's strobe
+ * byte through its own strobe curve (the state's `strobe_hz`); the look
+ * flashes at it, half on, half off. Without one it is steady.
  */
 export function beamLook(
-  channels:
-    | {
-        red?: number;
-        green?: number;
-        blue?: number;
-        dimmer?: number;
-        strobe?: number;
-        white?: number;
-      }
-    | undefined,
-): { rgb: [number, number, number]; intensity: number; strobeOn: boolean } {
+  channels: LookChannels | undefined,
+  strobeHz?: number,
+  nowMs = Date.now(),
+): Look {
   // No state at all for the fixture (idle player, nothing reported yet):
   // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
   if (!channels) return { rgb: [0, 0, 0], intensity: 0, strobeOn: true };
@@ -252,14 +267,21 @@ export function beamLook(
     g = Math.min(1, g + w);
     b = Math.min(1, b + w);
   }
-  let strobeOn = true;
-  const strobe = channels.strobe ?? 0;
-  if (strobe > 10) {
-    const freq = 2 + (strobe / 255) * 18;
-    strobeOn = Math.sin((Date.now() / 1000) * freq * Math.PI * 2) > 0;
-  }
+  const strobeOn =
+    !(strobeHz && strobeHz > 0) ||
+    Math.sin((nowMs / 1000) * strobeHz * Math.PI * 2) > 0;
   const intensity = ((r + g + b) / 3) * dimmer;
   return { rgb: [r * dimmer, g * dimmer, b * dimmer], intensity, strobeOn };
+}
+
+/** A look's colour as 0-255 components, dark while a strobe has it off. */
+export function lookRgb255(look: Look): [number, number, number] {
+  if (!look.strobeOn) return [0, 0, 0];
+  return [
+    Math.round(look.rgb[0] * 255),
+    Math.round(look.rgb[1] * 255),
+    Math.round(look.rgb[2] * 255),
+  ];
 }
 
 /**

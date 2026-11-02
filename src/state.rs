@@ -61,6 +61,29 @@ pub struct StateSnapshot {
     /// their channels), sorted: their `fixtures`, `cells` and `poses`
     /// show the test's bytes, which are what leaves for olad.
     pub under_test: Vec<String>,
+    /// The rate each fixture strobing on a strobe channel of its own
+    /// flashes at, in hertz, read back from its byte through its own
+    /// strobe curve ([`FixtureInfo::strobe_hz`]): the stage views flash at
+    /// it rather than guessing from the byte.
+    ///
+    /// [`FixtureInfo::strobe_hz`]: crate::lighting::effects::FixtureInfo::strobe_hz
+    pub strobe_hz: std::collections::BTreeMap<String, f64>,
+}
+
+/// The strobe rate of each fixture whose strobe channel is strobing, by
+/// name (see [`StateSnapshot::strobe_hz`]).
+pub(crate) fn strobe_rates(
+    fixtures: &[FixtureSnapshot],
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) -> std::collections::BTreeMap<String, f64> {
+    fixtures
+        .iter()
+        .filter_map(|f| {
+            let byte = *f.channels.get("strobe")?;
+            let hz = registry.get(&f.name)?.strobe_hz(byte)?;
+            Some((f.name.clone(), hz))
+        })
+        .collect()
 }
 
 /// A fixture test's output as the stage views see it: the bytes the
@@ -339,11 +362,13 @@ pub(crate) fn engine_snapshot(
             (compute_pose_snapshots(&poses, registry), under_test)
         }
     };
+    let strobe_hz = strobe_rates(&fixtures, registry);
     StateSnapshot {
         fixtures,
         active_effects,
         poses,
         under_test,
+        strobe_hz,
     }
 }
 
@@ -816,6 +841,7 @@ mod tests {
             active_effects: vec!["effect1".to_string()],
             poses: Vec::new(),
             under_test: Vec::new(),
+            strobe_hz: Default::default(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.fixtures.len(), 1);
@@ -1388,5 +1414,98 @@ mod tests {
             "an unganged channel has no mirrors"
         );
         assert!(is_pointing_channel("pan#2") && !is_pointing_channel("red#2"));
+    }
+
+    /// The byte the engine puts on `fixture`'s strobe channel for `hz`.
+    fn engine_strobe_byte(fixture: &crate::lighting::effects::FixtureInfo, hz: f64) -> u8 {
+        use crate::lighting::effects::{EffectInstance, EffectType, TempoAwareFrequency};
+        let channel = fixture.channels["strobe"];
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(fixture.clone());
+        engine
+            .start_effect(EffectInstance::new(
+                "s".to_string(),
+                EffectType::Strobe {
+                    frequency: TempoAwareFrequency::Fixed(hz),
+                    duration: Duration::from_secs(5),
+                },
+                vec![fixture.name.clone()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        engine
+            .update(Duration::from_millis(16), None)
+            .unwrap()
+            .iter()
+            .find(|c| c.channel == channel)
+            .map_or(0, |c| c.value)
+    }
+
+    #[test]
+    fn a_strobe_byte_reads_back_as_the_rate_the_engine_set_it_for() {
+        use crate::lighting::effects::FixtureInfo;
+        use crate::lighting::types::StrobeCurve;
+        // A PixelBrick: 0.4..25 Hz from DMX 7, in period (as measured) and
+        // linear in hertz.
+        let brick = |curve| {
+            let mut fixture = FixtureInfo::new(
+                "Brick".to_string(),
+                1,
+                1,
+                "Brick".to_string(),
+                HashMap::from([
+                    ("red".to_string(), 1),
+                    ("green".to_string(), 2),
+                    ("blue".to_string(), 3),
+                    ("strobe".to_string(), 4),
+                ]),
+                Some(25.0),
+            );
+            fixture.min_strobe_frequency = Some(0.4);
+            fixture.strobe_dmx_offset = Some(7);
+            fixture.strobe_curve = curve;
+            fixture
+        };
+        // A GDTF fixture with a twelve-step declared table over DMX 64..95.
+        let robe = {
+            let description = crate::lighting::gdtf::parse_description(
+                &crate::lighting::gdtf::robe_strobe_description(),
+            )
+            .unwrap();
+            let mut fixture_type = crate::lighting::gdtf::distill(&description, "8: RGBS", "Robe")
+                .unwrap()
+                .fixture_type;
+            fixture_type.set_source(crate::lighting::types::GdtfSource {
+                path: "lighting/library/robe.gdtf".to_string(),
+            });
+            crate::lighting::system::fixture_info_for("Robe", 1, 1, "Robe", &fixture_type)
+        };
+        assert_eq!(robe.strobe_curve, StrobeCurve::Declared);
+
+        for fixture in [brick(StrobeCurve::Period), brick(StrobeCurve::Linear), robe] {
+            for hz in [0.5, 1.0, 2.0, 4.0, 7.5, 10.0, 15.0, 20.0] {
+                let byte = engine_strobe_byte(&fixture, hz);
+                let read = fixture
+                    .strobe_hz(byte)
+                    .unwrap_or_else(|| panic!("{:?} {hz} Hz: byte {byte}", fixture.strobe_curve));
+                // The rate read back is one the engine puts on that byte.
+                assert_eq!(
+                    engine_strobe_byte(&fixture, read),
+                    byte,
+                    "{:?} {hz} Hz reads back as {read}",
+                    fixture.strobe_curve
+                );
+            }
+            assert_eq!(
+                fixture.strobe_hz(0),
+                None,
+                "{:?}: off",
+                fixture.strobe_curve
+            );
+        }
+        // Below the strobe range does not strobe.
+        assert_eq!(brick(StrobeCurve::Period).strobe_hz(3), None);
     }
 }

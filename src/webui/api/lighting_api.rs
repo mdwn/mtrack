@@ -2095,15 +2095,24 @@ pub(super) async fn evaluate_lighting(
     // The lighting system is a `parking_lot` mutex shared with the effects
     // loop, and evaluation is pure CPU besides: off the async worker.
     let evaluated = tokio::task::spawn_blocking(move || {
-        crate::lighting::evaluate::evaluate_with_system(
+        let evaluated = crate::lighting::evaluate::evaluate_with_system(
             shows,
             tempo.as_ref(),
             &times,
             lighting_system.as_deref(),
-        )
+        );
+        // The venue's fixtures, for their strobe curves.
+        let registry: std::collections::HashMap<_, _> = lighting_system
+            .as_deref()
+            .and_then(|system| system.lock().get_current_venue_fixtures().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|info| (info.name.clone(), info))
+            .collect();
+        (evaluated, registry)
     })
     .await;
-    let evaluated = match evaluated {
+    let (evaluated, registry) = match evaluated {
         Ok(evaluated) => evaluated,
         Err(e) => {
             return error(
@@ -2144,6 +2153,7 @@ pub(super) async fn evaluate_lighting(
                 "fixtures": fixtures,
                 "poses": poses,
                 "cells": cells,
+                "strobe_hz": crate::state::strobe_rates(&evaluation.fixtures, &registry),
                 "active_effects": active,
             })
         })

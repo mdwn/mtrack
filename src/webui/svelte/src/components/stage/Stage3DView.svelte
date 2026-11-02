@@ -50,6 +50,7 @@
   import { t } from "svelte-i18n";
   import {
     cellStore,
+    strobeStore,
     fixtureStore,
     metadataStore,
     poseStore,
@@ -200,7 +201,12 @@
       ? { fixtures: fileLight, poses: {}, cells: {} }
       : previewFrame
         ? previewFrame
-        : { fixtures: $fixtureStore, poses: $poseStore, cells: $cellStore },
+        : {
+            fixtures: $fixtureStore,
+            poses: $poseStore,
+            cells: $cellStore,
+            strobe_hz: $strobeStore,
+          },
   );
   const wheels = $derived(wheelFixtureCount(shownMeta));
   const noState = $derived(
@@ -320,6 +326,11 @@
   });
   $effect(() => {
     scene?.setCells(shown.cells);
+  });
+  $effect(() => {
+    scene?.setStrobeRates(
+      ("strobe_hz" in shown ? shown.strobe_hz : undefined) ?? {},
+    );
   });
   $effect(() => {
     scene?.setLabels(labels ?? fixtureCount <= 40);

@@ -24,6 +24,7 @@ import {
   deckExtent,
   genericRig,
   isMover,
+  lookRgb255,
   poseRotations,
   trayPositions,
   type RigModel,
@@ -170,6 +171,20 @@ test.describe("stage rig math", () => {
     expect(rgbOnly.intensity).toBeGreaterThan(0.3);
     // An explicit dimmer of zero is dark too.
     expect(beamLook({ dimmer: 0 }).intensity).toBe(0);
+  });
+
+  test("a strobe flashes at the rate the server reads from its curve", () => {
+    const channels = { red: 255, green: 0, blue: 0, dimmer: 255, strobe: 200 };
+    // 10 Hz: on for the first half of each 100 ms, off for the second.
+    expect(beamLook(channels, 10, 1000 + 25).strobeOn).toBe(true);
+    expect(beamLook(channels, 10, 1000 + 75).strobeOn).toBe(false);
+    expect(lookRgb255(beamLook(channels, 10, 1000 + 75))).toEqual([0, 0, 0]);
+    expect(lookRgb255(beamLook(channels, 10, 1000 + 25))).toEqual([255, 0, 0]);
+    // No rate from the server (nothing strobing): steady, whatever the
+    // byte says.
+    for (const now of [1025, 1075]) {
+      expect(beamLook(channels, undefined, now).strobeOn).toBe(true);
+    }
   });
 
   test("the tray and the deck extent hold everything", () => {

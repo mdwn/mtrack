@@ -61,6 +61,8 @@ export interface PreviewFrame {
   fixtures: Record<string, FixtureChannels>;
   poses: Record<string, FixturePose>;
   cells: CellChannels;
+  /** Each strobing fixture's rate in hertz, through its own strobe curve */
+  strobe_hz?: Record<string, number>;
 }
 
 export interface PreviewEvaluation extends PreviewFrame {
@@ -89,6 +91,7 @@ export function parsePreview(body: unknown): PreviewResult | null {
         fixtures: obj(e.fixtures) as unknown as PreviewFrame["fixtures"],
         poses: obj(e.poses) as unknown as PreviewFrame["poses"],
         cells: obj(e.cells) as unknown as PreviewFrame["cells"],
+        strobe_hz: obj(e.strobe_hz) as unknown as PreviewFrame["strobe_hz"],
         active_effects: arr<PreviewEffect>(e.active_effects).filter(isObj),
       })),
     untouched: arr<string>(body.untouched),

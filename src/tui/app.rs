@@ -483,6 +483,7 @@ mod tests {
                 active_effects: vec!["chase".to_string()],
                 poses: Vec::new(),
                 under_test: Vec::new(),
+                strobe_hz: Default::default(),
             });
             let (_tx, state_rx) = watch::channel(snapshot);
             let mut app = App::new(player, state_rx);

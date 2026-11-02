@@ -231,6 +231,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The tempo through many ramps**: reading the tempo at a time read the tempo before each ramp
   again from the top, doubling the work with every ramp before it, so an `offset` late in a show
   with a few dozen ramps could stall the parser. It is now one walk over the changes.
+- **Strobes in the stage views**: the 2D plot, its beams and the 3D view flashed a strobe at a
+  rate guessed from its byte (2-20 Hz, linear), whatever the fixture. The state stream (and the
+  preview's evaluation) now carries each strobing fixture's rate, read back from its byte through
+  its own strobe curve, and the views flash at it. The three views also mix colour and level one
+  way: a dimmer-only fixture shows lit on the 2D plot and its beams, and a white channel adds in.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status

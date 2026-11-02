@@ -478,6 +478,7 @@ pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
         "poses": poses,
         "cells": cells,
         "under_test": snapshot.under_test,
+        "strobe_hz": snapshot.strobe_hz,
     })
     .to_string()
 }
@@ -1453,6 +1454,7 @@ metronome: {}
             active_effects: Vec::new(),
             poses: Vec::new(),
             under_test: Vec::new(),
+            strobe_hz: Default::default(),
         }));
         let parsed: serde_json::Value =
             serde_json::from_str(&build_state_json(&state_rx.borrow())).unwrap();
@@ -1482,6 +1484,7 @@ metronome: {}
             active_effects: vec!["chase".to_string()],
             poses: Vec::new(),
             under_test: Vec::new(),
+            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 
@@ -1528,6 +1531,7 @@ metronome: {}
             active_effects: Vec::new(),
             poses: Vec::new(),
             under_test: Vec::new(),
+            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 
@@ -1895,6 +1899,7 @@ metronome: {}
             active_effects: vec![],
             poses: Vec::new(),
             under_test: Vec::new(),
+            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 

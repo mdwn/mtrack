@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import { beamLook, lookRgb255 } from "./rig";
+
 /**
  * Stage layout shared by the dashboard's stage view and the timeline
  * editor's preview.
@@ -266,10 +268,7 @@ export function drawBeam(
   hasFloor: boolean,
   options: { dark: boolean; width: number; dot: number },
 ): void {
-  const k = (channels.dimmer ?? 255) / 255;
-  const r = Math.round((channels.red ?? 0) * k);
-  const g = Math.round((channels.green ?? 0) * k);
-  const b = Math.round((channels.blue ?? 0) * k);
+  const [r, g, b] = lookRgb255(beamLook(channels));
   const lit = r + g + b > 24;
   const neutral = options.dark ? "255,255,255" : "0,0,0";
   ctx.strokeStyle = lit ? `rgba(${r},${g},${b},0.55)` : `rgba(${neutral},0.18)`;

@@ -25,6 +25,7 @@
     reloadStore,
     venueStore,
     poseStore,
+    strobeStore,
     underTestStore,
   } from "../lib/ws/stores";
   import type {
@@ -43,6 +44,7 @@
     type VenueError,
   } from "../lib/api/config";
   import type { FixturePose } from "../lib/ws/stores";
+  import { beamLook, lookRgb255 } from "../lib/stage/rig";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { deckFootprint, restAim } from "../lib/stage/aim";
@@ -570,6 +572,8 @@
     // Per-cell values ride the same state message as the channels; read
     // here so a redraw for either shows both.
     const cellStates = get(cellStore);
+    // A file being viewed has no engine behind it, so nothing strobes.
+    const strobeRates = viewingFile ? {} : get(strobeStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -623,29 +627,11 @@
       const meta = shownFixtures[name];
       const isUnplaced = frame !== null && meta.position == null;
 
-      const state = fixtureStates[name] || {};
-      const r = state.red || 0;
-      const g = state.green || 0;
-      const b = state.blue || 0;
-      const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-      const strobe = state.strobe || 0;
-
-      const brightness = dimmer / 255;
-      const fr = Math.round(r * brightness);
-      const fg = Math.round(g * brightness);
-      const fb = Math.round(b * brightness);
-
-      let strobeVisible = true;
-      if (strobe > 10) {
-        const freq = 2 + (strobe / 255) * 18;
-        const phase = (Date.now() / 1000) * freq;
-        strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
-      }
-
-      const intensity = (fr + fg + fb) / (3 * 255);
-      const finalR = strobeVisible ? fr : 0;
-      const finalG = strobeVisible ? fg : 0;
-      const finalB = strobeVisible ? fb : 0;
+      const state = fixtureStates[name];
+      const look = beamLook(state, strobeRates[name]);
+      const strobeVisible = look.strobeOn;
+      const intensity = look.intensity;
+      const [finalR, finalG, finalB] = lookRgb255(look);
 
       // Glow
       if (intensity > 0.02 && strobeVisible) {
@@ -680,10 +666,11 @@
       const cellColor = (cell: { name: string }) => {
         const own = cellState?.[cell.name];
         if (!own) return `rgb(${finalR},${finalG},${finalB})`;
-        const k = (own.dimmer ?? dimmer) / 255;
-        const cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
-        const cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
-        const cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
+        // A cell without a dimmer of its own takes the fixture's.
+        const [cr, cg, cb] = lookRgb255({
+          ...beamLook({ dimmer: state?.dimmer, ...own }),
+          strobeOn: strobeVisible,
+        });
         return `rgb(${cr},${cg},${cb})`;
       };
       const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;

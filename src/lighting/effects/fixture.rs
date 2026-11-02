@@ -682,6 +682,81 @@ impl FixtureInfo {
     pub fn profile(&self) -> &FixtureProfile {
         &self.cached_profile
     }
+
+    /// The rate, in hertz, a byte on the fixture's strobe channel flashes
+    /// at: what the engine reads back from the rate it set it for, through
+    /// the same curve (the declared table or the function's endpoints,
+    /// linear in hertz, or linear in the period between the type's limits).
+    /// `None` for a byte that does not strobe: 0, or below the strobe range.
+    pub fn strobe_hz(&self, byte: u8) -> Option<f64> {
+        use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
+        if byte == 0 {
+            return None;
+        }
+        let max_freq = self.max_strobe_frequency.unwrap_or(20.0);
+        let min_freq = self.min_strobe_frequency.unwrap_or(0.0);
+        let dmx_offset = self.strobe_dmx_offset.unwrap_or(0);
+        let min_normalized = f64::from(dmx_offset) / 255.0;
+        // The centre of the byte: the engine's level truncates to it.
+        let normalized = ((f64::from(byte) + 0.5) / 255.0).min(1.0);
+        let linear = matches!(
+            self.strobe_curve,
+            StrobeCurve::Linear | StrobeCurve::Declared
+        );
+        let function = linear
+            .then(|| strobe_function(&self.channel_defs))
+            .flatten();
+        let endpoints = function.and_then(|f| {
+            let hz = f.physical.filter(|p| p.unit == PhysicalUnit::Hertz)?;
+            Some(FunctionStep {
+                dmx_from: f.dmx_from,
+                dmx_to: f.dmx_to,
+                from: hz.from,
+                to: hz.to,
+            })
+        });
+        let table = match function {
+            Some(f) if self.strobe_curve == StrobeCurve::Declared && !f.steps.is_empty() => {
+                Some(f.steps.as_slice())
+            }
+            _ => endpoints.as_ref().map(std::slice::from_ref),
+        };
+        if let Some(steps) = table {
+            // The engine puts a rate on the byte of its step, linear inside it.
+            let dmx = f64::from(byte);
+            let step = steps.iter().find(|s| {
+                f64::from(s.dmx_from.min(s.dmx_to)) <= dmx
+                    && dmx <= f64::from(s.dmx_from.max(s.dmx_to))
+            })?;
+            let span = f64::from(step.dmx_to) - f64::from(step.dmx_from);
+            let fraction = if span.abs() < f64::EPSILON {
+                0.0
+            } else {
+                (dmx - f64::from(step.dmx_from)) / span
+            };
+            let hz = step.from + fraction * (step.to - step.from);
+            return (hz > 0.0).then_some(hz);
+        }
+        if normalized < min_normalized {
+            return None;
+        }
+        let fraction = if min_normalized < 1.0 {
+            ((normalized - min_normalized) / (1.0 - min_normalized)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let hz = if linear && max_freq > min_freq {
+            min_freq + fraction * (max_freq - min_freq)
+        } else if max_freq > 0.0 && min_freq > 0.0 && dmx_offset > 0 {
+            // Linear in the period between the type's limits.
+            let max_period = 1.0 / min_freq;
+            let min_period = 1.0 / max_freq;
+            1.0 / (max_period - fraction * (max_period - min_period))
+        } else {
+            normalized * max_freq
+        };
+        (hz > 0.0).then_some(hz)
+    }
 }
 
 #[cfg(test)]

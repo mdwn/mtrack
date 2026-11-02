@@ -272,6 +272,13 @@ export const fixtureStore = writable<Record<string, FixtureChannels>>({});
  */
 export const cellStore = writable<CellChannels>({});
 
+/**
+ * The rate each fixture strobing on a strobe channel of its own flashes at,
+ * in hertz: read back by the server from its strobe byte through the
+ * fixture's own strobe curve. A fixture absent here is not strobing.
+ */
+export const strobeStore = writable<Record<string, number>>({});
+
 /** Where a mover points, from the engine's pose memory. */
 export interface FixturePose {
   pan: number;
@@ -351,6 +358,7 @@ on("state", (msg) => {
     poses?: Record<string, FixturePose>;
     cells?: CellChannels;
     under_test?: string[];
+    strobe_hz?: Record<string, number>;
   };
   // Before the channels: a plot redraws on them and reads this.
   underTestStore.set(m.under_test ?? []);
@@ -358,6 +366,7 @@ on("state", (msg) => {
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});
   cellStore.set(m.cells ?? {});
+  strobeStore.set(m.strobe_hz ?? {});
 });
 
 on("metadata", (msg) => {
