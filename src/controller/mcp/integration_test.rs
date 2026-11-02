@@ -5202,9 +5202,13 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
             &url_clone,
             &session_clone,
             Duration::from_secs(5),
+            // The fixture's unlock is a state change too, and its
+            // notification can arrive first: wait for the switch's.
             |v| {
                 v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
                     && v["params"]["uri"].as_str() == Some("mtrack://status")
+                    && v["params"]["_meta"]["mtrack.status"]["playlist_name"].as_str()
+                        == Some("all_songs")
             },
         )
         .await
