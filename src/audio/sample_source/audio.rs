@@ -269,7 +269,7 @@ impl AudioSampleSource {
             source.leftover_samples.clear();
 
             // Target frame from the requested time (track timebase == frames).
-            let target_ts = (start.as_secs_f64() * sample_rate as f64).round() as u64;
+            let target_ts = crate::audio::duration_to_samples(start, sample_rate);
 
             // Seek a margin *before* the target so the codec decoder has
             // preceding frames to rebuild its state. Lossy codecs (MP3 bit

@@ -43,7 +43,7 @@ pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(10);
 
 /// Returns the default crossfade duration in samples for the given sample rate.
 pub fn default_crossfade_samples(sample_rate: u32) -> u64 {
-    (DEFAULT_CROSSFADE_DURATION.as_secs_f64() * sample_rate as f64) as u64
+    crate::audio::duration_to_samples(DEFAULT_CROSSFADE_DURATION, sample_rate)
 }
 
 /// Crossfade curve shape.

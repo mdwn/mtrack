@@ -51,6 +51,15 @@ pub fn next_source_id() -> u64 {
     SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// How many samples `duration` lasts at `sample_rate`, to the nearest one
+/// (half a sample rounds up). Every conversion of a time to a sample count
+/// goes through this, so two that should agree, such as a loop boundary and
+/// the crossfade scheduled on it, never differ by a sample from rounding
+/// one way here and the other there.
+pub fn duration_to_samples(duration: std::time::Duration, sample_rate: u32) -> u64 {
+    (duration.as_secs_f64() * sample_rate as f64).round() as u64
+}
+
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::PreparedSource>;
 
@@ -404,6 +413,24 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Audi
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Times convert to the nearest sample, half a sample rounding up, at
+    /// any rate, including ones a time does not divide evenly.
+    #[test]
+    fn durations_convert_to_the_nearest_sample() {
+        use std::time::Duration;
+        assert_eq!(duration_to_samples(Duration::ZERO, 48_000), 0);
+        assert_eq!(duration_to_samples(Duration::from_secs(1), 48_000), 48_000);
+        assert_eq!(duration_to_samples(Duration::from_millis(10), 44_100), 441);
+        // 220.5 samples: rounds up.
+        assert_eq!(duration_to_samples(Duration::from_millis(10), 22_050), 221);
+        // 165.375 and 661.5 samples.
+        assert_eq!(duration_to_samples(Duration::from_millis(15), 11_025), 165);
+        assert_eq!(duration_to_samples(Duration::from_millis(15), 44_100), 662);
+        // Just under half a sample at 48kHz rounds down.
+        assert_eq!(duration_to_samples(Duration::from_nanos(10_416), 48_000), 0);
+        assert_eq!(duration_to_samples(Duration::from_nanos(10_417), 48_000), 1);
+    }
 
     /// A device that has not turned up may still turn up, so init must keep
     /// waiting for it. This is the case the perpetual retry exists for.

@@ -29,6 +29,50 @@ use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{Engine, MidiDmxPlayback};
 
+/// The lighting timeline of the pass a crossfading loop jump starts (see
+/// [`super::timeline::song_lighting_timeline`]), built ahead of the jump.
+#[derive(Default)]
+struct NextPassTimeline {
+    /// The jump it is for, and where its build comes.
+    building: Option<(
+        crate::section_loop::SectionJump,
+        std::sync::mpsc::Receiver<Option<crate::lighting::timeline::LightingTimeline>>,
+    )>,
+}
+
+impl NextPassTimeline {
+    /// Starts building the timeline for `jump`, unless it is already.
+    fn build(&mut self, song: &Arc<Song>, jump: &crate::section_loop::SectionJump) {
+        if self.building.as_ref().is_some_and(|(of, _)| of == jump) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let song = song.clone();
+        let spawned = thread::Builder::new()
+            .name("mtrack-dmx-pass-build".into())
+            .spawn(move || {
+                let _ = tx.send(super::timeline::song_lighting_timeline(&song));
+            });
+        // Without a thread, it is built at the jump, as it always was.
+        self.building = spawned.is_ok().then_some((jump.clone(), rx));
+    }
+
+    /// The timeline for `jump`: the one built ahead, waiting for its build
+    /// to finish if it has not; built now if none was for it.
+    fn take(
+        &mut self,
+        song: &Song,
+        jump: &crate::section_loop::SectionJump,
+    ) -> Option<crate::lighting::timeline::LightingTimeline> {
+        match self.building.take() {
+            Some((of, rx)) if of == *jump => rx
+                .recv()
+                .unwrap_or_else(|_| super::timeline::song_lighting_timeline(song)),
+            _ => super::timeline::song_lighting_timeline(song),
+        }
+    }
+}
+
 impl Engine {
     /// Plays the given song through the DMX interface.
     pub fn play(
@@ -312,6 +356,12 @@ impl Engine {
                 // (a song that follows before this one's threads are all
                 // down) owns the timeline and the song time.
                 let ours = || dmx_engine.playback_generation() == generation;
+                // The timeline of the pass a crossfading jump starts, built
+                // on a thread of its own as soon as the jump is committed,
+                // and taken up as it falls due: building it may stat and
+                // parse the song's show files again, and copies their
+                // shows, which is not to be done at the seam.
+                let mut next_pass = NextPassTimeline::default();
                 while !cancel_handle.is_cancelled() && !stop_following.load(Ordering::Relaxed) {
                     // Closed first: a jump committed before it closed is then
                     // seen by the peek below.
@@ -323,7 +373,7 @@ impl Engine {
                         break;
                     }
                     while let Some(jump) = jumps.due(elapsed).filter(|_| ours()) {
-                        let position = elapsed.saturating_sub(jumps.consumed());
+                        let position = jumps.song_position(elapsed);
                         info!(
                             from = ?jump.from,
                             to = ?jump.to,
@@ -352,7 +402,7 @@ impl Engine {
                             // new one in song time, and fades out over the
                             // overlap as the new one fades in.
                             dmx_engine.begin_loop_crossfade(
-                                super::timeline::song_lighting_timeline(&song),
+                                next_pass.take(&song, &jump),
                                 jump.from,
                                 jump.to,
                                 jump.overlap,
@@ -379,8 +429,11 @@ impl Engine {
                             dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
                         }
                     }
-                    let position = elapsed.saturating_sub(jumps.consumed());
+                    let position = jumps.song_position(elapsed);
                     if let Some(next) = jumps.peek() {
+                        if !next.overlap.is_zero() {
+                            next_pass.build(&song, &next);
+                        }
                         // A jump committed and coming: this takes the time
                         // from the tracker now, not once the jump falls due.
                         // Left to the tracker until then, the time went on
@@ -600,5 +653,66 @@ impl Engine {
                 thread::sleep(Duration::from_millis(10));
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn song_with_show(dir: &std::path::Path) -> Result<Arc<Song>, Box<dyn Error>> {
+        let dsl_path = dir.join("show.dsl");
+        std::fs::write(
+            &dsl_path,
+            r#"show "long" {
+    @00:00.000
+    front_wash: static color: "blue", duration: 30s, dimmer: 100%
+}"#,
+        )?;
+        let song_config = crate::config::Song::new(
+            "Built ahead",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                dsl_path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            HashMap::new(),
+            Vec::new(),
+        );
+        Ok(Arc::new(Song::new(dir, &song_config)?))
+    }
+
+    fn pass(at_ms: u64) -> crate::section_loop::SectionJump {
+        crate::section_loop::SectionJump {
+            at: Duration::from_millis(at_ms),
+            from: Duration::from_millis(at_ms),
+            to: Duration::ZERO,
+            overlap: Duration::from_secs(4),
+            pass: true,
+        }
+    }
+
+    /// The next pass's timeline is the one built ahead for its jump, and
+    /// built at the jump for one it was not built for, as it always was.
+    #[test]
+    fn the_next_pass_timeline_is_built_ahead_for_its_jump() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let song = song_with_show(dir.path())?;
+        let mut next = NextPassTimeline::default();
+        next.build(&song, &pass(96_000));
+        // Asked again, the build under way is kept.
+        next.build(&song, &pass(96_000));
+        assert!(next.building.is_some());
+        assert!(next.take(&song, &pass(96_000)).is_some());
+        assert!(next.building.is_none());
+        // Built for another jump: that build is dropped, and this one's
+        // timeline built now.
+        next.build(&song, &pass(192_000));
+        assert!(next.take(&song, &pass(288_000)).is_some());
+        assert!(next.building.is_none());
+        Ok(())
     }
 }

@@ -116,12 +116,7 @@ impl OutgoingPass {
                 (elapsed, from + elapsed)
             }
         };
-        // No overlap is over at once, however little time has gone by.
-        let t = if self.overlap.is_zero() {
-            1.0
-        } else {
-            into.as_secs_f64() / self.overlap.as_secs_f64()
-        };
+        let t = crate::section_loop::crossfade_progress(into, self.overlap);
         let t = match self.hurry {
             Some((at, from, over)) => {
                 from + (1.0 - from) * at.elapsed().as_secs_f64()
