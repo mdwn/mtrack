@@ -243,25 +243,32 @@ test.describe("Config Save and Reload", () => {
 
 let wsCounter = 0;
 
-async function sendPlayback(
+/** Sends a playback update with the deferred reloads started (and the
+ *  last refused). */
+async function sendReloads(
   page: Page,
   wsId: string,
-  pending: boolean,
-  failed: string | null = null,
+  started: number,
+  refused: { generation: number; error: string } | null = null,
 ) {
   await page.request.post("http://127.0.0.1:3111/test/send-ws", {
     data: {
       ...PLAYBACK_STATE,
-      hardware_reload_pending: pending,
-      hardware_reload_failed: failed,
+      hardware_reload_started: started,
+      hardware_reload_refused: refused,
       _wsId: wsId,
     },
   });
 }
 
 /** Opens test-host's profile on a page of its own WebSocket, and answers
- *  its save as deferred. */
-async function openDeferredSave(page: Page): Promise<string> {
+ *  its save as deferred, waiting for reload generation `awaits` (with the
+ *  reply's other fields from `extra`). */
+async function openDeferredSave(
+  page: Page,
+  awaits: number,
+  extra: Record<string, unknown> = {},
+): Promise<string> {
   const wsId = `deferred-${test.info().parallelIndex}-${++wsCounter}-${Date.now()}`;
   await page.goto(`/?wsId=${wsId}#/config`);
   await page.locator(".profile-row", { hasText: "test-host" }).click();
@@ -275,6 +282,8 @@ async function openDeferredSave(page: Page): Promise<string> {
           checksum: "updated-checksum-1",
           applied: false,
           reload: "deferred",
+          awaits_reload: awaits,
+          ...extra,
         }),
       });
     } else {
@@ -287,42 +296,68 @@ async function openDeferredSave(page: Page): Promise<string> {
 }
 
 test.describe("Config save deferred under playback", () => {
-  // The notice says the hardware reloads when playback stops: once the
-  // player has run the reload, it goes.
-  test("the deferred notice goes once the reload has run", async ({ page }) => {
-    const wsId = await openDeferredSave(page);
+  // The notice is about the wait for playback to stop: it goes once the
+  // reload it waits for has started. What the reload makes of each device
+  // is the status page's to show.
+  test("the deferred notice goes once its reload has started", async ({
+    page,
+  }) => {
+    const wsId = await openDeferredSave(page, 3);
     const notice = page.locator(".save-msg.save-notice");
-    await expect(notice).toBeVisible();
-
-    await sendPlayback(page, wsId, true);
+    await expect(notice).toHaveText(
+      "Saved. The hardware reloads when playback stops.",
+    );
+    await sendReloads(page, wsId, 2);
     await page.waitForTimeout(300);
     await expect(notice).toBeVisible();
-    await sendPlayback(page, wsId, false);
+    await sendReloads(page, wsId, 3);
     await expect(notice).toHaveCount(0);
   });
 
-  // A deferred reload that fails when it runs is not cleared as though it
-  // were applied: the notice says it failed, and why.
-  test("a deferred reload that fails says so once it has run", async ({
+  // A stop before the first status update: the reload has started, and
+  // more besides, by the first update the page sees.
+  test("a stop before the first status update clears the notice", async ({
     page,
   }) => {
-    const wsId = await openDeferredSave(page);
+    const wsId = await openDeferredSave(page, 1);
     await expect(page.locator(".save-msg.save-notice")).toBeVisible();
-    await sendPlayback(page, wsId, true);
-    await page.waitForTimeout(300);
-    await sendPlayback(
-      page,
-      wsId,
-      false,
-      "audio: the device could not be opened",
-    );
-    const failed = page.locator(".save-msg.save-error");
-    await expect(failed).toContainText("The hardware reload failed");
-    await expect(failed).toContainText("could not be opened");
+    await sendReloads(page, wsId, 4);
     await expect(page.locator(".save-msg.save-notice")).toHaveCount(0);
+    await expect(page.locator(".save-msg.save-error")).toHaveCount(0);
   });
 
-  // A save whose song reload failed beside it says so, not "Saved".
+  // A reload that could not start at all is known at once, and said.
+  test("a deferred reload that could not start says why", async ({ page }) => {
+    const wsId = await openDeferredSave(page, 1);
+    await sendReloads(page, wsId, 1, {
+      generation: 1,
+      error: "No config store available",
+    });
+    const failed = page.locator(".save-msg.save-error");
+    await expect(failed).toContainText("could not start");
+    await expect(failed).toContainText("No config store available");
+  });
+
+  // A save whose song reload failed beside a deferred reload says both,
+  // and, when that reload could not start either, both failures.
+  test("both failures are shown", async ({ page }) => {
+    const wsId = await openDeferredSave(page, 1, {
+      songs_error: "failed to rescan songs: unreadable",
+    });
+    const notice = page.locator(".save-msg.save-notice");
+    await expect(notice).toContainText("reloads when playback stops");
+    await expect(notice).toContainText("songs could not be reloaded");
+    await sendReloads(page, wsId, 1, {
+      generation: 1,
+      error: "No config store available",
+    });
+    await expect(notice).toHaveCount(0);
+    const failed = page.locator(".save-msg.save-error");
+    await expect(failed).toContainText("could not start");
+    await expect(failed).toContainText("songs could not be reloaded");
+  });
+
+  // A save whose song reload failed says so, not "Saved".
   test("a save whose song reload failed says why", async ({ page }) => {
     await page.goto("/#/config");
     await page.locator(".profile-row", { hasText: "test-host" }).click();
@@ -347,46 +382,6 @@ test.describe("Config save deferred under playback", () => {
     });
     await page.locator("#profile-hostname").fill("new-hostname");
     await page.getByRole("button", { name: "Save" }).click();
-    await expect(page.locator(".save-msg.save-error")).toContainText(
-      "songs could not be reloaded",
-    );
-  });
-
-  // A deferred reload with the songs failed beside it says both, and is
-  // still followed: once the reload has run, the songs failure stays.
-  test("a deferred save with a songs failure says both and is followed", async ({
-    page,
-  }) => {
-    const wsId = `deferred-${test.info().parallelIndex}-${++wsCounter}-${Date.now()}`;
-    await page.goto(`/?wsId=${wsId}#/config`);
-    await page.locator(".profile-row", { hasText: "test-host" }).click();
-    await page.route("**/api/config/profiles/0", async (route) => {
-      if (route.request().method() === "PUT") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            yaml: "profiles:\n  - hostname: new-hostname\n    audio:\n      device: default\nsamples: {}\n",
-            checksum: "updated-checksum-1",
-            applied: false,
-            reload: "deferred",
-            songs_error: "failed to rescan songs: unreadable",
-          }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
-    await page.locator("#profile-hostname").fill("new-hostname");
-    await page.getByRole("button", { name: "Save" }).click();
-
-    const notice = page.locator(".save-msg.save-notice");
-    await expect(notice).toContainText("reloads when playback stops");
-    await expect(notice).toContainText("songs could not be reloaded");
-    await sendPlayback(page, wsId, true);
-    await page.waitForTimeout(300);
-    await sendPlayback(page, wsId, false);
-    await expect(notice).toHaveCount(0);
     await expect(page.locator(".save-msg.save-error")).toContainText(
       "songs could not be reloaded",
     );

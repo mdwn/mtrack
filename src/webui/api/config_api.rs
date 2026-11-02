@@ -267,6 +267,11 @@ fn config_apply_fields(
     if let Some(songs_error) = &outcome.songs_error {
         fields.insert("songs_error".into(), json!(songs_error));
     }
+    // The deferred reload generation a deferral waits for, for the web UI
+    // to clear its notice once the playback updates' started reaches it.
+    if let Some(awaits) = outcome.awaits {
+        fields.insert("awaits_reload".into(), json!(awaits));
+    }
     fields
 }
 
@@ -1447,6 +1452,9 @@ mod test {
         let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
         assert_eq!(body["status"], "saved");
         assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        // The deferred reload generation the save waits for, for the web
+        // UI to clear its notice by.
+        assert_eq!(body["awaits_reload"], serde_json::json!(1), "{body}");
         assert!(state.player.is_paused(), "the pause was kept");
         assert!(
             state.player.audio_device().is_some(),

@@ -234,7 +234,7 @@
   "config.addProfile": "Add Profile",
   "config.reloadDeferred": "Saved. The hardware reloads when playback stops.",
   "config.reloadFailed": "Saved, but the hardware did not reload.",
-  "config.reloadFailedLater": "The hardware reload failed: {reason}",
+  "config.reloadRefused": "The hardware reload could not start: {reason}",
   "config.songsNotReloaded": "The songs could not be reloaded: {reason}",
   "config.newProfile": "New Profile",
   "config.noProfilesDir": "No profiles in directory.",

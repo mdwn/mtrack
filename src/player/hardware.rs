@@ -140,6 +140,10 @@ pub struct ConfigChange {
     /// Why the songs could not be reloaded, when they could not: the player
     /// keeps the songs, and the song paths, it had.
     pub songs_error: Option<String>,
+    /// For a deferred hardware reload, the deferred reload generation it
+    /// waits for (see [`DeferredReloads`]): it has started once
+    /// `DeferredReloads::started` reaches it.
+    pub awaits: Option<u64>,
 }
 
 impl From<ConfigApply> for ConfigChange {
@@ -147,8 +151,24 @@ impl From<ConfigApply> for ConfigChange {
         ConfigChange {
             hardware,
             songs_error: None,
+            awaits: None,
         }
     }
+}
+
+/// The deferred hardware reloads, counted: each time one starts, or is
+/// refused (it cannot start at all), the generation goes up. A config save
+/// deferred waits for the generation after the one started when it was
+/// deferred, so a surface knows its wait for playback to stop is over once
+/// `started` reaches it, whatever it saw in between. What the reload's round
+/// then makes of each device is the hardware status's to say, per
+/// subsystem, not this.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeferredReloads {
+    /// The last generation started or refused.
+    pub started: u64,
+    /// The last refused, with its generation and why.
+    pub refused: Option<(u64, String)>,
 }
 
 impl ConfigChange {
@@ -763,6 +783,15 @@ impl Player {
     /// would cut the fade short. Returns which it did, for a config change's
     /// reply to say.
     pub async fn reload_hardware(self: &Arc<Self>) -> Result<HardwareReload, Box<dyn Error>> {
+        Ok(self.reload_hardware_awaiting().await?.0)
+    }
+
+    /// [`Player::reload_hardware`], with the deferred reload generation a
+    /// deferral waits for, taken under the join lock a deferred reload
+    /// starts under, so it is never one already started.
+    async fn reload_hardware_awaiting(
+        self: &Arc<Self>,
+    ) -> Result<(HardwareReload, Option<u64>), Box<dyn Error>> {
         let store = self.config_store().ok_or("No config store available")?;
 
         // Held until this reload has spawned its round, so a concurrent reload
@@ -803,17 +832,16 @@ impl Player {
                 });
             }
             info!("Hardware reload deferred until playback ends");
-            return Ok(HardwareReload::Deferred);
+            let awaits = self.deferred_reloads.lock().started + 1;
+            return Ok((HardwareReload::Deferred, Some(awaits)));
         }
         // This reload covers one deferred before it: the deferral is over,
-        // and the round below says once it is done how the reload went.
-        // The error cleared before the flag, so a status read never finds
-        // the reload over with the last one's error. The reload is applying
-        // from here: a device not present retries in the round, perhaps for
-        // good, and the status shows that per subsystem, not as a reload
-        // still waiting for playback to stop.
-        *self.hardware_reload_error.lock() = None;
-        self.hardware_reload_pending.store(false, Ordering::Release);
+        // and the next generation has started. The reload is applying from
+        // here: a device not present retries in the round, perhaps for good,
+        // and the hardware status shows that per subsystem.
+        if self.hardware_reload_pending.swap(false, Ordering::Relaxed) {
+            self.deferred_reloads.lock().started += 1;
+        }
 
         // Cancel the previous init round and take the replacement token here,
         // so the round spawned below carries it from the start.
@@ -870,44 +898,25 @@ impl Player {
         let init_player = self.clone();
         let bp = self.base_path.clone();
         spawn_after(&self.init_round, async move {
-            let round = cancel.clone();
             init_player.init_hardware_async(config, bp, cancel).await;
-            // A round a later reload cancelled leaves the saying to that
-            // one's. One that ran to its end says whether the hardware came
-            // up: a subsystem that gave up is a reload that failed, kept for
-            // the status, rather than one that reads as applied.
-            if !round.is_cancelled() {
-                let failed = {
-                    let hw = init_player.hardware.read();
-                    let mut errors: Vec<String> = hw
-                        .init_errors
-                        .iter()
-                        .map(|(subsystem, why)| format!("{subsystem}: {why}"))
-                        .collect();
-                    errors.sort();
-                    (!errors.is_empty()).then(|| errors.join("; "))
-                };
-                *init_player.hardware_reload_error.lock() = failed;
-            }
         });
         drop(join);
 
         info!("Hardware reload initiated");
-        Ok(HardwareReload::Applied)
+        Ok((HardwareReload::Applied, None))
     }
 
     /// Whether a hardware reload a config change asked for is deferred
-    /// until the player is idle. Cleared as the reload starts applying. The
-    /// status shows it, so a surface can say when the wait is over.
-    pub fn hardware_reload_pending(&self) -> bool {
-        self.hardware_reload_pending.load(Ordering::Acquire)
+    /// until the player is idle.
+    #[cfg(test)]
+    pub(crate) fn hardware_reload_pending(&self) -> bool {
+        self.hardware_reload_pending.load(Ordering::Relaxed)
     }
 
-    /// Why the last hardware reload failed, if it did: one that could not
-    /// run, or a round that ended with a subsystem given up. Cleared by the
-    /// next reload.
-    pub fn hardware_reload_error(&self) -> Option<String> {
-        self.hardware_reload_error.lock().clone()
+    /// The deferred hardware reloads started or refused so far, for the
+    /// status (see [`DeferredReloads`]).
+    pub fn deferred_reloads(&self) -> DeferredReloads {
+        self.deferred_reloads.lock().clone()
     }
 
     /// Applies a config change already saved to the config store to the
@@ -956,17 +965,22 @@ impl Player {
         };
         // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
         // await this.
-        let hardware = match self.reload_hardware().await.map_err(|e| e.to_string()) {
-            Ok(HardwareReload::Applied) => ConfigApply::Applied,
-            Ok(HardwareReload::Deferred) => ConfigApply::Deferred,
+        let (hardware, awaits) = match self
+            .reload_hardware_awaiting()
+            .await
+            .map_err(|e| e.to_string())
+        {
+            Ok((HardwareReload::Applied, _)) => (ConfigApply::Applied, None),
+            Ok((HardwareReload::Deferred, awaits)) => (ConfigApply::Deferred, awaits),
             Err(e) => {
                 warn!("Hardware reload after a config change failed: {}", e);
-                ConfigApply::Failed(e)
+                (ConfigApply::Failed(e), None)
             }
         };
         ConfigChange {
             hardware,
             songs_error,
+            awaits,
         }
     }
 
@@ -991,13 +1005,16 @@ impl Player {
             info!("Playback has ended: running the deferred hardware reload");
             if let Err(e) = player.reload_hardware().await.map_err(|e| e.to_string()) {
                 warn!("Deferred hardware reload failed: {}", e);
-                // Nothing will make it run now: it is over, failed, and the
-                // status says so. The error is written first, so a status
-                // read never finds it over with no error.
-                *player.hardware_reload_error.lock() = Some(e);
+                // Nothing will make it run now: the generation is over,
+                // refused, and the status says why.
+                {
+                    let mut reloads = player.deferred_reloads.lock();
+                    reloads.started += 1;
+                    reloads.refused = Some((reloads.started, e));
+                }
                 player
                     .hardware_reload_pending
-                    .store(false, Ordering::Release);
+                    .store(false, Ordering::Relaxed);
             }
         });
     }

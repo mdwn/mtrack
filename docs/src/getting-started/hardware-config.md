@@ -86,7 +86,9 @@ Two rules matter:
   first.
 
 mtrack reloads the hardware when you save a profile. While a song is playing or paused, the save
-is kept and the reload waits until the player is idle; the reply says so (`applied: false`).
+is kept and the reload waits until the player is idle; the reply says so (`applied: false`), and
+the web UI shows "Saved. The hardware reloads when playback stops." until the reload has started.
+How each device then comes up is on the status page, per subsystem.
 Before changing mappings, find your interface's name and channel count with
 [Discovering Devices](devices.md).
 

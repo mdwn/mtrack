@@ -305,11 +305,14 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "available_playlists": available_playlists,
             "persisted_playlist_name": persisted_playlist_name,
             "locked": status.locked,
-            // A config save's hardware reload waiting for the player to be
-            // idle, so the config page can say when it has run.
-            "hardware_reload_pending": status.hardware_reload_pending,
-            // Why it failed, once it has, for the notice to say so.
-            "hardware_reload_failed": status.hardware_reload_error,
+            // The deferred hardware reloads started (or refused): a config
+            // save's deferral is over once this reaches the generation its
+            // reply named. What each device then does is the hardware
+            // status's to say.
+            "hardware_reload_started": status.deferred_reloads.started,
+            "hardware_reload_refused": status.deferred_reloads.refused.as_ref().map(
+                |(generation, error)| json!({"generation": generation, "error": error})
+            ),
             "beat_grid": beat_grid,
             "available_sections": available_sections,
             "active_section": active_section,

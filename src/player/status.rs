@@ -75,11 +75,9 @@ pub struct PlayerStatus {
     pub auto_play: Option<(String, Duration)>,
     /// The looping song ending, and how long until its fade is over.
     pub ending: Option<(String, Duration)>,
-    /// A hardware reload a config change asked for, waiting for the player
-    /// to be idle or under way: cleared once it has run, well or not.
-    pub hardware_reload_pending: bool,
-    /// Why the last hardware reload failed, if it did.
-    pub hardware_reload_error: Option<String>,
+    /// The deferred hardware reloads started or refused, for a surface to
+    /// say when a save's wait for playback to stop is over.
+    pub deferred_reloads: super::DeferredReloads,
     /// Ambient light, `None` without a DMX engine.
     pub ambient: Option<DmxRead<AmbientStatus>>,
     /// The current song's lighting, `None` without a DMX engine;
@@ -276,8 +274,7 @@ impl Player {
             locked: self.is_locked(),
             auto_play,
             ending,
-            hardware_reload_pending: self.hardware_reload_pending(),
-            hardware_reload_error: self.hardware_reload_error(),
+            deferred_reloads: self.deferred_reloads(),
             ambient: None,
             lighting: None,
         }

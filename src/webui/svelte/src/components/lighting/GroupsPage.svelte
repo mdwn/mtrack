@@ -15,9 +15,8 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
-    DeferredReloadWatch,
     reloadNotice,
-    settledNotice,
+    settleNotice,
     type ReloadNotice,
   } from "../../lib/configReload";
   import { t } from "svelte-i18n";
@@ -58,23 +57,14 @@
   let saveMsg = $state("");
   let saveOk = $state(false);
   /** A save's reload waiting for playback to stop, or why it failed. */
-  let saveNotice = $state<ReloadNotice | null>(null);
-
-  // A deferred notice goes once its reload has run.
-  const deferredWatch = new DeferredReloadWatch();
-  $effect(() => {
-    const showing = saveNotice?.kind === "deferred";
-    const outcome = deferredWatch.settle(
-      showing,
-      $playbackStore.hardware_reload_pending,
-      $playbackStore.hardware_reload_failed,
-    );
-    if (outcome) {
-      // Done: the notice goes, or keeps a songs failure it carried.
-      // Failed: it says so, and why.
-      if (saveNotice) saveNotice = settledNotice(saveNotice, outcome);
-    }
-  });
+  let savedNotice = $state<ReloadNotice | null>(null);
+  // A deferred notice goes once the reload it waits for has started.
+  const saveNotice = $derived(
+    settleNotice(savedNotice, {
+      started: $playbackStore.hardware_reload_started,
+      refused: $playbackStore.hardware_reload_refused,
+    }),
+  );
   let selectEl: HTMLSelectElement | undefined = $state();
 
   $effect(() => {
@@ -113,7 +103,7 @@
     fileVersion = null;
     dirty = false;
     saveMsg = "";
-    saveNotice = null;
+    savedNotice = null;
     saveOk = false;
     if (!entry || !set) return;
     try {
@@ -185,7 +175,7 @@
     }
     saving = true;
     saveMsg = "";
-    saveNotice = null;
+    savedNotice = null;
     saveOk = false;
     try {
       const written = await writeProfile(
@@ -203,8 +193,8 @@
         set.inline = parseProfileYaml(snapshot.yaml).inline;
       }
       dirty = false;
-      saveNotice = reloadNotice(written.reload);
-      if (!saveNotice) {
+      savedNotice = reloadNotice(written.reload);
+      if (!savedNotice) {
         saveOk = true;
         setTimeout(() => (saveOk = false), 2000);
       }

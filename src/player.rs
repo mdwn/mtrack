@@ -17,7 +17,7 @@ mod playback;
 mod seek;
 mod status;
 
-pub use hardware::{ConfigApply, ConfigChange, HardwareReload};
+pub use hardware::{ConfigApply, ConfigChange, DeferredReloads, HardwareReload};
 pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;
@@ -405,8 +405,8 @@ pub struct Player {
     /// waited, which runs once the player is idle. Refusing it instead left
     /// a config save acknowledged while the rig kept the old config (#578).
     hardware_reload_pending: Arc<AtomicBool>,
-    /// Why the last hardware reload failed, if it did.
-    hardware_reload_error: Arc<parking_lot::Mutex<Option<String>>>,
+    /// The deferred hardware reloads started or refused, counted.
+    deferred_reloads: Arc<parking_lot::Mutex<hardware::DeferredReloads>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -746,7 +746,7 @@ impl Player {
             init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
-            hardware_reload_error: Arc::new(parking_lot::Mutex::new(None)),
+            deferred_reloads: Arc::default(),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -3980,57 +3980,43 @@ mod test {
         Ok(())
     }
 
-    /// A deferred reload stays pending until its round has run, and one
-    /// that fails is not cleared as though applied: the status keeps why.
+    /// A deferred config change names the deferred reload generation it
+    /// waits for, and the status counts it started once the reload starts:
+    /// a surface that missed every update in between still sees the wait is
+    /// over. One that cannot start at all is counted too, refused, with why.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_deferred_reload_is_pending_until_it_has_run_and_says_if_it_failed(
+    async fn a_deferred_reload_counts_its_generation_started_or_refused(
     ) -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let _dir = set_store_without_audio(&player)?;
+        assert_eq!(player.deferred_reloads(), DeferredReloads::default());
         player.play().await?;
-        player.reload_hardware().await?;
-        assert!(player.hardware_reload_pending());
+        let change = player.apply_config_change().await;
+        assert_eq!(change.hardware, ConfigApply::Deferred);
+        assert_eq!(change.awaits, Some(1));
+        // A second save in the same wait waits for the same reload.
+        assert_eq!(player.apply_config_change().await.awaits, Some(1));
         player.stop().await;
         eventually(
-            || !player.hardware_reload_pending(),
-            "the deferred reload never ran",
+            || player.deferred_reloads().started >= 1,
+            "the deferred reload never started",
         );
+        assert_eq!(player.deferred_reloads().refused, None);
         player.await_hardware_ready().await;
-        assert_eq!(player.hardware_reload_error(), None);
 
         // Deferred again, with nothing to reload from by the time it runs.
         player.play().await?;
-        player.reload_hardware().await?;
+        assert_eq!(player.apply_config_change().await.awaits, Some(2));
         *player.config_store.lock() = None;
-        // Read as a status reads it, all the while it fails: never over
-        // with no error.
-        let watch = {
-            let player = player.clone();
-            std::thread::spawn(move || {
-                let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                while std::time::Instant::now() < deadline {
-                    let pending = player.hardware_reload_pending();
-                    let error = player.hardware_reload_error();
-                    if !pending {
-                        return error.is_some();
-                    }
-                }
-                false
-            })
-        };
         player.stop().await;
-        assert!(
-            watch.join().unwrap(),
-            "the reload read as over with no error"
-        );
         eventually(
-            || player.hardware_reload_error().is_some(),
-            "the failed reload was not kept",
+            || player.deferred_reloads().started >= 2,
+            "the refused reload was not counted",
         );
+        let (generation, why) = player.deferred_reloads().refused.expect("refused");
+        assert_eq!(generation, 2);
+        assert!(why.contains("config store"), "{why}");
         assert!(!player.hardware_reload_pending());
-        assert!(player
-            .hardware_reload_error()
-            .is_some_and(|e| e.contains("config store")));
         Ok(())
     }
 
@@ -4260,6 +4246,7 @@ mod test {
         let change = ConfigChange {
             hardware: ConfigApply::Deferred,
             songs_error: Some("unreadable".into()),
+            awaits: None,
         };
         assert!(!change.applied());
         assert_eq!(change.kind(), "deferred");
@@ -4271,6 +4258,7 @@ mod test {
         let change = ConfigChange {
             hardware: ConfigApply::Applied,
             songs_error: Some("unreadable".into()),
+            awaits: None,
         };
         assert!(!change.applied());
         assert!(change.message().unwrap().contains("unreadable"));

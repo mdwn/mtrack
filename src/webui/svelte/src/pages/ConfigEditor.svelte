@@ -44,9 +44,8 @@
   } from "../lib/profileStore";
   import { playbackStore } from "../lib/ws/stores";
   import {
-    DeferredReloadWatch,
     reloadNotice,
-    settledNotice,
+    settleNotice,
     type ReloadNotice,
   } from "../lib/configReload";
   import ProfileCard from "../components/config/ProfileCard.svelte";
@@ -99,29 +98,15 @@
   /** A save's reload waiting for playback to stop, or why it failed. */
   let saveNotice = $state<ReloadNotice | null>(null);
 
-  // A deferred notice goes once its reload has run.
-  const deferredWatch = new DeferredReloadWatch();
+  // A deferred notice goes once the reload it waits for has started.
   $effect(() => {
-    const deferred = (n: ReloadNotice | null) => n?.kind === "deferred";
-    const showing =
-      deferred(saveNotice) ||
-      deferred(samplesNotice) ||
-      deferred(metronomeNotice);
-    const outcome = deferredWatch.settle(
-      showing,
-      $playbackStore.hardware_reload_pending,
-      $playbackStore.hardware_reload_failed,
-    );
-    if (outcome) {
-      // Done: the notice goes, or keeps a songs failure it carried.
-      // Failed: it says so, and why.
-      if (saveNotice && deferred(saveNotice))
-        saveNotice = settledNotice(saveNotice, outcome);
-      if (samplesNotice && deferred(samplesNotice))
-        samplesNotice = settledNotice(samplesNotice, outcome);
-      if (metronomeNotice && deferred(metronomeNotice))
-        metronomeNotice = settledNotice(metronomeNotice, outcome);
-    }
+    const reloads = {
+      started: $playbackStore.hardware_reload_started,
+      refused: $playbackStore.hardware_reload_refused,
+    };
+    saveNotice = settleNotice(saveNotice, reloads);
+    samplesNotice = settleNotice(samplesNotice, reloads);
+    metronomeNotice = settleNotice(metronomeNotice, reloads);
   });
   let dirty = $state(false);
   let audioDevices = $state<AudioDeviceInfo[]>([]);

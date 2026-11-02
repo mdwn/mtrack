@@ -26,6 +26,9 @@ export interface ConfigReload {
   message?: string;
   /** A song reload beside it that failed: the player keeps its songs. */
   songs_error?: string;
+  /** For a deferred reload, the deferred reload generation it waits for:
+   *  its wait is over once the playback updates' started reaches it. */
+  awaits_reload?: number;
 }
 
 /** A save's notice beside "Saved": the reload waiting for playback to stop,
@@ -34,8 +37,10 @@ export interface ReloadNotice {
   kind: "deferred" | "failed";
   text: string;
   /** A song reload that failed beside a deferred hardware reload: said
-   *  with it, and kept once the hardware reload has run. */
+   *  with it, and kept once the hardware reload has started. */
   songsError?: string;
+  /** For a deferred notice, the deferred reload generation it waits for. */
+  awaits?: number;
 }
 
 /** The notice a save's reply calls for, or null when its change is in
@@ -59,6 +64,7 @@ export function reloadNotice(
         default: "Saved. The hardware reloads when playback stops.",
       })} ${songsError}`,
       songsError,
+      awaits: reply.awaits_reload,
     };
   }
   if (reply.reload === "failed" || reply.songs_error) {
@@ -76,60 +82,41 @@ export function reloadNotice(
     text: get(t)("config.reloadDeferred", {
       default: "Saved. The hardware reloads when playback stops.",
     }),
+    awaits: reply.awaits_reload,
   };
 }
 
-/** What became of a deferred reload, once it has run: done, or failed and
- *  why. */
-export type DeferredOutcome =
-  | { failed: false }
-  | { failed: true; reason: string };
-
-/** Follows a deferred notice's hardware reload through the playback
- *  updates: `hardware_reload_pending` seen set and then clear again is the
- *  reload over, and `hardware_reload_failed` then says whether it failed.
- *  Feed it each update. */
-export class DeferredReloadWatch {
-  private seenPending = false;
-
-  /** The deferred reload's outcome, once it has run, while a deferred
-   *  notice is shown (`showing`); null until then. */
-  settle(
-    showing: boolean,
-    pending: boolean,
-    failed: string | null,
-  ): DeferredOutcome | null {
-    if (!showing) {
-      this.seenPending = false;
-      return null;
-    }
-    if (pending) {
-      this.seenPending = true;
-      return null;
-    }
-    if (!this.seenPending) return null;
-    this.seenPending = false;
-    return failed ? { failed: true, reason: failed } : { failed: false };
-  }
+/** The deferred hardware reloads, as the playback updates count them: the
+ *  last generation started (or refused), and the last refused, with why. */
+export interface DeferredReloads {
+  started: number;
+  refused: { generation: number; error: string } | null;
 }
 
-/** What a deferred notice becomes once its reload has run: the reload's
- *  failure, else the songs' failure it carried, else nothing. */
-export function settledNotice(
-  notice: ReloadNotice,
-  outcome: DeferredOutcome,
+/** What a deferred notice becomes, given the deferred reloads: the same
+ *  notice until the generation it waits for has started, then nothing, or
+ *  the failures that leaves -- the reload refused (it could not start at
+ *  all) and the songs failure the save carried, both when there are both.
+ *  Only the wait for playback to stop is followed: what the reload then
+ *  makes of each device is shown per subsystem on the status page. Any
+ *  other notice is answered as it is. */
+export function settleNotice(
+  notice: ReloadNotice | null,
+  reloads: DeferredReloads,
 ): ReloadNotice | null {
-  if (outcome.failed) return deferredFailedNotice(outcome.reason);
-  return notice.songsError ? { kind: "failed", text: notice.songsError } : null;
-}
-
-/** The notice for a deferred reload that has failed. */
-export function deferredFailedNotice(reason: string): ReloadNotice {
-  return {
-    kind: "failed",
-    text: get(t)("config.reloadFailedLater", {
-      values: { reason },
-      default: `The hardware reload failed: ${reason}`,
-    }),
-  };
+  if (notice?.kind !== "deferred" || notice.awaits === undefined) return notice;
+  if (reloads.started < notice.awaits) return notice;
+  const failures: string[] = [];
+  if (reloads.refused && reloads.refused.generation >= notice.awaits) {
+    failures.push(
+      get(t)("config.reloadRefused", {
+        values: { reason: reloads.refused.error },
+        default: `The hardware reload could not start: ${reloads.refused.error}`,
+      }),
+    );
+  }
+  if (notice.songsError) failures.push(notice.songsError);
+  return failures.length > 0
+    ? { kind: "failed", text: failures.join(" ") }
+    : null;
 }

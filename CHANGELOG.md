@@ -151,11 +151,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
   `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
   saves (profiles, samples, metronome, groups, Fit's added output) show "Saved. The hardware
-  reloads when playback stops." for a deferred save until the reload starts (the playback
-  updates' `hardware_reload_pending`; a device it then waits for shows on the status page), then
-  the reason if it could not run (`hardware_reload_failed`, also kept for a round that ended with
-  a subsystem given up), and the reason for a failed hardware or song reload, both when a deferred
-  reload has a song reload failed beside it. A
+  reloads when playback stops." for a deferred save until that reload has started: the save's reply
+  names the deferred reload it waits for (`awaits_reload`), and the playback updates count those
+  started (`hardware_reload_started`), so the notice clears even when the song stopped before the
+  page's next update. The notice covers the wait for playback to stop and nothing after it: how
+  each device then comes up, a failure arriving late included, is shown per subsystem on the
+  status page, as for any reload. A reload that cannot start at all is known at once
+  (`hardware_reload_refused`) and turns the notice into its reason. A failed hardware or song
+  reload is said, both when there are both. A
   reload that fails after the save is answered the same way on all three, with the new checksum
   and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
   leaving the client the old checksum of a config already saved.

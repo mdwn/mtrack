@@ -113,10 +113,10 @@ export interface PlaybackState {
   available_playlists: string[];
   persisted_playlist_name: string;
   locked: boolean;
-  /** A config save's hardware reload waiting for the player to be idle. */
-  hardware_reload_pending: boolean;
-  /** Why the last hardware reload failed, if it did. */
-  hardware_reload_failed: string | null;
+  /** The last deferred hardware reload generation started (or refused). */
+  hardware_reload_started: number;
+  /** The last deferred hardware reload refused, with why. */
+  hardware_reload_refused: { generation: number; error: string } | null;
   beat_grid: BeatGrid | null;
   looping: boolean;
   available_sections: SectionInfo[];
@@ -246,8 +246,8 @@ export const playbackStore = writable<PlaybackState>({
   available_playlists: [],
   persisted_playlist_name: "",
   locked: true,
-  hardware_reload_pending: false,
-  hardware_reload_failed: null,
+  hardware_reload_started: 0,
+  hardware_reload_refused: null,
   beat_grid: null,
   looping: false,
   available_sections: [],
@@ -322,8 +322,8 @@ on("playback", (msg) => {
     available_playlists: m.available_playlists ?? [],
     persisted_playlist_name: m.persisted_playlist_name ?? "",
     locked: m.locked ?? true,
-    hardware_reload_pending: m.hardware_reload_pending ?? false,
-    hardware_reload_failed: m.hardware_reload_failed ?? null,
+    hardware_reload_started: m.hardware_reload_started ?? 0,
+    hardware_reload_refused: m.hardware_reload_refused ?? null,
     beat_grid: m.beat_grid ?? null,
     looping: m.looping ?? false,
     available_sections: m.available_sections ?? [],
