@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { reloadNotice, type ReloadNotice } from "../../lib/configReload";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -51,6 +52,8 @@
   let saving = $state(false);
   let saveMsg = $state("");
   let saveOk = $state(false);
+  /** A save's reload waiting for playback to stop, or why it failed. */
+  let saveNotice = $state<ReloadNotice | null>(null);
   let selectEl: HTMLSelectElement | undefined = $state();
 
   $effect(() => {
@@ -89,6 +92,7 @@
     fileVersion = null;
     dirty = false;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     if (!entry || !set) return;
     try {
@@ -160,6 +164,7 @@
     }
     saving = true;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     try {
       const written = await writeProfile(
@@ -177,8 +182,11 @@
         set.inline = parseProfileYaml(snapshot.yaml).inline;
       }
       dirty = false;
-      saveOk = true;
-      setTimeout(() => (saveOk = false), 2000);
+      saveNotice = reloadNotice(written.reload);
+      if (!saveNotice) {
+        saveOk = true;
+        setTimeout(() => (saveOk = false), 2000);
+      }
     } catch (e: any) {
       if (e instanceof ConflictError) {
         // The profile file changed since it was opened: show it as it is
@@ -249,6 +257,13 @@
       <div class="groups-actions">
         {#if saveOk}
           <span class="save-msg">{$t("common.saved")}</span>
+        {:else if saveNotice}
+          <span
+            class="save-msg"
+            class:save-notice={saveNotice.kind === "deferred"}
+            class:save-error={saveNotice.kind === "failed"}
+            role="status">{saveNotice.text}</span
+          >
         {:else if saveMsg}
           <span class="save-msg save-error">{saveMsg}</span>
         {/if}
@@ -365,5 +380,8 @@
   }
   .save-error {
     color: var(--red);
+  }
+  .save-notice {
+    color: var(--yellow);
   }
 </style>

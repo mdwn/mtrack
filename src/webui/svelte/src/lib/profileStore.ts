@@ -35,6 +35,11 @@ import {
   type ProfileFileInfo,
 } from "./api/config";
 import { get } from "./api/rest";
+import {
+  reloadNotice,
+  type ConfigReload,
+  type ReloadNotice,
+} from "./configReload";
 
 /** Where one profile is stored. */
 export type ProfileRef =
@@ -153,10 +158,12 @@ export async function readProfile(
 
 /** What a profile write hands back: the new config snapshot for an inline
  *  profile (whose checksum the next save needs), or the new file version for
- *  a file profile (which the next save must present). */
+ *  a file profile (which the next save must present), and what became of
+ *  the hardware reload either way. */
 export interface ProfileWrite {
   snapshot: ConfigSnapshot | null;
   version: string | null;
+  reload: ConfigReload;
 }
 
 /** Writes one profile. Inline profiles are saved against the config
@@ -176,12 +183,12 @@ export async function writeProfile(
       profile,
       version ?? undefined,
     );
-    return { snapshot: null, version: saved };
+    return { snapshot: null, version: saved.version, reload: saved.reload };
   }
   const snapshot = isNew
     ? await addProfile(profile, checksum)
     : await updateProfile(ref.index, profile, checksum);
-  return { snapshot, version: null };
+  return { snapshot, version: null, reload: snapshot };
 }
 
 /** The profile the player is running: the one whose `hostname` matches what
@@ -235,12 +242,13 @@ export async function loadRunningLighting(): Promise<{
 
 /** Adds an output for `universe` (`{universe, name: "u<N>"}`) to the running
  *  profile's `dmx.universes` and saves it the way Config does, which is what
- *  makes the engine reload. Returns the profile's name. A universe the
- *  profile already lists is left alone. Throws when there is no profile to
- *  write to. */
+ *  makes the engine reload. Returns the profile's name, and the save's
+ *  reload notice (the reload waiting for playback to stop, or why it
+ *  failed), if it calls for one. A universe the profile already lists is
+ *  left alone. Throws when there is no profile to write to. */
 export async function addUniverseToRunningProfile(
   universe: number,
-): Promise<string> {
+): Promise<{ profile: string; notice: ReloadNotice | null }> {
   const [set, running] = await Promise.all([
     loadProfileSet(),
     fetchRunningProfile(),
@@ -257,9 +265,17 @@ export async function addUniverseToRunningProfile(
   );
   const dmx = (profile.dmx ??= {});
   const universes: any[] = (dmx.universes ??= []);
+  let notice: ReloadNotice | null = null;
   if (!universes.some((u) => u?.universe === universe)) {
     universes.push({ universe, name: `u${universe}` });
-    await writeProfile(entry.ref, profile, set.checksum, false, version);
+    const written = await writeProfile(
+      entry.ref,
+      profile,
+      set.checksum,
+      false,
+      version,
+    );
+    notice = reloadNotice(written.reload);
   }
-  return entry.name;
+  return { profile: entry.name, notice };
 }

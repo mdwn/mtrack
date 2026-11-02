@@ -105,6 +105,16 @@ impl ConfigApply {
         *self == ConfigApply::Applied
     }
 
+    /// Which it was, as a reply's `reload` field names it: `applied`,
+    /// `deferred` or `failed`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ConfigApply::Applied => "applied",
+            ConfigApply::Deferred => "deferred",
+            ConfigApply::Failed(_) => "failed",
+        }
+    }
+
     /// What a config change's reply says of the reload, when it is not
     /// applied.
     pub fn message(&self) -> Option<String> {

@@ -148,7 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface**: the web UI's config and profile saves answered 409 while a song played or was
   paused, or an auto play waited, while the same change over gRPC or MCP was saved and its
   hardware reload deferred. All three now save it and defer the reload, and the reply says so:
-  `applied: false` with a `message`, the web UI's status still 200 (201 for a new profile). A
+  `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
+  `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
+  saves (profiles, samples, metronome, groups, Fit's added output) show "Saved. The hardware
+  reloads when playback stops." for a deferred save, and the reason for a failed reload. A
   reload that fails after the save is answered the same way on all three, with the new checksum
   and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
   leaving the client the old checksum of a config already saved.

@@ -232,6 +232,8 @@
   "config.loadingConfig": "Loading configuration...",
   "config.hardwareProfiles": "Hardware Profiles",
   "config.addProfile": "Add Profile",
+  "config.reloadDeferred": "Saved. The hardware reloads when playback stops.",
+  "config.reloadFailed": "Saved, but the hardware did not reload.",
   "config.newProfile": "New Profile",
   "config.noProfilesDir": "No profiles in directory.",
   "config.noProfilesInline": "No profiles configured.",

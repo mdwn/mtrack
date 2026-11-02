@@ -171,4 +171,71 @@ test.describe("Config Save and Reload", () => {
       /checksum|mismatch|modified/i,
     );
   });
+
+  // A save while a song plays is kept and its hardware reload waits for the
+  // player to be idle: "Saved" alone read as a change already in effect.
+  test("a save deferred under playback says the hardware reloads later", async ({
+    page,
+  }) => {
+    await page.route("**/api/config/profiles/0", async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            yaml: "profiles:\n  - hostname: new-hostname\n    audio:\n      device: default\nsamples: {}\n",
+            checksum: "updated-checksum-1",
+            applied: false,
+            reload: "deferred",
+            message:
+              "The config was saved. A song is playing or paused, so the hardware reload waits until the player is idle, and the change takes effect then.",
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.locator("#profile-hostname").fill("new-hostname");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const notice = page.locator(".save-msg.save-notice");
+    await expect(notice).toHaveText(
+      "Saved. The hardware reloads when playback stops.",
+    );
+    // It stays, rather than passing like "Saved".
+    await page.waitForTimeout(2500);
+    await expect(notice).toBeVisible();
+  });
+
+  test("a save whose hardware reload failed says why", async ({ page }) => {
+    await page.route("**/api/config/profiles/0", async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            yaml: "profiles:\n  - hostname: new-hostname\n    audio:\n      device: default\nsamples: {}\n",
+            checksum: "updated-checksum-1",
+            applied: false,
+            reload: "failed",
+            message:
+              "The config was saved, but the hardware reload failed, so the change takes effect at the next reload or restart: no store",
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.locator("#profile-hostname").fill("new-hostname");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    await expect(page.locator(".save-msg.save-error")).toContainText(
+      "hardware reload failed",
+    );
+    await expect(page.locator(".save-msg.save-error")).toContainText(
+      "no store",
+    );
+  });
 });

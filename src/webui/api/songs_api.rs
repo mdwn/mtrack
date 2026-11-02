@@ -40,7 +40,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
             // so the frontend can construct lighting API paths.
             let base_dir = song
                 .base_path()
-                .strip_prefix(&state.songs_path())
+                .strip_prefix(state.songs_path())
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
@@ -51,7 +51,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .iter()
                 .filter_map(|show| {
                     show.file_path()
-                        .strip_prefix(&state.songs_path())
+                        .strip_prefix(state.songs_path())
                         .ok()
                         .map(|p| p.to_string_lossy().to_string())
                 })
@@ -63,7 +63,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .iter()
                 .filter_map(|show| {
                     show.dmx_file_path()
-                        .strip_prefix(&state.songs_path())
+                        .strip_prefix(state.songs_path())
                         .ok()
                         .map(|p| p.to_string_lossy().to_string())
                 })
@@ -107,7 +107,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
         .map(|f| {
             let base_dir = f
                 .base_path()
-                .strip_prefix(&state.songs_path())
+                .strip_prefix(state.songs_path())
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();

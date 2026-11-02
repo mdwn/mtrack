@@ -217,6 +217,9 @@ fn config_apply_fields(
     // client for a change that was not theirs.
     let mut fields = serde_json::Map::new();
     fields.insert("applied".into(), json!(outcome.applied()));
+    // Which it was, for the web UI to say so: a save deferred until the
+    // player is idle reads otherwise as one made.
+    fields.insert("reload".into(), json!(outcome.kind()));
     if let Some(message) = outcome.message() {
         fields.insert("message".into(), json!(message));
     }
@@ -1478,9 +1481,11 @@ mod test {
         assert!(!applied.contains_key("message"));
         let deferred = super::config_apply_fields(&ConfigApply::Deferred);
         assert_eq!(deferred["applied"], serde_json::json!(false));
+        assert_eq!(deferred["reload"], "deferred");
         assert!(deferred["message"].as_str().unwrap().contains("idle"));
         let failed = super::config_apply_fields(&ConfigApply::Failed("no store".into()));
         assert_eq!(failed["applied"], serde_json::json!(false));
+        assert_eq!(failed["reload"], "failed");
         let message = failed["message"].as_str().unwrap();
         assert!(
             message.contains("saved") && message.contains("no store"),
