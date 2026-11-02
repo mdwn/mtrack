@@ -12,7 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 test.describe("Config Save and Reload", () => {
   test.beforeEach(async ({ page }) => {
@@ -237,5 +238,54 @@ test.describe("Config Save and Reload", () => {
     await expect(page.locator(".save-msg.save-error")).toContainText(
       "no store",
     );
+  });
+});
+
+let wsCounter = 0;
+
+async function sendPlayback(page: Page, wsId: string, pending: boolean) {
+  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
+    data: {
+      ...PLAYBACK_STATE,
+      hardware_reload_pending: pending,
+      _wsId: wsId,
+    },
+  });
+}
+
+test.describe("Config save deferred under playback", () => {
+  // The notice says the hardware reloads when playback stops: once the
+  // player has run the reload, it goes.
+  test("the deferred notice goes once the reload has run", async ({ page }) => {
+    const wsId = `deferred-${test.info().parallelIndex}-${++wsCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/config`);
+    await page.locator(".profile-row", { hasText: "test-host" }).click();
+    await page.route("**/api/config/profiles/0", async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            yaml: "profiles:\n  - hostname: new-hostname\n    audio:\n      device: default\nsamples: {}\n",
+            checksum: "updated-checksum-1",
+            applied: false,
+            reload: "deferred",
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.locator("#profile-hostname").fill("new-hostname");
+    await page.getByRole("button", { name: "Save" }).click();
+    const notice = page.locator(".save-msg.save-notice");
+    await expect(notice).toBeVisible();
+
+    await sendPlayback(page, wsId, true);
+    await page.waitForTimeout(300);
+    await expect(notice).toBeVisible();
+    await sendPlayback(page, wsId, false);
+    await expect(notice).toHaveCount(0);
   });
 });

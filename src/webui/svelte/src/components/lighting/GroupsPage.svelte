@@ -14,7 +14,11 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  import { reloadNotice, type ReloadNotice } from "../../lib/configReload";
+  import {
+    DeferredReloadWatch,
+    reloadNotice,
+    type ReloadNotice,
+  } from "../../lib/configReload";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -54,6 +58,15 @@
   let saveOk = $state(false);
   /** A save's reload waiting for playback to stop, or why it failed. */
   let saveNotice = $state<ReloadNotice | null>(null);
+
+  // A deferred notice goes once its reload has run.
+  const deferredWatch = new DeferredReloadWatch();
+  $effect(() => {
+    const showing = saveNotice?.kind === "deferred";
+    if (deferredWatch.ran(showing, $playbackStore.hardware_reload_pending)) {
+      saveNotice = null;
+    }
+  });
   let selectEl: HTMLSelectElement | undefined = $state();
 
   $effect(() => {

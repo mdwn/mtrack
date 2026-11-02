@@ -151,7 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
   `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
   saves (profiles, samples, metronome, groups, Fit's added output) show "Saved. The hardware
-  reloads when playback stops." for a deferred save, and the reason for a failed reload. A
+  reloads when playback stops." for a deferred save until the reload has run, and the reason for a
+  failed reload. A
   reload that fails after the save is answered the same way on all three, with the new checksum
   and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
   leaving the client the old checksum of a config already saved.
@@ -162,8 +163,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first song or playlist edit, though mtrack had not loaded it at startup), MCP's playlist tools
   read and write the playlist named with `--playlist` on the command line rather than ignoring it,
   and a config change to `songs:` or `playlists_dir:` no longer has the web UI and MCP reloading
-  different sets: the save reloads the new set at once, and both read and write it from then on
-  (the web UI used to keep the startup paths until a restart). A song or playlist
+  different sets: the save reloads the new set at once, making a new songs directory inside the
+  project as startup does, and both read and write it from then on (the web UI used to keep the
+  startup paths until a restart). A `songs:` the songs cannot be reloaded from leaves the player
+  on the songs it had, and the save says so (`applied: false`). A song or playlist
   change whose reload fails (the songs directory unreadable, say) is now answered with an error
   saying the change was written but not taken up -- a 500 from the web UI, an `internal_error`
   from MCP -- rather than as saved while the player kept its old songs.
@@ -182,7 +185,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status
   one way, its reads of the lights bounded at 500 ms as MCP's `status` already was: a read that
-  does not answer leaves the ambient light out (gRPC, web UI) or says so (MCP). The web UI's
+  does not answer leaves the ambient light out (gRPC, web UI) or says so (MCP), and a read still
+  outstanding is waited on by the next status rather than started again, so a stalled lock holds
+  one thread, not one per poll. The web UI's
   position no longer wraps within an armed section on its own: the position every surface reports
   is already the song's, every loop jump put back as it falls due.
 

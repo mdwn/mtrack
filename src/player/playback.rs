@@ -164,7 +164,16 @@ impl Player {
                 return Ok(None);
             }
         };
-        super::seek::check_start_position(&song, start_time, "play from")?;
+        if let Err(e) = super::seek::check_start_position(&song, start_time, "play from") {
+            // A kept position the song can no longer play from (a reload
+            // shortened it) goes, or every Play after would fail on it. Only
+            // a start turned down before this, with the hardware still
+            // initializing, keeps it.
+            if self.pending_start() == Some(start_time) {
+                self.clear_pending_start();
+            }
+            return Err(e.into());
+        }
 
         // Any explicit playback start supersedes a pending seek position, and
         // an auto play waiting to start.

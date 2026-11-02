@@ -75,6 +75,9 @@ pub struct PlayerStatus {
     pub auto_play: Option<(String, Duration)>,
     /// The looping song ending, and how long until its fade is over.
     pub ending: Option<(String, Duration)>,
+    /// A hardware reload a config change asked for, waiting for the player
+    /// to be idle: cleared once it has run.
+    pub hardware_reload_pending: bool,
     /// Ambient light, `None` without a DMX engine.
     pub ambient: Option<DmxRead<AmbientStatus>>,
     /// The current song's lighting, `None` without a DMX engine;
@@ -96,15 +99,54 @@ impl PlayerStatus {
     }
 }
 
-/// Runs `read` on the blocking pool, bounded by [`STATUS_DMX_READ_TIMEOUT`].
-async fn bounded_read<T: Send + 'static>(
-    read: impl FnOnce() -> T + Send + 'static,
-    timeout: Duration,
-) -> DmxRead<T> {
-    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(read)).await {
-        Ok(Ok(value)) => DmxRead::Read(value),
-        Ok(Err(e)) => DmxRead::Failed(e.to_string()),
-        Err(_) => DmxRead::TimedOut,
+/// A read of the DMX engine on the blocking pool, shared by every status
+/// asking while it is outstanding, so a wedged lock holds one blocking
+/// thread, not one per poll: unbounded, the web UI's poll alone took several
+/// a second, and the blocking pool's limit was reached in minutes, after
+/// which every `spawn_blocking` in the process queued behind them.
+pub(super) struct InflightRead<T: Clone> {
+    pending: parking_lot::Mutex<Option<SharedRead<T>>>,
+}
+
+type SharedRead<T> =
+    futures_util::future::Shared<futures_util::future::BoxFuture<'static, Result<T, String>>>;
+
+impl<T: Clone> Default for InflightRead<T> {
+    fn default() -> Self {
+        InflightRead {
+            pending: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> InflightRead<T> {
+    /// Waits up to `timeout` for the read outstanding, or for `read`, run
+    /// on the blocking pool, when none is.
+    pub(super) async fn read(
+        &self,
+        read: impl FnOnce() -> T + Send + 'static,
+        timeout: Duration,
+    ) -> DmxRead<T> {
+        use futures_util::FutureExt;
+        let shared = {
+            let mut pending = self.pending.lock();
+            match pending.as_ref() {
+                Some(outstanding) if outstanding.peek().is_none() => outstanding.clone(),
+                _ => {
+                    let started = tokio::task::spawn_blocking(read)
+                        .map(|done| done.map_err(|e| e.to_string()))
+                        .boxed()
+                        .shared();
+                    *pending = Some(started.clone());
+                    started
+                }
+            }
+        };
+        match tokio::time::timeout(timeout, shared).await {
+            Ok(Ok(value)) => DmxRead::Read(value),
+            Ok(Err(e)) => DmxRead::Failed(e),
+            Err(_) => DmxRead::TimedOut,
+        }
     }
 }
 
@@ -117,6 +159,16 @@ impl Player {
     /// not be called from contexts that hold that lock.
     pub async fn status_snapshot(&self) -> PlayerStatus {
         self.status_with_timeout(STATUS_DMX_READ_TIMEOUT).await
+    }
+
+    /// The status the playback surfaces show (the web UI's playback updates,
+    /// gRPC's `Status`): [`Player::status_snapshot`] reading only the
+    /// ambient light of the DMX engine, not the song's lighting, which they
+    /// do not show.
+    pub async fn playback_status(&self) -> PlayerStatus {
+        let mut status = self.transport_status().await;
+        status.ambient = self.ambient_status_within(STATUS_DMX_READ_TIMEOUT).await;
+        status
     }
 
     /// [`Player::status_snapshot`] with the DMX reads bounded by `timeout`.
@@ -140,7 +192,10 @@ impl Player {
 
     async fn ambient_status_within(&self, timeout: Duration) -> Option<DmxRead<AmbientStatus>> {
         let dmx = self.dmx_engine()?;
-        let read = bounded_read(move || dmx.ambient_report(), timeout).await;
+        let read = self
+            .ambient_reads
+            .read(move || dmx.ambient_report(), timeout)
+            .await;
         let source = self.ambient_source();
         Some(match read {
             DmxRead::Read(report) => DmxRead::Read(AmbientStatus {
@@ -158,20 +213,21 @@ impl Player {
     ) -> Option<DmxRead<Option<LightingStatus>>> {
         let dmx = self.dmx_engine()?;
         Some(
-            bounded_read(
-                move || {
-                    dmx.lighting_arming_state().map(
-                        |(armed, cues_total, cues_remaining, next_cue)| LightingStatus {
-                            armed,
-                            cues_total,
-                            cues_remaining,
-                            next_cue,
-                        },
-                    )
-                },
-                timeout,
-            )
-            .await,
+            self.lighting_reads
+                .read(
+                    move || {
+                        dmx.lighting_arming_state().map(
+                            |(armed, cues_total, cues_remaining, next_cue)| LightingStatus {
+                                armed,
+                                cues_total,
+                                cues_remaining,
+                                next_cue,
+                            },
+                        )
+                    },
+                    timeout,
+                )
+                .await,
         )
     }
 
@@ -201,6 +257,9 @@ impl Player {
             locked: self.is_locked(),
             auto_play,
             ending,
+            hardware_reload_pending: self
+                .hardware_reload_pending
+                .load(std::sync::atomic::Ordering::Relaxed),
             ambient: None,
             lighting: None,
         }
@@ -212,31 +271,70 @@ mod tests {
     use super::*;
 
     /// A DMX read that does not come back in time is reported as timed
-    /// out, not waited on: a status read must answer while the effects loop
-    /// holds the lock it reads.
+    /// out, not waited on, and every read asked while it is outstanding
+    /// waits on it rather than starting another: with the lock it reads
+    /// held, the blocking threads stay at one however often status polls.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_dmx_read_that_hangs_times_out() {
-        let release = Arc::new(std::sync::Barrier::new(2));
-        let held = release.clone();
-        let started = std::time::Instant::now();
-        let read = bounded_read(move || held.wait(), Duration::from_millis(50)).await;
-        assert!(matches!(read, DmxRead::TimedOut));
-        assert!(started.elapsed() < Duration::from_secs(1));
-        release.wait();
+    async fn a_dmx_read_that_hangs_times_out_on_one_thread() {
+        let reads = InflightRead::<()>::default();
+        // The lock the read waits for, held until `released` is set.
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let begun = std::time::Instant::now();
+        for _ in 0..50 {
+            let (released, started) = (released.clone(), started.clone());
+            let read = reads
+                .read(
+                    move || {
+                        started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        while !released.load(std::sync::atomic::Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    },
+                    Duration::from_millis(5),
+                )
+                .await;
+            assert!(matches!(read, DmxRead::TimedOut));
+        }
+        assert!(begun.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a read per poll"
+        );
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Once it is over, the next read is a fresh one.
+        assert_eq!(
+            reads.read(|| (), Duration::from_millis(500)).await,
+            DmxRead::Read(())
+        );
+        assert_eq!(
+            reads.read(|| (), Duration::from_millis(500)).await,
+            DmxRead::Read(())
+        );
     }
 
     /// A read that panics is reported as failed, not as nothing there.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dmx_read_that_panics_fails() {
-        let read: DmxRead<()> = bounded_read(|| panic!("wedged"), Duration::from_millis(500)).await;
+        let reads = InflightRead::<()>::default();
+        let read = reads
+            .read(|| panic!("wedged"), Duration::from_millis(500))
+            .await;
         assert!(matches!(read, DmxRead::Failed(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dmx_read_that_answers_is_read() {
+        let reads = InflightRead::<i32>::default();
         assert_eq!(
-            bounded_read(|| 7, Duration::from_millis(500)).await,
+            reads.read(|| 7, Duration::from_millis(500)).await,
             DmxRead::Read(7)
+        );
+        assert_eq!(
+            reads.read(|| 8, Duration::from_millis(500)).await,
+            DmxRead::Read(8),
+            "a read done is not answered again"
         );
     }
 }

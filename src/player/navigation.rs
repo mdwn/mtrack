@@ -329,20 +329,36 @@ impl Player {
     /// the caller does not report a change the player has not taken up.
     ///
     /// The sources are resolved again from the config store first, so a
-    /// runtime change to `songs:` or `playlists_dir:` is taken up.
+    /// runtime change to `songs:` or `playlists_dir:` is taken up, and
+    /// become the player's once the reload from them succeeds.
     pub async fn reload_songs(&self) -> Result<(), ReloadSongsError> {
         let sources = self
-            .refresh_song_sources()
+            .resolve_song_sources()
             .await
             .ok_or(ReloadSongsError::NoSources)?;
+        self.reload_songs_into(sources).await
+    }
+
+    /// Reloads the songs from `sources` on the blocking pool, and takes the
+    /// sources up once that succeeds.
+    pub(super) async fn reload_songs_into(
+        &self,
+        sources: SongSources,
+    ) -> Result<(), ReloadSongsError> {
         let player = self.clone();
-        tokio::task::spawn_blocking(move || player.reload_songs_from(&sources))
-            .await
-            .map_err(|e| ReloadSongsError::Interrupted(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            player.reload_songs_from(&sources)?;
+            player.set_song_sources(sources);
+            Ok(())
+        })
+        .await
+        .map_err(|e| ReloadSongsError::Interrupted(e.to_string()))?
     }
 
     /// [`Player::reload_songs`] from `sources`, on the calling thread.
     pub(crate) fn reload_songs_from(&self, sources: &SongSources) -> Result<(), ReloadSongsError> {
+        // One scan at a time, from its scan to its swap.
+        let _scan = self.song_scans.lock();
         let new_songs =
             songs::get_all_songs_with_defaults(&sources.songs, self.default_metronome()).map_err(
                 |e| {

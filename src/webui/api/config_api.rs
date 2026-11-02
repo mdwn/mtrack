@@ -520,11 +520,16 @@ pub(super) async fn put_config_metronome(
     let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
-            let reload = apply_config_change(&state).await;
-            // The default-on flag is applied at song load; refresh both.
+            let mut reload = apply_config_change(&state).await;
+            // The default-on flag is applied at song load; refresh both. A
+            // reload that fails is answered with the save, its new checksum
+            // included, and the reason, as any save's failed reload is: a
+            // 500 left the UI the old checksum of a config already saved.
             state.player.set_default_metronome(default_enabled);
-            if let Err(resp) = super::helpers::reload_songs(&state).await {
-                return resp;
+            if let Err(e) = state.player.reload_songs().await {
+                warn!("Reloading songs after a metronome change failed: {}", e);
+                reload =
+                    config_apply_fields(&crate::player::ConfigApply::SongsFailed(e.to_string()));
             }
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
@@ -1425,6 +1430,111 @@ mod test {
         assert!(!state.player.is_playing().await);
         let reload = super::apply_config_change(&state).await;
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
+    }
+
+    /// Puts `yaml` as the whole config, and answers the reply's status and
+    /// body.
+    async fn put_whole_config(
+        state: &crate::webui::server::WebUiState,
+        yaml: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from(yaml.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap(),
+        )
+    }
+
+    /// A `songs:` naming a directory not there yet, inside the project, is
+    /// made, as startup makes it, and the songs reload from it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_songs_change_to_a_new_directory_makes_it() {
+        let (state, dir) = test_state();
+        set_store(&state);
+        let (status, body) = put_whole_config(&state, "songs: newdir\n").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(true), "{body}");
+        assert!(
+            dir.path().join("newdir").is_dir(),
+            "the directory was not made"
+        );
+        assert!(state.songs_path().ends_with("newdir"));
+    }
+
+    /// A `songs:` the songs cannot be reloaded from (outside the project and
+    /// not there) leaves the player, and its song paths, as they were, and
+    /// the save says so: it used to say applied, with every song path after
+    /// it pointing at the missing directory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_songs_change_that_cannot_reload_keeps_the_songs_and_says_so() {
+        let (state, dir) = test_state();
+        set_store(&state);
+        let before = state.songs_path();
+        let missing = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("mtrack-no-such-songs-dir");
+        let (status, body) =
+            put_whole_config(&state, &format!("songs: {}\n", missing.display())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        assert_eq!(body["reload"], "failed");
+        assert!(
+            body["message"].as_str().unwrap().contains("songs"),
+            "{body}"
+        );
+        assert!(!missing.exists());
+        assert_eq!(state.songs_path(), before, "the song paths moved");
+    }
+
+    /// A metronome save whose song reload fails is still answered with the
+    /// save and its new checksum, and the reason: a 500 left the UI the old
+    /// checksum, and its next save was refused as stale.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_metronome_save_whose_song_reload_fails_answers_with_the_checksum() {
+        let (state, _dir) = test_state();
+        set_store(&state);
+        let store = state.player.config_store().unwrap();
+        let (_, checksum) = store.read_yaml().await.unwrap();
+        // The songs directory gone from under the player.
+        std::fs::remove_dir_all(state.songs_path()).unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/metronome")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "expected_checksum": checksum,
+                            "metronome": {"enabled": true},
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        let (_, now) = store.read_yaml().await.unwrap();
+        assert_eq!(body["checksum"], serde_json::json!(now), "{body}");
+        assert_ne!(now, checksum);
+        assert_eq!(body["applied"], serde_json::json!(false));
+        assert_eq!(body["reload"], "failed");
     }
 
     /// A runtime change to `songs:` takes effect without a restart: the save

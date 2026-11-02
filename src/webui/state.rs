@@ -128,7 +128,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         // The player's one status, its DMX reads bounded: the ambient
         // light was read here on a runtime worker, unbounded, and a wedged
         // effects loop stalled the dashboard's every update with it.
-        let status = player.status_snapshot().await;
+        let status = player.playback_status().await;
         let is_playing = status.playing;
         let playlist = status.playlist.clone();
 
@@ -305,6 +305,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "available_playlists": available_playlists,
             "persisted_playlist_name": persisted_playlist_name,
             "locked": status.locked,
+            // A config save's hardware reload waiting for the player to be
+            // idle, so the config page can say when it has run.
+            "hardware_reload_pending": status.hardware_reload_pending,
             "beat_grid": beat_grid,
             "available_sections": available_sections,
             "active_section": active_section,

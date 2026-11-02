@@ -43,7 +43,11 @@
     writeProfile,
   } from "../lib/profileStore";
   import { playbackStore } from "../lib/ws/stores";
-  import { reloadNotice, type ReloadNotice } from "../lib/configReload";
+  import {
+    DeferredReloadWatch,
+    reloadNotice,
+    type ReloadNotice,
+  } from "../lib/configReload";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
   import SamplesSection, {
@@ -93,6 +97,21 @@
   let saveOk = $state(false);
   /** A save's reload waiting for playback to stop, or why it failed. */
   let saveNotice = $state<ReloadNotice | null>(null);
+
+  // A deferred notice goes once its reload has run.
+  const deferredWatch = new DeferredReloadWatch();
+  $effect(() => {
+    const deferred = (n: ReloadNotice | null) => n?.kind === "deferred";
+    const showing =
+      deferred(saveNotice) ||
+      deferred(samplesNotice) ||
+      deferred(metronomeNotice);
+    if (deferredWatch.ran(showing, $playbackStore.hardware_reload_pending)) {
+      if (deferred(saveNotice)) saveNotice = null;
+      if (deferred(samplesNotice)) samplesNotice = null;
+      if (deferred(metronomeNotice)) metronomeNotice = null;
+    }
+  });
   let dirty = $state(false);
   let audioDevices = $state<AudioDeviceInfo[]>([]);
   let midiDevices = $state<MidiDeviceInfo[]>([]);

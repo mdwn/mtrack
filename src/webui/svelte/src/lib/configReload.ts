@@ -56,3 +56,26 @@ export function reloadNotice(
     }),
   };
 }
+
+/** Clears a deferred notice once its hardware reload has run: told by the
+ *  playback updates' `hardware_reload_pending`, seen set and then clear
+ *  again. Feed it each update; it answers whether the reload is over. */
+export class DeferredReloadWatch {
+  private seenPending = false;
+
+  /** Whether the reload a deferred notice waits on has run, given the
+   *  latest `pending`, while one is shown (`showing`). */
+  ran(showing: boolean, pending: boolean): boolean {
+    if (!showing) {
+      this.seenPending = false;
+      return false;
+    }
+    if (pending) {
+      this.seenPending = true;
+      return false;
+    }
+    const ran = this.seenPending;
+    this.seenPending = false;
+    return ran;
+  }
+}

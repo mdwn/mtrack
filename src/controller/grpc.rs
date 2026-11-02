@@ -394,7 +394,7 @@ impl PlayerService for PlayerServer {
     async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
         // The player's one status, its DMX reads bounded: a wedged effects
         // loop leaves the ambient light out rather than hanging the call.
-        let status = self.player.status_snapshot().await;
+        let status = self.player.playback_status().await;
 
         let elapsed = match status.elapsed {
             Ok(Some(elapsed)) => Some(

@@ -97,6 +97,10 @@ pub enum ConfigApply {
     /// The reload could not run, and the change takes effect at the next
     /// reload or restart.
     Failed(String),
+    /// The change moved the songs or playlists, and they could not be
+    /// reloaded from where it moved them: the player keeps the songs, and
+    /// the song paths, it had.
+    SongsFailed(String),
 }
 
 impl ConfigApply {
@@ -111,7 +115,7 @@ impl ConfigApply {
         match self {
             ConfigApply::Applied => "applied",
             ConfigApply::Deferred => "deferred",
-            ConfigApply::Failed(_) => "failed",
+            ConfigApply::Failed(_) | ConfigApply::SongsFailed(_) => "failed",
         }
     }
 
@@ -124,6 +128,10 @@ impl ConfigApply {
             ConfigApply::Failed(e) => Some(format!(
                 "The config was saved, but the hardware reload failed, so the change takes \
                  effect at the next reload or restart: {e}"
+            )),
+            ConfigApply::SongsFailed(e) => Some(format!(
+                "The config was saved, but the songs could not be reloaded from where it \
+                 points, so the player keeps the songs it had: {e}"
             )),
         }
     }
@@ -831,25 +839,58 @@ impl Player {
     /// made over it.
     pub async fn apply_config_change(self: &Arc<Self>) -> ConfigApply {
         // A change to where songs or playlists live is taken up at once, as
-        // a song edit's reload would take it up.
-        let before = self.song_sources();
-        let after = self.refresh_song_sources().await;
-        if after != before {
-            info!("The songs or playlists moved: reloading them");
-            if let Err(e) = self.reload_songs().await {
+        // a song edit's reload would take it up: the songs directory made
+        // as startup makes it, inside the project, and the new sources the
+        // player's only once the songs reload from them. A reload that
+        // fails leaves the player, and every surface's song paths, as they
+        // were, and the reply says why.
+        let songs_failure = match self.moved_song_sources().await {
+            Ok(()) => None,
+            Err(e) => {
                 warn!("Reloading songs after a config change failed: {}", e);
+                Some(e)
             }
-        }
+        };
         // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
         // await this.
-        match self.reload_hardware().await.map_err(|e| e.to_string()) {
+        let hardware = match self.reload_hardware().await.map_err(|e| e.to_string()) {
             Ok(HardwareReload::Applied) => ConfigApply::Applied,
             Ok(HardwareReload::Deferred) => ConfigApply::Deferred,
             Err(e) => {
                 warn!("Hardware reload after a config change failed: {}", e);
                 ConfigApply::Failed(e)
             }
+        };
+        match songs_failure {
+            Some(e) => ConfigApply::SongsFailed(e),
+            None => hardware,
         }
+    }
+
+    /// Takes up the song sources the config now names, if they are not the
+    /// player's: makes the songs directory where startup would (inside the
+    /// project), reloads the songs from them, and keeps them once that
+    /// succeeds.
+    async fn moved_song_sources(&self) -> Result<(), String> {
+        let Some(mut sources) = self.resolve_song_sources().await else {
+            return Ok(());
+        };
+        if Some(&sources) == self.song_sources().as_ref() {
+            return Ok(());
+        }
+        info!("The songs or playlists moved: reloading them");
+        if let Some(store) = self.config_store() {
+            let project = crate::util::project_dir_of(store.path());
+            let created = crate::util::create_dir_within_async(sources.songs.clone(), project)
+                .await
+                .map_err(|e| e.to_string())?;
+            // Resolved as the next resolve will find it, so the sources
+            // compare equal to those the config names from now on.
+            sources.songs = crate::util::resolved_dir(&created.into_path_buf());
+        }
+        self.reload_songs_into(sources)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now

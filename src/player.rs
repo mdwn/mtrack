@@ -374,6 +374,15 @@ pub struct Player {
     /// The legacy playlist named on the command line, which wins over the
     /// config's whenever the sources are resolved.
     cli_playlist: Arc<parking_lot::RwLock<Option<PathBuf>>>,
+    /// Held by a song rescan from its scan to its swap, on the blocking
+    /// thread it runs on: a rescan outlives a request dropped mid-way, and
+    /// one let go with the request's lock overlapped the next, the older
+    /// scan swapping its songs in last.
+    song_scans: Arc<parking_lot::Mutex<()>>,
+    /// The status's reads of the DMX engine outstanding, one of each kind
+    /// at most (see `status::InflightRead`).
+    ambient_reads: Arc<status::InflightRead<dmx::engine::AmbientReport>>,
+    lighting_reads: Arc<status::InflightRead<Option<LightingStatus>>>,
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
     default_metronome: Arc<std::sync::atomic::AtomicBool>,
@@ -727,6 +736,9 @@ impl Player {
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             song_sources: Arc::new(parking_lot::RwLock::new(None)),
             cli_playlist: Arc::new(parking_lot::RwLock::new(None)),
+            song_scans: Arc::new(parking_lot::Mutex::new(())),
+            ambient_reads: Arc::default(),
+            lighting_reads: Arc::default(),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             init_round: Arc::new(parking_lot::Mutex::new(None)),
@@ -991,19 +1003,21 @@ impl Player {
         self.song_sources.read().clone()
     }
 
-    /// Resolves the song sources again from the config store's current
-    /// config, so a runtime change to `songs:` or `playlists_dir:` takes
-    /// effect without a restart, and returns them. Without a config store,
-    /// the sources set are kept.
-    pub async fn refresh_song_sources(&self) -> Option<SongSources> {
+    /// The song sources the config store's current config names, with the
+    /// command line's playlist over its own, without taking them up: they
+    /// become the player's only once songs have been reloaded from them, so
+    /// a `songs:` naming a directory that cannot be read leaves every surface
+    /// on the songs it has. Without a config store, the sources set.
+    pub async fn resolve_song_sources(&self) -> Option<SongSources> {
         let Some(store) = self.config_store() else {
             return self.song_sources();
         };
         let config = store.read_config().await;
-        let sources =
-            SongSources::resolve(&config, store.path(), self.cli_playlist.read().as_deref());
-        *self.song_sources.write() = Some(sources.clone());
-        Some(sources)
+        Some(SongSources::resolve(
+            &config,
+            store.path(),
+            self.cli_playlist.read().as_deref(),
+        ))
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -2336,6 +2350,35 @@ mod test {
         // Just before the end is still a start.
         player.seek_to(end - Duration::from_millis(1)).await?;
         assert_eq!(player.pending_start(), Some(end - Duration::from_millis(1)));
+        Ok(())
+    }
+
+    /// A kept position the song can no longer play from -- a reload has
+    /// shortened it -- is dropped by the Play it fails, so the next Play
+    /// starts the song rather than failing on it for good.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kept_position_past_the_songs_end_is_dropped_by_play() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let end = player.get_playlist().current().expect("a song").length();
+        player.pause_at_for_test(end + Duration::from_secs(5));
+        assert!(player.play().await.is_err(), "a start past the end");
+        assert_eq!(player.pending_start(), None, "the position was kept");
+        assert!(player.play().await?.is_some(), "Play failed for good");
+        player.stop().await;
+        Ok(())
+    }
+
+    /// A start turned down while the hardware initializes keeps the kept
+    /// position, for the Play after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_while_hardware_initializes_keeps_the_position() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let paused_at = Duration::from_millis(100);
+        player.pause_at_for_test(paused_at);
+        player.init_done_tx.send_modify(|v| *v = false);
+        assert!(player.play().await.is_err());
+        assert_eq!(player.pending_start(), Some(paused_at));
+        player.init_done_tx.send_modify(|v| *v = true);
         Ok(())
     }
 
