@@ -550,6 +550,10 @@ impl Engine {
         // What a channel no frame writes any more goes to, below: 0 for a
         // level or colour.
         let levels = effect_engine.level_channels();
+        // The main engine's frame, with each layer of light still crossing
+        // over it folded on in turn by the one blend (`pass::cross`): a
+        // looping song's outgoing pass, the loop breaks' fades, ambient.
+        //
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
         // the overlap. The outgoing pass goes once the overlap is over (among
@@ -563,15 +567,14 @@ impl Engine {
                     let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
                     match pass.render(dt, song_time) {
                         Ok((t, old)) => {
-                            let blended = effect_engine.crossfade_commands(&old, &incoming, t);
-                            // What goes out is the blend, so that is what the
-                            // rig shows to the web UI and get_fixture_state
-                            // too (#555).
-                            let shown = (t < 1.0)
-                                .then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
-                            effect_engine.set_shown(shown);
                             done = t >= 1.0;
-                            std::borrow::Cow::Owned(blended)
+                            std::borrow::Cow::Owned(pass::cross(
+                                &old,
+                                &pass.effect_engine,
+                                &mut effect_engine,
+                                &incoming,
+                                t,
+                            ))
                         }
                         Err(e) => {
                             error!("A loop pass's crossfade failed to render, and goes: {e}");

@@ -329,9 +329,7 @@ impl Overlay {
         let own = engine
             .update(dt, Some(now.saturating_duration_since(*started)))?
             .to_vec();
-        let blended = engine.crossfade_commands(&base, &own, t);
-        let shown = engine.crossfade_states(base_engine, t);
-        engine.set_shown(Some(shown));
+        let blended = super::pass::cross(&base, base_engine, engine, &own, t);
         if t >= 1.0 {
             self.inner = None;
         }
@@ -1615,6 +1613,41 @@ mod tests {
             (shown * 255.0 - sent).abs() < 3.0,
             "shows {} but sends {sent}",
             shown * 255.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_pass_crossfade_ending_shows_what_it_sends() -> Result<(), Box<dyn Error>> {
+        // The frame a loop pass's crossfade ended in sent the blend -- a
+        // mover only the outgoing pass drove holding its pan -- but showed
+        // the incoming pass alone, without the mover, where every other
+        // layer's blend shows what it sends (#555).
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            Duration::from_millis(50),
+        );
+        // Past the overlap: the crossfade ends in this frame.
+        song_frame(&engine, 0.2);
+        assert!(engine.outgoing_pass.lock().is_none());
+        let sent = pan(&engine);
+        assert_eq!(sent, 204.0, "the pan held");
+        let shown = engine
+            .effect_engine
+            .lock()
+            .shown_fixture_states()
+            .get("mover")
+            .and_then(|state| state.channels.get("pan"))
+            .map(|pan| pan.value * 255.0);
+        assert!(
+            shown.is_some_and(|shown| (shown - sent).abs() < 3.0),
+            "shows {shown:?} but sends {sent}"
         );
         Ok(())
     }

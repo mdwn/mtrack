@@ -101,6 +101,31 @@ pub(crate) enum PassClock {
 /// What a pass's timeline fired, by the pass's id, its groups resolved.
 pub(super) type PassUpdates = std::collections::HashMap<u64, TimelineUpdate>;
 
+/// The crossfade `t` of the way (0.0 to 1.0) from `older`'s frame, shown
+/// as `older_engine` shows it, to `newer`'s just rendered, `frame`: the
+/// frame that goes out, channel by channel as a console crosses cues (see
+/// [`EffectEngine::crossfade_commands`]). What goes out is the blend, so
+/// that is what the rig shows too -- the web UI and `get_fixture_state`
+/// (#555) -- left on `newer`. The one blend every layer of light crosses
+/// by: a loop pass into the next, the next into a break's fade, ambient
+/// over all of it.
+pub(super) fn cross(
+    older: &[DmxCommand],
+    older_engine: &EffectEngine,
+    newer: &mut EffectEngine,
+    frame: &[DmxCommand],
+    t: f64,
+) -> Vec<DmxCommand> {
+    let blended = newer.crossfade_commands(older, frame, t);
+    let shown = newer.crossfade_states_onto(
+        older_engine,
+        (newer.shown_fixture_states(), newer.shown_poses()),
+        t,
+    );
+    newer.set_shown(Some(shown));
+    blended
+}
+
 /// A new pass's id.
 fn next_pass_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -228,11 +253,13 @@ impl OutgoingPass {
             None => own,
             Some(inner) => {
                 let (inner_t, old) = inner.render(dt, time)?;
-                let blended = self.effect_engine.crossfade_commands(&old, &own, inner_t);
-                let shown = self
-                    .effect_engine
-                    .crossfade_states(&inner.effect_engine, inner_t);
-                self.effect_engine.set_shown(Some(shown));
+                let blended = cross(
+                    &old,
+                    &inner.effect_engine,
+                    &mut self.effect_engine,
+                    &own,
+                    inner_t,
+                );
                 // An inner pass whose crossfade is over stays, held, until
                 // this one goes: at its end it holds only what this one does
                 // not drive -- a mover's position -- which would jump as it
@@ -450,10 +477,6 @@ impl BreakFades {
         under: Vec<DmxCommand>,
     ) -> Vec<DmxCommand> {
         let mut blended = under;
-        let mut shown = (
-            main.shown_fixture_states().clone(),
-            main.shown_poses().clone(),
-        );
         // Newest first: (over, failed) for each.
         let mut ends = Vec::with_capacity(self.0.len());
         for fade in self.0.iter_mut().rev() {
@@ -465,13 +488,9 @@ impl BreakFades {
                     continue;
                 }
             };
-            blended = main.crossfade_commands(&old, &blended, t);
-            shown = main.crossfade_states_onto(&fade.effect_engine, (&shown.0, &shown.1), t);
+            blended = cross(&old, &fade.effect_engine, main, &blended, t);
             ends.push((t >= 1.0, false));
         }
-        // What goes out is the blend, so that is what the rig shows too
-        // (#555).
-        main.set_shown(Some(shown));
         // Oldest first: the over ones until the first still going, and any
         // that failed.
         let mut still_older = false;
