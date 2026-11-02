@@ -51,8 +51,8 @@ it. What listens, and where:
 
 | Service | Listens on | Default | Access control |
 |---|---|---|---|
-| web UI (`mtrack start`) | `--web-address`, all interfaces (`0.0.0.0`) | TCP 8080 (`--web-port`) | None. Lock mode only guards against accidental edits, and the lock itself can be toggled from any browser that reaches the page. |
-| gRPC controller | all interfaces | TCP 43234 (`port`) | None. Full transport and configuration control, including the `mtrack` CLI's remote commands. Lock mode refuses its config writes. |
+| web UI (`mtrack start`) | `--web-address`, all interfaces (`0.0.0.0`) | TCP 8080 (`--web-port`) | None. Lock mode only guards against accidental edits (track gains still save while locked), and the lock itself can be toggled from any browser that reaches the page. When the web UI cannot start, the player runs unlocked. |
+| gRPC controller | all interfaces | TCP 43234 (`port`) | None. Full transport and configuration control, including the `mtrack` CLI's remote commands. Lock mode refuses its config writes; track gains still save. |
 | OSC controller | all interfaces | UDP 43235 (`port`) | None. Transport control; status is broadcast to `broadcast_addresses`. |
 | MCP controller | `bind_address`, localhost only (`127.0.0.1`) | TCP 43237 (`port`) | Optional `bearer_token`; set one whenever `bind_address` is not localhost ([MCP](../interfaces/mcp.md)). Lock mode refuses its writes. |
 

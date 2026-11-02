@@ -310,15 +310,12 @@ pub async fn start(
                 waveform_cache: crate::webui::state::new_waveform_cache(),
             });
 
-        match crate::webui::server::start(webui_state, web_config.address.clone(), web_config.port)
-            .await
-        {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                tracing::warn!("Failed to start web UI: {}", e);
-                None
-            }
-        }
+        crate::webui::server::start_or_unlock(
+            webui_state,
+            web_config.address.clone(),
+            web_config.port,
+        )
+        .await
     };
 
     if tui_mode {

@@ -175,6 +175,29 @@ impl Drop for WebUiHandle {
     }
 }
 
+/// Starts the web UI, or, when it cannot start, unlocks the player. Only the
+/// web UI can release the lock, so a player left locked without one would
+/// refuse every gRPC and MCP config write for the whole run.
+pub async fn start_or_unlock(
+    webui_state: WebUiState,
+    address: String,
+    port: u16,
+) -> Option<WebUiHandle> {
+    let player = webui_state.player.clone();
+    match start(webui_state, address, port).await {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::warn!("Failed to start web UI: {}", e);
+            player.set_locked(false);
+            info!(
+                "No web UI is running, so the player is unlocked: only the web UI can \
+                 lock or unlock it"
+            );
+            None
+        }
+    }
+}
+
 /// Starts the unified web server with dashboard, gRPC-Web, and REST API.
 ///
 /// The server serves:
@@ -803,6 +826,61 @@ mod test {
             "unexpected status: {}",
             status
         );
+    }
+
+    /// Only the web UI can release the lock, so a player whose web UI
+    /// cannot start is left unlocked rather than refusing every write.
+    #[tokio::test]
+    async fn a_web_ui_that_cannot_start_leaves_the_player_unlocked() {
+        let (state, _dir) = test_webui_state();
+        let player = state.player.clone();
+        assert!(player.is_locked());
+        assert!(start_or_unlock(state, "not-an-ip".to_string(), 0)
+            .await
+            .is_none());
+        assert!(!player.is_locked());
+
+        let (state, _dir) = test_webui_state();
+        let player = state.player.clone();
+        let _handle = start_or_unlock(state, "127.0.0.1".to_string(), 0)
+            .await
+            .expect("server should start");
+        assert!(player.is_locked(), "a running web UI keeps the lock");
+    }
+
+    /// A config write over the web UI's gRPC-Web route is refused while
+    /// locked, the same as over native gRPC.
+    #[tokio::test]
+    async fn a_grpc_web_config_write_is_refused_while_locked() {
+        use prost::Message;
+        let (_handle, base_url, _dir) = start_test_server().await;
+        let msg = crate::proto::player::v1::UpdateAudioRequest {
+            audio_json: String::new(),
+            expected_checksum: String::new(),
+        }
+        .encode_to_vec();
+        let mut frame = vec![0u8];
+        frame.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&msg);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base_url}/player.v1.PlayerService/UpdateAudio"))
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(frame)
+            .send()
+            .await
+            .unwrap();
+        let headers = format!("{:?}", resp.headers()).to_lowercase();
+        let body = String::from_utf8_lossy(&resp.bytes().await.unwrap()).to_lowercase();
+        let all = format!("{headers} {body}");
+        // FAILED_PRECONDITION is status 9, in the headers or the trailer frame.
+        assert!(
+            all.contains("\"grpc-status\": \"9\"") || all.contains("grpc-status:9"),
+            "{all}"
+        );
+        assert!(all.contains("locked"), "{all}");
     }
 
     #[tokio::test]

@@ -6033,6 +6033,12 @@ async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert_eq!(resp["result"]["isError"], true, "{resp}");
+    let text = tool_text(&resp);
+    assert!(
+        text.contains("Player is locked. Unlock to make changes.")
+            && text.contains("`write_playlist`"),
+        "{text}"
+    );
     assert_eq!(snapshot_tree(&fixture.root), before, "a locked call wrote");
 
     // Reads and playback controls stay open.

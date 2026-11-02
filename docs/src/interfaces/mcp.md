@@ -138,7 +138,10 @@ files is refused before it runs: the `update_*` config tools, the profile tools,
 `patch_*` and `delete_*` tool, `import_gdtf`, `import_mvr` and `export_mvr`. The refusal is a
 tool error (`isError: true`) whose text says the player is locked. Reads, validation,
 `evaluate_show`, `analyze_show`, `diff_shows`, `inspect_mvr` and the playback controls work while
-locked. mtrack starts locked, so unlock it from the web UI before an agent edits the show.
+locked. Track gains set from the web UI's faders, gRPC or OSC still save to the active
+profile while locked. mtrack starts locked, so unlock it from the web UI before an agent edits
+the show. When the web UI cannot start, the player runs unlocked, since nothing else could
+release the lock.
 
 ### Resources
 

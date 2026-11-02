@@ -82,8 +82,10 @@ empty cell means the RPC is available to gRPC clients only.
 While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
 `UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile` and
 `RemoveProfile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
-Unlock to make changes." Every other RPC is a read or a playback control and works while
-locked. Unlock from the web UI.
+Unlock to make changes." The other RPCs work while locked. `SetTrackGain` is a performance
+control: a fader move still saves the track's gain to the active profile in `mtrack.yaml`,
+after a short pause, while locked. Unlock from the web UI. When the web UI cannot start, the
+player runs unlocked, since nothing else could release the lock.
 
 ## Security
 
