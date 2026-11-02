@@ -135,6 +135,12 @@ impl PlaybackClock {
         *self.inner.started_at.lock()
     }
 
+    /// Whether it counts an audio interface's samples, rather than reading
+    /// the wall clock.
+    pub fn is_audio(&self) -> bool {
+        matches!(self.inner.source, ClockSource::Audio { .. })
+    }
+
     /// Whether [`PlaybackClock::start`] has been called.
     pub fn has_started(&self) -> bool {
         *self.inner.start_mutex.lock().unwrap()

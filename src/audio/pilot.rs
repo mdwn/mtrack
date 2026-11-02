@@ -72,8 +72,10 @@ impl PilotSource {
     ) -> Result<Self, Box<dyn Error>> {
         let rate = sample_rate as f64;
         let start_secs = start_time.as_secs_f64();
-        let end_position =
-            ((song_duration.saturating_sub(start_time)).as_secs_f64() * rate).round() as i64;
+        let end_position = crate::audio::duration_to_samples(
+            song_duration.saturating_sub(start_time),
+            sample_rate,
+        ) as i64;
 
         let mut loaded = Vec::with_capacity(clips.len());
         for clip in clips {

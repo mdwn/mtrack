@@ -131,6 +131,29 @@
       <Tooltip text={$t("tooltips.midi.persistTempo")} />
     </label>
   </div>
+
+  <div class="field">
+    <label for="midi-beat-clock-seams"
+      >{$t("midi.beatClockSeams")}
+      <Tooltip text={$t("tooltips.midi.beatClockSeams")} /></label
+    >
+    <select
+      id="midi-beat-clock-seams"
+      class="input"
+      value={midi.beat_clock_seams ?? "run_through"}
+      disabled={!(midi.beat_clock ?? false)}
+      onchange={(e) => {
+        const value = (e.target as HTMLSelectElement).value;
+        setOrDelete(
+          "beat_clock_seams",
+          value === "run_through" ? undefined : value,
+        );
+      }}
+    >
+      <option value="run_through">{$t("midi.beatClockSeamsRunThrough")}</option>
+      <option value="relocate">{$t("midi.beatClockSeamsRelocate")}</option>
+    </select>
+  </div>
 </div>
 
 <style>

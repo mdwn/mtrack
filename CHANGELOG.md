@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MIDI Song Position Pointer with the beat clock**: playing from part way into a song (play
+  from, a seek) sent Continue without a position, so gear that follows song position went on
+  from wherever it last stopped. The beat clock now sends a Song Position Pointer and Continue
+  there, and Start at the top of the song. The pointer counts 16th notes, so the clock goes on
+  from the 16th at the point (or within half a pulse before it), else the next, and the pulses
+  before it are not sent. Past the pointer's reach (16,383 16ths, about 34 minutes at 120 BPM)
+  it is clamped.
+- **`midi.beat_clock_seams`**: what the beat clock does where a section loop or a looping song
+  goes back. `run_through`, the default, keeps the clock running straight through the loop, as
+  before. `relocate` sends Stop, then a Song Position Pointer to where the loop goes back to and
+  Continue (Start at the top of the song), so gear that follows song position goes back with it.
+  A section with no 16th in it runs through either way. Set in the web UI's MIDI settings too.
+
 - **Ambient light per playlist entry** (#614): an entry's own `ambient:` sets the ambient light in
   the gap before its song, while the player waits on it -- the next song after the one before ends,
   or Next or Previous lands on it while stopped; the same song after a stop. It takes the playlist's
@@ -205,6 +218,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   position no longer wraps within an armed section on its own: the position every surface reports
   is already the song's, every loop jump put back as it falls due.
 
+- **MIDI notes on the beat clock's grid**: on a rig with audio, a song's notes took the first
+  audio buffer after the start for their zero, and then went out only as the audio clock moved,
+  so they sat up to a buffer behind the beat clock, and up to a buffer late again. They now share
+  the beat clock's zero (measured against the audio over the song's first half second, the notes
+  going on the computer's clock until then) and follow the audio's clock through a delay-locked
+  loop, as JACK does: evenly spaced however unevenly the audio's callbacks come. On a sound card
+  they stay within a few milliseconds of the beat clock's grid; on a device whose clock is far
+  off the computer's, they follow the audio, at its own rate. An xrun or a stall puts them at
+  most an audio period ahead of the audio, and they go on with it once it does. The playback
+  delay is waited on that clock too, and the beat clock's Start (or Continue) goes out before a
+  note due with it.
+- **The beat clock keeps its count when it starts late part way in**: a start part way into a
+  song (or, with `beat_clock_seams: relocate`, a loop's jump) that the beat clock noticed a 16th
+  note or more late sent the pulses it had missed in a burst. It now puts the gear at the next
+  16th still to come with a Song Position Pointer and goes on from there. A late start at the top
+  of the song still sends Start and the missed pulses.
+- **The beat clock stays with the audio after a section shorter than a pulse**: such a section
+  has no pulse to go back to, and the clock ignored its jumps, so once it was broken the clock
+  ran ahead of the audio by the time spent going round it. The pulses after it now fall due
+  later by as much.
 - **A tempo of 0 or a ramp of no length is refused in a lighting show**: the `tempo` block took
   `bpm: 0` and `transition: 0` (or `0m`). A ramp of no length gave the beat walks no number, and
   a tempo of 0 put every later beat infinitely far away. The show now fails to parse, with the
@@ -256,7 +289,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comes in at its own time, and a time-positioned signature change after one governs from the bar
   its position falls in. The bar and beat a time is reported at (the lint, show diffs and
   analysis, the MCP tools) are counted the same way, through ramps and mid-bar signature changes.
-
 - **A crossfading song's pass begun late crosses the lights over with the audio**: a start, seek
   or section break inside a looping song's `loop_crossfade` begins the next pass part way in,
   where one begun on time would be by then. The audio, notes and beat clock did; the lights
@@ -272,7 +304,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Song starts no longer spin two cores**: the MIDI and lighting threads busy-waited for the
   other subsystems to be ready at every start and seek, taking CPU from the audio and lighting
   preparation they were waiting for, most noticeably on a Raspberry Pi. They now sleep until
-  the start, then wait at most one audio buffer for its first sample, as before.
+  the start. The lights then wait at most one audio buffer for its first sample, as before; the
+  notes go on the beat clock's zero (see "MIDI notes on the beat clock's grid").
 - **Lock mode holds on every control surface**: the lock was enforced only by the web UI's own
   routes, so gRPC config writes (from the `mtrack` CLI, other gRPC clients, or the web UI's
   gRPC-Web endpoint) and MCP writes went through while locked. Now gRPC `UpdateAudio`,

@@ -43,9 +43,32 @@ or disabled entirely with `MTRACK_DISABLE_RT_AUDIO=1`.
 
 The beat clock follows every loop as the notes, lights and audio do: a section loop, and a
 looping song's passes, its pulses switching to the new pass where it starts (through a
-`loop_crossfade` too: the clock does not overlap). Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
-down to whole quarter notes); any leftover before them has no pulses, in the first pass or later
-ones.
+`loop_crossfade` too: the clock does not overlap). By default its pulses run straight through each
+seam and nothing else is sent, so gear counting pulses counts on past the loop. With
+`midi.beat_clock_seams: relocate`, each jump sends Stop, a Song Position Pointer and Continue
+(Start back at the top of the song); the pointer counts 16th notes, so a section starting off a
+16th goes on from the next 16th, and its pulses before that are not sent, and a section with no
+16th in it runs through. A section shorter than a pulse has no pulse to go back to: the clock
+pauses while it goes round. Song Position Pointer reaches 16,383 16ths (about 34 minutes at 120
+BPM); past that it is clamped.
+
+The beat clock is timed on the computer's clock and steered gently onto the audio's, by at most
+250 ppm, so that gear following it sees a steady tempo. An audio device whose clock runs further
+off than that (one resampling, say) leaves the beat clock drifting from the audio over a song;
+the notes, which follow the audio at its own rate, do not drift.
+
+The notes share the beat clock's zero, measured against the audio over a song's first half
+second; until then they go on the computer's clock alone, which on a device far off it (10%,
+say) puts them that far off the audio for that half second. An xrun or a stall in it holds them
+once the audio has gone three periods (and 30ms at least) without moving, so they run at most that
+far ahead of it. On a sound card, whose callbacks come
+within a millisecond or so of their time, the notes keep within a few milliseconds of the beat
+clock's grid. An xrun or a stall can put them up to one audio period ahead of the audio (what
+was due before the audio stopped); they then hold until it catches up. On a device whose
+callbacks come periods early or late as a rule, they keep within a few periods of the audio.
+
+Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded down to whole quarter notes);
+any leftover before them has no pulses, in the first pass or later ones.
 
 ## Web UI file management
 
