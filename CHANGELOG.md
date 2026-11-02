@@ -150,6 +150,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The lint judges an effect by when it really ends**: `past-end-of-song` and `replace-overlap`
+  now take each effect's end as the show plays it, the same end the show's end and `analyze_show`
+  use. A freeze or a slowed layer carries an effect past its written end (now reported if that
+  overruns the song), a sped-up one ends early, a move another takes every head from ends there,
+  and a sequence's passes that never fire, the sequence stopped first, are not checked. They used
+  to cap the written end by clears and stops alone.
+- **A show that leaves a look frozen for good ends by its other looks' real ends**: without audio
+  to cap it, such a show ran to the latest written end of any of its effects; now an effect the
+  speed master sped up counts by when it really ends, as in a show without a held look, and the
+  held look by the end it was written with.
+
 - **A tempo ramp spans exactly its beats**: a ramp written over N beats now lasts exactly N beats,
   as a DAW plays it. One over N measures lasts exactly the beats in those bars. It used to last as
   long as N beats at the starting tempo, so it covered more or fewer beats than written. A ramp
