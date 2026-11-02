@@ -904,8 +904,9 @@ impl NoteTime for RealTime<'_> {
 ///   playback clock's start (plus the delay). Over the first half second the
 ///   counter's moves are set against the wall, and the offset between the two
 ///   taken once, so the notes and the beat clock share a zero. Until then the
-///   notes run on the wall clock alone, so the first goes out with Start
-///   (and an xrun in that first half second does not hold them).
+///   notes run on the wall clock alone, so the first goes out with Start,
+///   held only by a stall: the counter not moving for three periods (30ms
+///   at least), longer than callbacks come late.
 /// - **Tracking.** A delay-locked loop (Fons Adriaensen, "Using a DLL to
 ///   filter time", as JACK does) follows the counter's rate and phase: each
 ///   move, when it came (between the reads either side of it, which are
@@ -946,6 +947,9 @@ struct NoteClock<'a> {
     at: f64,
     value: f64,
     period: f64,
+    /// Wall time the clock has held over stalls before the offset was
+    /// measured.
+    paused: f64,
     /// Counter time lost to the audio held up, for calibrating across it:
     /// the moves after it are measured as if it had not been.
     slipped: f64,
@@ -971,6 +975,10 @@ impl<'a> NoteClock<'a> {
     /// sound card's is, to a few hundred ppm, and the fit is good only to a
     /// percent or so.
     const CALIBRATE_RATE: f64 = 0.02;
+    /// Before the offset is measured, how long without a move holds the
+    /// clock: this many periods, and this long at least.
+    const STALL_PERIODS: f64 = 3.0;
+    const STALL_LEAST: f64 = 0.03;
     /// How far past a period beyond the reading the clock may run.
     const MARGIN: f64 = 0.0015;
     /// Periods without a move that make the audio held up; a move this late,
@@ -1007,6 +1015,7 @@ impl<'a> NoteClock<'a> {
             at: 0.0,
             value: 0.0,
             period: 1.0,
+            paused: 0.0,
             slipped: 0.0,
             fresh: 0,
             spread: 0.001,
@@ -1047,6 +1056,11 @@ impl<'a> NoteClock<'a> {
             self.earliest = wall - window;
             // How long it surely went without moving.
             let gap = self.polled - self.moved_at;
+            if self.offset.is_none() && !first {
+                // Held over a stall until the offset is measured: from where
+                // it held, not jumping on by the stall.
+                self.paused += (wall - self.moved_at - self.stall_margin()).max(0.0);
+            }
             self.reading = reading;
             self.moved_at = wall;
             if first {
@@ -1079,13 +1093,25 @@ impl<'a> NoteClock<'a> {
                 line.min(ahead) - offset
             }
             // The wall clock, as the beat clock's, until the offset is
-            // measured: neither the slips the loop has seen nor a bound on
-            // the reading, both of which on a jittery device held the first
-            // notes up to a couple of periods behind the beat clock's Start.
+            // measured: neither the slips the loop has seen nor a bound of a
+            // period on the reading, both of which on a jittery device held
+            // the first notes up to a couple of periods behind the beat
+            // clock's Start. Only a stall holds it: the counter not moving
+            // for longer than any jitter keeps it (see `stall_margin`).
+            None if self.reading > 0.0 => {
+                wall.min(self.moved_at + self.stall_margin()) - self.paused
+            }
             None => wall,
         };
         self.now = self.now.max(estimate);
         self.now
+    }
+
+    /// How long the counter may go without moving, before the offset is
+    /// measured, before the clock holds: three periods, and 30ms at least,
+    /// more than a device's callbacks come late as a rule.
+    fn stall_margin(&self) -> f64 {
+        (Self::STALL_PERIODS * self.step() * self.period).max(Self::STALL_LEAST)
     }
 
     /// Takes the offset from the moves so far: where the counter's line over
@@ -5325,24 +5351,123 @@ mod test {
             }
         }
 
-        /// An xrun in the first half second, before the notes' clock has
-        /// measured the audio against the beat clock's zero: the notes run
-        /// on the wall clock through it, then are back on the audio within
-        /// a second of the measurement.
+        /// An xrun (a period) or a stall (300ms) in the first half second,
+        /// before the notes' clock has measured the audio against the beat
+        /// clock's zero: the notes run on the wall clock, held once the
+        /// counter has not moved for three periods (30ms at least), so they
+        /// run no further than that ahead of the audio; then they are not
+        /// late after it, nor bunched as the measurement comes, and are
+        /// back on the audio within a second.
         #[test]
-        fn an_early_xrun_leaves_no_lasting_offset() {
-            let frames = 1024;
-            let period = frames as f64 / 48_000.0;
-            let feed = stalled(callbacks(1.0, frames, 0.001, false, 0.0, 4.0), 0.3, period);
-            let held = [((0.3 / period).ceil() * period, period)];
-            let (truth, _) = held_audio(&held);
-            let times = every(50, 3_000);
-            let (sent, _) = play_virtual(&feed, frames, &times, 20, passes(&[], 0, 0));
-            for (sent, ms) in sent.iter().zip(&times) {
-                let audio = (20 + ms) as f64 / 1000.0;
-                let off = sent - truth(audio);
-                if truth(audio) > 1.5 {
-                    assert!(off.abs() < 0.003, "{ms}ms note {:.1}ms off", off * 1000.0);
+        fn an_early_xrun_or_stall_is_bounded_and_leaves_no_lasting_offset() {
+            for frames in [256, 1024] {
+                let period = frames as f64 / 48_000.0;
+                let margin = (3.0 * period).max(0.03);
+                for lost in [period, 0.3] {
+                    let feed = stalled(callbacks(1.0, frames, 0.001, false, 0.0, 4.0), 0.3, lost);
+                    let held = [((0.3 / period).ceil() * period, lost)];
+                    let (truth, position) = held_audio(&held);
+                    let times = every(50, 3_000);
+                    let (sent, _) = play_virtual(&feed, frames, &times, 20, passes(&[], 0, 0));
+                    for (sent, ms) in sent.iter().zip(&times) {
+                        let audio = (20 + ms) as f64 / 1000.0;
+                        let ahead = audio - position(*sent);
+                        assert!(
+                            ahead <= margin + 0.002,
+                            "{frames}, {lost}s: {ms}ms note {:.1}ms ahead of the audio",
+                            ahead * 1000.0
+                        );
+                        let due = truth(audio);
+                        let late = sent - due;
+                        // 3ms, and the device's jitter (see the test above).
+                        assert!(
+                            late < 0.004,
+                            "{frames}, {lost}s: {ms}ms note {:.1}ms late",
+                            late * 1000.0
+                        );
+                        if due > held[0].0 + lost + 1.0 {
+                            assert!(
+                                late.abs() < 0.003,
+                                "{frames}, {lost}s: {ms}ms note {:.1}ms off",
+                                late * 1000.0
+                            );
+                        }
+                    }
+                    // Not bunched once the audio goes on, through the
+                    // measurement (0.5s in) and on.
+                    for (pair, ms) in sent.windows(2).zip(&times) {
+                        if truth((20 + ms) as f64 / 1000.0) < held[0].0 + lost {
+                            continue;
+                        }
+                        assert!(
+                            pair[1] - pair[0] > 0.05 - 0.003,
+                            "{frames}, {lost}s: notes at {ms}ms bunched: {:.1}ms",
+                            (pair[1] - pair[0]) * 1000.0
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A hiccup (80ms) and a stall (300ms) on a device 10% slow or fast
+        /// (512 frames, callbacks within a millisecond): the notes hold
+        /// through each, go on with the audio once it does (within 3ms, and
+        /// its jitter, past 100ms after it), the stall not baked into the
+        /// rest of the song, and no notes bunched.
+        #[test]
+        fn notes_hold_through_a_stall_on_a_device_off_the_computers_clock() {
+            let times = every(100, 4_000);
+            for rate in [0.9, 1.1] {
+                let period = 512.0 / 48_000.0 / rate;
+                let stalls = [(1.5, 0.08), (2.5, 0.3)];
+                let mut feed = callbacks(rate, 512, 0.001, false, 0.0, 6.0);
+                for (at, lost) in stalls {
+                    feed = stalled(feed, at, lost);
+                }
+                let held: Vec<(f64, f64)> = stalls
+                    .iter()
+                    .map(|&(at, lost)| ((at / period).ceil() * period, lost))
+                    .collect();
+                let (truth, position) = held_audio(&held);
+                let (sent, _) = play_virtual(&feed, 512, &times, 20, passes(&[], 0, 0));
+                for (sent, ms) in sent.iter().zip(&times) {
+                    // In the device's time, the wall's at its rate.
+                    let audio = (20 + ms) as f64 / 1000.0 / rate;
+                    // Until the offset is measured (0.5s in) the notes go on
+                    // the wall clock, which this device is not on.
+                    if audio < 0.7 {
+                        continue;
+                    }
+                    let ahead = audio - position(*sent);
+                    assert!(
+                        ahead <= period + 0.002,
+                        "{rate}x: {ms}ms note {:.1}ms ahead of the audio",
+                        ahead * 1000.0
+                    );
+                    let due = truth(audio);
+                    if held
+                        .iter()
+                        .any(|&(at, lost)| due > at && due < at + lost + 0.1)
+                    {
+                        continue;
+                    }
+                    let off = sent - due;
+                    assert!(
+                        off.abs() < 0.004,
+                        "{rate}x: {ms}ms note {:.1}ms off the audio",
+                        off * 1000.0
+                    );
+                }
+                // From the notes' clock having measured the audio (until then
+                // they go on the wall clock, which this device is not on).
+                let spacing = 0.1 / rate;
+                for (k, pair) in sent.windows(2).enumerate().skip(7) {
+                    assert!(
+                        pair[1] - pair[0] + 0.003 >= spacing,
+                        "{rate}x: notes {k} and {} bunched: {:.1}ms",
+                        k + 1,
+                        (pair[1] - pair[0]) * 1000.0
+                    );
                 }
             }
         }
