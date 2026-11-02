@@ -328,19 +328,13 @@ impl Player {
     /// or rebuild that fails leaves the songs as they were, and says why, so
     /// the caller does not report a change the player has not taken up.
     ///
-    /// A player given no sources resolves them from its config store the
-    /// first time it is asked, and keeps them.
+    /// The sources are resolved again from the config store first, so a
+    /// runtime change to `songs:` or `playlists_dir:` is taken up.
     pub async fn reload_songs(&self) -> Result<(), ReloadSongsError> {
-        let sources = match self.song_sources() {
-            Some(sources) => sources,
-            None => {
-                let store = self.config_store().ok_or(ReloadSongsError::NoSources)?;
-                let config = store.read_config().await;
-                let sources = SongSources::from_config(&config, store.path());
-                self.set_song_sources(sources.clone());
-                sources
-            }
-        };
+        let sources = self
+            .refresh_song_sources()
+            .await
+            .ok_or(ReloadSongsError::NoSources)?;
         let player = self.clone();
         tokio::task::spawn_blocking(move || player.reload_songs_from(&sources))
             .await

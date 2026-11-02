@@ -367,9 +367,13 @@ pub struct Player {
     span: Span,
     /// Mutable configuration store for runtime config changes.
     config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
-    /// Where songs and playlists are read from, resolved once: every
-    /// reload reads these, whichever surface asks for it.
+    /// Where songs and playlists are read from: resolved from the config
+    /// store by one resolver, again as the config changes, and read by
+    /// every surface's reload and file access alike.
     song_sources: Arc<parking_lot::RwLock<Option<SongSources>>>,
+    /// The legacy playlist named on the command line, which wins over the
+    /// config's whenever the sources are resolved.
+    cli_playlist: Arc<parking_lot::RwLock<Option<PathBuf>>>,
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
     default_metronome: Arc<std::sync::atomic::AtomicBool>,
@@ -722,6 +726,7 @@ impl Player {
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
             song_sources: Arc::new(parking_lot::RwLock::new(None)),
+            cli_playlist: Arc::new(parking_lot::RwLock::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             init_round: Arc::new(parking_lot::Mutex::new(None)),
@@ -950,7 +955,15 @@ impl Player {
     }
 
     /// Sets the config store on the player. Called once after startup.
+    /// The song sources are resolved from it at once.
     pub fn set_config_store(&self, store: Arc<config::ConfigStore>) {
+        if let Some(config) = store.try_read_config() {
+            *self.song_sources.write() = Some(SongSources::resolve(
+                &config,
+                store.path(),
+                self.cli_playlist.read().as_deref(),
+            ));
+        }
         *self.config_store.lock() = Some(store);
     }
 
@@ -959,15 +972,38 @@ impl Player {
         self.config_store.lock().clone()
     }
 
-    /// Sets where songs and playlists are read from. Called once at
-    /// startup, with the paths the player's songs were first loaded from.
+    /// Sets where songs and playlists are read from, for a player with no
+    /// config store to resolve them from (a test's). A config store, once
+    /// set, resolves them in their place.
     pub fn set_song_sources(&self, sources: SongSources) {
         *self.song_sources.write() = Some(sources);
     }
 
-    /// Where songs and playlists are read from, if they have been set.
+    /// Sets the legacy playlist named on the command line, which wins over
+    /// the config's each time the sources are resolved. Set before the
+    /// config store.
+    pub fn set_cli_playlist(&self, playlist: Option<PathBuf>) {
+        *self.cli_playlist.write() = playlist;
+    }
+
+    /// Where songs and playlists are read from, as last resolved.
     pub fn song_sources(&self) -> Option<SongSources> {
         self.song_sources.read().clone()
+    }
+
+    /// Resolves the song sources again from the config store's current
+    /// config, so a runtime change to `songs:` or `playlists_dir:` takes
+    /// effect without a restart, and returns them. Without a config store,
+    /// the sources set are kept.
+    pub async fn refresh_song_sources(&self) -> Option<SongSources> {
+        let Some(store) = self.config_store() else {
+            return self.song_sources();
+        };
+        let config = store.read_config().await;
+        let sources =
+            SongSources::resolve(&config, store.path(), self.cli_playlist.read().as_deref());
+        *self.song_sources.write() = Some(sources.clone());
+        Some(sources)
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -1358,12 +1394,12 @@ fn resolve_playback_outcome(
     }
 }
 
-/// Where the player's songs and playlists are read from: resolved once, as
-/// mtrack starts, and read by every reload after, whichever surface asks
-/// for it. Resolved per surface, the web UI and MCP reloaded different sets
-/// after a config change, MCP ignored a playlist named on the command line,
-/// and the web UI loaded a `playlist.yaml` beside the config that nothing
-/// had configured.
+/// Where the player's songs and playlists are read from, resolved from the
+/// config by one resolver, [`SongSources::resolve`], whichever surface asks.
+/// Resolved per surface, the web UI and MCP reloaded different sets after a
+/// config change, MCP ignored a playlist named on the command line, and the
+/// web UI loaded a `playlist.yaml` beside the config that nothing had
+/// configured.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SongSources {
     /// The songs directory, resolved.
@@ -1378,13 +1414,13 @@ pub struct SongSources {
 }
 
 impl SongSources {
-    /// Resolves the sources from `config`, read from `config_path`, with
-    /// `songs` as the songs directory and the playlist named on the command
-    /// line, if one is, over the config's.
-    pub fn new(
+    /// Resolves the sources from `config`, read from `config_path`: the
+    /// songs directory it names, resolved as far as the filesystem allows,
+    /// and the playlist named on the command line, if one is, over the
+    /// config's.
+    pub fn resolve(
         config: &config::Player,
         config_path: &Path,
-        songs: PathBuf,
         cli_playlist: Option<&Path>,
     ) -> SongSources {
         let project_dir = crate::util::project_dir_of(config_path);
@@ -1402,18 +1438,10 @@ impl SongSources {
                 }
             });
         SongSources {
-            songs,
+            songs: crate::util::resolved_dir(&config.songs(config_path)),
             playlists_dir: Some(playlists_dir),
             legacy_playlist,
         }
-    }
-
-    /// [`SongSources::new`] with the songs directory the config names,
-    /// resolved, and no command-line playlist: for a player given no
-    /// sources, which resolves them from its config store.
-    pub fn from_config(config: &config::Player, config_path: &Path) -> SongSources {
-        let songs = crate::util::resolved_dir(&config.songs(config_path));
-        SongSources::new(config, config_path, songs, None)
     }
 }
 
@@ -4148,24 +4176,22 @@ mod test {
         Ok(())
     }
 
-    /// The song sources resolve the playlists directory, defaulting beside
-    /// the config, and the command line's playlist over the config's, both
-    /// against the config's directory.
+    /// The song sources resolve the songs and playlists directories,
+    /// defaulting beside the config, and the command line's playlist over
+    /// the config's, against the config's directory.
     #[test]
     fn song_sources_resolve_against_the_config() {
-        let dir = Path::new("/srv/show");
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(dir.join("songs")).unwrap();
         let path = dir.join("mtrack.yaml");
         let mut config = config::Player::default();
         config.set_songs("songs");
-        let sources = SongSources::new(&config, &path, dir.join("songs"), None);
+        let sources = SongSources::resolve(&config, &path, None);
+        assert_eq!(sources.songs, dir.join("songs"));
         assert_eq!(sources.playlists_dir, Some(dir.join("playlists")));
         assert_eq!(sources.legacy_playlist, None);
-        let sources = SongSources::new(
-            &config,
-            &path,
-            dir.join("songs"),
-            Some(Path::new("setlist.yaml")),
-        );
+        let sources = SongSources::resolve(&config, &path, Some(Path::new("setlist.yaml")));
         assert_eq!(sources.legacy_playlist, Some(dir.join("setlist.yaml")));
     }
 

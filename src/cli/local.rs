@@ -220,16 +220,13 @@ pub async fn start(
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
     let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;
 
-    // Where songs and playlists are read from, resolved once: the playlists
-    // directory from the config, defaulting to {config_dir}/playlists/, and
-    // the legacy playlist the command line names over the config's. Every
-    // reload after, from any surface, reads these.
-    let song_sources = crate::player::SongSources::new(
-        &player_config,
-        player_path,
-        songs_path.as_path().to_path_buf(),
-        playlist_path.as_ref().map(Path::new),
-    );
+    // Where songs and playlists are read from, by the one resolver the
+    // player uses again as the config changes: the playlists directory from
+    // the config, defaulting to {config_dir}/playlists/, and the legacy
+    // playlist the command line names over the config's.
+    let cli_playlist = playlist_path.as_ref().map(std::path::PathBuf::from);
+    let song_sources =
+        crate::player::SongSources::resolve(&player_config, player_path, cli_playlist.as_deref());
 
     // Load all playlists from directory + legacy file.
     let playlists = crate::player::load_playlists(
@@ -251,8 +248,8 @@ pub async fn start(
         &player_config,
         Some(project_dir.as_path()),
     )?;
+    player.set_cli_playlist(cli_playlist);
     player.set_config_store(config_store);
-    player.set_song_sources(song_sources);
     player.set_default_metronome(default_metronome);
 
     // Create the state watch channel upfront. The sampler will be started

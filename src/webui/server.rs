@@ -85,16 +85,6 @@ pub struct WebUiState {
     pub broadcast_tx: broadcast::Sender<String>,
     /// Canonicalized path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
-    /// Canonicalized path to the songs directory: the player's song
-    /// sources', so the files the web UI edits are the ones it reloads.
-    /// codeql[rust/path-injection] Set once at startup from the player config file; not user-controlled.
-    pub songs_path: PathBuf,
-    /// Canonicalized path to the playlists directory (if configured), from
-    /// the player's song sources.
-    pub playlists_dir: Option<PathBuf>,
-    /// Canonicalized path to the legacy playlist file, if one is
-    /// configured, from the player's song sources.
-    pub legacy_playlist_path: Option<PathBuf>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
     /// Canonicalized path to the profiles directory (if configured).
@@ -102,6 +92,36 @@ pub struct WebUiState {
     /// Active calibration session (at most one at a time).
     pub(crate) calibration:
         Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
+}
+
+impl WebUiState {
+    /// The player's song sources as last resolved: read on each call, so a
+    /// runtime change to `songs:` or `playlists_dir:` reaches the web UI's
+    /// file access as it reaches every surface's reload.
+    fn song_sources(&self) -> crate::player::SongSources {
+        self.player.song_sources().unwrap_or_default()
+    }
+
+    /// Canonicalized path to the songs directory, from the player's song
+    /// sources, so the files the web UI edits are the ones it reloads.
+    /// codeql[rust/path-injection] Resolved from the player config file; not user-controlled.
+    pub fn songs_path(&self) -> PathBuf {
+        canonicalize_or_keep(self.song_sources().songs)
+    }
+
+    /// Canonicalized path to the playlists directory, from the player's
+    /// song sources.
+    pub fn playlists_dir(&self) -> Option<PathBuf> {
+        self.song_sources().playlists_dir.map(canonicalize_or_keep)
+    }
+
+    /// Canonicalized path to the legacy playlist file, if one is
+    /// configured, from the player's song sources.
+    pub fn legacy_playlist_path(&self) -> Option<PathBuf> {
+        self.song_sources()
+            .legacy_playlist
+            .map(canonicalize_or_keep)
+    }
 }
 
 /// Canonicalizes a path, falling back to the original if canonicalization fails
@@ -121,22 +141,13 @@ pub struct WebUiStateParams {
 }
 
 impl WebUiState {
-    /// Creates a new WebUiState, canonicalizing all path fields. The songs
-    /// and playlist paths are the player's song sources, which must be set
-    /// first.
+    /// Creates a new WebUiState, canonicalizing all path fields.
     pub fn new(params: WebUiStateParams) -> Self {
-        let sources = params.player.song_sources().unwrap_or_else(|| {
-            tracing::warn!("The player has no song sources: the web UI has no songs directory");
-            Default::default()
-        });
         WebUiState {
             player: params.player,
             state_rx: params.state_rx,
             broadcast_tx: params.broadcast_tx,
             config_path: canonicalize_or_keep(params.config_path),
-            songs_path: canonicalize_or_keep(sources.songs),
-            playlists_dir: sources.playlists_dir.map(canonicalize_or_keep),
-            legacy_playlist_path: sources.legacy_playlist.map(canonicalize_or_keep),
             profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
             waveform_cache: params.waveform_cache,
             calibration: Arc::new(parking_lot::Mutex::new(None)),

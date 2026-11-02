@@ -3947,9 +3947,9 @@ impl McpServer {
     ) -> Result<crate::webui::safe_path::VerifiedRoot, McpError> {
         let store = self.config_store()?;
         let path = store.path().to_path_buf();
-        // The songs directory the player reloads from, so a song written
-        // here is one it picks up.
-        let songs = match self.player.song_sources() {
+        // The songs directory the player reloads from, resolved from the
+        // config as it is now, so a song written here is one it picks up.
+        let songs = match self.player.refresh_song_sources().await {
             Some(sources) => sources.songs,
             None => store.read_config().await.songs(&path),
         };
@@ -4047,10 +4047,10 @@ impl McpServer {
         let config_path = store.path().to_path_buf();
         // The playlists the player reloads from, so a playlist written here
         // is one it picks up: the command line's legacy playlist included.
-        let sources = match self.player.song_sources() {
+        let sources = match self.player.refresh_song_sources().await {
             Some(sources) => sources,
             None => {
-                crate::player::SongSources::from_config(&store.read_config().await, &config_path)
+                crate::player::SongSources::resolve(&store.read_config().await, &config_path, None)
             }
         };
         match name {

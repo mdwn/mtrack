@@ -218,7 +218,7 @@ pub(super) async fn import_gdtf(
 
 /// GET /api/lighting — lists available .light files from the songs directory.
 pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl IntoResponse {
-    let songs_path = state.songs_path.clone();
+    let songs_path = state.songs_path().clone();
     let mut light_files =
         match super::helpers::spawn_blocking_io("scan for lighting files", move || {
             let mut files = Vec::new();
@@ -245,11 +245,11 @@ pub(crate) fn find_light_files(
     dir: &std::path::Path,
     results: &mut Vec<serde_json::Value>,
 ) -> Result<(), std::io::Error> {
-    // codeql[rust/path-injection] dir is always state.songs_path, set at startup.
+    // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
     if !dir.is_dir() {
         return Ok(());
     }
-    // codeql[rust/path-injection] dir is always state.songs_path, set at startup.
+    // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -285,11 +285,11 @@ pub(super) async fn get_lighting_file(
 ) -> impl IntoResponse {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let root = match VerifiedRoot::new(&state.songs_path) {
+    let root = match VerifiedRoot::new(&state.songs_path()) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let safe = match SafePath::resolve(&state.songs_path.join(&name), &root) {
+    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
         Ok(p) => p,
         Err(_) => {
             return (
@@ -323,7 +323,7 @@ fn resolve_lighting_path(
 ) -> Result<std::path::PathBuf, super::super::safe_path::SafePathError> {
     use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
 
-    let root = VerifiedRoot::new(&state.songs_path)?;
+    let root = VerifiedRoot::new(&state.songs_path())?;
 
     // Resolve the file path under the songs root. For existing files, SafePath::resolve
     // canonicalizes and verifies containment. For new files, resolve the parent directory
@@ -364,7 +364,7 @@ pub(super) async fn put_lighting_file(
     if let Err(errors) = config_io::validate_light_show(
         &body,
         Some(&verified_path),
-        Some(&state.songs_path),
+        Some(&state.songs_path()),
         tempo.as_ref(),
     ) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
@@ -389,11 +389,11 @@ pub(super) async fn delete_lighting_file(
 ) -> impl IntoResponse {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let root = match VerifiedRoot::new(&state.songs_path) {
+    let root = match VerifiedRoot::new(&state.songs_path()) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let safe = match SafePath::resolve(&state.songs_path.join(&name), &root) {
+    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
         Ok(p) => p,
         Err(_) => {
             return (
@@ -462,7 +462,7 @@ pub(super) async fn validate_lighting(
     match config_io::validate_light_show(
         &body,
         path.as_deref(),
-        Some(&state.songs_path),
+        Some(&state.songs_path()),
         tempo.as_ref(),
     ) {
         Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
@@ -3322,7 +3322,7 @@ mod test {
     #[tokio::test]
     async fn get_lighting_files_with_files() {
         let (state, _dir) = test_state();
-        std::fs::write(state.songs_path.join("show.light"), "content").unwrap();
+        std::fs::write(state.songs_path().join("show.light"), "content").unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -3344,9 +3344,9 @@ mod test {
     #[tokio::test]
     async fn get_lighting_files_sorted() {
         let (state, _dir) = test_state();
-        std::fs::write(state.songs_path.join("z_show.light"), "content").unwrap();
-        std::fs::write(state.songs_path.join("a_show.light"), "content").unwrap();
-        std::fs::write(state.songs_path.join("m_show.light"), "content").unwrap();
+        std::fs::write(state.songs_path().join("z_show.light"), "content").unwrap();
+        std::fs::write(state.songs_path().join("a_show.light"), "content").unwrap();
+        std::fs::write(state.songs_path().join("m_show.light"), "content").unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -3371,7 +3371,7 @@ mod test {
     #[tokio::test]
     async fn get_lighting_file_success() {
         let (state, _dir) = test_state();
-        std::fs::write(state.songs_path.join("show.light"), "light content").unwrap();
+        std::fs::write(state.songs_path().join("show.light"), "light content").unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -3413,7 +3413,7 @@ mod test {
         let outside_dir = tempfile::tempdir().unwrap();
         let secret_file = outside_dir.path().join("secret.light");
         std::fs::write(&secret_file, "secret content").unwrap();
-        std::os::unix::fs::symlink(&secret_file, state.songs_path.join("evil.light")).unwrap();
+        std::os::unix::fs::symlink(&secret_file, state.songs_path().join("evil.light")).unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -3458,7 +3458,7 @@ mod test {
         use std::os::unix::fs::PermissionsExt;
 
         let (state, _dir) = test_state();
-        let file = state.songs_path.join("unreadable.light");
+        let file = state.songs_path().join("unreadable.light");
         std::fs::write(&file, "content").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
 
@@ -3528,7 +3528,7 @@ show "test" {
     #[tokio::test]
     async fn validate_lighting_resolves_includes_from_the_named_file() {
         let (state, _dir) = test_state();
-        let songs = state.songs_path.clone();
+        let songs = state.songs_path().clone();
         std::fs::create_dir_all(songs.join("song/lighting")).unwrap();
         std::fs::write(
             songs.join("common.light"),
@@ -3569,7 +3569,7 @@ show "test" {
     #[tokio::test]
     async fn put_lighting_file_valid() {
         let (state, _dir) = test_state();
-        let file_path = state.songs_path.join("new.light");
+        let file_path = state.songs_path().join("new.light");
         let content =
             "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
         let app = router().with_state(state);
@@ -3610,8 +3610,12 @@ show "test" {
 
     #[tokio::test]
     async fn get_lighting_files_missing_dir() {
-        let (mut state, _dir) = test_state();
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let (state, _dir) = test_state();
+        {
+            let mut sources = state.player.song_sources().unwrap_or_default();
+            sources.songs = std::path::PathBuf::from("/nonexistent/songs");
+            state.player.set_song_sources(sources);
+        }
         let app = router().with_state(state);
 
         let response = app
@@ -3631,7 +3635,7 @@ show "test" {
     async fn put_lighting_file_outside_base() {
         let (state, _dir) = test_state();
         let outside_dir = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside_dir.path(), state.songs_path.join("escape")).unwrap();
+        std::os::unix::fs::symlink(outside_dir.path(), state.songs_path().join("escape")).unwrap();
 
         let content =
             "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
@@ -3816,7 +3820,7 @@ show "test" {
         use std::os::unix::fs::PermissionsExt;
 
         let (state, _dir) = test_state();
-        let file = state.songs_path.join("broken.light");
+        let file = state.songs_path().join("broken.light");
         std::fs::write(&file, "content").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
 
@@ -3874,7 +3878,7 @@ show "test" {
         use std::os::unix::fs::PermissionsExt;
 
         let (state, _dir) = test_state();
-        let sub = state.songs_path.join("readonly");
+        let sub = state.songs_path().join("readonly");
         std::fs::create_dir(&sub).unwrap();
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
 
@@ -3905,7 +3909,7 @@ show "test" {
         use std::os::unix::fs::PermissionsExt;
 
         let (state, _dir) = test_state();
-        let sub = state.songs_path.join("unreadable_dir");
+        let sub = state.songs_path().join("unreadable_dir");
         std::fs::create_dir(&sub).unwrap();
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
 

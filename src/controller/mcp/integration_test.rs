@@ -629,13 +629,6 @@ async fn build_standalone_player(
         fixture.config_path.clone(),
     ));
     player.set_config_store(store);
-    // Resolved from the config, as `cli::local::start` resolves them.
-    player.set_song_sources(crate::player::SongSources::new(
-        &config::Player::deserialize(&fixture.config_path)?,
-        &fixture.config_path,
-        songs_path,
-        None,
-    ));
 
     // `cli::local::start` installs this before hardware init, and the sampler
     // that feeds `mtrack://lighting/state` is started by that init. Without it
@@ -6093,5 +6086,41 @@ async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
     .await;
     assert!(resp["error"].is_null(), "{resp}");
     assert_ne!(resp["result"]["isError"], true, "{resp}");
+    Ok(())
+}
+
+/// A runtime change to `songs:` reaches MCP's reload and its song root
+/// without a restart: both read the sources the player resolves again from
+/// the config, as the web UI's do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_songs_change_reloads_the_new_set_over_mcp() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    assert!(player.songs().get("DSL Light Show Song").is_ok());
+
+    let more = fixture.root.join("more").join("moved");
+    std::fs::create_dir_all(&more)?;
+    crate::testutil::write_wav(more.join("kick.wav"), vec![vec![0_i32; 441]], 44100)?;
+    std::fs::write(
+        more.join("song.yaml"),
+        "name: Moved Song\ntracks:\n- name: kick\n  file: kick.wav\n",
+    )?;
+    let config = std::fs::read_to_string(&fixture.config_path)?.replace(
+        &format!("songs: {}", fixture.root.join("songs").display()),
+        "songs: more",
+    );
+    std::fs::write(&fixture.config_path, config)?;
+    let store = player.config_store().expect("a config store");
+    store.lock_for_disk_write().await.reload().await?;
+
+    let server = crate::controller::mcp::McpServer::new(player.clone());
+    server.reload_player_songs().await?;
+    assert!(player.songs().get("Moved Song").is_ok(), "the new set");
+    assert!(
+        player.songs().get("DSL Light Show Song").is_err(),
+        "the old set"
+    );
+    let root = server.songs_root_verified().await?;
+    assert!(root.as_path().ends_with("more"), "{:?}", root.as_path());
     Ok(())
 }

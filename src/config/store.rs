@@ -150,6 +150,12 @@ impl ConfigStore {
         })
     }
 
+    /// A clone of the current config, without waiting: `None` while a
+    /// mutation holds the store. For a synchronous caller that can retry.
+    pub fn try_read_config(&self) -> Option<Player> {
+        self.inner.try_read().ok().map(|guard| guard.clone())
+    }
+
     /// Returns a clone of the current config.
     pub async fn read_config(&self) -> Player {
         self.inner.read().await.clone()

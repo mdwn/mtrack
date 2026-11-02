@@ -154,12 +154,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaving the client the old checksum of a config already saved.
 
 - **Songs and playlists reload from one place**: the paths songs and playlists are read from are
-  resolved once, as mtrack starts, and every reload reads them, whichever surface asks. The web UI
-  no longer loads a `playlist.yaml` beside the config that nothing configured (it used to on its
+  resolved by one resolver, from the config as it is now, whichever surface asks. The web UI no
+  longer loads a `playlist.yaml` beside the config that nothing configured (it used to on its
   first song or playlist edit, though mtrack had not loaded it at startup), MCP's playlist tools
   read and write the playlist named with `--playlist` on the command line rather than ignoring it,
   and a config change to `songs:` or `playlists_dir:` no longer has the web UI and MCP reloading
-  different sets: it takes effect on the next start, as for the web UI before. A song or playlist
+  different sets: the save reloads the new set at once, and both read and write it from then on
+  (the web UI used to keep the startup paths until a restart). A song or playlist
   change whose reload fails (the songs directory unreadable, say) is now answered with an error
   saying the change was written but not taken up -- a 500 from the web UI, an `internal_error`
   from MCP -- rather than as saved while the player kept its old songs.

@@ -1424,6 +1424,49 @@ mod test {
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
     }
 
+    /// A runtime change to `songs:` takes effect without a restart: the save
+    /// reloads the new set, and the web UI's song files are read from it,
+    /// as every surface's reload reads it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_songs_change_reloads_the_new_set_over_the_web() {
+        let (state, dir) = test_state();
+        set_store(&state);
+        let moved = dir.path().join("other").join("moved");
+        std::fs::create_dir_all(&moved).unwrap();
+        crate::testutil::write_wav(moved.join("kick.wav"), vec![vec![0_i32; 441]], 44100).unwrap();
+        std::fs::write(
+            moved.join("song.yaml"),
+            "name: Moved Song\ntracks:\n- name: kick\n  file: kick.wav\n",
+        )
+        .unwrap();
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: other\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            state.player.songs().get("Moved Song").is_ok(),
+            "the new set"
+        );
+        assert!(
+            state.songs_path().ends_with("other"),
+            "{:?}",
+            state.songs_path()
+        );
+
+        // A song edit's reload reads it too.
+        super::super::helpers::reload_songs(&state).await.unwrap();
+        assert!(state.player.songs().get("Moved Song").is_ok());
+    }
+
     /// The reply to a save says what became of it on the hardware, as the
     /// gRPC and MCP replies do: applied, deferred with a message, or saved
     /// and not applied because the reload failed, with the reason.

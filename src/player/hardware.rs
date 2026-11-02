@@ -820,6 +820,16 @@ impl Player {
     /// a change to them, so a surface's own transport survives a change
     /// made over it.
     pub async fn apply_config_change(self: &Arc<Self>) -> ConfigApply {
+        // A change to where songs or playlists live is taken up at once, as
+        // a song edit's reload would take it up.
+        let before = self.song_sources();
+        let after = self.refresh_song_sources().await;
+        if after != before {
+            info!("The songs or playlists moved: reloading them");
+            if let Err(e) = self.reload_songs().await {
+                warn!("Reloading songs after a config change failed: {}", e);
+            }
+        }
         // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
         // await this.
         match self.reload_hardware().await.map_err(|e| e.to_string()) {
