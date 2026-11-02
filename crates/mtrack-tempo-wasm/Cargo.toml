@@ -1,0 +1,12 @@
+[package]
+name = "mtrack-tempo-wasm"
+description = "mtrack's tempo map and cue clock, compiled to WebAssembly for the web UI."
+license = "GPL-3.0"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A cdylib is what `wasm32-unknown-unknown` turns into a .wasm module; the
+# rlib lets the host build, test and lint it with the rest of the workspace.
+[lib]
+crate-type = ["cdylib", "rlib"]

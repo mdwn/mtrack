@@ -203,6 +203,9 @@ check_rust() {
 
   # Ensure clippy and rustfmt are installed.
   rustup component add clippy rustfmt 2>/dev/null || true
+
+  # The web UI runs the player's tempo map compiled to WebAssembly.
+  rustup target add wasm32-unknown-unknown 2>/dev/null || true
 }
 
 # --- Main ---

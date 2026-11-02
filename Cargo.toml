@@ -1,5 +1,5 @@
 [workspace]
-members = ["harness"]
+members = ["harness", "crates/mtrack-tempo-wasm"]
 exclude = ["fuzz"]
 
 [package]
@@ -28,6 +28,7 @@ include = [
     "!src/webui/svelte/.svelte-kit/**",
     "!src/webui/svelte/.claude/**",
     "!src/webui/svelte/e2e/**",
+    "!src/webui/svelte/scripts/**",
     "!src/webui/svelte/test-results/**",
     "!src/webui/svelte/playwright-report/**",
     "!src/webui/svelte/.playwright-mcp/**",
@@ -162,3 +163,8 @@ harness = false
 
 [package.metadata.cargo-shear]
 ignored = ["prost"]
+
+# The web UI's tempo module (crates/mtrack-tempo-wasm) is downloaded with the
+# page: built for size.
+[profile.release.package.mtrack-tempo-wasm]
+opt-level = "s"

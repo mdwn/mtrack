@@ -219,6 +219,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes follow a tempo change or ramp inside them rather than keeping a fixed length in seconds;
   its effects' durations in beats or measures are resolved where each pass plays, as a sequence's
   are. A sequence (or loop) with no effect at all now lasts until its last cue rather than no time.
+- **The web UI's timeline is timed by the player's own tempo map**: the lighting timeline had a
+  TypeScript copy of the tempo map, cue offsets and sequence expansion, and its sequences were
+  laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,
+  compiled to WebAssembly, so its bars, ramps, offsets and sequences are where the player puts
+  them, sequences through a tempo change included.
+- **The tempo through many ramps**: reading the tempo at a time read the tempo before each ramp
+  again from the top, doubling the work with every ramp before it, so an `offset` late in a show
+  with a few dozen ramps could stall the parser. It is now one walk over the changes.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "gen:wasm": "node scripts/build-tempo-wasm.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",

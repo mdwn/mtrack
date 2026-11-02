@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -30,10 +30,12 @@ setup-dev:
 ## Build everything
 build: build-ui build-rust
 
-## Compute a hash of all frontend inputs (source, proto, lockfile).
-# src/gen is generated from src/proto (hashed here already) and gitignored, so it is left
-# out: a checkout that has never run buf would otherwise never match a stamp built elsewhere.
-FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
+## Compute a hash of all frontend inputs (source, proto, the tempo map, lockfile).
+# src/gen is generated from src/proto and the tempo map's Rust (both hashed here already) and
+# gitignored, so it is left out: a checkout that has never generated it would otherwise never
+# match a stamp built elsewhere.
+WASM_SOURCES := $(ROOT_DIR)/src/tempo.rs $(ROOT_DIR)/src/tempo $(ROOT_DIR)/crates/mtrack-tempo-wasm
+FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto $(WASM_SOURCES) -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
 FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
 
 ## Install frontend dependencies
@@ -44,12 +46,18 @@ install-ui:
 gen-proto:
 	cd $(SVELTE_DIR) && npx @bufbuild/buf generate
 
+## Build the player's tempo map (src/tempo.rs) to WebAssembly for the web UI, into
+## src/webui/svelte/src/gen. Needs Rust's wasm32-unknown-unknown target
+## (`rustup target add wasm32-unknown-unknown`; ./setup.sh adds it).
+gen-wasm:
+	cd $(SVELTE_DIR) && node scripts/build-tempo-wasm.mjs
+
 ## Build the Svelte frontend (skips if sources unchanged)
 build-ui:
 	@if [ -f "$(FRONTEND_STAMP)" ] && [ "$$(cat "$(FRONTEND_STAMP)")" = "$(FRONTEND_HASH)" ]; then \
 		echo "Frontend up to date, skipping build."; \
 	else \
-		$(MAKE) install-ui gen-proto && \
+		$(MAKE) install-ui gen-proto gen-wasm && \
 		cd $(SVELTE_DIR) && MTRACK_UI_BUILD=$(FRONTEND_HASH) npm run build && \
 		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
 	fi
@@ -185,7 +193,7 @@ fmt-rust-check:
 	cargo fmt --manifest-path $(ROOT_DIR)/Cargo.toml --check
 
 ## Start the Vite dev server
-dev-ui:
+dev-ui: gen-wasm
 	cd $(SVELTE_DIR) && npm run dev
 
 ## Build the documentation

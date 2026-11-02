@@ -111,30 +111,14 @@ impl TempoConfig {
     }
 
     /// The time signature in effect at the start of a measure (1-indexed),
-    /// or `None` if any signature along the way fails to parse.
+    /// or `None` if the configuration does not make a tempo map.
     ///
     /// A change anchored mid-measure does not govern the measure it lands
     /// in — `BeatGrid::from_tempo_map` reads the signature at the measure's
-    /// downbeat — so only changes at or before that downbeat count.
+    /// downbeat — so only changes at or before that downbeat count: the
+    /// tempo map's own rule ([`TempoMap::time_signature_in_measure`]).
     pub fn time_signature_at_measure(&self, measure: u32) -> Option<TimeSignature> {
-        let mut signature = parse_time_signature(&self.time_signature).ok()?;
-        let mut best: Option<(u32, f64)> = None;
-        for change in &self.changes {
-            let beat = change.beat.unwrap_or(1.0);
-            let governs = change.measure < measure || (change.measure == measure && beat <= 1.0);
-            if !governs {
-                continue;
-            }
-            let Some(raw) = &change.time_signature else {
-                continue;
-            };
-            if best.is_some_and(|(m, b)| (change.measure, beat) < (m, b)) {
-                continue;
-            }
-            signature = parse_time_signature(raw).ok()?;
-            best = Some((change.measure, beat));
-        }
-        Some(signature)
+        Some(self.to_tempo_map().ok()?.time_signature_in_measure(measure))
     }
 
     /// How many beats a measure (1-indexed) holds, as the beat grid counts

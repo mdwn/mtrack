@@ -124,6 +124,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         if: env.SOURCE_BUILD == 'true'
+        with:
+          # For the web UI's tempo map (make build-ui).
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         if: env.SOURCE_BUILD == 'true'
         with:
