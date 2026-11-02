@@ -15,23 +15,61 @@
 import type {
   Timestamp,
   TempoSection,
+  TempoChange,
   Cue,
   Sequence,
   CueEffect,
 } from "./types";
 import { absoluteTimestamp } from "./types";
 
-/** A segment of constant tempo, used for measure/beat <-> ms conversion. */
+/** Where the tempo stands from one tempo change to the next.
+ *
+ *  Positions are counted as the server's tempo map counts them: in quarter
+ *  notes from bar 1 beat 1, so `@bar/beat` beats are quarter notes in any
+ *  metre (a bar of 6/8 holds three). A ramp moves the tempo linearly in time
+ *  and spans exactly the beats it is written over, as a DAW renders it. */
 export interface TempoSegment {
   /** Absolute ms where this segment starts */
   startMs: number;
   /** Measure number at the start of this segment (1-based) */
   startMeasure: number;
-  /** Beat within the start measure (1-based) */
+  /** Quarter-note beat within the start measure (1-based) */
   startBeat: number;
+  /** Quarter notes from bar 1 beat 1 to the start of this segment */
+  startBeats: number;
+  /** The tempo from here, once any ramp in progress has reached it */
   bpm: number;
+  /** A ramp still in progress at the start of this segment */
+  ramp?: TempoRamp;
+  /** The time signature's numerator, as written */
   beatsPerMeasure: number;
+  /** The time signature's denominator, as written */
   beatValue: number;
+}
+
+/** A gradual tempo change: linear in time from `fromBpm` to `toBpm`. */
+export interface TempoRamp {
+  fromBpm: number;
+  toBpm: number;
+  /** How long the whole ramp lasts */
+  totalMs: number;
+  /** How far into the ramp the segment it belongs to starts */
+  elapsedMs: number;
+}
+
+/** A time signature, governing from the downbeat of `measure` on. */
+interface MeterSpan {
+  measure: number;
+  /** Quarter notes from bar 1 beat 1 to that downbeat */
+  startBeats: number;
+  /** Quarter notes in each bar */
+  quarters: number;
+}
+
+/** The tempo map the timeline converts through. */
+interface TempoGrid {
+  segments: TempoSegment[];
+  meters: MeterSpan[];
 }
 
 /** Grid line for rendering on the ruler. */
@@ -41,87 +79,316 @@ export interface GridLine {
   label?: string;
 }
 
-/** Build a sorted array of tempo segments from a TempoSection.
- *  Uses only already-built segments to resolve change timestamps,
- *  avoiding mutual recursion with timestampToMs. */
-export function buildTempoSegments(tempo: TempoSection): TempoSegment[] {
-  const segments: TempoSegment[] = [];
-  const [beatsPerMeasure, beatValue] = tempo.time_signature;
+const MS_PER_MINUTE = 60000;
 
-  // First segment starts at the tempo start offset
-  const startMs = durationToMs(tempo.start);
-  segments.push({
-    startMs,
-    startMeasure: 1,
-    startBeat: 1,
-    bpm: tempo.bpm,
-    beatsPerMeasure,
-    beatValue,
-  });
-
-  for (const change of tempo.changes) {
-    const prev = segments[segments.length - 1];
-    // Resolve the change timestamp using segments built so far — NOT
-    // timestampToMs(), which would call buildTempoSegments() and recurse.
-    const changeMs = resolveTimestampWithSegments(change.timestamp, segments);
-    const elapsed = changeMs - prev.startMs;
-    const beatDurationMs = 60000 / prev.bpm;
-    const beatsElapsed = elapsed / beatDurationMs;
-
-    // Calculate measure/beat at the change point
-    const totalBeats =
-      (prev.startMeasure - 1) * prev.beatsPerMeasure +
-      (prev.startBeat - 1) +
-      beatsElapsed;
-    const newBpm = change.bpm ?? prev.bpm;
-    const newTimeSig = change.time_signature ?? [
-      prev.beatsPerMeasure,
-      prev.beatValue,
-    ];
-    const newBeatsPerMeasure = newTimeSig[0];
-    const measure = Math.floor(totalBeats / newBeatsPerMeasure) + 1;
-    const beat = (totalBeats % newBeatsPerMeasure) + 1;
-
-    segments.push({
-      startMs: changeMs,
-      startMeasure: measure,
-      startBeat: beat,
-      bpm: newBpm,
-      beatsPerMeasure: newBeatsPerMeasure,
-      beatValue: newTimeSig[1],
-    });
-  }
-
-  return segments;
+function quartersPerMeasure([numerator, denominator]: [
+  number,
+  number,
+]): number {
+  return denominator > 0 ? (numerator * 4) / denominator : numerator;
 }
 
-/** Convert a timestamp to ms using an already-built segment list.
- *  This avoids the mutual recursion between buildTempoSegments and timestampToMs. */
-function resolveTimestampWithSegments(
-  ts: Timestamp,
-  segments: TempoSegment[],
+/** How long a ramp from `fromBpm` to `toBpm` lasts when it spans `beats`
+ *  beats: a tempo linear in time averages the two ends. */
+export function rampDurationMs(
+  fromBpm: number,
+  toBpm: number,
+  beats: number,
 ): number {
-  if (ts.type === "absolute") {
-    return ts.ms ?? 0;
-  }
-  // measure_beat: walk the segments built so far
-  const targetMeasure = ts.measure ?? 1;
-  const targetBeat = ts.beat ?? 1;
+  const mean = (fromBpm + toBpm) / 2;
+  return (beats * MS_PER_MINUTE) / (mean > 0 ? mean : fromBpm);
+}
 
+/** Beats a ramp covers from `elapsed` ms in to its end. */
+function rampBeatsFrom(r: TempoRamp, elapsed: number): number {
+  const t = r.totalMs;
+  return (
+    (r.fromBpm * (t - elapsed) +
+      ((r.toBpm - r.fromBpm) * (t * t - elapsed * elapsed)) / (2 * t)) /
+    MS_PER_MINUTE
+  );
+}
+
+/** Beats covered `dt` ms after the start of a segment. */
+function segmentBeatsIn(seg: TempoSegment, dt: number): number {
+  const r = seg.ramp;
+  if (!r) return (dt * seg.bpm) / MS_PER_MINUTE;
+  const left = r.totalMs - r.elapsedMs;
+  const remaining = rampBeatsFrom(r, r.elapsedMs);
+  if (dt >= left) return remaining + ((dt - left) * seg.bpm) / MS_PER_MINUTE;
+  return remaining - rampBeatsFrom(r, r.elapsedMs + dt);
+}
+
+/** Ms needed to cover `beats` beats from the start of a segment: the
+ *  inverse of `segmentBeatsIn`. */
+function segmentMsFor(seg: TempoSegment, beats: number): number {
+  const r = seg.ramp;
+  if (!r) return (beats * MS_PER_MINUTE) / seg.bpm;
+  const remaining = rampBeatsFrom(r, r.elapsedMs);
+  if (beats > remaining) {
+    return (
+      r.totalMs - r.elapsedMs + ((beats - remaining) * MS_PER_MINUTE) / seg.bpm
+    );
+  }
+  // beats = b * dt + a * dt^2
+  const a = (r.toBpm - r.fromBpm) / (2 * r.totalMs * MS_PER_MINUTE);
+  const b =
+    (r.fromBpm + ((r.toBpm - r.fromBpm) * r.elapsedMs) / r.totalMs) /
+    MS_PER_MINUTE;
+  if (Math.abs(a) < 1e-15) return beats / b;
+  const disc = b * b + 4 * a * beats;
+  return (-b + Math.sqrt(Math.max(0, disc))) / (2 * a);
+}
+
+/** The tempo `dt` ms after the start of a segment. */
+function segmentBpmAt(seg: TempoSegment, dt: number): number {
+  const r = seg.ramp;
+  if (!r) return seg.bpm;
+  const t = Math.min(1, Math.max(0, (r.elapsedMs + dt) / r.totalMs));
+  return r.fromBpm + (r.toBpm - r.fromBpm) * t;
+}
+
+/** The ramp still in progress `dt` ms after the start of a segment. */
+function rampAfter(seg: TempoSegment, dt: number): TempoRamp | undefined {
+  const r = seg.ramp;
+  if (!r || r.elapsedMs + dt >= r.totalMs) return undefined;
+  return { ...r, elapsedMs: r.elapsedMs + dt };
+}
+
+function meterAtMeasure(meters: MeterSpan[], measure: number): MeterSpan {
+  let found = meters[0];
+  for (const m of meters) {
+    if (m.measure <= measure) found = m;
+    else break;
+  }
+  return found;
+}
+
+/** Quarter notes from bar 1 beat 1 to a bar and (quarter-note) beat. */
+function beatsAtMeasureBeat(
+  meters: MeterSpan[],
+  measure: number,
+  beat: number,
+): number {
+  const m = meterAtMeasure(meters, measure);
+  return m.startBeats + (measure - m.measure) * m.quarters + (beat - 1);
+}
+
+/** The bar and (quarter-note) beat of a position in quarter notes; bar 1
+ *  for one before it. */
+function measureBeatAtBeats(
+  meters: MeterSpan[],
+  beats: number,
+): { measure: number; beat: number } {
+  const at = Math.max(0, Math.round(beats * 1e6) / 1e6);
+  let m = meters[0];
+  for (const span of meters) {
+    if (span.startBeats <= at) m = span;
+    else break;
+  }
+  const bars = Math.floor((at - m.startBeats) / m.quarters + 1e-9);
+  return {
+    measure: m.measure + bars,
+    beat: 1 + Math.max(0, at - m.startBeats - bars * m.quarters),
+  };
+}
+
+/** Measures elapsed (0 at bar 1 beat 1, fractional within a bar). */
+function measuresAtBeats(meters: MeterSpan[], beats: number): number {
+  if (beats < 0) return beats / meters[0].quarters;
+  const { measure, beat } = measureBeatAtBeats(meters, beats);
+  return measure - 1 + (beat - 1) / meterAtMeasure(meters, measure).quarters;
+}
+
+/** The inverse of `measuresAtBeats`. */
+function beatsAtMeasures(meters: MeterSpan[], measures: number): number {
+  if (measures < 0) return measures * meters[0].quarters;
+  const whole = Math.floor(measures);
+  const bar = whole + 1;
+  const quarters = meterAtMeasure(meters, bar).quarters;
+  return beatsAtMeasureBeat(meters, bar, 1 + (measures - whole) * quarters);
+}
+
+function segmentAtMs(segments: TempoSegment[], ms: number): TempoSegment {
   let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMeasure <= targetMeasure) {
-      seg = segments[i];
-      break;
+  for (const s of segments) {
+    if (s.startMs <= ms) seg = s;
+    else break;
+  }
+  return seg;
+}
+
+function segmentAtBeats(segments: TempoSegment[], beats: number): TempoSegment {
+  let seg = segments[0];
+  for (const s of segments) {
+    if (s.startBeats <= beats) seg = s;
+    else break;
+  }
+  return seg;
+}
+
+/** Quarter notes from bar 1 beat 1 at an absolute ms position. */
+function beatsAtMs(grid: TempoGrid, ms: number): number {
+  const first = grid.segments[0];
+  if (ms < first.startMs) {
+    return ((ms - first.startMs) * first.bpm) / MS_PER_MINUTE;
+  }
+  const seg = segmentAtMs(grid.segments, ms);
+  return seg.startBeats + segmentBeatsIn(seg, ms - seg.startMs);
+}
+
+/** The absolute ms of a position in quarter notes from bar 1 beat 1. */
+function msAtBeats(grid: TempoGrid, beats: number): number {
+  const first = grid.segments[0];
+  if (beats < 0) return first.startMs + (beats * MS_PER_MINUTE) / first.bpm;
+  const seg = segmentAtBeats(grid.segments, beats);
+  return seg.startMs + segmentMsFor(seg, beats - seg.startBeats);
+}
+
+/** A transition's length in quarter notes: a bare number of beats, `Nm`
+ *  measures (in `quarters` a bar), or none for a snap. */
+function transitionBeats(
+  transition: string | undefined,
+  quarters: number,
+): number | undefined {
+  if (!transition) return undefined;
+  const t = transition.trim();
+  const measures = t.match(/^(\d+(?:\.\d+)?)m$/);
+  const length = measures
+    ? parseFloat(measures[1]) * quarters
+    : /^\d+(?:\.\d+)?$/.test(t)
+      ? parseFloat(t)
+      : NaN;
+  return Number.isFinite(length) && length > 0 ? length : undefined;
+}
+
+function positiveBpm(bpm: number | undefined, fallback: number): number {
+  return bpm !== undefined && Number.isFinite(bpm) && bpm > 0 ? bpm : fallback;
+}
+
+/** Resolve a tempo section as the server's tempo map does: changes are taken
+ *  in time order, each reached through the tempo (and any ramp) of those
+ *  before it; a time signature set mid-bar governs from the next bar; a ramp
+ *  over N beats spans exactly N beats, and one over N measures the beats in
+ *  N bars of the signature set at its position. */
+function buildTempoGrid(tempo: TempoSection): TempoGrid {
+  const initialSig = tempo.time_signature;
+  const initialBpm = positiveBpm(tempo.bpm, 120);
+  const startMs = durationToMs(tempo.start);
+  const segments: TempoSegment[] = [
+    {
+      startMs,
+      startMeasure: 1,
+      startBeat: 1,
+      startBeats: 0,
+      bpm: initialBpm,
+      beatsPerMeasure: initialSig[0],
+      beatValue: initialSig[1],
+    },
+  ];
+  const meters: MeterSpan[] = [
+    { measure: 1, startBeats: 0, quarters: quartersPerMeasure(initialSig) },
+  ];
+  const grid = { segments, meters };
+
+  const timed = tempo.changes
+    .filter((c) => c.timestamp.type === "absolute")
+    .sort((a, b) => (a.timestamp.ms ?? 0) - (b.timestamp.ms ?? 0));
+  const barred = tempo.changes
+    .filter((c) => c.timestamp.type !== "absolute")
+    .sort(
+      (a, b) =>
+        (a.timestamp.measure ?? 1) - (b.timestamp.measure ?? 1) ||
+        (a.timestamp.beat ?? 1) - (b.timestamp.beat ?? 1),
+    );
+  const barredBeats = (c: TempoChange) =>
+    beatsAtMeasureBeat(meters, c.timestamp.measure ?? 1, c.timestamp.beat ?? 1);
+  let sig: [number, number] = [initialSig[0], initialSig[1]];
+
+  while (timed.length > 0 || barred.length > 0) {
+    const cur = segments[segments.length - 1];
+    let change: TempoChange;
+    let beats: number;
+    let dt: number;
+    const barredAt =
+      barred.length > 0
+        ? cur.startMs +
+          segmentMsFor(cur, barredBeats(barred[0]) - cur.startBeats)
+        : Infinity;
+    if (timed.length > 0 && (timed[0].timestamp.ms ?? 0) <= barredAt) {
+      change = timed.shift()!;
+      // A change before bar 1 counts as at it.
+      dt = Math.max(0, (change.timestamp.ms ?? 0) - cur.startMs);
+      beats = cur.startBeats + segmentBeatsIn(cur, dt);
+    } else {
+      change = barred.shift()!;
+      beats = barredBeats(change);
+      dt = barredAt - cur.startMs;
     }
+
+    if (change.time_signature) {
+      sig = change.time_signature;
+      const at = measureBeatAtBeats(meters, beats);
+      const from = Math.abs(at.beat - 1) < 0.001 ? at.measure : at.measure + 1;
+      const span = {
+        measure: from,
+        startBeats: beatsAtMeasureBeat(meters, from, 1),
+        quarters: quartersPerMeasure(change.time_signature),
+      };
+      const later = meters.findIndex((m) => m.measure >= from);
+      if (later >= 0) meters.splice(later);
+      meters.push(span);
+    }
+
+    const at = measureBeatAtBeats(meters, beats);
+    const next: TempoSegment = {
+      startMs: cur.startMs + dt,
+      startMeasure: at.measure,
+      startBeat: at.beat,
+      startBeats: beats,
+      bpm: cur.bpm,
+      ramp: rampAfter(cur, dt),
+      beatsPerMeasure: sig[0],
+      beatValue: sig[1],
+    };
+    if (change.bpm !== undefined && positiveBpm(change.bpm, 0) > 0) {
+      // A ramp in measures counts them in the signature set at its
+      // position, by its own change or another beside it.
+      let sizingSig = sig;
+      for (const other of [...timed, ...barred]) {
+        const same =
+          other.timestamp.type === "absolute"
+            ? change.timestamp.type === "absolute" &&
+              other.timestamp.ms === change.timestamp.ms
+            : Math.abs(barredBeats(other) - beats) < 1e-9;
+        if (same && other.time_signature) sizingSig = other.time_signature;
+      }
+      const length = transitionBeats(
+        change.transition,
+        quartersPerMeasure(sizingSig),
+      );
+      const fromBpm = segmentBpmAt(cur, dt);
+      next.ramp =
+        length === undefined
+          ? undefined
+          : {
+              fromBpm,
+              toBpm: change.bpm,
+              totalMs: rampDurationMs(fromBpm, change.bpm, length),
+              elapsedMs: 0,
+            };
+      next.bpm = change.bpm;
+    }
+    segments.push(next);
   }
 
-  const beatDurationMs = 60000 / seg.bpm;
-  const beatsFromSegStart =
-    (targetMeasure - seg.startMeasure) * seg.beatsPerMeasure +
-    (targetBeat - seg.startBeat);
+  return grid;
+}
 
-  return seg.startMs + beatsFromSegStart * beatDurationMs;
+/** Build a sorted array of tempo segments from a TempoSection: one per
+ *  change, each carrying any ramp still in progress where it starts. */
+export function buildTempoSegments(tempo: TempoSection): TempoSegment[] {
+  return buildTempoGrid(tempo).segments;
 }
 
 /** Convert a Duration to milliseconds. */
@@ -145,25 +412,11 @@ export function timestampToMs(ts: Timestamp, tempo?: TempoSection): number {
   // measure_beat type
   if (!tempo) return 0;
 
-  const segments = buildTempoSegments(tempo);
-  const targetMeasure = ts.measure ?? 1;
-  const targetBeat = ts.beat ?? 1;
-
-  // Find the segment that contains this measure/beat
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMeasure <= targetMeasure) {
-      seg = segments[i];
-      break;
-    }
-  }
-
-  const beatDurationMs = 60000 / seg.bpm;
-  const beatsFromSegStart =
-    (targetMeasure - seg.startMeasure) * seg.beatsPerMeasure +
-    (targetBeat - seg.startBeat);
-
-  return seg.startMs + beatsFromSegStart * beatDurationMs;
+  const grid = buildTempoGrid(tempo);
+  return msAtBeats(
+    grid,
+    beatsAtMeasureBeat(grid.meters, ts.measure ?? 1, ts.beat ?? 1),
+  );
 }
 
 /**
@@ -179,26 +432,14 @@ export function msToTimestamp(
     return { type: "absolute", ms };
   }
 
-  const segments = buildTempoSegments(tempo);
-
-  // Find the segment containing this ms
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMs <= ms) {
-      seg = segments[i];
-      break;
-    }
+  const grid = buildTempoGrid(tempo);
+  const at = measureBeatAtBeats(grid.meters, beatsAtMs(grid, ms));
+  let measure = at.measure;
+  let beat = Math.round(at.beat);
+  if (beat - 1 >= meterAtMeasure(grid.meters, measure).quarters) {
+    measure += 1;
+    beat = 1;
   }
-
-  const beatDurationMs = 60000 / seg.bpm;
-  const beatsFromSegStart = (ms - seg.startMs) / beatDurationMs;
-  const totalBeatsFromStart =
-    (seg.startMeasure - 1) * seg.beatsPerMeasure +
-    (seg.startBeat - 1) +
-    beatsFromSegStart;
-
-  const measure = Math.floor(totalBeatsFromStart / seg.beatsPerMeasure) + 1;
-  const beat = Math.round((totalBeatsFromStart % seg.beatsPerMeasure) + 1);
 
   return { type: "measure_beat", measure, beat };
 }
@@ -211,14 +452,19 @@ export function getGridLines(
   pixelsPerMs?: number,
 ): GridLine[] {
   const lines: GridLine[] = [];
-  const segments = buildTempoSegments(tempo);
+  const grid = buildTempoGrid(tempo);
+  const MAX_LINES = 100000;
 
-  for (let si = 0; si < segments.length; si++) {
-    const seg = segments[si];
-    const segEnd =
-      si < segments.length - 1 ? segments[si + 1].startMs : viewEndMs + 10000;
-    const beatDurationMs = 60000 / seg.bpm;
-    const measureDurationMs = beatDurationMs * seg.beatsPerMeasure;
+  let measure = measureBeatAtBeats(
+    grid.meters,
+    beatsAtMs(grid, viewStartMs),
+  ).measure;
+  while (lines.length < MAX_LINES) {
+    const quarters = meterAtMeasure(grid.meters, measure).quarters;
+    const barBeats = beatsAtMeasureBeat(grid.meters, measure, 1);
+    const barMs = msAtBeats(grid, barBeats);
+    if (!(barMs <= viewEndMs)) break;
+    const measureDurationMs = msAtBeats(grid, barBeats + quarters) - barMs;
 
     // Determine label and beat-line density based on pixels per measure.
     // At low zoom, skip labels and beat lines to avoid overlap.
@@ -234,38 +480,24 @@ export function getGridLines(
     else if (pxPerMeasure < 60) labelEvery = 2;
 
     // Hide beat lines when they'd be < 6px apart
-    const showBeats = pixelsPerMs ? pixelsPerMs * beatDurationMs >= 6 : true;
+    const showBeats = pxPerMeasure / quarters >= 6;
 
-    // Walk beats from this segment's start
-    let beatIndex = 0;
-    // If segment starts before our view, skip ahead
-    if (seg.startMs < viewStartMs) {
-      beatIndex = Math.floor((viewStartMs - seg.startMs) / beatDurationMs);
+    if (barMs >= viewStartMs) {
+      const showLabel = (measure - 1) % labelEvery === 0;
+      lines.push({
+        ms: barMs,
+        type: "measure",
+        label: showLabel ? `${measure}` : undefined,
+      });
     }
-
-    while (true) {
-      const ms = seg.startMs + beatIndex * beatDurationMs;
-      if (ms > viewEndMs || ms >= segEnd) break;
-
-      if (ms >= viewStartMs) {
-        const beatInMeasure = beatIndex % seg.beatsPerMeasure;
-        const measureNum =
-          seg.startMeasure +
-          Math.floor((beatIndex + (seg.startBeat - 1)) / seg.beatsPerMeasure);
-
-        if (beatInMeasure === 0) {
-          const showLabel = (measureNum - 1) % labelEvery === 0;
-          lines.push({
-            ms,
-            type: "measure",
-            label: showLabel ? `${measureNum}` : undefined,
-          });
-        } else if (showBeats) {
-          lines.push({ ms, type: "beat" });
-        }
+    if (showBeats) {
+      for (let q = 1; q < quarters - 1e-9; q++) {
+        const ms = msAtBeats(grid, barBeats + q);
+        if (ms > viewEndMs) break;
+        if (ms >= viewStartMs) lines.push({ ms, type: "beat" });
       }
-      beatIndex++;
     }
+    measure++;
   }
 
   return lines;
@@ -304,7 +536,7 @@ export function durationStringToMs(
   if (rawUnit === "s") return value * 1000;
   if (!tempo) return 0;
   if (rawUnit === "beat" || rawUnit === "beats") {
-    return offsetMeasuresToMs(value / tempo.time_signature[0], atMs, tempo);
+    return beatsToMs(value, atMs, tempo);
   }
   if (rawUnit === "measure" || rawUnit === "measures") {
     return offsetMeasuresToMs(value, atMs, tempo);
@@ -323,25 +555,20 @@ export function msToDurationString(
   atMs: number = 0,
 ): string {
   if (tempo) {
-    const segments = buildTempoSegments(tempo);
-    let seg = segments[0];
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (segments[i].startMs <= atMs) {
-        seg = segments[i];
-        break;
-      }
-    }
-    const beatDurationMs = 60000 / seg.bpm;
-    const measureDurationMs = beatDurationMs * seg.beatsPerMeasure;
+    const grid = buildTempoGrid(tempo);
+    const startBeats = beatsAtMs(grid, atMs);
+    const endBeats = beatsAtMs(grid, atMs + ms);
 
     // Prefer whole measures
-    const measures = ms / measureDurationMs;
+    const measures =
+      measuresAtBeats(grid.meters, endBeats) -
+      measuresAtBeats(grid.meters, startBeats);
     if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
       const rounded = Math.round(measures);
       return rounded === 1 ? "1measure" : `${rounded}measures`;
     }
     // Then whole beats
-    const beats = ms / beatDurationMs;
+    const beats = endBeats - startBeats;
     if (beats >= 1 && Math.abs(beats - Math.round(beats)) < 0.001) {
       const rounded = Math.round(beats);
       return rounded === 1 ? "1beat" : `${rounded}beats`;
@@ -372,36 +599,31 @@ export type SnapResolution =
   | "1/8"
   | "1/16";
 
+const SNAP_BEATS: Record<Exclude<SnapResolution, "measure">, number> = {
+  beat: 1,
+  "1/2": 0.5,
+  "1/4": 0.25,
+  "1/8": 0.125,
+  "1/16": 0.0625,
+};
+
 export function snapToNearestGrid(
   ms: number,
   tempo: TempoSection,
   resolution: SnapResolution,
 ): number {
-  const segments = buildTempoSegments(tempo);
-
-  // Find containing segment
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMs <= ms) {
-      seg = segments[i];
-      break;
-    }
+  const grid = buildTempoGrid(tempo);
+  const beats = beatsAtMs(grid, ms);
+  if (resolution === "measure") {
+    const measures = Math.round(measuresAtBeats(grid.meters, beats));
+    return msAtBeats(grid, beatsAtMeasures(grid.meters, measures));
   }
-
-  const beatDurationMs = 60000 / seg.bpm;
-  const subdivisions: Record<SnapResolution, number> = {
-    measure: seg.beatsPerMeasure,
-    beat: 1,
-    "1/2": 0.5,
-    "1/4": 0.25,
-    "1/8": 0.125,
-    "1/16": 0.0625,
-  };
-  const step = beatDurationMs * subdivisions[resolution];
-
-  const elapsed = ms - seg.startMs;
-  const snapped = Math.round(elapsed / step) * step;
-  return seg.startMs + snapped;
+  // Steps count from the bar's downbeat, so an odd metre's bar keeps its
+  // subdivisions.
+  const { measure } = measureBeatAtBeats(grid.meters, beats);
+  const bar = beatsAtMeasureBeat(grid.meters, measure, 1);
+  const step = SNAP_BEATS[resolution];
+  return msAtBeats(grid, bar + Math.round((beats - bar) / step) * step);
 }
 
 /** Snap a duration to the nearest grid step at a given playback position. */
@@ -411,26 +633,23 @@ export function snapDurationToGrid(
   tempo: TempoSection,
   resolution: SnapResolution,
 ): number {
-  const segments = buildTempoSegments(tempo);
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMs <= atMs) {
-      seg = segments[i];
-      break;
-    }
+  const grid = buildTempoGrid(tempo);
+  const startBeats = beatsAtMs(grid, atMs);
+  const endBeats = beatsAtMs(grid, atMs + durationMs);
+  if (resolution === "measure") {
+    const from = measuresAtBeats(grid.meters, startBeats);
+    const span = measuresAtBeats(grid.meters, endBeats) - from;
+    const measures = Math.max(1, Math.round(span));
+    return (
+      msAtBeats(grid, beatsAtMeasures(grid.meters, from + measures)) - atMs
+    );
   }
-
-  const beatDurationMs = 60000 / seg.bpm;
-  const subdivisions: Record<SnapResolution, number> = {
-    measure: seg.beatsPerMeasure,
-    beat: 1,
-    "1/2": 0.5,
-    "1/4": 0.25,
-    "1/8": 0.125,
-    "1/16": 0.0625,
-  };
-  const step = beatDurationMs * subdivisions[resolution];
-  return Math.max(step, Math.round(durationMs / step) * step);
+  const step = SNAP_BEATS[resolution];
+  const beats = Math.max(
+    step,
+    Math.round((endBeats - startBeats) / step) * step,
+  );
+  return msAtBeats(grid, startBeats + beats) - atMs;
 }
 
 /** An offset marker on the timeline. */
@@ -515,21 +734,27 @@ export interface AdjustedCuePosition {
   cumulativeOffsetMs: number;
 }
 
-/** Convert N measures to ms at the tempo active at a given ms position. */
+/** How long the N measures from a given ms position last, through any
+ *  tempo change, ramp or signature change inside them. */
 export function offsetMeasuresToMs(
   measures: number,
   atMs: number,
   tempo: TempoSection,
 ): number {
-  const segments = buildTempoSegments(tempo);
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMs <= atMs) {
-      seg = segments[i];
-      break;
-    }
-  }
-  return measures * (60000 / seg.bpm) * seg.beatsPerMeasure;
+  const grid = buildTempoGrid(tempo);
+  const from = measuresAtBeats(grid.meters, beatsAtMs(grid, atMs));
+  return msAtBeats(grid, beatsAtMeasures(grid.meters, from + measures)) - atMs;
+}
+
+/** How long the N beats from a given ms position last, through any tempo
+ *  change or ramp inside them. */
+export function beatsToMs(
+  beats: number,
+  atMs: number,
+  tempo: TempoSection,
+): number {
+  const grid = buildTempoGrid(tempo);
+  return msAtBeats(grid, beatsAtMs(grid, atMs) + beats) - atMs;
 }
 
 /**
@@ -676,18 +901,12 @@ export function getSequenceIterationMs(
   return maxBeats * msPerBeatAtRef;
 }
 
-/** Get the BPM active at a given ms position. */
-function getTempoAtMs(ms: number, tempo?: TempoSection): number {
+/** Get the BPM at a given ms position (mid-ramp, the ramp's tempo there). */
+export function getTempoAtMs(ms: number, tempo?: TempoSection): number {
   if (!tempo) return 120; // default
-  const segments = buildTempoSegments(tempo);
-  let seg = segments[0];
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].startMs <= ms) {
-      seg = segments[i];
-      break;
-    }
-  }
-  return seg.bpm;
+  const grid = buildTempoGrid(tempo);
+  const seg = segmentAtMs(grid.segments, ms);
+  return segmentBpmAt(seg, Math.max(0, ms - seg.startMs));
 }
 
 function parseLoopCount(loop?: string): number {

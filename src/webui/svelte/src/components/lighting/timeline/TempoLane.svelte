@@ -109,7 +109,12 @@
       const labelX = Math.max(x1 + 6, 4);
       if (labelX < x2 - 20 && labelX < w) {
         const ts = seg.beatsPerMeasure + "/" + seg.beatValue;
-        const label = `${seg.bpm} BPM, ${ts}`;
+        // A segment starting a ramp shows where it goes from and to.
+        const bpm =
+          seg.ramp && seg.ramp.elapsedMs === 0
+            ? `${round(seg.ramp.fromBpm)} → ${seg.bpm}`
+            : `${seg.bpm}`;
+        const label = `${bpm} BPM, ${ts}`;
         ctx.fillStyle = labelColor;
         ctx.font = "12px monospace";
         ctx.textAlign = "left";
@@ -117,6 +122,10 @@
         ctx.fillText(label, labelX, h / 2);
       }
     }
+  }
+
+  function round(bpm: number): number {
+    return Math.round(bpm * 100) / 100;
   }
 
   $effect(() => {

@@ -154,6 +154,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tempo of 0 or a ramp of no length is refused in a lighting show**: the `tempo` block took
+  `bpm: 0` and `transition: 0` (or `0m`). A ramp of no length gave the beat walks no number, and
+  a tempo of 0 put every later beat infinitely far away. The show now fails to parse, with the
+  same messages as a song's `tempo:` config.
+
+- **The lighting timeline follows tempo ramps**: the web UI's timeline editor took every tempo
+  change as a snap, so after a ramp its grid, its `@bar/beat` positions and its snapping disagreed
+  with the player. It now sizes and follows each ramp as the server does. It also counts beats in
+  quarter notes, as the `tempo` block does, so a bar of 6/8 holds three. It places bars after a
+  time signature change in the new signature, and a change mid-bar from the next bar.
+
 - **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
   had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.
   It is now a parse error saying the change is before the start. A tempo map built some other

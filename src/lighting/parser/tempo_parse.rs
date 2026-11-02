@@ -94,6 +94,12 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
         }
     }
 
+    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
+    // later beat infinitely far away.
+    if !bpm.is_finite() || bpm <= 0.0 {
+        return Err(format!("tempo bpm must be positive, got {bpm}").into());
+    }
+
     // Bar 1 is at `start`, so a change timed before it has no bar to fall in.
     for change in &changes {
         if let TempoChangePosition::Time(t) = change.position {
@@ -141,7 +147,7 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                 for value_pair in actual_param.into_inner() {
                                     if value_pair.as_rule() == Rule::number_value {
                                         let bpm_str = value_pair.as_str().trim();
-                                        let bpm_value = bpm_str.parse()?;
+                                        let bpm_value: f64 = bpm_str.parse()?;
                                         bpm = Some(bpm_value);
                                         break;
                                     }
@@ -218,6 +224,23 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                 }
             }
             _ => {}
+        }
+    }
+
+    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
+    // later beat infinitely far away, and a ramp of no length has no curve.
+    let at = match position {
+        TempoChangePosition::MeasureBeat(m, _) => format!("measure {m}"),
+        TempoChangePosition::Time(t) => format!("{:.3}s", t.as_secs_f64()),
+    };
+    if let Some(bpm) = bpm {
+        if !bpm.is_finite() || bpm <= 0.0 {
+            return Err(format!("tempo change at {at} has invalid bpm {bpm}").into());
+        }
+    }
+    if let TempoTransition::Beats(length, _) | TempoTransition::Measures(length, _) = transition {
+        if !length.is_finite() || length <= 0.0 {
+            return Err(format!("tempo change at {at} has invalid transition length").into());
         }
     }
 
@@ -518,5 +541,49 @@ mod tests {
             change.position,
             TempoChangePosition::Time(d) if d == Duration::from_secs_f64(45.5)
         ));
+    }
+
+    fn tempo_error(content: &str) -> String {
+        let mut pairs = LightingParser::parse(Rule::tempo, content).unwrap();
+        parse_tempo_definition(pairs.next().unwrap())
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// A tempo of 0, or a ramp of no length, is refused with the song
+    /// config's own messages: neither has a timing.
+    #[test]
+    fn a_zero_tempo_or_ramp_length_is_refused() {
+        assert_eq!(
+            tempo_error("tempo {\n    bpm: 0\n}"),
+            "tempo bpm must be positive, got 0"
+        );
+        assert_eq!(
+            tempo_error("tempo {\n    bpm: 120\n    changes: [\n    @8/1 { bpm: 0 }\n    ]\n}"),
+            "tempo change at measure 8 has invalid bpm 0"
+        );
+        assert_eq!(
+            tempo_error(
+                "tempo {\n    bpm: 120\n    changes: [\n    @00:30.000 { bpm: 0.0 }\n    ]\n}"
+            ),
+            "tempo change at 30.000s has invalid bpm 0"
+        );
+        for transition in ["0", "0.0", "0m", "0.0m"] {
+            assert_eq!(
+                tempo_error(&format!(
+                    "tempo {{\n    bpm: 120\n    changes: [\n    @8/1 {{ bpm: 140, transition: {transition} }}\n    ]\n}}"
+                )),
+                "tempo change at measure 8 has invalid transition length",
+                "{transition}"
+            );
+        }
+        // A whole show with one fails to parse.
+        let show = "tempo {\n    bpm: 120\n    changes: [\n    @8/1 { bpm: 140, transition: 0 }\n    ]\n}\n\nshow \"S\" {\n    @1/1\n    front_wash: static color: \"blue\", duration: 1s\n}";
+        assert!(crate::lighting::parser::parse_light_shows(show).is_err());
+        // Small but positive lengths and tempos still parse.
+        let tm = parse_tempo_from_dsl(
+            "tempo {\n    bpm: 0.5\n    changes: [\n    @2/1 { bpm: 140, transition: 0.25 }\n    ]\n}",
+        );
+        assert_eq!(tm.initial_bpm, 0.5);
     }
 }
