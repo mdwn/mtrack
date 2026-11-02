@@ -527,15 +527,26 @@ impl Engine {
     /// Lets go of what a song left driving the lights, as far as `scope`
     /// says (see [`Release`]).
     pub(super) fn release_song(&self, scope: Release) {
+        let rebuilding = self.rebuilding();
+        self.release_song_rebuilding(&rebuilding, scope);
+    }
+
+    /// [`Self::release_song`] under the rebuild lock, held already: a show
+    /// rebuild under way finishes first, and none starts until the song is
+    /// let go.
+    pub(super) fn release_song_rebuilding(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        scope: Release,
+    ) {
         // What writes the rig on its own goes first, so nothing it writes
         // after relights what fades: MIDI DMX playback, and -- the song done
-        // with -- the show file watcher, whose reload would put its show back,
-        // and any show rebuild still on its way in, which would too (see
-        // `retire_watcher`). A playback's end lets neither go: a live edit
-        // still rebuilds the stopped show.
+        // with -- the show file watcher, whose reload would put its show back.
+        // A playback's end leaves the watcher: a live edit still rebuilds
+        // the stopped show.
         self.midi_dmx_playbacks.lock().clear();
         if scope != Release::Ended {
-            self.retire_watcher();
+            self.retire_watcher_rebuilding(rebuilding);
         }
         match scope {
             Release::Ended => self.stop_lighting_timeline(),
@@ -550,7 +561,7 @@ impl Engine {
                 };
                 let lit = !self.effect_engine.lock().last_commands().is_empty();
                 if lit || !floor.is_empty() {
-                    self.begin_break_fade_over(fade, floor);
+                    self.begin_break_fade_over(rebuilding, fade, floor);
                 }
             }
         }
@@ -564,15 +575,14 @@ impl Engine {
     /// to make refused, edits it took in before it went included. Returns
     /// the generation a watcher started now reloads under.
     pub(in crate::dmx) fn retire_watcher(&self) -> u64 {
-        let generation = {
-            // Under the timeline's lock, which a reload checks it under as
-            // it arms; one armed already is superseded, under the engine's
-            // it would go in under.
-            let _engine = self.effect_engine.lock();
-            let _timeline = self.current_song_timeline.lock();
-            self.supersede_rebuilds();
-            self.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1
-        };
+        let rebuilding = self.rebuilding();
+        self.retire_watcher_rebuilding(&rebuilding)
+    }
+
+    /// [`Self::retire_watcher`] under the rebuild lock, held already, which
+    /// a reload checks the generation under before it rebuilds.
+    fn retire_watcher_rebuilding(&self, _rebuilding: &super::timeline::Rebuilding) -> u64 {
+        let generation = self.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.watcher_handle.lock().take();
         generation
     }

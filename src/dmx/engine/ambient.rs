@@ -519,14 +519,20 @@ impl Engine {
                 .lock()
                 .as_ref()
                 .is_some_and(|o| o.level.at(now) >= 1.0);
-            if full {
+            // The effects loop never waits on a show rebuild: with one under
+            // way, this goes at a later tick.
+            let rebuilding = full.then(|| self.try_rebuilding()).flatten();
+            if let Some(rebuilding) = rebuilding {
                 // A loop break's fade going out goes on at its own length:
                 // ambient covers only what it lights, and what it does not
                 // is still fading in view.
-                self.release_song(super::playback::Release::Dark {
-                    fade: Duration::ZERO,
-                    floor: false,
-                });
+                self.release_song_rebuilding(
+                    &rebuilding,
+                    super::playback::Release::Dark {
+                        fade: Duration::ZERO,
+                        floor: false,
+                    },
+                );
                 state.stage = Stage::Dark;
             }
         }
@@ -614,11 +620,18 @@ impl Engine {
     /// lose: what ambient at full left as it was, where it does not light.
     /// A song's show stays.
     fn darken_stage(&self, state: &mut AmbientState, fade: Duration) {
+        if state.stage == Stage::Song {
+            return;
+        }
+        let rebuilding = self.rebuilding();
         match state.stage {
             Stage::Song => {}
-            Stage::Dark => self.fade_out_stale(fade),
+            Stage::Dark => self.fade_out_stale(&rebuilding, fade),
             Stage::LastFrame => {
-                self.release_song(super::playback::Release::Dark { fade, floor: true });
+                self.release_song_rebuilding(
+                    &rebuilding,
+                    super::playback::Release::Dark { fade, floor: true },
+                );
                 state.stage = Stage::Dark;
             }
         }
@@ -626,10 +639,10 @@ impl Engine {
 
     /// Fades out over `fade` what the rig holds lit that nothing writes any
     /// more, under a stage already dark otherwise.
-    fn fade_out_stale(&self, fade: Duration) {
+    fn fade_out_stale(&self, rebuilding: &super::timeline::Rebuilding, fade: Duration) {
         let floor = self.dark_floor(fade);
         if !floor.is_empty() {
-            self.begin_break_fade_over(fade, floor);
+            self.begin_break_fade_over(rebuilding, fade, floor);
         }
     }
 
@@ -1082,6 +1095,40 @@ mod tests {
         *engine.rebuild_hook.lock() = Some(Box::new(hook));
     }
 
+    /// Starts `contender` on a thread of its own while a rebuild is under
+    /// way, and checks it waits for that rebuild: the thread, to join once
+    /// the rebuild is in.
+    fn contend<T: Send + 'static>(
+        engine: &Arc<Engine>,
+        contender: impl FnOnce(&Engine) -> T + Send + 'static,
+    ) -> Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<T>>>> {
+        let slot = Arc::new(parking_lot::Mutex::new(None));
+        let theirs = slot.clone();
+        let engine_for = engine.clone();
+        between_replay_and_install(engine, move |_| {
+            let thread = std::thread::spawn(move || contender(&engine_for));
+            sleep(Duration::from_millis(100));
+            assert!(!thread.is_finished(), "it did not wait for the rebuild");
+            *theirs.lock() = Some(thread);
+        });
+        slot
+    }
+
+    fn joined<T>(slot: Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<T>>>>) -> T {
+        slot.lock()
+            .take()
+            .expect("the rebuild ran the contender")
+            .join()
+            .expect("the contender panicked")
+    }
+
+    /// Restarts the section at `secs`, as the jump follower does.
+    fn restart_at(engine: &Engine, secs: u64) {
+        engine.restart_section_rewinding(Duration::from_secs(secs), &|| {
+            engine.update_song_time(Duration::from_secs(secs))
+        });
+    }
+
     #[test]
     fn a_section_restart_holds_the_frame_until_its_state_is_in() -> Result<(), Box<dyn Error>> {
         // The song time went back before the section's state went in, and
@@ -1105,9 +1152,7 @@ mod tests {
                 frames.lock().push(tick(engine));
             }
         });
-        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
-            engine.update_song_time(Duration::from_secs(1))
-        });
+        restart_at(&engine, 1);
         assert_eq!(*seen.lock(), vec![before; 3], "the frame did not hold");
         assert!(!engine.rebuild_holding());
         assert_eq!(song_frame(&engine, 1.0), (0.0, 255.0, 0.0));
@@ -1115,61 +1160,104 @@ mod tests {
     }
 
     #[test]
-    fn a_rebuild_superseded_lets_the_frame_go() -> Result<(), Box<dyn Error>> {
-        // A rebuild that does not go in must not leave the rig held.
+    fn a_rebuild_unwinding_lets_the_frame_and_the_lock_go() -> Result<(), Box<dyn Error>> {
+        // However a rebuild ends, the rig is not left held, nor the next
+        // rebuild waiting.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
         start_song(&engine, GREEN_THEN_RED_FADE);
         song_frame(&engine, 5.0);
-        between_replay_and_install(&engine, |engine| {
-            engine.retire_watcher();
-        });
-        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
-            engine.update_song_time(Duration::from_secs(1))
-        });
+        between_replay_and_install(&engine, |_| panic!("a rebuild unwinding"));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            restart_at(&engine, 1);
+        }));
+        assert!(unwound.is_err());
         assert!(!engine.rebuild_holding(), "the rig held for a rebuild gone");
+        assert!(engine.try_rebuilding().is_some(), "the rebuild lock kept");
+        restart_at(&engine, 1);
+        assert_eq!(song_frame(&engine, 1.0), (0.0, 255.0, 0.0));
         Ok(())
     }
 
     #[test]
-    fn a_rebuild_overtaken_does_not_go_in_over_the_newer() -> Result<(), Box<dyn Error>> {
+    fn rebuilds_wait_their_turn() -> Result<(), Box<dyn Error>> {
         // Two rebuilds at once -- a reload and a section's restart on the
         // jump follower -- each replaced the engine's state whole as it
         // went in: the older going in last put back the state of its time
-        // under a timeline at the newer's.
+        // under a timeline at the newer's. One at a time, the later wins.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
         start_song(&engine, GREEN_THEN_RED_FADE);
         song_frame(&engine, 5.0);
-        between_replay_and_install(&engine, |engine| {
-            engine.restart_section_rewinding(Duration::from_secs(6), &|| {
-                engine.update_song_time(Duration::from_secs(6))
-            });
-        });
-        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
-            engine.update_song_time(Duration::from_secs(1))
-        });
+        let later = contend(&engine, |engine| restart_at(engine, 6));
+        restart_at(&engine, 1);
+        joined(later);
         assert!(!engine.rebuild_holding());
         assert_eq!(
             song_frame(&engine, 6.0),
             (255.0, 255.0, 0.0),
-            "the newer's state"
+            "the later's state"
         );
         Ok(())
     }
 
     #[test]
-    fn a_reload_overtaken_by_the_song_going_puts_nothing_back() -> Result<(), Box<dyn Error>> {
-        // A reload past its arming when the song was let go (a song with
-        // no show starting) went in after: the last song's effects back
-        // under a song with no lights.
+    fn a_stale_reload_during_a_restart_leaves_its_cues_firing() -> Result<(), Box<dyn Error>> {
+        // A reload from a watcher since let go, coming in during a
+        // section's restart, overtook it and went no further: the restart's
+        // timeline stayed held, and no cue fired for the rest of the song.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        let stale = engine.retire_watcher();
+        engine.retire_watcher();
+        let reload = contend(&engine, move |engine| {
+            engine.reload_show(timeline(RED), None, stale)
+        });
+        restart_at(&engine, 1);
+        assert!(!joined(reload), "the stale reload went in");
+        for secs in [1.5, 4.0, 4.5] {
+            song_frame(&engine, secs);
+        }
+        let red = song_frame(&engine, 5.0).0;
+        assert!(red > 50.0, "the cue at 4 s did not fire: red {red}");
+        assert_eq!(engine.lighting_arming_state().map(|s| s.2), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_reload_waiting_on_a_restart_goes_in_after_it() -> Result<(), Box<dyn Error>> {
+        // A live edit that met a section's jump came back false, which the
+        // watcher took for its own end: the edit lost, and hot reload with
+        // it for the rest of the song. It waits its turn now.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        let generation = engine.retire_watcher();
+        let reload = contend(&engine, move |engine| {
+            engine.reload_show(timeline(RED), None, generation)
+        });
+        restart_at(&engine, 1);
+        assert!(joined(reload), "the edit was dropped");
+        assert_eq!(engine.get_timeline_cues().len(), 1, "the edited show");
+        assert_eq!(song_frame(&engine, 1.5), (255.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_let_go_during_a_reload_goes_after_it() -> Result<(), Box<dyn Error>> {
+        // A song let go while a reload replayed went first, and the reload
+        // then put its show and tempo back under the next song. The song
+        // goes once the reload is in, and an edit after reloads nothing.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
         let generation = engine.retire_watcher();
-        between_replay_and_install(&engine, |engine| {
-            engine.release_song(super::super::playback::Release::Replaced);
+        let release = contend(&engine, |engine| {
+            engine.release_song(super::super::playback::Release::Replaced)
         });
-        assert!(!engine.reload_show(timeline(RED), None, generation));
-        assert_eq!(engine.effect_engine.lock().active_effects_count(), 0);
+        assert!(engine.reload_show(timeline(RED), None, generation));
+        joined(release);
         assert!(engine.current_song_timeline.lock().is_none());
-        assert!(!engine.rebuild_holding());
+        assert!(!engine.effect_engine.lock().has_tempo_map());
+        assert!(!engine.reload_show(timeline(RED), None, generation));
+        assert!(engine.current_song_timeline.lock().is_none());
         Ok(())
     }
 
@@ -1185,12 +1273,8 @@ mod tests {
         let next = dir.path().join("next.light");
         std::fs::write(&next, GREEN_THEN_RED_FADE)?;
         let old = engine.retire_watcher();
-        let reloaded = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let seen = reloaded.clone();
-        between_replay_and_install(&engine, move |engine| {
-            let done =
-                crate::dmx::watcher::reload_timeline(engine, &[last], None, old).unwrap_or(true);
-            seen.store(done, std::sync::atomic::Ordering::SeqCst);
+        let reload = contend(&engine, move |engine| {
+            crate::dmx::watcher::reload_timeline(engine, &[last], None, old).unwrap_or(true)
         });
         let song_config = config::Song::new(
             "Next",
@@ -1223,14 +1307,15 @@ mod tests {
             },
         )?;
         assert!(
-            !reloaded.load(std::sync::atomic::Ordering::SeqCst),
-            "the last song's watcher reloaded into the next song's start"
+            !joined(reload),
+            "the last song's watcher reloaded over the next song's start"
         );
         assert_eq!(engine.get_timeline_cues().len(), 2, "the next song's show");
         Ok(())
     }
 
     #[test]
+
     fn a_song_without_lights_under_ambient_stops_the_last_songs_watcher(
     ) -> Result<(), Box<dyn Error>> {
         // A song with no lights of its own, ambient still fading in over

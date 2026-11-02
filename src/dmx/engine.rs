@@ -159,12 +159,14 @@ pub struct Engine {
     /// one is let go, so an edit it took in before it went cannot reload
     /// the last song's show into the next (see `Engine::reload_show`).
     pub(super) watcher_generation: AtomicU64,
-    /// The newest show rebuild's ticket: only it goes in (see
-    /// `Engine::rebuild_at`, `Engine::supersede_rebuilds`).
-    pub(super) rebuild_seq: AtomicU64,
-    /// The ticket of the show rebuild on its way in, the main engine's frame
-    /// held for it; 0 for none.
-    pub(super) rebuild_hold: AtomicU64,
+    /// The show rebuild lock: rebuilds one at a time, and what would cut
+    /// across one waits for it (see `Engine::rebuilding`). Outermost: taken
+    /// before the timeline's lock and the engine's.
+    pub(super) rebuild_lock: Mutex<()>,
+    /// A show rebuild is under way: the main engine's frame holds its last
+    /// (see `Engine::rebuild_at`). What the effects loop reads in place of
+    /// the lock, which it never waits on.
+    pub(super) rebuild_hold: AtomicBool,
     /// Run once by the next show rebuild between its replay and its
     /// install, for a test to come in between.
     #[cfg(test)]
@@ -307,8 +309,8 @@ impl Engine {
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
             watcher_generation: AtomicU64::new(0),
-            rebuild_seq: AtomicU64::new(0),
-            rebuild_hold: AtomicU64::new(0),
+            rebuild_lock: Mutex::new(()),
+            rebuild_hold: AtomicBool::new(false),
             #[cfg(test)]
             rebuild_hook: Mutex::new(None),
             midi_dmx_store,
