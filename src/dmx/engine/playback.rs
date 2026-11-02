@@ -267,7 +267,11 @@ impl Engine {
         // Signal readiness — all setup is complete.
         ready_tx.send();
 
-        // Wait for the clock to start (the "go" signal from play_files).
+        // Wait for the clock to start (the "go" signal from play_files):
+        // blocked until it is started, then spinning only until it reads
+        // past zero (an audio clock's first buffer), not for the whole of
+        // the other subsystems' startup.
+        clock.wait_for_start_or_cancel(&cancel_handle);
         while clock.elapsed() == Duration::ZERO {
             if cancel_handle.is_cancelled() {
                 dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
@@ -335,27 +339,35 @@ impl Engine {
                         // since the cue pointer never moves backwards.
                         section_owns_time.store(true, Ordering::Relaxed);
                         if jump.overlap.is_zero() {
-                            dmx_engine.update_song_time_for_generation(position, generation);
                             // The restart clears the MIDI DMX store: what the
                             // events before the section set goes back with it
-                            // (#583).
-                            dmx_engine.start_lighting_timeline_with(
-                                position,
-                                super::timeline::MidiDmxStart::Seek,
-                            );
+                            // (#583). A crossfade still crossing out carries
+                            // on from where it is, before the song time goes
+                            // back under it.
+                            dmx_engine.keep_crossfade_on_own_time();
+                            dmx_engine.update_song_time_for_generation(position, generation);
+                            dmx_engine.restart_section_at(position);
                         } else {
-                            // The outgoing pass is `from` ahead of the new
-                            // one in song time, and fades out over the
+                            // The outgoing pass is `from - to` ahead of the
+                            // new one in song time, and fades out over the
                             // overlap as the new one fades in.
                             dmx_engine.begin_loop_crossfade(
                                 super::timeline::song_lighting_timeline(&song),
                                 jump.from,
+                                jump.to,
                                 jump.overlap,
                             );
                             // The store carries the last pass's values into
                             // the crossfade; MIDI DMX starts over from the
-                            // beginning.
-                            dmx_engine.rewind_midi_dmx_playbacks();
+                            // beginning, or from where a pass begun late
+                            // joins, rather than sending everything before
+                            // that in one frame.
+                            let join = dmx_engine.to_delayed_song_time(jump.to);
+                            if join.is_zero() {
+                                dmx_engine.rewind_midi_dmx_playbacks();
+                            } else {
+                                dmx_engine.join_midi_dmx_playbacks(join);
+                            }
                             dmx_engine.update_song_time_for_generation(position, generation);
                         }
                         // A show restarted runs again, however long ago its
