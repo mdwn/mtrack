@@ -21,6 +21,10 @@ import {
   beatsToMs,
   computeAdjustedCuePositions,
   expandSequencesIntoCues,
+  getAdjustedGridLines,
+  offsetMarkers,
+  offsetTimeline,
+  snapDurationToGrid,
   offsetToMs,
   tempoLaneSpans,
   getGridLines,
@@ -430,4 +434,66 @@ test("placing a cue under an offset round-trips with its layout", () => {
   expect(
     Math.abs(offset.adjustedMs - offset.cumulativeOffsetMs - offset.rawMs),
   ).toBeGreaterThan(1);
+});
+
+test("a snapped beat or bar reads back as one, wherever it starts", () => {
+  for (const bpm of [97, 120, 133.7]) {
+    const t = tempo(
+      bpm,
+      [4, 4],
+      [at(9, 1, { bpm: bpm + 40, transition: "2m" })],
+    );
+    for (let m = 1; m <= 40; m++) {
+      for (let b = 1; b <= 4; b++) {
+        const from = bar(t, m, b);
+        const what = `${bpm} @${m}/${b}`;
+        // A drag a little past each length, snapped back to it.
+        const beat = snapDurationToGrid(
+          beatsToMs(1, from, t) + 20,
+          from,
+          t,
+          "beat",
+        );
+        expect(msToDurationString(beat, t, from), what).toBe("1beat");
+        const measure = snapDurationToGrid(
+          measuresToMs(1, from, t) + 20,
+          from,
+          t,
+          "measure",
+        );
+        expect(msToDurationString(measure, t, from), what).toBe("1measure");
+        const two = snapDurationToGrid(
+          beatsToMs(2, from, t) - 20,
+          from,
+          t,
+          "beat",
+        );
+        expect(msToDurationString(two, t, from), what).toBe("2beats");
+      }
+    }
+  }
+});
+
+test("after a reset the grid and tempo lane follow the cues", () => {
+  const t = tempo(120, [4, 4], []);
+  const cues = [
+    cueAt(3, 1, { offset_measures: 4 }),
+    cueAt(6, 1, { reset_measures: true }),
+    cueAt(10, 1),
+  ];
+  const positions = computeAdjustedCuePositions(cues, t);
+  close(positions[1].adjustedMs, 10000 + 8000);
+  close(positions[2].adjustedMs, 18000);
+  const markers = offsetMarkers(cues, t, 0);
+  const offsetAt = offsetTimeline(markers);
+  // Every cue is drawn where the timeline puts its raw position.
+  for (const p of positions) {
+    close(p.rawMs + offsetAt(p.rawMs), p.adjustedMs, `cue ${p.index}`);
+  }
+  // The ruler's bar 10 is where the cue on it is drawn.
+  const lines = getAdjustedGridLines(t, 0, 30000, markers);
+  const bar10 = lines.find((l) => l.type === "measure" && l.label === "10");
+  close(bar10!.ms, 18000);
+  const bar6 = lines.filter((l) => l.type === "measure" && l.label === "6");
+  close(bar6[0].ms, 18000);
 });

@@ -176,6 +176,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change positioned in time moves with the offset while one positioned by bar stays on its bar,
   as the player has it, so a bar-positioned cue lands where it plays. Placing a cue with a
   double-click, or dragging one, goes through the same tempo map, so it lands where it was put.
+  The ruler, the grid and the tempo lane drop the offset at a `reset_measures` as the cues do. A
+  resize snapped to one beat or one bar saves as `1beat` or `1measure`; float noise could save it
+  as milliseconds or beats.
 
 - **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
   had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.

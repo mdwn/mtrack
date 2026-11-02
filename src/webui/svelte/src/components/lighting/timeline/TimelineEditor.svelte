@@ -25,6 +25,7 @@
     timestampToMs,
     msToPixel,
     computeAdjustedCuePositions,
+    offsetMarkers,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import TimelineToolbar from "./TimelineToolbar.svelte";
@@ -231,33 +232,7 @@
     const markers: OffsetMarker[] = [];
     for (let si = 0; si < lightFile.shows.length; si++) {
       const show = lightFile.shows[si];
-      const adjusted = computeAdjustedCuePositions(show.cues, lightFile.tempo);
-      for (const ap of adjusted) {
-        const rawMs = ap.rawMs;
-        if (ap.cue.offset_measures !== undefined) {
-          const durationMs = ap.offsetMs;
-          markers.push({
-            ms: ap.adjustedMs,
-            rawMs,
-            durationMs,
-            type: "offset",
-            measures: ap.cue.offset_measures,
-            showIndex: si,
-            cueIndex: ap.index,
-          });
-        }
-        if (ap.cue.reset_measures) {
-          markers.push({
-            ms: ap.adjustedMs,
-            rawMs,
-            durationMs: 0,
-            type: "reset",
-            measures: 0,
-            showIndex: si,
-            cueIndex: ap.index,
-          });
-        }
-      }
+      markers.push(...offsetMarkers(show.cues, lightFile.tempo, si));
     }
     return markers.sort((a, b) => a.ms - b.ms);
   }

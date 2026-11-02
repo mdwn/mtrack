@@ -17,6 +17,7 @@
   import type { TempoSection } from "../../../lib/lighting/types";
   import {
     msToPixel,
+    offsetTimeline,
     tempoLaneSpans,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
@@ -40,16 +41,8 @@
     offsets = [],
   }: Props = $props();
 
-  // Compute cumulative offset at a raw ms position
-  function cumulativeOffsetAt(rawMs: number): number {
-    let cumulative = 0;
-    for (const off of offsets) {
-      if (off.type !== "offset" || off.durationMs <= 0) continue;
-      if (off.rawMs > rawMs) break;
-      cumulative += off.durationMs;
-    }
-    return cumulative;
-  }
+  // The cumulative offset at a raw ms position, as the cues have it
+  let cumulativeOffsetAt = $derived(offsetTimeline(offsets));
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
 

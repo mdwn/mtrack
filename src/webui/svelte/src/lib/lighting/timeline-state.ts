@@ -98,6 +98,13 @@ export interface GridLine {
 
 const MS_PER_MINUTE = 60000;
 
+/** A beat position rounded to a millionth of a beat, as the server's
+ *  `snap_beats` rounds one: below any float noise a time carries, far finer
+ *  than anything musical. */
+function snapBeats(beats: number): number {
+  return Math.round(beats * 1e6) / 1e6;
+}
+
 function quartersPerMeasure([numerator, denominator]: [
   number,
   number,
@@ -798,19 +805,23 @@ export function msToDurationString(
 ): string {
   if (tempo) {
     const grid = buildTempoGrid(tempo);
-    const startBeats = beatsAtMs(grid, atMs);
-    const endBeats = beatsAtMs(grid, atMs + ms);
+    // Rounded to a millionth of a beat, as the server's snap_beats does:
+    // two positions read back from times carry float noise, and a span of
+    // one beat must not come out 0.9999999999.
+    const startBeats = snapBeats(beatsAtMs(grid, atMs));
+    const endBeats = snapBeats(beatsAtMs(grid, atMs + ms));
 
     // Prefer whole measures
-    const measures =
+    const measures = snapBeats(
       measuresAtBeats(grid.meters, endBeats) -
-      measuresAtBeats(grid.meters, startBeats);
+        measuresAtBeats(grid.meters, startBeats),
+    );
     if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
       const rounded = Math.round(measures);
       return rounded === 1 ? "1measure" : `${rounded}measures`;
     }
     // Then whole beats
-    const beats = endBeats - startBeats;
+    const beats = snapBeats(endBeats - startBeats);
     if (beats >= 1 && Math.abs(beats - Math.round(beats)) < 0.001) {
       const rounded = Math.round(beats);
       return rounded === 1 ? "1beat" : `${rounded}beats`;
@@ -921,6 +932,88 @@ export interface OffsetMarker {
   cueIndex: number;
 }
 
+/** The offset and reset markers of one show's cues, where they are drawn. */
+export function offsetMarkers(
+  cues: Cue[],
+  tempo: TempoSection | undefined,
+  showIndex: number,
+): OffsetMarker[] {
+  const markers: OffsetMarker[] = [];
+  for (const ap of computeAdjustedCuePositions(cues, tempo)) {
+    if (ap.cue.offset_measures !== undefined) {
+      markers.push({
+        ms: ap.adjustedMs,
+        rawMs: ap.rawMs,
+        durationMs: ap.offsetMs,
+        type: "offset",
+        measures: ap.cue.offset_measures,
+        showIndex,
+        cueIndex: ap.index,
+      });
+    }
+    if (ap.cue.reset_measures) {
+      markers.push({
+        ms: ap.adjustedMs,
+        rawMs: ap.rawMs,
+        durationMs: 0,
+        type: "reset",
+        measures: 0,
+        showIndex,
+        cueIndex: ap.index,
+      });
+    }
+  }
+  return markers;
+}
+
+/**
+ * The cumulative offset at each raw (tempo-map) position, as the cues have
+ * it: each offset adds its length after its cue and each reset drops what
+ * there is, in the order the cues come. A position exactly at a marker is
+ * before it, so a grid line on an offset's cue is drawn before the gap, as
+ * the cue is. The one timeline the cues, grid, ruler and tempo lane share.
+ */
+export function offsetTimeline(
+  offsets: OffsetMarker[],
+): (rawMs: number) => number {
+  const steps = offsets
+    .filter((o) => o.type === "reset" || o.durationMs > 0)
+    .map((o, order) => ({ o, order }))
+    .sort(
+      (a, b) =>
+        a.o.rawMs - b.o.rawMs ||
+        a.o.showIndex - b.o.showIndex ||
+        a.o.cueIndex - b.o.cueIndex ||
+        // A cue's reset comes before its own offset.
+        (a.o.type === "reset" ? 0 : 1) - (b.o.type === "reset" ? 0 : 1) ||
+        a.order - b.order,
+    );
+  const at: { rawMs: number; cumulativeMs: number }[] = [];
+  let cumulative = 0;
+  for (const { o } of steps) {
+    cumulative = o.type === "reset" ? 0 : cumulative + o.durationMs;
+    at.push({ rawMs: o.rawMs, cumulativeMs: cumulative });
+  }
+  return (rawMs: number) => {
+    let offsetMs = 0;
+    for (const c of at) {
+      if (c.rawMs >= rawMs) break;
+      offsetMs = c.cumulativeMs;
+    }
+    return offsetMs;
+  };
+}
+
+/** The largest cumulative offset an offset timeline reaches. */
+function maxOffset(offsets: OffsetMarker[]): number {
+  const offsetAt = offsetTimeline(offsets);
+  let max = 0;
+  for (const o of offsets) {
+    max = Math.max(max, offsetAt(o.rawMs + 1e-6));
+  }
+  return max;
+}
+
 /**
  * Generate grid lines shifted by cumulative offsets, so measure/beat
  * positions align with offset-adjusted cue positions.
@@ -936,38 +1029,19 @@ export function getAdjustedGridLines(
     return getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
   }
 
-  // Sort offsets by rawMs
-  const sorted = [...offsets]
-    .filter((o) => o.type === "offset" && o.durationMs > 0)
-    .sort((a, b) => a.rawMs - b.rawMs);
+  const offsetAt = offsetTimeline(offsets);
 
-  // Compute cumulative offset durations at each offset point
-  const cumulativeAt: { rawMs: number; cumulativeMs: number }[] = [];
-  let cumulative = 0;
-  for (const off of sorted) {
-    cumulative += off.durationMs;
-    cumulativeAt.push({ rawMs: off.rawMs, cumulativeMs: cumulative });
-  }
-
-  // Convert view range from adjusted back to raw to know what grid lines to generate
-  // adjusted = raw + cumulativeOffset => raw = adjusted - cumulativeOffset
-  // We need a generous raw range to ensure we generate all visible grid lines
-  const totalOffset = cumulative;
-  const rawStart = Math.max(0, viewStartMs - totalOffset);
+  // Convert view range from adjusted back to raw to know what grid lines to
+  // generate: adjusted = raw + cumulativeOffset, so a generous raw range
+  // starts the largest offset earlier.
+  const rawStart = Math.max(0, viewStartMs - maxOffset(offsets));
   const rawEnd = viewEndMs;
 
   const rawLines = getGridLines(tempo, rawStart, rawEnd, pixelsPerMs);
 
-  // Shift each grid line by the cumulative offset at its raw position.
-  // Use >= so that a grid line coinciding with an offset appears BEFORE the gap.
   const result: GridLine[] = [];
   for (const line of rawLines) {
-    let offsetMs = 0;
-    for (const c of cumulativeAt) {
-      if (c.rawMs >= line.ms) break;
-      offsetMs = c.cumulativeMs;
-    }
-    const adjustedMs = line.ms + offsetMs;
+    const adjustedMs = line.ms + offsetAt(line.ms);
     // Only include lines visible in the adjusted view range
     if (adjustedMs >= viewStartMs && adjustedMs <= viewEndMs) {
       result.push({ ...line, ms: adjustedMs });
