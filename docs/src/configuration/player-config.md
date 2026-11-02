@@ -173,6 +173,15 @@ midi:
   # no beat clock. The clock runs to the end of the song, past where its click or MIDI stops,
   # and a looping song's clock loops with it (one with audio; see known limitations).
   #
+  # A song played from the top sends Start. Played from part way in (play from, a seek), the
+  # clock sends a Song Position Pointer and Continue, so gear that follows song position goes
+  # on from there. The pointer counts 16th notes (six pulses), so the clock goes on from the
+  # 16th at the point (or within half a pulse before it), else the next, and the pulses before
+  # it are not sent. If a start part way in is noticed a 16th or more late, the clock goes on at
+  # the next 16th still to come rather than sending the missed pulses in a burst (a late start
+  # at the top still sends Start and every pulse). The pointer reaches 16,383 16ths (4,096
+  # quarter notes, about 34 minutes at 120 BPM); a position past that is clamped to it.
+  #
   # The beat clock thread runs at elevated (real-time) thread priority to minimize timing jitter.
   # On Linux, this requires CAP_SYS_NICE (granted by the systemd service unit). On macOS, no
   # special privileges are needed. If real-time scheduling cannot be obtained, the beat clock
@@ -190,6 +199,17 @@ midi:
   # previously established tempo alive. Defaults to false: the clock goes silent once a song
   # stops.
   persist_tempo: true
+
+  # (Optional) What the beat clock does where a section loop or a looping song goes back.
+  # `run_through` (the default) keeps the clock running straight through the loop, back to the
+  # first pulse in what it goes back over, sending nothing else: gear counting pulses counts on
+  # past the loop. `relocate` sends Stop, then a Song Position Pointer to where the loop goes
+  # back to (its 16th, as above) and Continue, or Start at the top of the song, so gear that
+  # follows song position goes back with it; a jump noticed late goes on at the next 16th still
+  # to come. Some gear treats Continue as Start, or cuts its notes and restarts its arpeggios at
+  # Stop, which `relocate` sends at every pass. A section with no 16th in it runs through either
+  # way. Only meaningful when beat_clock is enabled.
+  beat_clock_seams: run_through
 
 # The DMX configuration. This maps OLA universes to light show names defined within
 # song files. Omit the section on a host without lighting.
@@ -507,6 +527,7 @@ controllers:
 | `midi.playback_delay` | duration | `0` | no |
 | `midi.beat_clock` | bool | `false` | no |
 | `midi.persist_tempo` | bool | `false` | no |
+| `midi.beat_clock_seams` | `run_through` or `relocate` | `run_through` | no |
 | `dmx.dim_speed_modifier` | float > 0 | `1.0` | no |
 | `dmx.playback_delay` | duration | `0` | no |
 | `dmx.ola_port` | integer | `9010` | no |
