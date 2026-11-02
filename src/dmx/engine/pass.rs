@@ -22,9 +22,10 @@ use std::{
 
 use tracing::error;
 
+use super::timeline::Fired;
 use crate::lighting::{
     effects::{DmxCommand, EffectError},
-    timeline::{LightingTimeline, TimelineUpdate},
+    timeline::LightingTimeline,
     EffectEngine,
 };
 
@@ -35,9 +36,6 @@ use crate::lighting::{
 /// too, crossing out over whatever comes after it.
 pub(crate) struct OutgoingPass {
     pub(super) effect_engine: EffectEngine,
-    /// Which pass this is, so what its timeline fired finds it again after
-    /// the passes are locked anew, wherever it has gone in between.
-    pub(super) id: u64,
     /// The frame this pass last rendered.
     pub(super) last: Vec<DmxCommand>,
     state: PassState,
@@ -98,9 +96,6 @@ pub(crate) enum PassClock {
     Wall { started: Instant, from: Duration },
 }
 
-/// What a pass's timeline fired, by the pass's id, its groups resolved.
-pub(super) type PassUpdates = std::collections::HashMap<u64, TimelineUpdate>;
-
 /// The crossfade `t` of the way (0.0 to 1.0) from `older`'s frame, shown
 /// as `older_engine` shows it, to `newer`'s just rendered, `frame`: the
 /// frame that goes out, channel by channel as a console crosses cues (see
@@ -124,12 +119,6 @@ pub(super) fn cross(
     );
     newer.set_shown(Some(shown));
     blended
-}
-
-/// A new pass's id.
-fn next_pass_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Crossing {
@@ -174,7 +163,6 @@ impl OutgoingPass {
         });
         OutgoingPass {
             effect_engine,
-            id: next_pass_id(),
             last,
             state: PassState::Crossing(Box::new(Crossing {
                 timeline,
@@ -274,26 +262,17 @@ impl OutgoingPass {
 
     /// Advances this pass's timeline to its own song time, the incoming
     /// pass at `song_time`, and each inner pass's to its own, collecting
-    /// what they fire by pass.
-    pub(super) fn advance_timelines(
-        &mut self,
-        song_time: Duration,
-        updates: &mut Vec<(u64, TimelineUpdate)>,
-    ) {
+    /// what they fire.
+    pub(super) fn advance_timelines(&mut self, song_time: Duration, fired: &mut Vec<Fired>) {
         let PassState::Crossing(crossing) = &mut self.state else {
             return;
         };
         let (_, time) = crossing.timing(song_time);
-        updates.push((
-            self.id,
-            crossing
-                .timeline
-                .as_mut()
-                .map(|timeline| timeline.update(time))
-                .unwrap_or_default(),
-        ));
+        if let Some(timeline) = crossing.timeline.as_mut() {
+            fired.push(Fired::new(timeline.epoch(), timeline.update(time)));
+        }
         if let Some(inner) = crossing.inner.as_mut() {
-            inner.advance_timelines(time, updates);
+            inner.advance_timelines(time, fired);
         }
     }
 
@@ -310,25 +289,6 @@ impl OutgoingPass {
             .inner
             .as_mut()
             .and_then(|inner| inner.engine_of(epoch))
-    }
-
-    /// Applies what [`Self::advance_timelines`] collected, its groups
-    /// resolved, to this pass's engine and each inner one's.
-    pub(super) fn apply_updates(&mut self, updates: &mut PassUpdates) {
-        let PassState::Crossing(crossing) = &mut self.state else {
-            return;
-        };
-        if let Some(update) = updates.remove(&self.id) {
-            for e in self.effect_engine.apply_timeline_update(update) {
-                error!(
-                    "Failed to start lighting effect in the outgoing loop pass: {}",
-                    e
-                );
-            }
-        }
-        if let Some(inner) = crossing.inner.as_mut() {
-            inner.apply_updates(updates);
-        }
     }
 
     /// Moves this pass off the incoming pass's song time onto the wall clock,

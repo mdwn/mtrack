@@ -33,7 +33,7 @@ use std::{
 
 use tracing::{error, info};
 
-use super::Engine;
+use super::{timeline::Fired, Engine};
 use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
     lighting::{
@@ -213,14 +213,6 @@ pub(super) struct Overlay {
     frame: Instant,
 }
 
-/// What one overlay's timeline fired in a tick: a restart's state (the show
-/// starting again) and the cues now due.
-struct OverlayUpdate {
-    /// A new pass's history, and where in the show it starts.
-    restart: Option<(TimelineUpdate, Duration)>,
-    update: TimelineUpdate,
-}
-
 impl Overlay {
     fn new(ambient: LoadedAmbient, mut engine: EffectEngine, now: Instant) -> Overlay {
         let mut timeline = LightingTimeline::new(ambient.shows.clone());
@@ -249,7 +241,7 @@ impl Overlay {
     /// Moves this overlay's time to `now` -- starting the show again at its
     /// end, as a looping song does -- and an inner one's, collecting what
     /// they fire: this one's first.
-    fn advance(&mut self, now: Instant, out: &mut Vec<OverlayUpdate>) {
+    fn advance(&mut self, now: Instant, out: &mut Vec<Fired>) {
         self.frame = now;
         let mut elapsed = now.saturating_duration_since(self.started);
         let mut restart = None;
@@ -272,29 +264,23 @@ impl Overlay {
             ));
         }
         let update = self.timeline.update(elapsed);
-        out.push(OverlayUpdate { restart, update });
+        let epoch = self.timeline.epoch();
+        out.push(match restart {
+            Some((history, at)) => Fired::restarted(epoch, history, at, update),
+            None => Fired::new(epoch, update),
+        });
         if let Some(inner) = self.inner.as_mut() {
             inner.advance(now, out);
         }
     }
 
-    /// Applies what [`Self::advance`] collected, its groups resolved, in
-    /// the same order.
-    fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
-        if let Some(OverlayUpdate { restart, update }) = updates.next() {
-            if let Some((restart, at)) = restart {
-                // Its own show only: the MIDI DMX store is every engine's.
-                self.engine.stop_show_effects();
-                // A freeze in the history holds where the pass starts from,
-                // not where the last one ended.
-                self.engine.set_song_time(at);
-                apply_update(&mut self.engine, restart);
-            }
-            apply_update(&mut self.engine, update);
+    /// The engine of the overlay, this one or an inner one, whose timeline
+    /// is armed as `epoch`.
+    fn engine_of(&mut self, epoch: u64) -> Option<&mut EffectEngine> {
+        if self.timeline.epoch() == epoch {
+            return Some(&mut self.engine);
         }
-        if let Some(inner) = self.inner.as_mut() {
-            inner.apply(updates);
-        }
+        self.inner.as_mut().and_then(|inner| inner.engine_of(epoch))
     }
 
     /// This overlay's frame crossed over `under` (the commands below it and
@@ -366,14 +352,6 @@ impl Overlay {
 /// Resolves move groups to the fixtures they stand for (see
 /// `Engine::resolve_groups`).
 pub(super) type ResolveGroups<'a> = dyn FnMut(HashSet<String>) -> HashMap<String, Vec<String>> + 'a;
-
-/// Applies a timeline update, its groups resolved, to `engine`, as
-/// [`Engine::apply_timeline_update`] does to the main one.
-fn apply_update(engine: &mut EffectEngine, update: TimelineUpdate) {
-    for e in engine.apply_timeline_update(update) {
-        error!("Failed to start ambient effect: {}", e);
-    }
-}
 
 impl Engine {
     /// The player has gone idle: play the ambient light the player's
@@ -732,32 +710,25 @@ impl Engine {
     /// Moves the overlay's time on and starts what its timeline fires, its
     /// groups resolved with no overlay lock held, as for the outgoing pass.
     fn advance_overlay(&self, now: Instant) {
-        let mut updates = Vec::new();
+        let mut fired = Vec::new();
         {
             let mut overlay = self.ambient_overlay.lock();
             let Some(o) = overlay.as_mut() else {
                 return;
             };
-            o.advance(now, &mut updates);
+            o.advance(now, &mut fired);
         }
-        let mut resolved = updates
-            .into_iter()
-            .map(|mut u| {
-                if let Some((restart, _)) = u.restart.as_mut() {
-                    self.resolve_update_groups(restart);
-                }
-                self.resolve_update_groups(&mut u.update);
-                u
-            })
-            .collect::<Vec<_>>()
-            .into_iter();
+        let fired = self.resolve_fired(fired);
+        if fired.is_empty() {
+            return;
+        }
         if let Some(o) = self.ambient_overlay.lock().as_mut() {
-            o.apply(&mut resolved);
+            for fired in fired {
+                if let Some(engine) = o.engine_of(fired.epoch()) {
+                    fired.apply(engine);
+                }
+            }
         }
-    }
-
-    fn resolve_update_groups(&self, update: &mut TimelineUpdate) {
-        update.map_effects(|effect| self.resolve_effect_groups(effect));
     }
 
     /// Resolves and reads the ambient light for `playlist`, `None` when there
