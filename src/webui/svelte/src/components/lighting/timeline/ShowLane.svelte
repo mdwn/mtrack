@@ -193,16 +193,19 @@
     adjustedMs = Math.max(0, adjustedMs);
 
     // Subtract cumulative offset to get the raw timestamp ms
+    // The score time under the offset there, placed through the tempo map
+    // the player uses for a cue under that offset, so the new cue lands
+    // where it was clicked.
     const offsetMs = getCumulativeOffsetAtMs(adjustedMs);
     let rawMs = adjustedMs - offsetMs;
     rawMs = Math.max(0, rawMs);
 
     if (snapEnabled && tempo) {
-      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution);
+      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution, offsetMs);
     }
 
     const ts: Timestamp = tempo
-      ? msToTimestamp(rawMs, "measure_beat", tempo)
+      ? msToTimestamp(rawMs, "measure_beat", tempo, offsetMs)
       : absoluteTimestamp(rawMs);
 
     const newCue = emptyCue(ts);
@@ -234,17 +237,24 @@
 
   function handleCueMove(index: number, deltaMs: number) {
     const cue = cues[index];
-    // Move operates on raw timestamps (offset is structural, not per-cue position)
-    const currentMs = timestampToMs(cue.timestamp, tempo);
+    // Move operates on score times under the offset the cue sits under
+    // (offset is structural, not per-cue position), through the tempo map
+    // the player uses for it, so the cue moves by what was dragged.
+    const offsetMs =
+      laneType === "show"
+        ? (computeAdjustedCuePositions(cues, tempo)[index]
+            ?.cumulativeOffsetMs ?? 0)
+        : 0;
+    const currentMs = timestampToMs(cue.timestamp, tempo, offsetMs);
     let newMs = Math.max(0, currentMs + deltaMs);
 
     if (snapEnabled && tempo) {
-      newMs = snapToNearestGrid(newMs, tempo, snapResolution);
+      newMs = snapToNearestGrid(newMs, tempo, snapResolution, offsetMs);
     }
 
     const newTs: Timestamp =
       cue.timestamp.type === "measure_beat" && tempo
-        ? msToTimestamp(newMs, "measure_beat", tempo)
+        ? msToTimestamp(newMs, "measure_beat", tempo, offsetMs)
         : absoluteTimestamp(newMs);
 
     oncuechange(index, { ...cue, timestamp: newTs });

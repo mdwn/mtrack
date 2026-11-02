@@ -77,6 +77,8 @@ interface TempoGrid {
   changes: ResolvedChange[];
   /** Whether any change is positioned in time rather than by bar */
   anyTimed: boolean;
+  /** The walks for cues under each offset met so far */
+  offsetSegments: Map<number, TempoSegment[]>;
 }
 
 /** A change as the tempo walk applies it. */
@@ -359,6 +361,7 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
     meters,
     changes,
     anyTimed: tempo.changes.some((c) => c.timestamp.type === "absolute"),
+    offsetSegments: new Map<number, TempoSegment[]>(),
   };
 
   const timed = tempo.changes
@@ -540,29 +543,21 @@ function durationToMs(d: { value: number; unit: string }): number {
   }
 }
 
-/** The ms of a beat position for a cue under an offset of `offsetMs`, as
- *  the player places it: the tempo changes positioned in time are taken
- *  `offsetMs` later (each at the beat the unshifted map has there), those
- *  positioned by bar stay on their bars. The player's own walk, step for
- *  step; with no offset, or no change positioned in time, it is the
- *  unshifted position. */
-function msAtBeatsOffset(
-  grid: TempoGrid,
-  beats: number,
-  offsetMs: number,
-): number {
-  if (offsetMs === 0 || !grid.anyTimed || beats < 0) {
-    return msAtBeats(grid, beats);
-  }
-  const first = grid.segments[0];
-  let cur: TempoSegment = { ...first, ramp: undefined };
+/** The segments the player walks for a cue under an offset of `offsetMs`:
+ *  the tempo changes positioned in time are taken `offsetMs` later (each at
+ *  the beat the unshifted map has there), those positioned by bar stay on
+ *  their bars. Its walk, step for step, kept with the grid per offset. */
+function offsetSegments(grid: TempoGrid, offsetMs: number): TempoSegment[] {
+  const cached = grid.offsetSegments.get(offsetMs);
+  if (cached) return cached;
+  let cur: TempoSegment = { ...grid.segments[0], ramp: undefined };
+  const walk = [cur];
   for (let i = 0; i < grid.changes.length; i++) {
     const change = grid.changes[i];
     const seg = grid.segments[i + 1];
     const changeBeats = change.timed
       ? Math.max(0, beatsAtMs(grid, seg.startMs + offsetMs))
       : seg.startBeats;
-    if (changeBeats > beats) break;
     const dt = Math.max(0, segmentMsFor(cur, changeBeats - cur.startBeats));
     const bpmAtChange = segmentBpmAt(cur, dt);
     const next: TempoSegment = {
@@ -587,9 +582,54 @@ function msAtBeatsOffset(
               elapsedMs: 0,
             };
     }
+    walk.push(next);
     cur = next;
   }
+  if (grid.offsetSegments.size > 64) grid.offsetSegments.clear();
+  grid.offsetSegments.set(offsetMs, walk);
+  return walk;
+}
+
+/** The ms of a beat position for a cue under an offset of `offsetMs`, as
+ *  the player places it (before the offset itself is added). With no
+ *  offset, or no change positioned in time, the unshifted position. */
+function msAtBeatsOffset(
+  grid: TempoGrid,
+  beats: number,
+  offsetMs: number,
+): number {
+  if (offsetMs === 0 || !grid.anyTimed || beats < 0) {
+    return msAtBeats(grid, beats);
+  }
+  const walk = offsetSegments(grid, offsetMs);
+  // The player stops at the first change past the position.
+  let cur = walk[0];
+  for (let i = 1; i < walk.length && walk[i].startBeats <= beats; i++) {
+    cur = walk[i];
+  }
   return cur.startMs + Math.max(0, segmentMsFor(cur, beats - cur.startBeats));
+}
+
+/** The inverse of `msAtBeatsOffset`: the beat position the player puts at
+ *  a score time for a cue under an offset of `offsetMs`. */
+function beatsAtMsOffset(
+  grid: TempoGrid,
+  ms: number,
+  offsetMs: number,
+): number {
+  const first = grid.segments[0];
+  if (offsetMs === 0 || !grid.anyTimed || ms < first.startMs) {
+    return beatsAtMs(grid, ms);
+  }
+  const walk = offsetSegments(grid, offsetMs);
+  let cur = walk[0];
+  for (let i = 1; i < walk.length; i++) {
+    // Where the walk above would stop: a change before the last one's
+    // beat is never reached.
+    if (walk[i].startMs > ms || walk[i].startBeats < cur.startBeats) break;
+    cur = walk[i];
+  }
+  return cur.startBeats + segmentBeatsIn(cur, ms - cur.startMs);
 }
 
 /** Convert a Timestamp to absolute milliseconds: its place in the tempo
@@ -623,13 +663,19 @@ export function msToTimestamp(
   ms: number,
   preferType: "absolute" | "measure_beat",
   tempo?: TempoSection,
+  offsetMs = 0,
 ): Timestamp {
   if (preferType === "absolute" || !tempo) {
     return { type: "absolute", ms };
   }
 
+  // With `offsetMs`, `ms` is a score time under that offset, as
+  // `timestampToMs(ts, tempo, offsetMs)` gives it.
   const grid = buildTempoGrid(tempo);
-  const at = measureBeatAtBeats(grid.meters, beatsAtMs(grid, ms));
+  const at = measureBeatAtBeats(
+    grid.meters,
+    beatsAtMsOffset(grid, ms, offsetMs),
+  );
   let measure = at.measure;
   let beat = Math.round(at.beat);
   if (beat - 1 >= meterAtMeasure(grid.meters, measure).quarters) {
@@ -807,19 +853,30 @@ export function snapToNearestGrid(
   ms: number,
   tempo: TempoSection,
   resolution: SnapResolution,
+  offsetMs = 0,
 ): number {
+  // With `offsetMs`, `ms` is a score time under that offset, and so is
+  // the grid it snaps to.
   const grid = buildTempoGrid(tempo);
-  const beats = beatsAtMs(grid, ms);
+  const beats = beatsAtMsOffset(grid, ms, offsetMs);
   if (resolution === "measure") {
     const measures = Math.round(measuresAtBeats(grid.meters, beats));
-    return msAtBeats(grid, beatsAtMeasures(grid.meters, measures));
+    return msAtBeatsOffset(
+      grid,
+      beatsAtMeasures(grid.meters, measures),
+      offsetMs,
+    );
   }
   // Steps count from the bar's downbeat, so an odd metre's bar keeps its
   // subdivisions.
   const { measure } = measureBeatAtBeats(grid.meters, beats);
   const bar = beatsAtMeasureBeat(grid.meters, measure, 1);
   const step = SNAP_BEATS[resolution];
-  return msAtBeats(grid, bar + Math.round((beats - bar) / step) * step);
+  return msAtBeatsOffset(
+    grid,
+    bar + Math.round((beats - bar) / step) * step,
+    offsetMs,
+  );
 }
 
 /** Snap a duration to the nearest grid step at a given playback position. */

@@ -389,3 +389,45 @@ test("under an offset, a tempo change positioned in time moves with it", () => {
   );
   close(positions[1].adjustedMs, 10000 + 2000);
 });
+
+test("placing a cue under an offset round-trips with its layout", () => {
+  // Offsets, a time-positioned ramp the offset moves, and a bar-positioned
+  // ramp that stays: a cue placed at the time it is drawn at comes back
+  // as the same bar and beat, and is drawn there again.
+  const t = tempo(
+    120,
+    [4, 4],
+    [
+      { timestamp: absoluteTimestamp(6000), bpm: 60, transition: "4" },
+      at(9, 1, { bpm: 150, transition: "1m" }),
+    ],
+  );
+  const offsetCues = [
+    cueAt(1, 1, { offset_measures: 1 }),
+    cueAt(3, 3, { offset_measures: 2 }),
+  ];
+  for (let m = 3; m <= 12; m++) {
+    for (let b = 1; b <= 4; b++) {
+      const cues = [...offsetCues, cueAt(m, b)];
+      const placed = computeAdjustedCuePositions(cues, t)[2];
+      const offset = placed.cumulativeOffsetMs;
+      const score = placed.adjustedMs - offset;
+      const what = `@${m}/${b}`;
+      expect(msToTimestamp(score, "measure_beat", t, offset), what).toEqual(
+        measureBeatTimestamp(m, b),
+      );
+      // Snapping a click near it lands back on it.
+      close(snapToNearestGrid(score + 15, t, "beat", offset), score, what);
+      close(timestampToMs(measureBeatTimestamp(m, b), t, offset), score, what);
+    }
+  }
+  // The offset does move the time-positioned ramp: under it, bar 5 is
+  // not where it is unshifted.
+  const offset = computeAdjustedCuePositions(
+    [...offsetCues, cueAt(5, 1)],
+    t,
+  )[2];
+  expect(
+    Math.abs(offset.adjustedMs - offset.cumulativeOffsetMs - offset.rawMs),
+  ).toBeGreaterThan(1);
+});
