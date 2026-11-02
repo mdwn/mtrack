@@ -219,6 +219,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A song without a show no longer brings the last song's back on an edit**: the last song's
+  light show file watcher went on running under a song with no show of its own (MIDI DMX only,
+  or no lights), and saving that file put its show back on the rig. It stops with the song now,
+  as it already did when the stage went dark between songs.
+- **Ambient Off over a dark stage takes out what was lit since**: setting the mode Off again,
+  with the stage already dark between songs and no ambient up, left lit what nothing writes
+  (MIDI DMX on an unpatched channel, say); going idle while Off already took it out. Both do now.
+- **The web UI shows a loop crossfade's last frame as it goes out**: in the frame a crossfading
+  loop's pass ended, the visualizer and `get_fixture_state` showed the new pass alone -- a mover
+  only the old pass drove dropped from the view -- while the rig got the blend.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status
