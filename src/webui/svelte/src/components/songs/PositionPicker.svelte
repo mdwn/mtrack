@@ -13,12 +13,11 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../lib/util/format";
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import {
     type BeatGrid,
-    formatSeconds,
-    formatSecondsShort,
     maxBeatIn,
     parseSeconds,
     positionAtTime,
@@ -153,7 +152,7 @@
   let musical = $derived(
     `m${measure} · b${fmtBeat(decoupled ? Math.round(beat * 2) / 2 : beat)}`,
   );
-  let clock = $derived(seconds === null ? "" : formatSeconds(seconds));
+  let clock = $derived(seconds === null ? "" : formatClock(seconds, 3));
   let readout = $derived(mode === "time" ? clock : musical);
   /** The line under the readout: the other unit, and how exact it is. */
   let readoutSub = $derived(
@@ -169,7 +168,7 @@
   let spoken = $derived(
     mode === "time" && seconds !== null
       ? $t("position.valueTime", {
-          values: { time: formatSeconds(seconds), position: musical },
+          values: { time: formatClock(seconds, 3), position: musical },
         })
       : $t("position.value", { values: { measure, beat: fmtBeat(beat) } }),
   );
@@ -569,7 +568,7 @@
             {#if mode === "time"}
               {#each secondsByMeasure[m] ?? [] as s (s.time)}
                 <span class="pp-secnum" style:left="{s.pct}%"
-                  >{formatSecondsShort(s.time)}</span
+                  >{formatClock(s.time)}</span
                 >
               {/each}
               <!-- The value itself, above the fingertip, as in beat mode. -->
@@ -577,7 +576,7 @@
                 <span
                   class="pp-num pp-num--selected"
                   style:left="{((beat - 1) / beats) * 100}%"
-                  >{formatSeconds(seconds)}</span
+                  >{formatClock(seconds, 3)}</span
                 >
               {/if}
             {:else}

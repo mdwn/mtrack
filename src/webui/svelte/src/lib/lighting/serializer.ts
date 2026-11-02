@@ -22,6 +22,7 @@ import type {
   SequenceRef,
   SequenceArg,
 } from "./types";
+import { formatClock } from "../util/format";
 
 /**
  * Serialize a LightFile structure back to DSL text.
@@ -150,12 +151,8 @@ export function formatTimestamp(ts: Timestamp): string {
     return `${ts.measure ?? 1}/${beat}`;
   }
 
-  // Absolute: format as MM:SS.mmm
-  const totalMs = ts.ms ?? 0;
-  const mins = Math.floor(totalMs / 60000);
-  const secs = Math.floor((totalMs % 60000) / 1000);
-  const ms = totalMs % 1000;
-  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
+  // Absolute: MM:SS.mmm
+  return formatClock((ts.ms ?? 0) / 1000, 3, true);
 }
 
 function serializeEffect(cueEffect: CueEffect): string {

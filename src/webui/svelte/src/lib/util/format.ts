@@ -12,12 +12,33 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/** Formats milliseconds as "m:ss". */
-export function formatMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+/**
+ * A time as a clock reads it: `m:ss`, with `digits` decimals of a second
+ * (`m:ss.s`, `m:ss.mmm`), minutes zero-padded to two with `padMinutes` (the
+ * light show DSL's `@mm:ss.mmm`). Whole seconds are counted down (a clock
+ * shows 0:01 until 2s), decimals rounded to the nearest; a time before 0
+ * has a minus sign. Every clock in the UI is this one.
+ */
+export function formatClock(
+  seconds: number,
+  digits: 0 | 1 | 3 = 0,
+  padMinutes = false,
+): string {
+  const sign = seconds < 0 ? "-" : "";
+  const scale = 10 ** digits;
+  const abs = Math.abs(seconds) * scale;
+  // A whisker over, so a time that floating point puts a hair short of a
+  // second (1.9999999) reads as the second.
+  const units = digits === 0 ? Math.floor(abs + 1e-6) : Math.round(abs);
+  const minutes = Math.floor(units / (60 * scale));
+  const rest = units - minutes * 60 * scale;
+  const secs = Math.floor(rest / scale);
+  const frac = rest - secs * scale;
+  const mm = padMinutes ? String(minutes).padStart(2, "0") : String(minutes);
+  const ss = String(secs).padStart(2, "0");
+  return digits === 0
+    ? `${sign}${mm}:${ss}`
+    : `${sign}${mm}:${ss}.${String(frac).padStart(digits, "0")}`;
 }
 
 /** A fade length as written (`1measure`, `4beats`, `2s`) for reading:

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../lib/util/format";
   import { effectiveTheme } from "../../lib/theme";
   interface Props {
     songDurationMs: number;
@@ -53,13 +54,6 @@
   const TIME_BASELINE = 26;
   const TIME_TICK_TOP = 28;
   const LABEL_WIDTH = 80;
-
-  function formatTime(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    return `${min}:${sec.toString().padStart(2, "0")}`;
-  }
 
   function chooseTickInterval(pxPerMs: number): number {
     const candidates = [
@@ -116,7 +110,7 @@
       ctx.lineTo(x, h);
       ctx.stroke();
 
-      ctx.fillText(formatTime(t), x, TIME_BASELINE);
+      ctx.fillText(formatClock(t / 1000), x, TIME_BASELINE);
     }
 
     // Measure markers from beat grid with density-based thinning.

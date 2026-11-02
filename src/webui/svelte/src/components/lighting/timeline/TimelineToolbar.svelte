@@ -13,8 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../../lib/util/format";
   import { t } from "svelte-i18n";
-  import { formatMs } from "../../../lib/lighting/timeline-state";
 
   interface Props {
     pixelsPerMs: number;
@@ -175,11 +175,15 @@
   <div class="toolbar-spacer"></div>
 
   {#if isPlaying && playheadMs !== null}
-    <span class="cursor-time playhead-time">{formatMs(playheadMs)}</span>
+    <span class="cursor-time playhead-time"
+      >{formatClock(playheadMs / 1000, 3)}</span
+    >
   {:else if cursorMs !== null}
-    <span class="cursor-time">{formatMs(cursorMs)}</span>
+    <span class="cursor-time">{formatClock(cursorMs / 1000, 3)}</span>
   {:else if playCursorMs !== null && playCursorMs > 0}
-    <span class="cursor-time play-cursor-time">{formatMs(playCursorMs)}</span>
+    <span class="cursor-time play-cursor-time"
+      >{formatClock(playCursorMs / 1000, 3)}</span
+    >
   {/if}
 </div>
 

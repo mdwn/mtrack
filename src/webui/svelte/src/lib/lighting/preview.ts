@@ -120,16 +120,6 @@ export async function evaluatePreview(
   return result;
 }
 
-/** "1:05" for a time in seconds; tenths when asked, for the scrubber. */
-export function clock(seconds: number, tenths = false): string {
-  const whole = Math.max(0, seconds);
-  const minutes = Math.floor(whole / 60);
-  const rest = whole - minutes * 60;
-  return tenths
-    ? `${minutes}:${rest.toFixed(1).padStart(4, "0")}`
-    : `${minutes}:${Math.floor(rest).toString().padStart(2, "0")}`;
-}
-
 export interface SectionSegment {
   name: string;
   /** Percent of the song's length. */

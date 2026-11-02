@@ -17,7 +17,7 @@
   import { playbackStore } from "../lib/ws/stores";
   import { setLocked } from "../lib/api/config";
   import { playerClient } from "../lib/grpc/client";
-  import { formatMs } from "../lib/util/format";
+  import { formatClock } from "../lib/util/format";
   import { playlistEnds } from "../lib/nextUp";
   import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
@@ -101,8 +101,8 @@
 
   let displayName = $derived($playbackStore.song_name || $t("playback.noSong"));
 
-  let elapsed = $derived(formatMs($playbackStore.elapsed_ms));
-  let total = $derived(formatMs($playbackStore.song_duration_ms));
+  let elapsed = $derived(formatClock($playbackStore.elapsed_ms / 1000));
+  let total = $derived(formatClock($playbackStore.song_duration_ms / 1000));
 </script>
 
 <div class="miniplayer" role="region" aria-label={$t("playback.title")}>

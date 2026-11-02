@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../../lib/util/format";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { effectiveTheme } from "../../../lib/theme";
@@ -21,7 +22,6 @@
     msToPixel,
     getGridLines,
     getAdjustedGridLines,
-    formatMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
 
@@ -130,7 +130,7 @@
 
       // Label
       ctx.fillStyle = tickLabel;
-      ctx.fillText(formatMs(t), x, h - 16);
+      ctx.fillText(formatClock(t / 1000, 3), x, h - 16);
     }
 
     // Draw measure/beat grid if tempo exists

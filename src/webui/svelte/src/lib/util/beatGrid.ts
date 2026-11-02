@@ -155,20 +155,6 @@ export function measureTime(
   return timeAtPosition(grid, measure, 1);
 }
 
-/** "1:23.456" — the format the position readout shows and accepts. */
-export function formatSeconds(seconds: number): string {
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds - minutes * 60;
-  return `${minutes}:${rest.toFixed(3).padStart(6, "0")}`;
-}
-
-/** "1:23", for tick labels where milliseconds would be noise. */
-export function formatSecondsShort(seconds: number): string {
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds - minutes * 60);
-  return `${minutes}:${rest.toString().padStart(2, "0")}`;
-}
-
 /** Parses "1:23.456", "83.456" or "83"; null when it is not a time. */
 export function parseSeconds(raw: string): number | null {
   const match = /^(?:(\d+):)?(\d+(?:[.,]\d+)?)$/.exec(raw.trim());

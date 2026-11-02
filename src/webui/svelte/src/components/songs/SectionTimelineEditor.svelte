@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../lib/util/format";
   import { t } from "svelte-i18n";
   import type {
     SongSummary,
@@ -262,11 +263,6 @@
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
     previewSeek(playheadMs + (e.key === "ArrowLeft" ? -5000 : 5000));
-  }
-
-  function formatPlayheadMs(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, "0")}`;
   }
 
   /** Musical position + tempo/meter at the playhead, from the beat grid and
@@ -750,7 +746,7 @@
         <span class="playhead-info__pos"
           >m{playheadInfo.measure}.{playheadInfo.beat}</span
         >
-        · {formatPlayheadMs(playheadMs)}
+        · {formatClock(playheadMs / 1000)}
         {#if playheadInfo.bpm !== null}
           · {playheadInfo.bpm}
           {$t("tempo.bpm")}
@@ -805,7 +801,7 @@
         aria-valuemin={0}
         aria-valuemax={Math.floor(songDurationMs / 1000)}
         aria-valuenow={Math.floor(playheadMs / 1000)}
-        aria-valuetext={formatPlayheadMs(playheadMs)}
+        aria-valuetext={formatClock(playheadMs / 1000)}
         onpointerdown={handlePlayheadDown}
         onpointermove={handlePlayheadMove}
         onpointerup={handlePlayheadUp}
@@ -813,7 +809,8 @@
         onkeydown={handlePlayheadKeydown}
       >
         {#if playheadDragMs !== null}
-          <span class="playhead__time mono">{formatPlayheadMs(playheadMs)}</span
+          <span class="playhead__time mono"
+            >{formatClock(playheadMs / 1000)}</span
           >
         {/if}
       </div>

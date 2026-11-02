@@ -19,7 +19,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { Snippet } from "svelte";
-  import { formatSeconds } from "../../lib/util/beatGrid";
+  import { formatClock } from "../../lib/util/format";
 
   interface Props {
     /** Playhead position in seconds. */
@@ -36,7 +36,7 @@
 <div class="playhead-capture">
   <span class="playhead-at mono">
     {$t("sections.dialog.playheadAt", {
-      values: { pos: formatSeconds(time) },
+      values: { pos: formatClock(time, 3) },
     })}{#if position}<span class="playhead-pos"> · {position}</span>{/if}
   </span>
   {@render actions()}

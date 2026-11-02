@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../lib/util/format";
   /**
    * The 3D view's Preview mode (lighting UI design, section 12.1): pick a
    * song, scrub through it, and see what its show does at that moment.
@@ -25,7 +26,6 @@
   import { BadAnswerError } from "../../lib/lighting/answer";
   import { fetchSongs, type SongSummary } from "../../lib/api/songs";
   import {
-    clock,
     evaluatePreview,
     groupActivity,
     sectionSegments,
@@ -204,7 +204,7 @@
               step="0.1"
               value={time}
               disabled={!song}
-              aria-valuetext={clock(time, true)}
+              aria-valuetext={formatClock(Math.max(0, time), 1)}
               oninput={scrub}
             />
           </div>
@@ -212,7 +212,9 @@
             class="preview__clock"
             for="preview-time"
             data-testid="preview-clock"
-            >{clock(time, true)} / {clock(duration)}</output
+            >{formatClock(Math.max(0, time), 1)} / {formatClock(
+              Math.max(0, duration),
+            )}</output
           >
         </div>
       </div>

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { formatClock } from "../../../lib/util/format";
   import type {
     Cue,
     CueEffect,
@@ -26,10 +27,7 @@
   import EffectForm from "../EffectForm.svelte";
   import LayerCommandForm from "../LayerCommandForm.svelte";
   import SequenceRefForm from "../SequenceRefForm.svelte";
-  import {
-    formatMs,
-    timestampToMs,
-  } from "../../../lib/lighting/timeline-state";
+  import { timestampToMs } from "../../../lib/lighting/timeline-state";
   import type { TempoSection } from "../../../lib/lighting/types";
 
   interface Props {
@@ -64,7 +62,9 @@
     if (tab.startsWith("effects:")) return "effects";
     return tab;
   });
-  let absTime = $derived(formatMs(timestampToMs(cue.timestamp, tempo)));
+  let absTime = $derived(
+    formatClock(timestampToMs(cue.timestamp, tempo) / 1000, 3),
+  );
 
   let sectionLabels = $derived({
     effects: $t("timeline.properties.effects"),

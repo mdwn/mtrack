@@ -18,7 +18,7 @@
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
-  import { formatFadeLength, formatMs } from "../../lib/util/format";
+  import { formatClock, formatFadeLength } from "../../lib/util/format";
   import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -616,7 +616,7 @@
 
     <div class="playback-card__progress">
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.elapsed_ms)}</span
+        >{formatClock($playbackStore.elapsed_ms / 1000)}</span
       >
       <div
         class="scrub scrub--seekable"
@@ -656,12 +656,12 @@
           <div
             class="scrub__pending"
             style:left="{pendingStartPct}%"
-            title={formatMs($playbackStore.pending_start_ms ?? 0)}
+            title={formatClock(($playbackStore.pending_start_ms ?? 0) / 1000)}
           ></div>
         {/if}
       </div>
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.song_duration_ms)}</span
+        >{formatClock($playbackStore.song_duration_ms / 1000)}</span
       >
     </div>
 

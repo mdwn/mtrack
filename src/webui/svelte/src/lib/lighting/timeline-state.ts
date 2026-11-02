@@ -324,15 +324,6 @@ export function getGridLines(
   return lines;
 }
 
-/** Format milliseconds as MM:SS.mmm */
-export function formatMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  const millis = Math.round(ms % 1000);
-  return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-}
-
 /**
  * Convert an effect duration string (e.g. "5s", "500ms", "2beats", "4measures")
  * to milliseconds. Requires tempo for beat/measure units; returns 0 if tempo is
