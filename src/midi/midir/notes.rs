@@ -698,6 +698,10 @@ pub(super) fn play_streams(
         // on from there, at its time -- on the schedule of the stream it
         // leaves, where its `from` falls, so the streams keep one grid (the
         // playback delay included) rather than each starting a poll late.
+        // That is `jump.at` less the start, as the log commits jumps, but
+        // counted from the stream's origin a note at `from` ties with it to
+        // the bit, and is cut rather than sent: from `jump.at` the two come
+        // out a rounding apart, either way, as often as not.
         let jump_at = next_jump.as_ref().map(|jump| match streams.last() {
             Some(current) => current.origin + jump.from.as_secs_f64(),
             None => last_origin + jump.from.as_secs_f64(),

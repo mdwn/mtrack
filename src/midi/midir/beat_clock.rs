@@ -78,7 +78,6 @@ pub(super) fn run_beat_clock(
     use midly::live::SystemRealtime;
 
     let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
-    let stop_bytes = realtime_bytes(SystemRealtime::Stop);
 
     // Track the spacing between consecutive delivered ticks so we can report the
     // final tempo when we stop.
@@ -123,20 +122,10 @@ pub(super) fn run_beat_clock(
                 if !follow.pending(ticks) {
                     break 'ticks;
                 }
-                if cancel_handle.is_cancelled() {
-                    let _ = sender.send(&stop_bytes);
-                    return ScheduleOutcome::Finished(last_interval);
-                }
-                match rx.try_recv() {
-                    Ok(command) => {
-                        let _ = sender.send(&stop_bytes);
-                        return ScheduleOutcome::Preempted(command, last_interval);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        let _ = sender.send(&stop_bytes);
-                        return ScheduleOutcome::Finished(last_interval);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                if let Some(outcome) =
+                    schedule_ends(sender, cancel_handle, false, Some(rx), last_interval)
+                {
+                    return outcome;
                 }
                 // A jump committed is taken at once, however far ahead it
                 // falls: no tick is left before it, and the schedule then
@@ -207,16 +196,7 @@ pub(super) fn run_beat_clock(
         }
         // A broken loop ends the clock, as it ends the notes: the player
         // stops the song with it.
-        if sections.is_some_and(|sections| sections.loop_break.load(Ordering::Relaxed))
-            || cancel_handle.is_cancelled()
-        {
-            let _ = sender.send(&stop_bytes);
-            return ScheduleOutcome::Finished(last_interval);
-        }
-        if std::mem::take(&mut seam) {
-            prev_tick = None;
-        }
-
+        //
         // A newer command supersedes this schedule. Nothing cancels the handle
         // when a song ends naturally -- the cleanup path only clears the join
         // and advances the playlist -- so a schedule that outlasts its audio
@@ -224,16 +204,13 @@ pub(super) fn run_beat_clock(
         // dequeue the next song late, and shift its Start and every tick by the
         // residual. This is also how Shutdown gets observed mid-schedule, so
         // dropping the device does not block for the rest of the song.
-        match rx.try_recv() {
-            Ok(command) => {
-                let _ = sender.send(&stop_bytes);
-                return ScheduleOutcome::Preempted(command, last_interval);
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let _ = sender.send(&stop_bytes);
-                return ScheduleOutcome::Finished(last_interval);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        let broken = sections.is_some_and(|sections| sections.loop_break.load(Ordering::Relaxed));
+        if let Some(outcome) = schedule_ends(sender, cancel_handle, broken, Some(rx), last_interval)
+        {
+            return outcome;
+        }
+        if std::mem::take(&mut seam) {
+            prev_tick = None;
         }
 
         // Due on the wall clock, steered toward the playback clock the notes
@@ -271,9 +248,8 @@ pub(super) fn run_beat_clock(
             }
         }
 
-        if cancel_handle.is_cancelled() {
-            let _ = sender.send(&stop_bytes);
-            return ScheduleOutcome::Finished(last_interval);
+        if let Some(outcome) = schedule_ends(sender, cancel_handle, false, None, last_interval) {
+            return outcome;
         }
 
         if let Some(sent) = transport_sent.take() {
@@ -294,8 +270,32 @@ pub(super) fn run_beat_clock(
     }
 
     // Send STOP when finished
-    let _ = sender.send(&stop_bytes);
+    let _ = sender.send(&realtime_bytes(SystemRealtime::Stop));
     ScheduleOutcome::Finished(last_interval)
+}
+
+/// Whether a schedule ends before its last tick: stopped (cancelled, or
+/// `broken`, its loop broken), or, given the engine's channel, superseded by
+/// a newer command there (or the channel closed: the engine is going away).
+/// If it ends, it sends Stop, and gives how it ended.
+fn schedule_ends(
+    sender: &mut dyn MidiSender,
+    cancel_handle: &CancelHandle,
+    broken: bool,
+    rx: Option<&mpsc::Receiver<BeatClockCommand>>,
+    last_interval: Option<Duration>,
+) -> Option<ScheduleOutcome> {
+    let outcome = if broken || cancel_handle.is_cancelled() {
+        ScheduleOutcome::Finished(last_interval)
+    } else {
+        match rx?.try_recv() {
+            Ok(command) => ScheduleOutcome::Preempted(command, last_interval),
+            Err(mpsc::TryRecvError::Disconnected) => ScheduleOutcome::Finished(last_interval),
+            Err(mpsc::TryRecvError::Empty) => return None,
+        }
+    };
+    let _ = sender.send(&realtime_bytes(midly::live::SystemRealtime::Stop));
+    Some(outcome)
 }
 
 /// Pulses to a MIDI beat (a 16th note): what Song Position Pointer counts.
