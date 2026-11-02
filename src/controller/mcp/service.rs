@@ -1298,7 +1298,7 @@ impl McpServer {
         staged_write_string(&yaml_path, &args.yaml).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": yaml_path.display().to_string(),
             "bytes": args.yaml.len(),
@@ -1379,7 +1379,7 @@ impl McpServer {
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.yaml.len(),
@@ -2469,7 +2469,7 @@ impl McpServer {
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
         remove_lighting_file(&path).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
             "deleted": path.display().to_string(),
@@ -2622,7 +2622,7 @@ impl McpServer {
         // a real path, and a rig that does nothing.
         let registration = self.register_song_lighting(&song, &path).await?;
 
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -2701,7 +2701,7 @@ impl McpServer {
         )?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -2725,7 +2725,7 @@ impl McpServer {
         )?;
         self.validate_playlist(&updated)?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -2774,7 +2774,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -3999,8 +3999,12 @@ impl McpServer {
     ) -> Result<crate::webui::safe_path::VerifiedRoot, McpError> {
         let store = self.config_store()?;
         let path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
-        let songs = cfg.songs(&path);
+        // The songs directory the player reloads from, so a song written
+        // here is one it picks up.
+        let songs = match self.player.song_sources() {
+            Some(sources) => sources.songs,
+            None => store.read_config().await.songs(&path),
+        };
         // Created only when it is inside the project. A `songs:` pointing
         // elsewhere is the operator's to set up -- see `create_dir_within`.
         let project = crate::util::project_dir_of(&path);
@@ -4059,36 +4063,17 @@ impl McpServer {
     /// Rescans songs from disk and rebuilds the player's playlists. Used after
     /// any tool that creates, edits, or removes a song file so subsequent
     /// `list_songs` / `read_song` / `write_song_lighting` calls see the new
-    /// state without requiring an mtrack restart. Mirrors the resolution
-    /// logic in `cli::local::start`.
-    pub(crate) async fn reload_songs_from_config(&self) -> Result<(), McpError> {
-        let store = self.config_store()?;
-        let config_path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
-
-        // Resolved, like songs_root_verified: the configured spelling is not
-        // always usable now that the stray intermediate is not created, and a
-        // rescan that fails here only logs a warning -- every write tool would
-        // report success while the player kept stale songs.
-        let songs_path = crate::util::resolved_dir(&cfg.songs(&config_path));
-        let playlists_dir = cfg
-            .playlists_dir(&config_path)
-            .or_else(|| Some(crate::util::project_dir_of(&config_path).join("playlists")));
-
-        let legacy_playlist_path = cfg.playlist().map(|rel| {
-            if rel.is_absolute() {
-                rel
-            } else {
-                crate::util::project_dir_of(&config_path).join(rel)
-            }
-        });
-
-        self.player.reload_songs(
-            &songs_path,
-            playlists_dir.as_deref(),
-            legacy_playlist_path.as_deref(),
-        );
-        Ok(())
+    /// state without requiring an mtrack restart. Reads the player's song
+    /// sources, as every surface's reload does, and reports a reload that
+    /// failed: every write tool reported success while the player kept
+    /// stale songs.
+    pub(crate) async fn reload_player_songs(&self) -> Result<(), McpError> {
+        self.player.reload_songs().await.map_err(|e| {
+            McpError::internal_error(
+                format!("the change was written, but the player could not reload its songs: {e}"),
+                None,
+            )
+        })
     }
 
     /// Checks a playlist about to be written: that it parses, and that its
@@ -4112,27 +4097,27 @@ impl McpServer {
     ) -> Result<std::path::PathBuf, McpError> {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
+        // The playlists the player reloads from, so a playlist written here
+        // is one it picks up: the command line's legacy playlist included.
+        let sources = match self.player.song_sources() {
+            Some(sources) => sources,
+            None => {
+                crate::player::SongSources::from_config(&store.read_config().await, &config_path)
+            }
+        };
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
                 // The same default the loader uses: `playlists/` beside the
                 // config when no `playlists_dir` is configured.
-                let dir = cfg
-                    .playlists_dir(&config_path)
+                let dir = sources
+                    .playlists_dir
                     .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
                 Ok(dir.join(format!("{n}.yaml")))
             }
-            None => {
-                let rel = cfg.playlist().ok_or_else(|| {
-                    McpError::invalid_params("no top-level playlist file configured", None)
-                })?;
-                if rel.is_absolute() {
-                    Ok(rel)
-                } else {
-                    Ok(crate::util::project_dir_of(&config_path).join(rel))
-                }
-            }
+            None => sources.legacy_playlist.ok_or_else(|| {
+                McpError::invalid_params("no top-level playlist file configured", None)
+            }),
         }
     }
 }

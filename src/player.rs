@@ -365,6 +365,9 @@ pub struct Player {
     span: Span,
     /// Mutable configuration store for runtime config changes.
     config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
+    /// Where songs and playlists are read from, resolved once: every
+    /// reload reads these, whichever surface asks for it.
+    song_sources: Arc<parking_lot::RwLock<Option<SongSources>>>,
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
     default_metronome: Arc<std::sync::atomic::AtomicBool>,
@@ -716,6 +719,7 @@ impl Player {
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
+            song_sources: Arc::new(parking_lot::RwLock::new(None)),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             init_round: Arc::new(parking_lot::Mutex::new(None)),
@@ -969,6 +973,17 @@ impl Player {
     /// Returns the config store, if one has been set.
     pub fn config_store(&self) -> Option<Arc<config::ConfigStore>> {
         self.config_store.lock().clone()
+    }
+
+    /// Sets where songs and playlists are read from. Called once at
+    /// startup, with the paths the player's songs were first loaded from.
+    pub fn set_song_sources(&self, sources: SongSources) {
+        *self.song_sources.write() = Some(sources);
+    }
+
+    /// Where songs and playlists are read from, if they have been set.
+    pub fn song_sources(&self) -> Option<SongSources> {
+        self.song_sources.read().clone()
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -1357,6 +1372,80 @@ fn resolve_playback_outcome(
     } else {
         Ok(())
     }
+}
+
+/// Where the player's songs and playlists are read from: resolved once, as
+/// mtrack starts, and read by every reload after, whichever surface asks
+/// for it. Resolved per surface, the web UI and MCP reloaded different sets
+/// after a config change, MCP ignored a playlist named on the command line,
+/// and the web UI loaded a `playlist.yaml` beside the config that nothing
+/// had configured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SongSources {
+    /// The songs directory, resolved.
+    pub songs: PathBuf,
+    /// The playlists directory: the configured `playlists_dir`, else
+    /// `playlists/` beside the config.
+    pub playlists_dir: Option<PathBuf>,
+    /// The legacy single playlist file, if one is configured (the command
+    /// line's over the config's), made absolute against the config's
+    /// directory.
+    pub legacy_playlist: Option<PathBuf>,
+}
+
+impl SongSources {
+    /// Resolves the sources from `config`, read from `config_path`, with
+    /// `songs` as the songs directory and the playlist named on the command
+    /// line, if one is, over the config's.
+    pub fn new(
+        config: &config::Player,
+        config_path: &Path,
+        songs: PathBuf,
+        cli_playlist: Option<&Path>,
+    ) -> SongSources {
+        let project_dir = crate::util::project_dir_of(config_path);
+        let playlists_dir = config
+            .playlists_dir(config_path)
+            .unwrap_or_else(|| project_dir.join("playlists"));
+        let legacy_playlist = cli_playlist
+            .map(Path::to_path_buf)
+            .or_else(|| config.playlist())
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    project_dir.join(path)
+                }
+            });
+        SongSources {
+            songs,
+            playlists_dir: Some(playlists_dir),
+            legacy_playlist,
+        }
+    }
+
+    /// [`SongSources::new`] with the songs directory the config names,
+    /// resolved, and no command-line playlist: for a player given no
+    /// sources, which resolves them from its config store.
+    pub fn from_config(config: &config::Player, config_path: &Path) -> SongSources {
+        let songs = crate::util::resolved_dir(&config.songs(config_path));
+        SongSources::new(config, config_path, songs, None)
+    }
+}
+
+/// Why [`Player::reload_songs`] left the songs as they were.
+#[derive(Debug, thiserror::Error)]
+pub enum ReloadSongsError {
+    /// The player was given no song sources and has no config store to
+    /// resolve them from.
+    #[error("no songs directory is configured for the player")]
+    NoSources,
+    #[error("failed to rescan songs: {0}")]
+    Songs(String),
+    #[error("failed to rebuild playlists: {0}")]
+    Playlists(String),
+    #[error("the song reload did not finish: {0}")]
+    Interrupted(String),
 }
 
 /// Loads all playlists from a directory and/or legacy playlist path.
@@ -2700,7 +2789,13 @@ mod test {
         let green = dir.path().join("green.light").display().to_string();
         let path = dir.path().join("playlist.yaml");
         fs::write(&path, yaml.replace("{green}", &green)).unwrap();
-        player.reload_songs(&dir.path().join("songs"), None, Some(&path));
+        player
+            .reload_songs_from(&SongSources {
+                songs: dir.path().join("songs"),
+                playlists_dir: None,
+                legacy_playlist: Some(path),
+            })
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3944,7 +4039,12 @@ mod test {
             "name: \"New Test Song\"\ntracks:\n  - name: click\n    file: ../1Channel44.1k.wav\n";
         fs::write(songs_dir.join("newsong.yaml"), new_song_yaml)?;
 
-        player.reload_songs(&songs_dir, None, None);
+        player.set_song_sources(SongSources {
+            songs: songs_dir,
+            playlists_dir: None,
+            legacy_playlist: None,
+        });
+        player.reload_songs().await?;
         assert!(
             player.songs().len() > initial_count,
             "reload_songs should discover the new song (was {}, now {})",
@@ -3952,6 +4052,63 @@ mod test {
             player.songs().len(),
         );
         Ok(())
+    }
+
+    /// A reload that cannot rescan says so, and leaves the songs as they
+    /// were: a surface answering "saved" over it left the player on stale
+    /// songs with nothing said.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_that_cannot_rescan_says_so_and_keeps_the_songs() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_bare_player()?;
+        let before = player.songs().len();
+        assert!(before > 0);
+        let dir = tempfile::tempdir()?;
+        player.set_song_sources(SongSources {
+            songs: dir.path().join("no such songs"),
+            playlists_dir: None,
+            legacy_playlist: None,
+        });
+        let err = player
+            .reload_songs()
+            .await
+            .expect_err("a rescan of nothing");
+        assert!(matches!(err, ReloadSongsError::Songs(_)), "{err}");
+        assert_eq!(player.songs().len(), before, "the songs were kept");
+        Ok(())
+    }
+
+    /// A player with no song sources and no config store has nothing to
+    /// reload from, and says so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_with_no_sources_says_so() -> Result<(), Box<dyn Error>> {
+        let player = make_bare_player()?;
+        assert!(matches!(
+            player.reload_songs().await,
+            Err(ReloadSongsError::NoSources)
+        ));
+        Ok(())
+    }
+
+    /// The song sources resolve the playlists directory, defaulting beside
+    /// the config, and the command line's playlist over the config's, both
+    /// against the config's directory.
+    #[test]
+    fn song_sources_resolve_against_the_config() {
+        let dir = Path::new("/srv/show");
+        let path = dir.join("mtrack.yaml");
+        let mut config = config::Player::default();
+        config.set_songs("songs");
+        let sources = SongSources::new(&config, &path, dir.join("songs"), None);
+        assert_eq!(sources.playlists_dir, Some(dir.join("playlists")));
+        assert_eq!(sources.legacy_playlist, None);
+        let sources = SongSources::new(
+            &config,
+            &path,
+            dir.join("songs"),
+            Some(Path::new("setlist.yaml")),
+        );
+        assert_eq!(sources.legacy_playlist, Some(dir.join("setlist.yaml")));
     }
 
     #[test]
@@ -4883,7 +5040,13 @@ mod test {
     fn edit_playlist(player: &Player, dir: &tempfile::TempDir, yaml: &str) {
         let playlist_path = dir.path().join("playlist.yaml");
         std::fs::write(&playlist_path, yaml).unwrap();
-        player.reload_songs(&dir.path().join("songs"), None, Some(&playlist_path));
+        player
+            .reload_songs_from(&SongSources {
+                songs: dir.path().join("songs"),
+                playlists_dir: None,
+                legacy_playlist: Some(playlist_path),
+            })
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4935,7 +5098,11 @@ mod test {
         let (player, dir) = player_looping_b().await?;
         let empty = dir.path().join("playlists");
         std::fs::create_dir_all(&empty)?;
-        player.reload_songs(&dir.path().join("songs"), Some(&empty), None);
+        player.reload_songs_from(&SongSources {
+            songs: dir.path().join("songs"),
+            playlists_dir: Some(empty),
+            legacy_playlist: None,
+        })?;
         assert_eq!(player.get_playlist().name(), "all_songs");
         assert_eq!(current_name(&player).await, "B", "B is still playing");
         assert!(player.is_current_song_looping());
@@ -4967,14 +5134,20 @@ mod test {
             let player = player.clone();
             let songs = dir.path().join("songs");
             let playlist = dir.path().join("playlist.yaml");
-            std::thread::spawn(move || player.reload_songs(&songs, None, Some(&playlist)))
+            std::thread::spawn(move || {
+                player.reload_songs_from(&SongSources {
+                    songs,
+                    playlists_dir: None,
+                    legacy_playlist: Some(playlist),
+                })
+            })
         };
         let (_, moved) = player.move_playlist(|playlist| {
             // The reload runs to its end here unless the move holds it off.
             std::thread::sleep(Duration::from_millis(300));
             playlist.next().map(|song| song.name().to_string())
         });
-        reload.join().unwrap();
+        reload.join().unwrap()?;
         assert_eq!(moved.as_deref(), Some("C"));
         assert_eq!(current_name(&player).await, "C");
         Ok(())

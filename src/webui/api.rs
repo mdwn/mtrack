@@ -516,14 +516,16 @@ pub(super) mod test_helpers {
         let (_state_tx, state_rx) =
             watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
 
+        player.set_song_sources(crate::player::SongSources {
+            songs: songs_path,
+            playlists_dir: Some(dir.path().to_path_buf()),
+            legacy_playlist: Some(playlist_path),
+        });
         let state = WebUiState::new(super::super::server::WebUiStateParams {
             player,
             state_rx,
             broadcast_tx,
             config_path,
-            songs_path,
-            playlists_dir: Some(dir.path().to_path_buf()),
-            legacy_playlist_path: Some(playlist_path),
             profiles_dir: None,
             waveform_cache: super::super::state::new_waveform_cache(),
         });

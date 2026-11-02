@@ -571,11 +571,9 @@ pub(super) async fn put_config_metronome(
             let reload = reload_hardware_after_mutation(&state).await;
             // The default-on flag is applied at song load; refresh both.
             state.player.set_default_metronome(default_enabled);
-            state.player.reload_songs(
-                &state.songs_path,
-                state.playlists_dir.as_deref(),
-                state.legacy_playlist_path.as_deref(),
-            );
+            if let Err(resp) = super::helpers::reload_songs(&state).await {
+                return resp;
+            }
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),

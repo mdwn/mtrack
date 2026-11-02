@@ -629,6 +629,13 @@ async fn build_standalone_player(
         fixture.config_path.clone(),
     ));
     player.set_config_store(store);
+    // Resolved from the config, as `cli::local::start` resolves them.
+    player.set_song_sources(crate::player::SongSources::new(
+        &config::Player::deserialize(&fixture.config_path)?,
+        &fixture.config_path,
+        songs_path,
+        None,
+    ));
 
     // `cli::local::start` installs this before hardware init, and the sampler
     // that feeds `mtrack://lighting/state` is started by that init. Without it
@@ -3997,7 +4004,7 @@ async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
     tokio::time::sleep(Duration::from_millis(300)).await;
     std::fs::remove_file(fixture.root.join("songs/dsl-light-show-song/song.yaml"))?;
     std::fs::write(&path, "kind: playlist\nsongs: []\n")?;
-    player.reload_songs(&fixture.root.join("songs"), None, Some(&path));
+    player.reload_songs().await?;
     assert!(player.songs().get("DSL Light Show Song").is_err());
     drop(web_delete);
     drop(song_writes);

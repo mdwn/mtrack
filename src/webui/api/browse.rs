@@ -264,26 +264,23 @@ pub(super) async fn create_song_in_directory(
         }
     }
 
-    match song_config.save(&config_path) {
-        Ok(()) => {
-            // Refresh the player's all-songs playlist so newly imported songs appear.
-            state.player.reload_songs(
-                &state.songs_path,
-                state.playlists_dir.as_deref(),
-                state.legacy_playlist_path.as_deref(),
-            );
-            (
-                StatusCode::CREATED,
-                Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
-            )
-                .into_response()
-        }
-        Err(e) => (
+    // Flattened before the reload's await: the save's error is not Send.
+    if let Err(e) = song_config.save(&config_path).map_err(|e| e.to_string()) {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to save song config: {}", e)})),
         )
-            .into_response(),
+            .into_response();
     }
+    // Refresh the player's all-songs playlist so newly imported songs appear.
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
+    (
+        StatusCode::CREATED,
+        Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
+    )
+        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -349,11 +346,9 @@ pub(super) async fn bulk_import(
 
     // Refresh the player's song state once after all imports
     if !created.is_empty() {
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        if let Err(resp) = super::helpers::reload_songs(&state).await {
+            return resp;
+        }
     }
 
     (

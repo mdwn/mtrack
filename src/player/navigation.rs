@@ -24,7 +24,7 @@ use crate::{
     songs::{self, Song, Songs},
 };
 
-use super::{LoopExit, Player, PlaylistDirection};
+use super::{LoopExit, Player, PlaylistDirection, ReloadSongsError, SongSources};
 
 impl Player {
     /// Plays a specific song by name, starting from the given time.
@@ -319,31 +319,51 @@ impl Player {
     }
 
     /// Reinitializes all song-related state by rescanning songs from disk and
-    /// rebuilding all playlists. Call this after any mutation that affects songs
-    /// (import, create, config edit, etc.).
-    pub fn reload_songs(
-        &self,
-        songs_path: &std::path::Path,
-        playlists_dir: Option<&std::path::Path>,
-        legacy_playlist_path: Option<&std::path::Path>,
-    ) {
-        let new_songs =
-            match songs::get_all_songs_with_defaults(songs_path, self.default_metronome()) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to rescan songs: {}", e);
-                    return;
-                }
-            };
+    /// rebuilding all playlists, from the player's song sources. Call this
+    /// after any mutation that affects songs (import, create, config edit,
+    /// etc.). The rescan reads every song from disk, so it runs on the
+    /// blocking pool rather than on the caller's runtime worker. A rescan
+    /// or rebuild that fails leaves the songs as they were, and says why, so
+    /// the caller does not report a change the player has not taken up.
+    ///
+    /// A player given no sources resolves them from its config store the
+    /// first time it is asked, and keeps them.
+    pub async fn reload_songs(&self) -> Result<(), ReloadSongsError> {
+        let sources = match self.song_sources() {
+            Some(sources) => sources,
+            None => {
+                let store = self.config_store().ok_or(ReloadSongsError::NoSources)?;
+                let config = store.read_config().await;
+                let sources = SongSources::from_config(&config, store.path());
+                self.set_song_sources(sources.clone());
+                sources
+            }
+        };
+        let player = self.clone();
+        tokio::task::spawn_blocking(move || player.reload_songs_from(&sources))
+            .await
+            .map_err(|e| ReloadSongsError::Interrupted(e.to_string()))?
+    }
 
-        let new_playlists =
-            match super::load_playlists(playlists_dir, legacy_playlist_path, new_songs.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to rebuild playlists: {}", e);
-                    return;
-                }
-            };
+    /// [`Player::reload_songs`] from `sources`, on the calling thread.
+    pub(crate) fn reload_songs_from(&self, sources: &SongSources) -> Result<(), ReloadSongsError> {
+        let new_songs =
+            songs::get_all_songs_with_defaults(&sources.songs, self.default_metronome()).map_err(
+                |e| {
+                    warn!("Failed to rescan songs: {}", e);
+                    ReloadSongsError::Songs(e.to_string())
+                },
+            )?;
+
+        let new_playlists = super::load_playlists(
+            sources.playlists_dir.as_deref(),
+            sources.legacy_playlist.as_deref(),
+            new_songs.clone(),
+        )
+        .map_err(|e| {
+            warn!("Failed to rebuild playlists: {}", e);
+            ReloadSongsError::Playlists(e.to_string())
+        })?;
 
         // Copying each playlist's place and swapping the new ones in is one
         // step to a move of the active playlist's place, such as a song's
@@ -406,6 +426,7 @@ impl Player {
         if called_off || (idle && self.gap_ambient() != ambient_before) {
             self.idle_ambient(true);
         }
+        Ok(())
     }
 
     /// The ambient light for the gap the player is in, and whose settings

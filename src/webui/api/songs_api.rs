@@ -310,11 +310,9 @@ pub(super) async fn import_file_to_song(
         return *e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
 
     (
         StatusCode::OK,
@@ -391,11 +389,9 @@ pub(super) async fn delete_song(
     }
 
     // Refresh the player's song state.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
 
     (
         StatusCode::OK,
@@ -692,11 +688,9 @@ pub(super) async fn post_song(
         return e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
     (
         StatusCode::CREATED,
         Json(json!({"status": "created", "song": name})),
@@ -738,11 +732,9 @@ pub(super) async fn put_song(
         return e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
     (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
 }
 
@@ -767,11 +759,7 @@ pub(super) async fn upload_track_single(
     super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>((
         StatusCode::OK,
@@ -842,11 +830,7 @@ pub(super) async fn upload_tracks_multipart(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok((
         StatusCode::OK,
@@ -1213,11 +1197,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
 
@@ -1250,11 +1230,7 @@ mod test {
         let song_yaml = "name: MySong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yaml"), song_yaml).unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -1285,11 +1261,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         std::fs::rename(song_dir.join("song.yaml"), song_dir.join("song.bak")).unwrap();
 
@@ -1321,11 +1293,7 @@ mod test {
         let song_yaml = "name: YmlSong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yml"), song_yaml).unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1412,11 +1380,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1448,11 +1412,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -2074,11 +2034,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2122,11 +2078,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2179,11 +2131,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2228,11 +2176,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2283,11 +2227,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         // First call — computes and caches.
         let app = router().with_state(state.clone());
@@ -2339,11 +2279,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app

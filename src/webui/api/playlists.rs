@@ -276,11 +276,7 @@ pub(super) async fn put_playlist_by_name(
     .await?;
 
     // Reload songs to pick up the new playlist.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -322,11 +318,7 @@ pub(super) async fn delete_playlist_by_name(
         .await?;
 
     // Reload songs to remove the playlist.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -377,11 +369,7 @@ mod test {
         let playlists_dir = state.playlists_dir.clone().unwrap();
         std::fs::write(playlists_dir.join("mylist.yaml"), "songs: []\n").unwrap();
         // Reload songs so the player picks up the new playlist.
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -541,7 +529,7 @@ mod test {
             "name: Song A\ntracks:\n- name: kick\n  file: kick.wav\n",
         )
         .unwrap();
-        state.player.reload_songs(&state.songs_path, None, None);
+        state.player.reload_songs().await.unwrap();
         let puts: Vec<_> = (0..12)
             .map(|i| {
                 let app = router().with_state(state.clone());
@@ -786,11 +774,7 @@ mod test {
             "songs:\n- song: Song A\n  fade_out: {length: 1measure, exclude: [kick]}\n- Song A\n",
         )
         .unwrap();
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1041,11 +1025,7 @@ mod test {
         // Use an empty song list so the playlist loads without requiring actual songs on disk.
         std::fs::write(playlists_dir.join("testlist.yaml"), "songs: []\n").unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -1077,11 +1057,7 @@ mod test {
             "songs: []\nambient:\n  show: a.light\n  delay: 3s\n",
         )
         .unwrap();
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1107,11 +1083,7 @@ mod test {
         // Write a .yml file (not .yaml) with an empty song list.
         std::fs::write(playlists_dir.join("ymllist.yml"), "songs: []\n").unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app

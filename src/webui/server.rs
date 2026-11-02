@@ -85,12 +85,15 @@ pub struct WebUiState {
     pub broadcast_tx: broadcast::Sender<String>,
     /// Canonicalized path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
-    /// Canonicalized path to the songs directory.
+    /// Canonicalized path to the songs directory: the player's song
+    /// sources', so the files the web UI edits are the ones it reloads.
     /// codeql[rust/path-injection] Set once at startup from the player config file; not user-controlled.
     pub songs_path: PathBuf,
-    /// Canonicalized path to the playlists directory (if configured).
+    /// Canonicalized path to the playlists directory (if configured), from
+    /// the player's song sources.
     pub playlists_dir: Option<PathBuf>,
-    /// Canonicalized path to the legacy playlist file (for backward compat).
+    /// Canonicalized path to the legacy playlist file, if one is
+    /// configured, from the player's song sources.
     pub legacy_playlist_path: Option<PathBuf>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
@@ -113,24 +116,27 @@ pub struct WebUiStateParams {
     pub state_rx: watch::Receiver<Arc<StateSnapshot>>,
     pub broadcast_tx: broadcast::Sender<String>,
     pub config_path: PathBuf,
-    pub songs_path: PathBuf,
-    pub playlists_dir: Option<PathBuf>,
-    pub legacy_playlist_path: Option<PathBuf>,
     pub profiles_dir: Option<PathBuf>,
     pub waveform_cache: ws_state::WaveformCache,
 }
 
 impl WebUiState {
-    /// Creates a new WebUiState, canonicalizing all path fields.
+    /// Creates a new WebUiState, canonicalizing all path fields. The songs
+    /// and playlist paths are the player's song sources, which must be set
+    /// first.
     pub fn new(params: WebUiStateParams) -> Self {
+        let sources = params.player.song_sources().unwrap_or_else(|| {
+            tracing::warn!("The player has no song sources: the web UI has no songs directory");
+            Default::default()
+        });
         WebUiState {
             player: params.player,
             state_rx: params.state_rx,
             broadcast_tx: params.broadcast_tx,
             config_path: canonicalize_or_keep(params.config_path),
-            songs_path: canonicalize_or_keep(params.songs_path),
-            playlists_dir: params.playlists_dir.map(canonicalize_or_keep),
-            legacy_playlist_path: params.legacy_playlist_path.map(canonicalize_or_keep),
+            songs_path: canonicalize_or_keep(sources.songs),
+            playlists_dir: sources.playlists_dir.map(canonicalize_or_keep),
+            legacy_playlist_path: sources.legacy_playlist.map(canonicalize_or_keep),
             profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
             waveform_cache: params.waveform_cache,
             calibration: Arc::new(parking_lot::Mutex::new(None)),
@@ -616,14 +622,16 @@ mod test {
         let (_state_tx, state_rx) =
             watch::channel(Arc::new(crate::state::StateSnapshot::default()));
 
+        player.set_song_sources(crate::player::SongSources {
+            songs: songs_path,
+            playlists_dir: None,
+            legacy_playlist: Some(playlist_path),
+        });
         let state = WebUiState::new(WebUiStateParams {
             player,
             state_rx,
             broadcast_tx,
             config_path,
-            songs_path,
-            playlists_dir: None,
-            legacy_playlist_path: Some(playlist_path),
             profiles_dir: None,
             waveform_cache: ws_state::new_waveform_cache(),
         });
