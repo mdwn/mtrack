@@ -161,9 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MIDI notes in time with the beat clock**: on a rig with audio, a song's notes took the first
   audio buffer after the start for their zero, and then went out only as the audio clock moved,
   so they sat up to a buffer behind the beat clock, and up to a buffer late again. They now keep
-  to a smoothed reading of the audio clock: on time from the start, evenly spaced however unevenly
-  the audio callbacks come, and at the audio's own rate, however far that is off the computer's. The beat clock's Start (or Continue) now goes out
-  before a note due with it.
+  to the audio clock filtered with a delay-locked loop, as JACK does: on time from the start,
+  evenly spaced however unevenly the audio callbacks come, and at the audio's own rate, however
+  far that is off the computer's. The playback delay is waited on the audio's clock too. When the
+  audio stalls, the notes hold, and go on with it once it does. The beat clock's Start (or
+  Continue) now goes out before a note due with it.
 - **The beat clock keeps its count when it starts late part way in**: a start part way into a
   song (or, with `beat_clock_seams: relocate`, a loop's jump) that the beat clock noticed a 16th
   note or more late sent the pulses it had missed in a burst. It now puts the gear at the next
