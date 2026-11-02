@@ -154,6 +154,11 @@ pub struct Engine {
     pub(super) timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
     pub(super) broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     pub(super) watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
+    /// Which show file watcher may reload the show: the one started for
+    /// the song now playing. Bumped, under the timeline's lock, whenever
+    /// one is let go, so an edit it took in before it went cannot reload
+    /// the last song's show into the next (see `Engine::reload_show`).
+    pub(super) watcher_generation: AtomicU64,
     pub(super) midi_dmx_store: Arc<parking_lot::RwLock<MidiDmxStore>>,
     pub(super) midi_dmx_playbacks: Mutex<Vec<MidiDmxPlayback>>,
     pub(super) effects_loop_heartbeat: Arc<AtomicU64>,
@@ -287,6 +292,7 @@ impl Engine {
             timeline_cancel_handle,
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
+            watcher_generation: AtomicU64::new(0),
             midi_dmx_store,
             midi_dmx_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
@@ -1912,6 +1918,7 @@ mod test {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
             Arc::downgrade(&engine),
+            0,
             vec![dsl_path],
             None,
             tx,
@@ -5173,7 +5180,12 @@ mod test {
             )?;
             engine.update_song_time(Duration::from_secs(10));
 
-            crate::dmx::watcher::reload_timeline(&engine, std::slice::from_ref(&dsl_path), None)?;
+            crate::dmx::watcher::reload_timeline(
+                &engine,
+                std::slice::from_ref(&dsl_path),
+                None,
+                0,
+            )?;
             let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
             assert_eq!(
                 next_cue(&engine),

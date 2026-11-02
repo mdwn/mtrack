@@ -221,8 +221,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A song without a show no longer brings the last song's back on an edit**: the last song's
   light show file watcher went on running under a song with no show of its own (MIDI DMX only,
-  or no lights), and saving that file put its show back on the rig. It stops with the song now,
-  as it already did when the stage went dark between songs.
+  or no lights, and with ambient light fading in over the last song until it was all the way in),
+  and saving that file put its show back on the rig. It stops with the song now, as it already
+  did when the stage went dark between songs, and an edit it took in just before the song
+  changed reloads nothing.
 - **Ambient Off over a dark stage takes out what was lit since**: setting the mode Off again,
   with the stage already dark between songs and no ambient up, left lit what nothing writes
   (MIDI DMX on an unpatched channel, say); going idle while Off already took it out. Both do now.

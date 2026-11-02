@@ -39,9 +39,11 @@ pub struct WatcherHandle {
 /// 4. Sends a reload notification over WebSocket
 ///
 /// The engine is held weakly: it owns the handle, and the watcher stops
-/// with it.
+/// with it. It reloads under `generation`, the engine's watcher generation
+/// for the song it watches for: once let go, it reloads nothing more.
 pub fn start_watching(
     engine: Weak<Engine>,
+    generation: u64,
     file_paths: Vec<PathBuf>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
     broadcast_tx: broadcast::Sender<String>,
@@ -156,8 +158,17 @@ pub fn start_watching(
                     };
                     info!("Light show file changed, reloading...");
 
-                    match reload_timeline(&engine, &file_paths, fallback_tempo_map.as_ref()) {
-                        Ok(()) => {
+                    match reload_timeline(
+                        &engine,
+                        &file_paths,
+                        fallback_tempo_map.as_ref(),
+                        generation,
+                    ) {
+                        Ok(false) => {
+                            info!("Light show watcher let go; its song's show not reloaded");
+                            break;
+                        }
+                        Ok(true) => {
                             info!("Light show reloaded successfully");
                             let msg = json!({
                                 "type": "reload",
@@ -189,12 +200,15 @@ pub fn start_watching(
 }
 
 /// Re-parses light show files, builds a new timeline, and swaps it into
-/// `engine`'s, rebuilt where the lights are (see [`Engine::reload_show`]).
+/// `engine`'s, rebuilt where the lights are (see [`Engine::reload_show`]),
+/// unless the watcher reloading under `generation` has been let go since:
+/// then it returns false, the show as it was.
 pub(super) fn reload_timeline(
     engine: &Engine,
     file_paths: &[PathBuf],
     fallback_tempo_map: Option<&crate::tempo::TempoMap>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    generation: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let mut all_shows = Vec::new();
 
     for path in file_paths {
@@ -225,8 +239,7 @@ pub(super) fn reload_timeline(
 
     let timeline = LightingTimeline::new(all_shows);
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
-    engine.reload_show(timeline, tempo_map);
-    Ok(())
+    Ok(engine.reload_show(timeline, tempo_map, generation))
 }
 
 #[cfg(test)]
@@ -273,7 +286,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
         assert!(engine.current_song_timeline.lock().is_some());
     }
@@ -304,7 +317,7 @@ mod test {
             .lock()
             .set_midi_dmx_store(store.clone());
 
-        reload_timeline(&engine, &[dsl_path], None).unwrap();
+        reload_timeline(&engine, &[dsl_path], None, 0).unwrap();
         assert!(
             store.read().has_active_slots(),
             "the reload cleared MIDI DMX"
@@ -328,7 +341,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
         assert!(engine.current_song_timeline.lock().is_some());
     }
@@ -337,7 +350,12 @@ mod test {
     fn reload_timeline_with_missing_file() {
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[PathBuf::from("/nonexistent/show.light")], None);
+        let result = reload_timeline(
+            &engine,
+            &[PathBuf::from("/nonexistent/show.light")],
+            None,
+            0,
+        );
         assert!(result.is_err());
     }
 
@@ -349,7 +367,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_err());
     }
 
@@ -378,7 +396,7 @@ mod test {
 
         let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
     }
 
@@ -407,7 +425,7 @@ mod test {
 
         let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_err());
     }
 
@@ -441,7 +459,7 @@ mod test {
         );
         assert!(engine.lighting_system.is_some());
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
     }
 
@@ -455,7 +473,7 @@ mod test {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No shows found"));
     }
@@ -481,7 +499,7 @@ mod test {
         // Set song_time > 0 to exercise the layer_commands/stop_sequences path
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
     }
 
@@ -514,7 +532,7 @@ show "test" {
         // Set song_time past the stop sequence cue
         let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(&engine, &[dsl_path], None);
+        let result = reload_timeline(&engine, &[dsl_path], None, 0);
         assert!(result.is_ok());
     }
 
@@ -584,7 +602,7 @@ show "test" {
 
         let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(&engine, &[dsl_path1, dsl_path2], None);
+        let result = reload_timeline(&engine, &[dsl_path1, dsl_path2], None, 0);
         assert!(result.is_ok());
     }
 
@@ -605,7 +623,7 @@ show "test" {
         let (tx, mut rx) = broadcast::channel(16);
 
         let _handle =
-            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
+            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
 
         // Modify the file to trigger a reload event
         std::thread::sleep(Duration::from_millis(500));
@@ -672,7 +690,7 @@ show "test" {
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
         let _handle =
-            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
+            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
 
         // Only the included file changes; the show file is untouched.
         std::thread::sleep(Duration::from_millis(500));
@@ -714,7 +732,7 @@ show "test" {
         let (tx, mut rx) = broadcast::channel(16);
 
         let _handle =
-            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
+            start_watching(Arc::downgrade(&engine), 0, vec![dsl_path.clone()], None, tx).unwrap();
 
         // Wait for watcher to be established
         std::thread::sleep(Duration::from_millis(500));
@@ -743,6 +761,37 @@ show "test" {
     }
 
     #[test]
+    fn a_watcher_let_go_reloads_nothing() {
+        // Dropping a watcher does not drain what it has taken in: an edit
+        // still in its debounce as the song changed reloaded the last
+        // song's show into the next one.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let last = tmp_dir.path().join("last.light");
+        std::fs::write(
+            &last,
+            "show \"last\" {\n    @00:00.000\n    front_wash: static color: \"red\", duration: 5s\n    @00:02.000\n    front_wash: static color: \"green\", duration: 5s\n}",
+        )
+        .unwrap();
+        let next = tmp_dir.path().join("next.light");
+        std::fs::write(
+            &next,
+            "show \"next\" {\n    @00:00.000\n    front_wash: static color: \"blue\", duration: 5s\n}",
+        )
+        .unwrap();
+        let engine = test_engine(None, None, Duration::from_secs(1));
+        let old = engine.retire_watcher();
+        // The next song starts, with a watcher of its own.
+        let new = engine.retire_watcher();
+        assert!(reload_timeline(&engine, std::slice::from_ref(&next), None, new).unwrap());
+        let cues = engine.get_timeline_cues();
+        // The last song's watcher's edit lands after.
+        assert!(!reload_timeline(&engine, &[last], None, old).unwrap());
+        assert_eq!(engine.get_timeline_cues(), cues);
+        // The next song's own still reloads.
+        assert!(reload_timeline(&engine, &[next], None, new).unwrap());
+    }
+
+    #[test]
     fn start_watching_returns_handle() {
         let tmp_dir = tempfile::tempdir().unwrap();
         let dsl_path = tmp_dir.path().join("show.light");
@@ -758,7 +807,7 @@ show "test" {
         let engine = test_engine(None, None, Duration::ZERO);
         let (tx, _rx) = broadcast::channel(16);
 
-        let result = start_watching(Arc::downgrade(&engine), vec![dsl_path], None, tx);
+        let result = start_watching(Arc::downgrade(&engine), 0, vec![dsl_path], None, tx);
         assert!(result.is_ok());
 
         // WatcherHandle drops here, stopping the watcher

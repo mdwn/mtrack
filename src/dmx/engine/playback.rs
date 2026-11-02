@@ -47,6 +47,10 @@ pub(super) enum Release {
     /// rig holds lit that nothing writes any more too (#573) -- left as it
     /// is under ambient at full, still in view where ambient does not light.
     Dark { fade: Duration, floor: bool },
+    /// The next song has no show of its own, and ambient light plays over
+    /// what the last one left: only the watcher goes at the song change;
+    /// the rest goes when ambient covers it ([`Release::Dark`]).
+    Covered,
 }
 
 /// The lighting timeline of the pass a crossfading loop jump starts (see
@@ -133,6 +137,7 @@ impl Engine {
         if light_shows.is_empty() && !has_lighting {
             // A song with no lights of its own leaves ambient light playing.
             if dmx_engine.ambient_playing() {
+                dmx_engine.release_song(Release::Covered);
                 ready_tx.send();
                 return Ok(());
             }
@@ -246,7 +251,9 @@ impl Engine {
             super::timeline::MidiDmxStart::Install(midi_dmx_playbacks),
         );
 
-        // Start file watcher for hot-reload if broadcast channel is available
+        // Start file watcher for hot-reload if broadcast channel is available,
+        // the last song's let go whether or not one starts.
+        let watcher_generation = dmx_engine.retire_watcher();
         {
             let broadcast_tx = dmx_engine.broadcast_tx.lock();
             if let Some(tx) = broadcast_tx.as_ref() {
@@ -257,6 +264,7 @@ impl Engine {
                 if !file_paths.is_empty() {
                     match crate::dmx::watcher::start_watching(
                         Arc::downgrade(&dmx_engine),
+                        watcher_generation,
                         file_paths,
                         song.lighting_tempo_map(),
                         tx.clone(),
@@ -527,10 +535,11 @@ impl Engine {
         // with -- the show file watcher, whose reload would put its show back.
         self.midi_dmx_playbacks.lock().clear();
         if scope != Release::Ended {
-            self.watcher_handle.lock().take();
+            self.retire_watcher();
         }
         match scope {
             Release::Ended => self.stop_lighting_timeline(),
+            Release::Covered => return,
             Release::Replaced => *self.current_song_timeline.lock() = None,
             Release::Dark { fade, floor } => {
                 // Nothing lit, nothing to fade: a fade over nothing would
@@ -550,6 +559,19 @@ impl Engine {
         if scope != Release::Ended {
             self.effect_engine.lock().set_tempo_map(None);
         }
+    }
+
+    /// Lets the show file watcher go: dropped, and any reload it has yet
+    /// to make refused, edits it took in before it went included. Returns
+    /// the generation a watcher started now reloads under.
+    pub(in crate::dmx) fn retire_watcher(&self) -> u64 {
+        let generation = {
+            // Under the timeline's lock, which a reload checks it under.
+            let _timeline = self.current_song_timeline.lock();
+            self.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1
+        };
+        self.watcher_handle.lock().take();
+        generation
     }
 
     /// Waits for the lighting timeline to finish, with a heartbeat check to detect

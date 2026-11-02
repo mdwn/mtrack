@@ -1067,6 +1067,71 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_song_without_lights_under_ambient_stops_the_last_songs_watcher(
+    ) -> Result<(), Box<dyn Error>> {
+        // A song with no lights of its own, ambient still fading in over
+        // the last song's frame, left that song's show file watcher running
+        // until ambient was all the way in: an edit meanwhile reloaded the
+        // last song's show under the new song.
+        let (dir, engine) = ambient_engine(BLUE, ("0s", "10s", "0s"))?;
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        assert_eq!(engine.ambient_status().unwrap().state, "playing");
+        let dsl_path = dir.path().join("last.light");
+        std::fs::write(&dsl_path, RED)?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let generation = engine.retire_watcher();
+        *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            Arc::downgrade(&engine),
+            generation,
+            vec![dsl_path.clone()],
+            None,
+            tx,
+        )?);
+
+        let song_config = config::Song::new(
+            "No Light",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle: crate::playsync::CancelHandle::new(),
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            engine.watcher_handle.lock().is_none(),
+            "the last song's watcher outlived it"
+        );
+        // An edit it took in before it went reloads nothing.
+        assert!(!crate::dmx::watcher::reload_timeline(
+            &engine,
+            &[dsl_path],
+            None,
+            generation
+        )?);
+        assert!(engine.current_song_timeline.lock().is_none());
+        assert_eq!(engine.ambient_status().unwrap().state, "playing");
+        Ok(())
+    }
+
     /// The wash as the rig shows it to the web UI: (red, green, blue), 0-1.
     fn shown(engine: &Engine) -> (f64, f64, f64) {
         let effect_engine = engine.effect_engine.lock();

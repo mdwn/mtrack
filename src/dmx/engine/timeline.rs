@@ -444,20 +444,26 @@ impl Engine {
     /// effects on `tempo_map`. Only the show's effects stop: the MIDI DMX
     /// store goes on as MIDI set it, which nothing would put back mid-song
     /// (#583).
+    ///
+    /// Only from the watcher started for the song now playing, as
+    /// `generation` says (see `Engine::retire_watcher`): one let go since
+    /// -- the song changed while an edit was in its debounce -- would put
+    /// the last song's show into this one. Returns whether it reloaded.
     pub(crate) fn reload_show(
         &self,
         timeline: crate::lighting::timeline::LightingTimeline,
         tempo_map: Option<crate::lighting::tempo::TempoMap>,
-    ) {
+        generation: u64,
+    ) -> bool {
         // Where the lights are, not the transport: rebuilding at the
         // undelayed time put the show the delay ahead of the rig, skipping
         // the cues in between (#593).
         self.rebuild_at(
             self.to_delayed_song_time(self.get_song_time()),
-            Some((timeline, tempo_map)),
+            Some((timeline, tempo_map, generation)),
             StopScope::Show,
             MidiDmxStart::Leave,
-        );
+        )
     }
 
     /// Rebuilds the main show at `at` (delayed song time): the current
@@ -472,25 +478,36 @@ impl Engine {
     /// the channels unwritten and send them 0 -- a black flash at every seek
     /// and section loop (#581). The timeline fires nothing until the state
     /// is in; then its cues -- one at the start point too -- fire over it.
+    /// A reload from a watcher since let go changes nothing, and returns
+    /// false.
     fn rebuild_at(
         &self,
         at: Duration,
         reload: Option<(
             crate::lighting::timeline::LightingTimeline,
             Option<crate::lighting::tempo::TempoMap>,
+            u64,
         )>,
         scope: StopScope,
         midi: MidiDmxStart,
-    ) {
+    ) -> bool {
         // A reloaded timeline is armed before it goes in, with no lock held.
-        let reload = reload.map(|(mut timeline, tempo_map)| {
+        let reload = reload.map(|(mut timeline, tempo_map, generation)| {
             let history = timeline.start_at(at);
-            (timeline, tempo_map, history)
+            (timeline, tempo_map, generation, history)
         });
         let (mut history, tempo_map) = {
             let mut current = self.current_song_timeline.lock();
             let (history, tempo_map) = match reload {
-                Some((mut timeline, tempo_map, history)) => {
+                Some((_, _, generation, _))
+                    if generation
+                        != self
+                            .watcher_generation
+                            .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    return false;
+                }
+                Some((mut timeline, tempo_map, _, history)) => {
                     // The song's end bound belongs to the song, not the
                     // show text.
                     timeline.set_end_cap(current.as_ref().and_then(|t| t.end_cap()));
@@ -541,6 +558,7 @@ impl Engine {
         if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
             timeline.hold(false);
         }
+        true
     }
 
     /// Does what `midi` says with the MIDI DMX playbacks for a show
