@@ -275,6 +275,15 @@ impl LayerState {
         }
     }
 
+    /// Lays `later`'s masters and clocks over these: what was set there,
+    /// later than these were, stands.
+    pub(crate) fn overlay(&mut self, later: &LayerState) {
+        self.intensity_masters
+            .extend(later.intensity_masters.iter().map(|(k, v)| (*k, *v)));
+        self.clocks
+            .extend(later.clocks.iter().map(|(k, v)| (*k, *v)));
+    }
+
     pub(crate) fn clock_mut(&mut self, layer: EffectLayer) -> &mut LayerClock {
         self.clocks.entry(layer).or_default()
     }

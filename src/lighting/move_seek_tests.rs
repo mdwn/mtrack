@@ -955,7 +955,7 @@ fn time_a_seeks_phases() {
         let prepared = scratch.prepare(history);
         let replayed = t.elapsed();
         let t = std::time::Instant::now();
-        let errors = engine.install(prepared, scope);
+        let errors = engine.install(prepared);
         let installed = t.elapsed();
         eprintln!(
             "{n} cues: scratch {scratched:?}, prepare {replayed:?}, install {installed:?}, \
@@ -988,9 +988,91 @@ fn a_start_prepared_while_the_engine_renders_installs_the_same() {
         let _ = engine.update(Duration::from_millis(23), Some(Duration::ZERO));
     }
     let prepared = scratch.prepare(tl.start_at(at));
-    assert!(engine.install(prepared, scope).is_empty());
+    assert!(engine.install(prepared).is_empty());
     run_frames(&mut tl, &mut engine, 3500, 4500);
 
     assert_eq!(pan_of(&engine), pan_of(&at_once));
     assert_eq!(blue_of(&engine), blue_of(&at_once));
+}
+
+/// A pass crossfade's start, replayed from the pose memory of a moment
+/// before the swap and installed into the fresh engine at it, is the start
+/// replayed from the fresh engine's own: a head the history moves without a
+/// `from` starts from where it is at the swap (the history replayed again,
+/// since it has moved), one it moves from a pose of its own is where the
+/// replay left it, and one it leaves alone keeps its pose at the swap.
+#[test]
+fn a_start_installed_at_a_swap_starts_from_the_poses_then() {
+    for next in [
+        "    @0.000\n    m: move pan: 90deg, tilt: 0deg, duration: 2s\n",
+        "    @0.000\n    m: move from_pan: 0deg, from_tilt: 0deg, pan: 90deg, tilt: 0deg, \
+         duration: 2s\n",
+    ] {
+        let next = show(next.to_string());
+        let f = [mover("m"), mover_at("n", 41)];
+        let mut outgoing = fresh(&f);
+        let mut playing = LightingTimeline::new(shows(&show(
+            "    @0.000\n    m, n: move from_pan: 0deg, from_tilt: 0deg, pan: -90deg, \
+             tilt: 0deg, duration: 3s\n"
+                .to_string(),
+        )));
+        playing.start();
+        run_frames(&mut playing, &mut outgoing, 0, 500);
+        let history = || LightingTimeline::new(shows(&next)).start_at(Duration::from_millis(1500));
+
+        let scratch = outgoing.scratch(crate::lighting::engine::StopScope::Nothing);
+        let prepared = scratch.prepare(history());
+        // The outgoing pass plays on while the history replays.
+        run_frames(&mut playing, &mut outgoing, 510, 1000);
+        let mut split = outgoing.sibling();
+        assert!(split.install(prepared).is_empty());
+
+        let mut whole = outgoing.sibling();
+        let _ = whole.start_from(history(), crate::lighting::engine::StopScope::Nothing);
+        for head in ["m", "n"] {
+            let (a, b) = (split.poses()[head], whole.poses()[head]);
+            assert!(
+                (a.pan - b.pan).abs() < 1e-9 && (a.tilt - b.tilt).abs() < 1e-9,
+                "{next}: {head}: {a:?} vs {b:?}"
+            );
+        }
+        assert!(
+            (split.poses()["n"].pan - outgoing.poses()["n"].pan).abs() < 1e-9,
+            "n is where the outgoing pass has it at the swap"
+        );
+    }
+}
+
+/// An install with `StopScope::Nothing` takes nothing the engine runs: an
+/// effect started between the scratch and the install stays, as it was,
+/// beside the history's.
+#[test]
+fn an_install_beside_what_runs_keeps_it_as_it_was() {
+    let f = [mover("m"), rgb("w")];
+    let mut engine = fresh(&f);
+    let src = show(st("0.000", "10s"));
+    let mut tl = LightingTimeline::new(shows(&src));
+    let scratch = engine.scratch(crate::lighting::engine::StopScope::Nothing);
+    let prepared = scratch.prepare(tl.start_at(Duration::from_secs(2)));
+
+    let mut live = EffectInstance::new(
+        "live".to_string(),
+        crate::lighting::effects::EffectType::Static {
+            parameters: HashMap::from([("red".to_string(), 1.0)]),
+            duration: Duration::from_secs(30),
+        },
+        vec!["w".to_string()],
+        None,
+        None,
+        None,
+    );
+    live.layer = crate::lighting::effects::EffectLayer::Foreground;
+    engine.start_effect(live).unwrap();
+    for _ in 0..5 {
+        let _ = engine.update(Duration::from_millis(23), None);
+    }
+    let started = engine.get_active_effects()["live"].start_time;
+    assert!(engine.install(prepared).is_empty());
+    assert_eq!(engine.get_active_effects()["live"].start_time, started);
+    assert_eq!(engine.get_active_effects().len(), 2, "the history's too");
 }

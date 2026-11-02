@@ -87,10 +87,8 @@ impl Fired {
     pub(super) fn apply(self, engine: &mut crate::lighting::EffectEngine) {
         // Its own show only: the MIDI DMX store is every engine's.
         let mut errors = match self.restart {
-            Some(Restart::Ready(prepared)) => engine.install(*prepared, StopScope::Show),
-            Some(Restart::Due(history, scratch)) => {
-                engine.install(scratch.prepare(history), StopScope::Show)
-            }
+            Some(Restart::Ready(prepared)) => engine.install(*prepared),
+            Some(Restart::Due(history, scratch)) => engine.install(scratch.prepare(history)),
             None => Vec::new(),
         };
         errors.extend(engine.apply_timeline_update(self.update));
@@ -216,11 +214,12 @@ impl Engine {
         // as a seek does, rather than firing them all in its first frame.
         // Groups are resolved and the history replayed here, with no lock
         // held but the engine's for a moment, to take its rig and pose
-        // memory, as the fresh engine below does.
+        // memory; the install into the fresh engine below takes the pose
+        // memory as of the swap.
         let prepared = next.as_mut().map(|timeline| {
             let mut history = timeline.start_at(start);
             history.map_effects(|effect| self.resolve_effect_groups(effect));
-            let scratch = self.effect_engine.lock().sibling();
+            let scratch = self.effect_engine.lock().scratch(StopScope::Nothing);
             scratch.prepare(history)
         });
         // Song time first: a frame rendered between the swap and the reset
@@ -238,7 +237,7 @@ impl Engine {
         // A rebuild still on its way in was for the engine swapped out.
         self.supersede_rebuilds();
         if let Some(prepared) = prepared {
-            for e in effect_engine.install(prepared, StopScope::Nothing) {
+            for e in effect_engine.install(prepared) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
@@ -693,7 +692,7 @@ impl Engine {
         if let Some(tempo_map) = tempo_map {
             effect_engine.set_tempo_map(tempo_map);
         }
-        for e in effect_engine.install(prepared, scope) {
+        for e in effect_engine.install(prepared) {
             error!("Failed to start lighting effect: {}", e);
         }
         self.start_midi_dmx(midi, at);
