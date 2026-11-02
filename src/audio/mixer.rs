@@ -28,9 +28,139 @@ use tracing::debug;
 // Thread-local scratch buffers for process_into_output.
 // BATCH_READ_SCRATCH: 8192 samples covers 512 frames * 16 channels; resized if needed.
 // SOURCES_SCRATCH: reuses the Vec across callbacks to avoid per-callback heap allocation.
+// FINISHED_SCRATCH: the ids of the sources a callback finds finished, reused
+// the same way.
 thread_local! {
     static BATCH_READ_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 8192]);
     static SOURCES_SCRATCH: RefCell<Vec<Arc<Mutex<ActiveSource>>>> = const { RefCell::new(Vec::new()) };
+    static FINISHED_SCRATCH: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Something the audio callback has to say about a source, logged off the
+/// callback by the mixer's log thread: the callback only queues it.
+#[derive(Debug)]
+enum MixerEvent {
+    /// Found finished, or cancelled with no fade-out to see out.
+    Skipped { source_id: u64, finished: bool },
+    /// Its scheduled cut reached.
+    CancelReached {
+        source_id: u64,
+        cancel_sample: u64,
+        current_sample: u64,
+    },
+    /// Its fade-out envelope completed.
+    FadedOut { source_id: u64 },
+    /// It read short and is exhausted.
+    Exhausted { source_id: u64 },
+    /// A read error dropped it mid-playback.
+    ReadError {
+        source_id: u64,
+        error: crate::audio::sample_source::error::SampleSourceError,
+    },
+    /// The finished sources removed after a callback, and how many there were
+    /// before.
+    Removed { count: usize, before: usize },
+}
+
+impl MixerEvent {
+    fn log(self) {
+        match self {
+            MixerEvent::Skipped {
+                source_id,
+                finished,
+            } => debug!(
+                source_id,
+                reason = if finished {
+                    "already_finished"
+                } else {
+                    "cancel_handle_cancelled"
+                },
+                "mixer: source marked finished (skip)"
+            ),
+            MixerEvent::CancelReached {
+                source_id,
+                cancel_sample,
+                current_sample,
+            } => debug!(
+                source_id,
+                cancel_sample,
+                current_sample,
+                "mixer: source marked finished (cancel_at_sample reached)"
+            ),
+            MixerEvent::FadedOut { source_id } => debug!(
+                source_id,
+                "mixer: source marked finished (fade-out envelope completed)"
+            ),
+            MixerEvent::Exhausted { source_id } => debug!(
+                source_id,
+                "mixer: source marked finished (read_frames returned fewer frames)"
+            ),
+            // A read error drops just this source while the mix keeps going --
+            // worth a warning, not just a debug line.
+            MixerEvent::ReadError { source_id, error } => tracing::warn!(
+                source_id,
+                "mixer: source dropped mid-playback (read_frames error): {}",
+                error
+            ),
+            MixerEvent::Removed { count, before } => debug!(
+                count,
+                remaining_before = before,
+                "mixer: removing finished sources"
+            ),
+        }
+    }
+}
+
+/// The audio callback's side of the mixer's log: a bounded lock-free queue the
+/// callback pushes to without waiting, and a count of what did not fit.
+#[derive(Clone)]
+struct MixerLog {
+    tx: crossbeam_channel::Sender<MixerEvent>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// How many events the mixer's log queue holds before the callback drops them.
+const MIXER_LOG_QUEUE: usize = 1024;
+
+/// How often the mixer's log thread drains its queue. It polls rather than
+/// blocking on the queue, so the callback never has a sleeping reader to wake.
+const MIXER_LOG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+impl MixerLog {
+    /// A log queue, and the thread that logs what the callback queues. The
+    /// thread ends once every mixer sharing the queue is gone.
+    fn new() -> Self {
+        let (tx, rx) = crossbeam_channel::bounded::<MixerEvent>(MIXER_LOG_QUEUE);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let log_dropped = dropped.clone();
+        let _ = std::thread::Builder::new()
+            .name("mtrack-mixer-log".into())
+            .spawn(move || loop {
+                loop {
+                    match rx.try_recv() {
+                        Ok(event) => event.log(),
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                    }
+                }
+                let dropped = log_dropped.swap(0, Ordering::Relaxed);
+                if dropped > 0 {
+                    tracing::warn!(dropped, "mixer: log events dropped (queue full)");
+                }
+                std::thread::sleep(MIXER_LOG_POLL);
+            });
+        MixerLog { tx, dropped }
+    }
+
+    /// Queues `event`, if debug logging is on for the mixer (a read error is
+    /// queued whatever the level), without waiting.
+    fn send(&self, event: MixerEvent) {
+        let wanted = matches!(event, MixerEvent::ReadError { .. })
+            || tracing::enabled!(tracing::Level::DEBUG);
+        if wanted && self.tx.try_send(event).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// A source that has been through `prepare_source` and can be inserted by the
@@ -51,6 +181,8 @@ pub struct AudioMixer {
     /// Shared per-output-track gains. Read once per callback (no per-sample
     /// atomics); `None` until installed at hardware init (e.g. mock devices).
     track_gains: Arc<RwLock<Option<Arc<TrackGains>>>>,
+    /// Where the audio callback queues what it has to say, for logging off it.
+    log: MixerLog,
     /// Performance monitoring (test only)
     #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
@@ -141,6 +273,7 @@ impl AudioMixer {
             sample_rate,
             sample_counter: Arc::new(AtomicU64::new(0)),
             track_gains: Arc::new(RwLock::new(None)),
+            log: MixerLog::new(),
             #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -265,7 +398,11 @@ impl AudioMixer {
     /// O(N * M) overall. This is fine for typical counts (< 32 sources) but would
     /// need a HashSet if source counts ever grow significantly.
     pub fn remove_sources(&self, source_ids: &[u64]) {
-        let mut sources = self.active_sources.write();
+        Self::retain_unlisted(&mut self.active_sources.write(), source_ids);
+    }
+
+    /// Keeps the sources whose ids `source_ids` does not list.
+    fn retain_unlisted(sources: &mut Vec<Arc<Mutex<ActiveSource>>>, source_ids: &[u64]) {
         sources.retain(|source| {
             let source_guard = source.lock();
             !source_ids.contains(&source_guard.id)
@@ -634,7 +771,9 @@ impl AudioMixer {
             sources_to_process.extend(sources.iter().cloned());
         }
 
-        let mut finished_source_ids: Vec<u64> = Vec::new();
+        let mut finished_source_ids =
+            FINISHED_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        finished_source_ids.clear();
 
         // Snapshot the shared track gains once per callback. Individual gain
         // targets are read once per source below — never per sample.
@@ -655,15 +794,10 @@ impl AudioMixer {
             if active_source.is_finished.load(Ordering::Relaxed)
                 || (active_source.cancel_handle.is_cancelled() && !has_active_fade_out)
             {
-                debug!(
-                    source_id = active_source.id,
-                    reason = if active_source.is_finished.load(Ordering::Relaxed) {
-                        "already_finished"
-                    } else {
-                        "cancel_handle_cancelled"
-                    },
-                    "mixer: source marked finished (skip)"
-                );
+                self.log.send(MixerEvent::Skipped {
+                    source_id: active_source.id,
+                    finished: active_source.is_finished.load(Ordering::Relaxed),
+                });
                 finished_source_ids.push(active_source.id);
                 continue;
             }
@@ -672,12 +806,11 @@ impl AudioMixer {
             if let Some(ref cancel_at) = active_source.cancel_at_sample {
                 let cancel_sample = cancel_at.load(Ordering::Relaxed);
                 if cancel_sample > 0 && current_sample >= cancel_sample {
-                    debug!(
-                        source_id = active_source.id,
+                    self.log.send(MixerEvent::CancelReached {
+                        source_id: active_source.id,
                         cancel_sample,
                         current_sample,
-                        "mixer: source marked finished (cancel_at_sample reached)"
-                    );
+                    });
                     active_source.is_finished.store(true, Ordering::Relaxed);
                     finished_source_ids.push(active_source.id);
                     continue;
@@ -825,7 +958,9 @@ impl AudioMixer {
                                     // one it simply steps the position. Either way the
                                     // ramp tracks the actual audio sample-for-sample.
                                     let global = current_sample + (start_frame + frame_idx) as u64;
-                                    let at = |env: &Option<Arc<crate::audio::crossfade::GainEnvelope>>| {
+                                    let at = |env: &Option<
+                                        Arc<crate::audio::crossfade::GainEnvelope>,
+                                    >| {
                                         env.as_ref().map_or(1.0, |env| {
                                             if env.is_finished() {
                                                 env.end_gain()
@@ -870,21 +1005,21 @@ impl AudioMixer {
                         // full batch lands on the target (snapped exactly on
                         // the next callback by the |delta| < 1e-6 fast path).
                         for i in 1..active_source.gain.cur.len() {
-                            let advanced =
-                                active_source.gain.cur[i] + active_source.gain.inc[i] * frames_got as f32;
+                            let advanced = active_source.gain.cur[i]
+                                + active_source.gain.inc[i] * frames_got as f32;
                             active_source.gain.cur[i] = advanced;
                         }
 
                         // Auto-finish sources whose fade-out envelope has completed.
-                        let faded_out = [&active_source.gain_envelope, &active_source.break_envelope]
-                            .into_iter()
-                            .flatten()
-                            .any(|env| env.is_finished() && env.end_gain() == 0.0);
+                        let faded_out =
+                            [&active_source.gain_envelope, &active_source.break_envelope]
+                                .into_iter()
+                                .flatten()
+                                .any(|env| env.is_finished() && env.end_gain() == 0.0);
                         if faded_out {
-                            debug!(
-                                source_id = active_source.id,
-                                "mixer: source marked finished (fade-out envelope completed)"
-                            );
+                            self.log.send(MixerEvent::FadedOut {
+                                source_id: active_source.id,
+                            });
                             active_source.is_finished.store(true, Ordering::Relaxed);
                             finished_source_ids.push(active_source.id);
                         }
@@ -893,23 +1028,19 @@ impl AudioMixer {
                             // Buffered sources report false during transient underruns;
                             // unbuffered sources return None → treated as EOF.
                             if active_source.source.is_exhausted().unwrap_or(true) {
-                                debug!(
-                                    source_id = active_source.id,
-                                    "mixer: source marked finished (read_frames returned fewer frames)"
-                                );
+                                self.log.send(MixerEvent::Exhausted {
+                                    source_id: active_source.id,
+                                });
                                 active_source.is_finished.store(true, Ordering::Relaxed);
                                 finished_source_ids.push(active_source.id);
                             }
                         }
                     }
-                    Err(e) => {
-                        // A read error drops just this source while the mix
-                        // keeps going — worth a warning, not just a debug line.
-                        tracing::warn!(
-                            source_id = active_source.id,
-                            "mixer: source dropped mid-playback (read_frames error): {}",
-                            e
-                        );
+                    Err(error) => {
+                        self.log.send(MixerEvent::ReadError {
+                            source_id: active_source.id,
+                            error,
+                        });
                         active_source.is_finished.store(true, Ordering::Relaxed);
                         finished_source_ids.push(active_source.id);
                     }
@@ -921,20 +1052,28 @@ impl AudioMixer {
         self.sample_counter
             .fetch_add(num_frames as u64, Ordering::Relaxed);
 
-        // Clean up finished sources inline - we're the only accessor in direct callback mode
+        // Clean up finished sources inline, unless another thread has the
+        // sources locked: the callback does not wait for it. They are marked
+        // finished (or their playback cancelled), so the next callback finds
+        // them again and removes them then.
         if !finished_source_ids.is_empty() {
-            debug!(
-                source_ids = ?finished_source_ids,
-                remaining_before = self.active_sources.read().len(),
-                "mixer: removing finished sources"
-            );
-            self.remove_sources(&finished_source_ids);
+            if let Some(mut sources) = self.active_sources.try_write() {
+                let before = sources.len();
+                Self::retain_unlisted(&mut sources, &finished_source_ids);
+                self.log.send(MixerEvent::Removed {
+                    count: before - sources.len(),
+                    before,
+                });
+            }
         }
 
-        // Put back the scratch Vec for reuse (drop Arc refs first)
+        // Put back the scratch Vecs for reuse (drop Arc refs first)
         sources_to_process.clear();
         SOURCES_SCRATCH.with(|cell| {
             *cell.borrow_mut() = sources_to_process;
+        });
+        FINISHED_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = finished_source_ids;
         });
     }
 
@@ -2556,6 +2695,32 @@ mod tests {
             for i in 0..8 {
                 assert_eq!(output[i * 2], 0.5, "frame {i} should have audio");
             }
+        }
+
+        /// A callback that finds the sources locked by another thread does
+        /// not wait to remove the finished ones: it leaves them, silent, for
+        /// the next callback to remove.
+        #[test]
+        fn process_into_output_leaves_removal_to_the_next_callback_when_locked() {
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.5; 100], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let active = make_active_source(1, source, mappings);
+            active.cancel_handle.cancel();
+            mixer.add_source(active);
+
+            let sources = mixer.get_active_sources();
+            let mut output = vec![0.0f32; 8 * 2];
+            {
+                let _reader = sources.read();
+                mixer.process_into_output(&mut output, 8);
+            }
+            assert!(output.iter().all(|&s| s == 0.0));
+            assert_eq!(sources.read().len(), 1, "removed under another's lock");
+            mixer.process_into_output(&mut output, 8);
+            assert!(output.iter().all(|&s| s == 0.0));
+            assert!(sources.read().is_empty(), "left for the next callback");
         }
     }
 

@@ -402,6 +402,11 @@ enum CancelState {
 pub struct CancelHandle {
     /// A boolean that should be set to true if the underlying operation should be cancelled.
     cancelled: Arc<Mutex<CancelState>>,
+    /// Whether `cancelled` has left `Untouched`, mirrored for a lock-free
+    /// [`CancelHandle::is_cancelled`]: the audio callback reads it for every
+    /// source, and must not wait on the mutex a cancel holds as it wakes the
+    /// waiters. Set under the mutex, before they are woken.
+    cancelled_flag: Arc<AtomicBool>,
     /// The condvar will handle notification of cancelling.
     condvar: Arc<Condvar>,
     /// Held while the audio schedules a loop jump, and while a loop break
@@ -415,6 +420,7 @@ impl CancelHandle {
     pub fn new() -> CancelHandle {
         CancelHandle {
             cancelled: Arc::new(Mutex::new(CancelState::Untouched)),
+            cancelled_flag: Arc::new(AtomicBool::new(false)),
             condvar: Arc::new(Condvar::new()),
             jumps: Arc::new(Mutex::new(())),
         }
@@ -434,7 +440,7 @@ impl CancelHandle {
     /// true whichever way the cancellation came about — only the player-side
     /// cleanup cares about the difference.
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.lock() != CancelState::Untouched
+        self.cancelled_flag.load(Ordering::Acquire)
     }
 
     /// Holds off the playback's loop jumps until the guard is dropped: the
@@ -488,6 +494,7 @@ impl CancelHandle {
         let mut cancel_state = self.cancelled.lock();
         if *cancel_state == CancelState::Untouched {
             *cancel_state = CancelState::Cancelled;
+            self.cancelled_flag.store(true, Ordering::Release);
             // Signal directly — we already hold the mutex.
             self.condvar.notify_all();
         }
@@ -511,6 +518,7 @@ impl CancelHandle {
         let mut cancel_state = self.cancelled.lock();
         if *cancel_state == CancelState::Untouched {
             *cancel_state = CancelState::CancelledByFailure;
+            self.cancelled_flag.store(true, Ordering::Release);
             self.condvar.notify_all();
         }
     }
@@ -672,6 +680,23 @@ mod test {
 
         cancel_handle.cancel();
         assert!(join.join().unwrap());
+    }
+
+    /// Cancelled either way, the handle says so without its lock, and keeps
+    /// telling the two apart.
+    #[test]
+    fn test_cancel_flag_follows_either_cancel() {
+        let deliberate = CancelHandle::new();
+        let failed = CancelHandle::new();
+        assert!(!deliberate.is_cancelled() && !failed.is_cancelled());
+        deliberate.cancel();
+        failed.cancel_due_to_failure();
+        // A second cancel of the other kind changes nothing.
+        deliberate.cancel_due_to_failure();
+        failed.cancel();
+        assert!(deliberate.is_cancelled() && failed.is_cancelled());
+        assert!(!deliberate.cancelled_due_to_failure());
+        assert!(failed.cancelled_due_to_failure());
     }
 
     #[test]
