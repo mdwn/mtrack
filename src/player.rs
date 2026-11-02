@@ -442,20 +442,12 @@ pub struct Player {
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
     start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
-    /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
-    /// loop the specified time region instead of the full song.
-    active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
-    /// Signal to stop section looping. The current iteration finishes and
-    /// the song continues from the section end.
-    section_loop_break: Arc<AtomicBool>,
-    /// The section loop jumps due when the section loop now armed was
-    /// armed: the loop is going round once more have fallen due.
-    jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
+    /// The section loop armed in the playback, if one is, and the reactive
+    /// loop's state.
+    section_loop: SectionLoop,
     /// The playing song's section loop jumps (its playback's log): the
     /// position counts them as they fall due, exactly.
     section_jumps: Arc<parking_lot::Mutex<Arc<crate::playsync::SectionJumpLog>>>,
-    /// Reactive loop state machine.
-    reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
     /// Start position for the next play(), set by a pause or by seeking
     /// while stopped.
     /// Cleared when the playlist position changes.
@@ -479,6 +471,47 @@ pub enum TrackGainError {
     NoAudioProfile,
     #[error(transparent)]
     UnknownTrack(#[from] crate::audio::track_gains::UnknownTrackError),
+}
+
+/// A section loop's state: the section armed, a break asked of it, when it
+/// was armed, and the reactive loop's state. It belongs to one playback, or
+/// a paused song's, and [`SectionLoop::reset`] forgets it as each starts
+/// fresh and stops (a pause and its resume keep it): kept, the next playback
+/// -- the same song from the top, or another song -- looped the old section,
+/// at the old song's bounds, once it reached the section's end.
+#[derive(Clone, Default)]
+pub(crate) struct SectionLoop {
+    /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
+    /// loop the specified time region instead of the full song.
+    active: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
+    /// Signal to stop section looping. The current iteration finishes and
+    /// the song continues from the section end.
+    break_requested: Arc<AtomicBool>,
+    /// The section loop jumps due when the section loop now armed was
+    /// armed: the loop is going round once more have fallen due.
+    jumps_at_arm: Arc<parking_lot::Mutex<usize>>,
+    /// Reactive loop state machine.
+    reactive: Arc<parking_lot::RwLock<ReactiveLoopState>>,
+}
+
+impl SectionLoop {
+    /// Forgets the section loop and the reactive loop's state: nothing
+    /// armed, offered or breaking.
+    fn reset(&self) {
+        *self.active.write() = None;
+        self.break_requested.store(false, Ordering::Relaxed);
+        *self.jumps_at_arm.lock() = 0;
+        *self.reactive.write() = ReactiveLoopState::Idle;
+    }
+
+    /// Takes the section loop up in the playback resuming a paused song:
+    /// armed, offered, looping or breaking as the pause left it. A loop
+    /// armed and not yet round counts its jumps from none in the new
+    /// playback's log; counted from the old log's, it never read as
+    /// looping.
+    fn resume(&self) {
+        *self.jumps_at_arm.lock() = 0;
+    }
 }
 
 /// Bounds of an active section loop.
@@ -704,11 +737,8 @@ impl Player {
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
             fading_until: Arc::new(parking_lot::Mutex::new(None)),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
-            active_section: Arc::new(parking_lot::RwLock::new(None)),
-            section_loop_break: Arc::new(AtomicBool::new(false)),
-            jumps_at_arm: Arc::new(parking_lot::Mutex::new(0)),
+            section_loop: SectionLoop::default(),
             section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
-            reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
             pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
                 44100,
@@ -901,8 +931,13 @@ impl Player {
         let playlist_name = playlist.name().to_string();
         let current_song = playlist.current().map(|s| s.name().to_string());
         let playing = self.is_playing().await;
-        let section_loop = self.active_section.read().as_ref().map(|b| b.name.clone());
-        let reactive_loop_state = ReactiveLoopStateKind::from(&*self.reactive_loop_state.read());
+        let section_loop = self
+            .section_loop
+            .active
+            .read()
+            .as_ref()
+            .map(|b| b.name.clone());
+        let reactive_loop_state = ReactiveLoopStateKind::from(&*self.section_loop.reactive.read());
         let locked = self.is_locked();
         TransportSnapshot {
             playlist_name,
@@ -2573,6 +2608,110 @@ mod test {
         Ok(())
     }
 
+    /// Rewrites the playlist of a player from [`entry_ambient_player`] as
+    /// `yaml` (`{green}` for the green show) and reloads it, as a save does.
+    fn edit_ambient_playlist(player: &Player, dir: &tempfile::TempDir, yaml: &str) {
+        let green = dir.path().join("green.light").display().to_string();
+        let path = dir.path().join("playlist.yaml");
+        fs::write(&path, yaml.replace("{green}", &green)).unwrap();
+        player.reload_songs(&dir.path().join("songs"), None, Some(&path));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_last_song_taken_off_the_list_ending_does_not_auto_play_the_entry_before(
+    ) -> Result<(), Box<dyn Error>> {
+        let (dir, player) = entry_ambient_player("- song: One\n  auto_play: 2s\n- Two\n").await?;
+        player.next().await;
+        assert!(player.auto_play_status().is_none(), "Two waits for play");
+        player.play().await?;
+        // Two, the last, is taken off the list while it plays.
+        edit_ambient_playlist(&player, &dir, "songs:\n- song: One\n  auto_play: 2s\n");
+        eventually(
+            || !player.song_playing.load(Ordering::Relaxed),
+            "Two never ended",
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        // One, already played before Two, must not start again by itself.
+        assert_eq!(player.auto_play_status().map(|(s, _)| s), None);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_removing_the_waiting_song_does_not_auto_play_another(
+    ) -> Result<(), Box<dyn Error>> {
+        let (dir, player) = entry_ambient_player("- One\n- song: Two\n  auto_play: 1s\n").await?;
+        player.next().await;
+        let (song, _) = player.auto_play_status().expect("Two waits out its gap");
+        assert_eq!(song, "Two");
+        // Two is taken off the list during the gap.
+        edit_ambient_playlist(&player, &dir, "songs:\n- One\n");
+        assert_eq!(current_name(&player).await, "One");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            !player.song_playing.load(Ordering::Relaxed),
+            "One, never waited on, started by itself in Two's place"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_turning_auto_play_off_calls_the_wait_off() -> Result<(), Box<dyn Error>> {
+        let (dir, player) = entry_ambient_player("- One\n- song: Two\n  auto_play: 1s\n").await?;
+        player.next().await;
+        assert!(player.auto_play_status().is_some());
+        edit_ambient_playlist(&player, &dir, "songs:\n- One\n- Two\n");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            !player.song_playing.load(Ordering::Relaxed),
+            "Two started by itself with auto_play taken off it"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_to_the_playlists_ambient_while_stopped_takes_effect(
+    ) -> Result<(), Box<dyn Error>> {
+        let (dir, player) = entry_ambient_player("- One\n- Two\n").await?;
+        let up = |show: &str, source| (Some(show.to_string()), Some(source));
+        eventually(
+            || ambient_up(&player) == up("blue.light", "profile"),
+            "the profile's before One",
+        );
+        edit_ambient_playlist(
+            &player,
+            &dir,
+            "ambient:\n  show: {green}\nsongs:\n- One\n- Two\n",
+        );
+        eventually(
+            || ambient_up(&player) == up("green.light", "playlist"),
+            "the playlist's new ambient light after the save",
+        );
+        Ok(())
+    }
+
+    /// A song that ends by itself takes its section boundary poller with it.
+    /// The poller waited on a cancel, which a song ending by itself never
+    /// makes, and outlived it: one more task for each song played.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_song_ending_by_itself_leaves_no_task_behind() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = entry_ambient_player("- One\n").await?;
+        let alive = || {
+            tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks()
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let before = alive();
+        for _ in 0..3 {
+            player.play().await?;
+            eventually_async(|| async { !player.is_playing().await }, "One never ended").await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let after = alive();
+        assert!(after < before + 3, "{before} tasks before, {after} after");
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn the_ambient_mode_holds_it_over_a_song_or_keeps_it_off() -> Result<(), Box<dyn Error>> {
         use crate::dmx::engine::AmbientMode;
@@ -2879,6 +3018,78 @@ mod test {
         // Without events of its own, a waiting auto play idles.
         let events = parse(&base);
         assert_eq!(value(events.current(false, true)), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_reporting_ends_with_its_init_round() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new("mock-midi", None)),
+            None,
+        )
+        .await?;
+        let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
+        let config: config::StatusEvents = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("off_events: {cc}\nidling_events: {cc}\nplaying_events: {cc}\n"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        let events = StatusEvents::new(Some(config))?.expect("status events");
+        let round = tokio_util::sync::CancellationToken::new();
+        let reporting = player
+            .report_status(events, round.clone())
+            .expect("a MIDI device to report on");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !reporting.is_finished(),
+            "reports while its round is current"
+        );
+        // A hardware reload cancels the round: its reporting stops, rather
+        // than going on beside the next round's.
+        round.cancel();
+        tokio::time::timeout(Duration::from_secs(2), reporting)
+            .await
+            .expect("the status loop outlived its init round")?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_reporting_cancelled_while_waiting_emits_nothing() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new("mock-midi", None)),
+            None,
+        )
+        .await?;
+        let midi = player.midi_device().expect("MIDI device").to_mock()?;
+        let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
+        let config: config::StatusEvents = ::config::Config::builder()
+            .add_source(::config::File::from_str(
+                &format!("off_events: {cc}\nidling_events: {cc}\nplaying_events: {cc}\n"),
+                ::config::FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        let events = StatusEvents::new(Some(config))?.expect("status events");
+        let round = tokio_util::sync::CancellationToken::new();
+        // The loop waits for the join lock, as behind a song starting, while
+        // a reload cancels its round.
+        let join = player.join.lock().await;
+        midi.reset_emitted_event();
+        let reporting = player
+            .report_status(events, round.clone())
+            .expect("a MIDI device to report on");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        round.cancel();
+        drop(join);
+        tokio::time::timeout(Duration::from_secs(2), reporting)
+            .await
+            .expect("the status loop outlived its init round")?;
+        assert_eq!(midi.get_emitted_event(), None, "emitted for a round gone");
+        Ok(())
     }
 
     // --- resolve_playback_outcome tests ---
@@ -3772,6 +3983,31 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_announces_the_song_it_moves_to() -> Result<(), Box<dyn Error>> {
+        struct Announced(parking_lot::Mutex<Vec<String>>);
+        impl SongChangeNotifier for Announced {
+            fn notify(&self, song: &Song) {
+                self.0.lock().push(song.name().to_string());
+            }
+        }
+        let player = make_test_player().await?;
+        let announced = Arc::new(Announced(Default::default()));
+        player.add_song_change_notifier(announced.clone());
+        // The playlist moves to Song 3 as a navigation moves it, and says
+        // so: a MIDI controller showing the current song kept showing the
+        // one before.
+        player
+            .play_song_from("Song 3", std::time::Duration::ZERO)
+            .await?;
+        assert_eq!(
+            announced.0.lock().last().map(String::as_str),
+            Some("Song 3")
+        );
+        player.stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_not_found() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let playlist = Playlist::new(
@@ -3886,7 +4122,7 @@ mod test {
 
         // Manually set active section state to simulate an active loop.
         {
-            let mut active = player.active_section.write();
+            let mut active = player.section_loop.active.write();
             *active = Some(SectionBounds {
                 name: "test".to_string(),
                 start_time: Duration::from_secs(1),
@@ -3898,7 +4134,7 @@ mod test {
         // stop_section_loop should clear it.
         player.stop_section_loop();
         assert!(player.active_section().is_none());
-        assert!(player.section_loop_break.load(Ordering::Relaxed));
+        assert!(player.section_loop.break_requested.load(Ordering::Relaxed));
 
         Ok(())
     }
@@ -4030,7 +4266,7 @@ mod test {
             start_time: Duration::from_secs(10),
             end_time: Duration::from_secs(20),
         };
-        *player.active_section.write() = Some(bounds.clone());
+        *player.section_loop.active.write() = Some(bounds.clone());
 
         let active = player.active_section().unwrap();
         assert_eq!(active.name, "chorus");
@@ -4082,7 +4318,7 @@ mod test {
         let song = player.get_playlist().current().unwrap();
         let (a_start, a_end) = song.resolve_section("a").unwrap();
         let (_, b_end) = song.resolve_section("b").unwrap();
-        *player.reactive_loop_state.write() = ReactiveLoopState::Looping(SectionBounds {
+        *player.section_loop.reactive.write() = ReactiveLoopState::Looping(SectionBounds {
             name: "a".to_string(),
             start_time: a_start,
             end_time: a_end,
@@ -4161,6 +4397,153 @@ mod test {
         Ok(())
     }
 
+    /// A player on a playlist of songs S and T, each with a section `a`
+    /// from 2 s to 4 s, on the mock audio device.
+    async fn two_section_songs_player() -> Result<(tempfile::TempDir, Arc<Player>), Box<dyn Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let songs_dir = dir.path().join("songs");
+        for name in ["S", "T"] {
+            let song_dir = songs_dir.join(name);
+            std::fs::create_dir_all(&song_dir)?;
+            crate::testutil::write_wav(song_dir.join("t.wav"), vec![vec![0_i32; 8000 * 10]], 8000)?;
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!(
+                    "name: {name}\ntracks:\n  - name: t\n    file: t.wav\ntempo:\n  bpm: 120\n  \
+                     time_signature: 4/4\nsections:\n  - name: a\n    start_measure: 2\n    \
+                     end_measure: 3\n"
+                ),
+            )?;
+        }
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n- S\n- T\n")?;
+        let songs = songs::get_all_songs(&songs_dir)?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(&playlist_path)?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                songs_dir.to_str().unwrap(),
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        Ok((dir, player))
+    }
+
+    /// A section loop armed, then Stop: the section is forgotten. Kept, the
+    /// next playback -- the same song from the top, or another song after
+    /// Next -- looped that section, at the old song's bounds, as soon as it
+    /// reached its end, and the status reported it looping.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        player.next().await;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song T never started playing");
+        let armed = player.active_section();
+        player.stop().await;
+        assert!(
+            armed.is_none(),
+            "song T plays with song S's section still armed: {armed:?}"
+        );
+        Ok(())
+    }
+
+    /// A section loop armed, then a pause and a resume: the operator paused
+    /// mid-loop, and the song loops on. A reactive arm (an ack) is kept with
+    /// it, and counts its jumps from the resumed playback's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_and_resume_keep_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        let armed = player.active_section().expect("the section armed");
+        // As an ack arms it in reactive looping.
+        *player.section_loop.reactive.write() = ReactiveLoopState::LoopArmed(armed.clone());
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        assert!(player.is_paused());
+        assert_eq!(player.active_section(), Some(armed.clone()), "kept paused");
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never resumed");
+        assert_eq!(player.active_section(), Some(armed.clone()), "kept resumed");
+        assert!(
+            matches!(player.reactive_loop_state(), ReactiveLoopState::LoopArmed(ref b) if *b == armed),
+            "{:?}",
+            player.reactive_loop_state()
+        );
+        assert_eq!(*player.section_loop.jumps_at_arm.lock(), 0);
+        // A stop then forgets it all.
+        player.stop().await;
+        assert!(player.active_section().is_none());
+        assert!(matches!(
+            player.reactive_loop_state(),
+            ReactiveLoopState::Idle
+        ));
+        Ok(())
+    }
+
+    /// A pause on the song's very end keeps nothing to resume, and leaves
+    /// the player stopped: the section loop goes with it, rather than the
+    /// status showing a loop while stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_on_the_very_end_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let song = player.get_playlist().current().expect("S");
+        let (start_time, end_time) = song.resolve_section("a").expect("section a");
+        *player.section_loop.active.write() = Some(SectionBounds {
+            name: "a".to_string(),
+            start_time,
+            end_time,
+        });
+        player.keep_paused_position(song.length());
+        assert!(!player.is_paused(), "nothing to resume");
+        assert!(
+            player.active_section().is_none(),
+            "stopped with a loop armed"
+        );
+        Ok(())
+    }
+
+    /// A pause, then a navigation: the section loop kept for the resume is
+    /// forgotten with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_navigation_from_a_pause_forgets_the_armed_section() -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = two_section_songs_player().await?;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.loop_section("a").await?;
+        player.pause().await?;
+        eventually(|| !device.is_playing(), "Song never paused");
+        player.next().await;
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song T never started playing");
+        let armed = player.active_section();
+        player.stop().await;
+        assert!(armed.is_none(), "T plays with S's section armed: {armed:?}");
+        Ok(())
+    }
+
     /// Arming while another task holds `play_start_time` (a status poll in
     /// `elapsed()`, a seek) counts the jumps due as any other time: it read
     /// none (a `try_lock` that failed), so a section armed after an earlier
@@ -4227,7 +4610,7 @@ mod test {
             start_time: b_start,
             end_time: b_end,
         };
-        *player.reactive_loop_state.write() = ReactiveLoopState::SectionOffered(b);
+        *player.section_loop.reactive.write() = ReactiveLoopState::SectionOffered(b);
         {
             // Another task in elapsed() / a seek, holding the lock.
             let _held = player.play_start_time.lock().await;
@@ -4562,6 +4945,22 @@ mod test {
         player.stop().await;
         assert!(player.ending_status().is_none(), "cut");
         assert!(player.break_fade.lock().is_none(), "cut");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pause_during_an_ending_stops_the_song() -> Result<(), Box<dyn Error>> {
+        let (player, _dir) =
+            player_looping_b_with("songs:\n- A\n- song: B\n  fade_out: 10s\n- C\n").await?;
+        player.stop().await;
+        assert!(player.ending_status().is_some());
+        // The operator ended B: a pause has nothing to resume, and stops it
+        // as a second stop does, whether or not it has wound down yet.
+        assert_eq!(player.pause().await?, None, "nothing to resume");
+        assert!(!player.is_paused(), "ending and paused at once");
+        assert!(player.ending_status().is_none(), "cut, as by a stop");
+        rests_stopped_on(&player, "B").await;
+        assert!(player.elapsed().await?.is_none(), "no position kept");
         Ok(())
     }
 

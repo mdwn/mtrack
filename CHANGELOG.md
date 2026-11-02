@@ -479,6 +479,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also stays on for a song an edit took off the list before the first entry, which it moves onto,
   and breaks such a looping song's loop onto that entry rather than ending it. The playback
   feed's `next` carries `ends_loop` and the `fade_out` at the end of the list.
+- **A stop forgets the section loop**: a section loop armed and then stopped stayed armed, so the
+  next playback (the same song from the top, or another song after Next) looped that section, at
+  the old song's bounds, once it got there, and the status showed it looping. A section loop, and
+  the reactive loop's offer, now go with the playback they were made in: a stop, a seek, a move
+  to another song or playlist, or the song ending forgets them, and a fresh start begins with
+  none. A pause keeps them, and the resume loops on.
+- **A song ending by itself leaves nothing running**: each song that played to its end left its
+  section boundary poller running, waking every 50 ms for as long as mtrack ran. It now ends with
+  its song.
+- **MIDI status events no longer pile up over hardware reloads**: each hardware reload (a config
+  or profile save) started another status-event loop beside the ones before, each holding the MIDI
+  device it started with and all of them emitting. A reload now stops the old loop.
+- **A huge seek no longer stops OSC**: a seek over OSC to a number of seconds too large for a
+  duration (`1e30`, say) panicked and took the OSC receive loop with it, so OSC went deaf until
+  mtrack restarted. It is now turned down as an invalid seek, and the MCP tools that take a time
+  turn it down as invalid too, rather than failing the request.
+- **A playlist save calls off an auto play it took away**: a save during an `auto_play` gap that
+  removed the waiting song, or took its `auto_play` off, left the wait running, and when the gap
+  ended the song the playlist was then on started by itself. The wait is now called off, and the
+  lights go to ambient as when it is cancelled; one the save left as it was waits on.
+- **The last song, taken off the list while it plays, ends after the last entry**: when it ended,
+  the playlist settled on the entry now last and read that as having moved on to it, so that
+  entry's `auto_play` started a song already played, and the gap played its ambient light rather
+  than the playlist's. It now ends as the last entry ending does.
+- **A playlist save while stopped brings up its ambient light**: a save that changed the ambient
+  light of the gap the player was stopped in (the playlist's, or the waiting entry's) kept the
+  old light up, and the status the old settings' source, until the next stop or navigation. It now
+  crosses into the new light, as a navigation onto another entry does. A song playing or paused
+  holds its lights as before.
+- **A pause during a looping song's ending stops it**: a pause while a looping song faded out over
+  its `fade_out` kept its position, so the song was ending and paused at once, and the next Play
+  resumed a song the operator had ended. A pause there now stops, as a second stop does.
+- **Playing a song by name announces it**: playing a song by name (from the web UI, MCP's
+  `play_song_from`, or gRPC) moved the playlist to it without emitting the song-change MIDI event
+  or telling song-change notifiers (a Morningstar controller, say), which went on showing the song
+  before. It now announces it as Next and Previous do, and its move can no longer be
+  lost to a playlist save landing at the same moment.
+- **A playlist switch can no longer race a play**: a switch checked nothing was playing and then
+  let go before switching, so a play landing in between started a song on the playlist being
+  left, which the switch then took out from under it. The check and the switch are now one step.
 
 ### Security
 

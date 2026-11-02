@@ -44,6 +44,14 @@ pub fn duration_minutes_seconds(duration: Duration) -> String {
     format!("{}:{:02}", minutes, secs)
 }
 
+/// A duration of `secs` seconds, or `None` for one no duration holds: a
+/// negative or non-finite number, or one too large. For seconds a client
+/// sends: `Duration::from_secs_f64` panics on these, and a panic there takes
+/// down the task serving the client.
+pub fn duration_from_secs(secs: f64) -> Option<Duration> {
+    Duration::try_from_secs_f64(secs).ok()
+}
+
 /// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
 /// and PascalCase by inserting hyphens at word boundaries and lowercasing.
 pub fn to_kebab_case(s: &str) -> String {
@@ -1209,6 +1217,19 @@ mod ownership_test {
 
 #[cfg(test)]
 mod test {
+
+    #[test]
+    fn duration_from_secs_turns_down_what_no_duration_holds() {
+        use super::duration_from_secs;
+        use std::time::Duration;
+        assert_eq!(duration_from_secs(1.5), Some(Duration::from_millis(1500)));
+        assert_eq!(duration_from_secs(0.0), Some(Duration::ZERO));
+        // Finite but past what a duration holds: from_secs_f64 panics.
+        assert_eq!(duration_from_secs(1e30), None);
+        assert_eq!(duration_from_secs(-1.0), None);
+        assert_eq!(duration_from_secs(f64::NAN), None);
+        assert_eq!(duration_from_secs(f64::INFINITY), None);
+    }
 
     #[test]
     fn yaml_source_reads_the_format_the_extension_names() {
