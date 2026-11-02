@@ -1911,13 +1911,8 @@ mod test {
         )?;
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            Arc::downgrade(&engine),
             vec![dsl_path],
-            engine.effect_engine.clone(),
-            engine.current_song_timeline.clone(),
-            engine.current_song_time.clone(),
-            engine.playback_delay,
-            None,
-            None,
             None,
             tx,
         )?);
@@ -5178,16 +5173,7 @@ mod test {
             )?;
             engine.update_song_time(Duration::from_secs(10));
 
-            crate::dmx::watcher::reload_timeline(
-                std::slice::from_ref(&dsl_path),
-                &engine.effect_engine,
-                &engine.current_song_timeline,
-                &engine.current_song_time,
-                engine.playback_delay,
-                None,
-                None,
-                None,
-            )?;
+            crate::dmx::watcher::reload_timeline(&engine, std::slice::from_ref(&dsl_path), None)?;
             let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
             assert_eq!(
                 next_cue(&engine),

@@ -574,7 +574,7 @@ impl Engine {
     /// Resolves group names in an effect's target_fixtures to actual fixture names
     /// using the lighting system. If no lighting system is available, returns the
     /// effect unchanged (groups are passed through as-is).
-    pub(super) fn resolve_effect_groups(
+    pub(in crate::dmx) fn resolve_effect_groups(
         &self,
         effect: crate::lighting::EffectInstance,
     ) -> crate::lighting::EffectInstance {

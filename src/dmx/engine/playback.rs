@@ -256,13 +256,8 @@ impl Engine {
                     .collect();
                 if !file_paths.is_empty() {
                     match crate::dmx::watcher::start_watching(
+                        Arc::downgrade(&dmx_engine),
                         file_paths,
-                        dmx_engine.effect_engine.clone(),
-                        dmx_engine.current_song_timeline.clone(),
-                        dmx_engine.current_song_time.clone(),
-                        dmx_engine.playback_delay,
-                        dmx_engine.lighting_system.clone(),
-                        dmx_engine.lighting_config.clone(),
                         song.lighting_tempo_map(),
                         tx.clone(),
                     ) {

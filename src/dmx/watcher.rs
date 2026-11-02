@@ -13,19 +13,16 @@
 //
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
-use parking_lot::Mutex;
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::Weak;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
-use crate::lighting::system::LightingSystem;
+use super::engine::Engine;
 use crate::lighting::timeline::LightingTimeline;
 use crate::lighting::validation::validate_light_shows;
-use crate::lighting::EffectEngine;
 
 /// Handle to a running file watcher, shuts down when dropped.
 pub struct WatcherHandle {
@@ -37,18 +34,15 @@ pub struct WatcherHandle {
 /// On file change (debounced 300ms):
 /// 1. Re-parses the .light file
 /// 2. Builds a new LightingTimeline
-/// 3. Swaps it into current_song_timeline
-/// 4. Reconstructs state at current_song_time, less `playback_delay`
-/// 5. Sends a reload notification over WebSocket
-#[allow(clippy::too_many_arguments)]
+/// 3. Swaps it into `engine`'s, rebuilt where the lights are
+///    ([`Engine::reload_show`])
+/// 4. Sends a reload notification over WebSocket
+///
+/// The engine is held weakly: it owns the handle, and the watcher stops
+/// with it.
 pub fn start_watching(
+    engine: Weak<Engine>,
     file_paths: Vec<PathBuf>,
-    effect_engine: Arc<Mutex<EffectEngine>>,
-    current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
-    current_song_time: Arc<AtomicU64>,
-    playback_delay: Duration,
-    lighting_system: Option<Arc<Mutex<LightingSystem>>>,
-    lighting_config: Option<crate::config::Lighting>,
     fallback_tempo_map: Option<crate::tempo::TempoMap>,
     broadcast_tx: broadcast::Sender<String>,
 ) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
@@ -85,10 +79,6 @@ pub fn start_watching(
     }
 
     // Spawn a thread to handle file change events
-    let effect_engine = effect_engine.clone();
-    let current_song_timeline = current_song_timeline.clone();
-    let current_song_time = current_song_time.clone();
-
     std::thread::spawn(move || {
         // Track the last-known mtime per watched file so we can distinguish
         // "the file actually changed" from "something fired a spurious event"
@@ -161,18 +151,12 @@ pub fn start_watching(
                         continue;
                     }
 
+                    let Some(engine) = engine.upgrade() else {
+                        break;
+                    };
                     info!("Light show file changed, reloading...");
 
-                    match reload_timeline(
-                        &file_paths,
-                        &effect_engine,
-                        &current_song_timeline,
-                        &current_song_time,
-                        playback_delay,
-                        lighting_system.as_ref(),
-                        lighting_config.as_ref(),
-                        fallback_tempo_map.as_ref(),
-                    ) {
+                    match reload_timeline(&engine, &file_paths, fallback_tempo_map.as_ref()) {
                         Ok(()) => {
                             info!("Light show reloaded successfully");
                             let msg = json!({
@@ -204,19 +188,11 @@ pub fn start_watching(
     })
 }
 
-/// Re-parses light show files, builds a new timeline, and swaps it in.
-///
-/// `current_song_time` is the transport's clock; the show is rebuilt at it
-/// less `playback_delay`, the delayed time base frames render on.
-#[allow(clippy::too_many_arguments)]
+/// Re-parses light show files, builds a new timeline, and swaps it into
+/// `engine`'s, rebuilt where the lights are (see [`Engine::reload_show`]).
 pub(super) fn reload_timeline(
+    engine: &Engine,
     file_paths: &[PathBuf],
-    effect_engine: &Arc<Mutex<EffectEngine>>,
-    current_song_timeline: &Arc<Mutex<Option<LightingTimeline>>>,
-    current_song_time: &Arc<AtomicU64>,
-    playback_delay: Duration,
-    lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
-    lighting_config: Option<&crate::config::Lighting>,
     fallback_tempo_map: Option<&crate::tempo::TempoMap>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut all_shows = Vec::new();
@@ -233,7 +209,7 @@ pub(super) fn reload_timeline(
                 .map_err(|e| format!("Parse error in {}: {}", path.display(), e))?;
 
         // Validate if lighting config is available
-        if let Some(lc) = lighting_config {
+        if let Some(lc) = engine.lighting_config.as_ref() {
             validate_light_shows(&shows, Some(lc))
                 .map_err(|e| format!("Validation error in {}: {}", path.display(), e))?;
         }
@@ -247,75 +223,40 @@ pub(super) fn reload_timeline(
         return Err("No shows found after re-parse".into());
     }
 
-    let mut new_timeline = LightingTimeline::new(all_shows);
-
-    // Where the lights are, not the transport: rebuilding at the undelayed
-    // time put the show the delay ahead of the rig, skipping the cues in
-    // between (#593). As `Engine::to_delayed_song_time`, a reload inside the
-    // delay window starts from the top.
-    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed))
-        .saturating_sub(playback_delay);
-
-    // Calculate the timeline's history before acquiring the engine lock.
-    let mut history = new_timeline.start_at(song_time);
-
-    // Pre-resolve group names while the engine lock is NOT held
-    // to avoid deadlocking with the lighting system lock.
-    history.map_effects(|e| resolve_effect_groups(lighting_system, e));
-
-    // Extract tempo map before moving new_timeline into the lock. Shows
-    // without their own tempo block fall back to the song's tempo map.
-    let tempo_map = new_timeline.tempo_map_or(fallback_tempo_map);
-
-    // Swap the timeline first, so the main effects loop won't generate
-    // updates from the old timeline while the engine has new state.
-    {
-        let mut current = current_song_timeline.lock();
-        // The song's end bound belongs to the song, not the show text.
-        new_timeline.set_end_cap(current.as_ref().and_then(|t| t.end_cap()));
-        // Firing nothing until the reloaded state is in, below: a cue at
-        // the song's time would land in the engine about to be cleared.
-        new_timeline.hold(true);
-        *current = Some(new_timeline);
-    }
-
-    // Atomically stop + apply the new state under a single lock to prevent
-    // the sampler loop from seeing an intermediate empty state (flash).
-    {
-        info!("Watcher acquiring effect_engine lock for reload...");
-        let mut engine = effect_engine.lock();
-        info!("Watcher acquired effect_engine lock.");
-        engine.set_tempo_map(tempo_map);
-        // The show's effects only: the MIDI DMX store goes on as MIDI set
-        // it, which nothing would put back mid-song (#583).
-        for e in engine.start_from(history, crate::lighting::engine::StopScope::Show) {
-            error!("Failed to start lighting effect: {}", e);
-        }
-        info!("Watcher releasing effect_engine lock.");
-    }
-    if let Some(timeline) = current_song_timeline.lock().as_mut() {
-        timeline.hold(false);
-    }
-
+    let timeline = LightingTimeline::new(all_shows);
+    let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
+    engine.reload_show(timeline, tempo_map);
     Ok(())
-}
-
-/// Resolves group names in an effect's target_fixtures to actual fixture names.
-fn resolve_effect_groups(
-    lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
-    effect: crate::lighting::EffectInstance,
-) -> crate::lighting::EffectInstance {
-    if let Some(ls) = lighting_system {
-        let mut system = ls.lock();
-        system.resolve_effect_groups(effect)
-    } else {
-        effect
-    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::Arc;
+
+    /// An engine for one universe with `lighting` (from `base`), its song
+    /// time at `song_time`.
+    fn test_engine(
+        lighting: Option<&crate::config::Lighting>,
+        base: Option<&std::path::Path>,
+        song_time: Duration,
+    ) -> Arc<Engine> {
+        let engine = Engine::new(
+            &crate::config::Dmx::new(
+                None,
+                None,
+                Some(9010),
+                vec![crate::config::Universe::new(1, "universe1".to_string())],
+                None,
+            ),
+            lighting,
+            base,
+            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
+        )
+        .unwrap();
+        engine.update_song_time(song_time);
+        Arc::new(engine)
+    }
 
     #[test]
     fn reload_timeline_with_valid_file_at_zero() {
@@ -330,22 +271,11 @@ mod test {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
-        assert!(timeline.lock().is_some());
+        assert!(engine.current_song_timeline.lock().is_some());
     }
 
     #[test]
@@ -368,22 +298,13 @@ mod test {
             store.register_universe(1);
         }
         store.read().write(1, 1, 200, false);
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        effect_engine.lock().set_midi_dmx_store(store.clone());
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
+        let engine = test_engine(None, None, Duration::from_secs(3));
+        engine
+            .effect_engine
+            .lock()
+            .set_midi_dmx_store(store.clone());
 
-        reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        reload_timeline(&engine, &[dsl_path], None).unwrap();
         assert!(
             store.read().has_active_slots(),
             "the reload cleared MIDI DMX"
@@ -405,40 +326,18 @@ mod test {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
+        let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
-        assert!(timeline.lock().is_some());
+        assert!(engine.current_song_timeline.lock().is_some());
     }
 
     #[test]
     fn reload_timeline_with_missing_file() {
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[PathBuf::from("/nonexistent/show.light")],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[PathBuf::from("/nonexistent/show.light")], None);
         assert!(result.is_err());
     }
 
@@ -448,20 +347,9 @@ mod test {
         let dsl_path = tmp_dir.path().join("bad.light");
         std::fs::write(&dsl_path, "this is not valid DSL {").unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_err());
     }
 
@@ -488,20 +376,9 @@ mod test {
             None,
         );
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            Some(&lighting_config),
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
     }
 
@@ -528,20 +405,9 @@ mod test {
             None,
         );
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(Some(&lighting_config), None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            Some(&lighting_config),
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_err());
     }
 
@@ -558,27 +424,24 @@ mod test {
         )
         .unwrap();
 
-        let mut ls = LightingSystem::new();
-        let _ = ls.load(
-            &crate::config::Lighting::new(None, None, None),
-            tmp_dir.path(),
-        );
-        let lighting_system = Arc::new(Mutex::new(ls));
-
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(1).as_nanos() as u64));
-
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            Some(&lighting_system),
+        // The group named, so the show validates against the configuration
+        // the lighting system loads.
+        let lighting = crate::config::Lighting::new(
             None,
+            Some(std::collections::HashMap::from([(
+                "front_wash".to_string(),
+                crate::config::lighting::LogicalGroup::new("front_wash".to_string(), vec![]),
+            )])),
             None,
         );
+        let engine = test_engine(
+            Some(&lighting),
+            Some(tmp_dir.path()),
+            Duration::from_secs(1),
+        );
+        assert!(engine.lighting_system.is_some());
+
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
     }
 
@@ -590,20 +453,9 @@ mod test {
         // Write a valid DSL file but with empty content (no show blocks)
         std::fs::write(&dsl_path, "// just a comment\n").unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No shows found"));
     }
@@ -626,21 +478,10 @@ mod test {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
         // Set song_time > 0 to exercise the layer_commands/stop_sequences path
-        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
+        let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
     }
 
@@ -670,21 +511,10 @@ show "test" {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
         // Set song_time past the stop sequence cue
-        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
+        let engine = test_engine(None, None, Duration::from_secs(3));
 
-        let result = reload_timeline(
-            &[dsl_path],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path], None);
         assert!(result.is_ok());
     }
 
@@ -702,14 +532,18 @@ show "test" {
             None,
         );
 
-        let resolved = resolve_effect_groups(None, effect);
+        let resolved = test_engine(None, None, Duration::ZERO).resolve_effect_groups(effect);
         assert_eq!(resolved.target_fixtures, vec!["group1".to_string()]);
     }
 
     #[test]
     fn resolve_effect_groups_with_system() {
-        let ls = LightingSystem::new();
-        let lighting_system = Arc::new(Mutex::new(ls));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let engine = test_engine(
+            Some(&crate::config::Lighting::new(None, None, None)),
+            Some(tmp_dir.path()),
+            Duration::ZERO,
+        );
 
         let effect = crate::lighting::EffectInstance::new(
             "test".to_string(),
@@ -723,7 +557,7 @@ show "test" {
             None,
         );
 
-        let _resolved = resolve_effect_groups(Some(&lighting_system), effect);
+        let _resolved = engine.resolve_effect_groups(effect);
     }
 
     #[test]
@@ -748,20 +582,9 @@ show "test" {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
 
-        let result = reload_timeline(
-            &[dsl_path1, dsl_path2],
-            &effect_engine,
-            &timeline,
-            &song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-        );
+        let result = reload_timeline(&engine, &[dsl_path1, dsl_path2], None);
         assert!(result.is_ok());
     }
 
@@ -778,23 +601,11 @@ show "test" {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
 
-        let _handle = start_watching(
-            vec![dsl_path.clone()],
-            effect_engine,
-            timeline.clone(),
-            song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-            tx,
-        )
-        .unwrap();
+        let _handle =
+            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
 
         // Modify the file to trigger a reload event
         std::thread::sleep(Duration::from_millis(500));
@@ -832,7 +643,7 @@ show "test" {
 
         // Timeline should have been updated
         assert!(
-            timeline.lock().is_some(),
+            engine.current_song_timeline.lock().is_some(),
             "Timeline should be set after reload"
         );
     }
@@ -858,20 +669,10 @@ show "test" {
         )
         .unwrap();
 
-        let timeline = Arc::new(Mutex::new(None));
+        let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
-        let _handle = start_watching(
-            vec![dsl_path.clone()],
-            Arc::new(Mutex::new(EffectEngine::new())),
-            timeline.clone(),
-            Arc::new(AtomicU64::new(0)),
-            Duration::ZERO,
-            None,
-            None,
-            None,
-            tx,
-        )
-        .unwrap();
+        let _handle =
+            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
 
         // Only the included file changes; the show file is untouched.
         std::thread::sleep(Duration::from_millis(500));
@@ -893,7 +694,7 @@ show "test" {
         }
         let status = status.expect("an edit to an included file reloads the show");
         assert!(status.contains("\"ok\""), "reload failed: {status}");
-        assert!(timeline.lock().is_some());
+        assert!(engine.current_song_timeline.lock().is_some());
     }
 
     #[test]
@@ -909,23 +710,11 @@ show "test" {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
         let (tx, mut rx) = broadcast::channel(16);
 
-        let _handle = start_watching(
-            vec![dsl_path.clone()],
-            effect_engine,
-            timeline,
-            song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-            tx,
-        )
-        .unwrap();
+        let _handle =
+            start_watching(Arc::downgrade(&engine), vec![dsl_path.clone()], None, tx).unwrap();
 
         // Wait for watcher to be established
         std::thread::sleep(Duration::from_millis(500));
@@ -966,22 +755,10 @@ show "test" {
         )
         .unwrap();
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
-        let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(AtomicU64::new(0));
+        let engine = test_engine(None, None, Duration::ZERO);
         let (tx, _rx) = broadcast::channel(16);
 
-        let result = start_watching(
-            vec![dsl_path],
-            effect_engine,
-            timeline,
-            song_time,
-            Duration::ZERO,
-            None,
-            None,
-            None,
-            tx,
-        );
+        let result = start_watching(Arc::downgrade(&engine), vec![dsl_path], None, tx);
         assert!(result.is_ok());
 
         // WatcherHandle drops here, stopping the watcher
