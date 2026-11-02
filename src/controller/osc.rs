@@ -534,9 +534,11 @@ impl Driver {
                     OscType::Int(i) => Some(*i as f64),
                     _ => None,
                 });
-                match seconds {
-                    Some(seconds) if seconds >= 0.0 && seconds.is_finite() => {
-                        let position = std::time::Duration::from_secs_f64(seconds);
+                // A number too large for a duration is turned down with the
+                // rest: converting it panicked, and took the receive loop
+                // with it.
+                match seconds.and_then(|s| crate::util::duration_from_secs(s).map(|d| (s, d))) {
+                    Some((seconds, position)) => {
                         if let Err(e) = player.seek_to(position).await {
                             error!("Failed to seek to {}s: {}", seconds, e);
                         }
@@ -1628,6 +1630,21 @@ mod test {
 
             let result = Driver::handle_packet(&player, &events, &packet).await;
             assert!(result.unwrap(), "stop_samples should return true");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_turns_down_a_seek_too_large_to_hold() {
+            let player = make_player().await;
+            let events = Arc::new(make_default_osc_events());
+            // Finite, but more seconds than a duration holds: converting it
+            // panicked, and the receive loop went with it.
+            let packet = OscPacket::Message(OscMessage {
+                addr: "/mtrack/seek".to_string(),
+                args: vec![OscType::Double(1e30)],
+            });
+            let result = Driver::handle_packet(&player, &events, &packet).await;
+            assert!(result.unwrap(), "seek is recognized");
+            assert_eq!(player.pending_start(), None, "nothing cued");
         }
 
         #[tokio::test(flavor = "multi_thread")]

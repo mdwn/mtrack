@@ -3534,13 +3534,14 @@ pub(crate) fn parse_duration(value: &str) -> Result<std::time::Duration, McpErro
             .parse::<f64>()
             .map_err(|e| McpError::invalid_params(format!("invalid duration: {e}"), None))?
     };
-    if !seconds.is_finite() || seconds < 0.0 {
-        return Err(McpError::invalid_params(
-            "duration must be a finite non-negative number",
+    // Too large a number is turned down with the rest: converting it
+    // panicked, failing the request with no answer.
+    crate::util::duration_from_secs(seconds).ok_or_else(|| {
+        McpError::invalid_params(
+            "duration must be a finite, non-negative number of seconds in range",
             None,
-        ));
-    }
-    Ok(std::time::Duration::from_secs_f64(seconds))
+        )
+    })
 }
 
 fn parse_mm_ss(s: &str) -> Result<f64, McpError> {
@@ -4451,6 +4452,20 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod parse_duration_tests {
+    #[test]
+    fn a_duration_too_large_to_hold_is_turned_down() {
+        assert_eq!(
+            super::parse_duration("90s").unwrap(),
+            std::time::Duration::from_secs(90)
+        );
+        // Finite, but more seconds than a duration holds: it panicked.
+        assert!(super::parse_duration("1e30").is_err());
+        assert!(super::parse_duration("999999999999999999:00").is_err());
+    }
 }
 
 #[cfg(test)]

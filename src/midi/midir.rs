@@ -756,7 +756,11 @@ struct PlaybackContext<'a> {
 fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
     ctx.ready_tx.send();
 
-    // Wait for the clock to start (the "go" signal from play_files).
+    // Wait for the clock to start (the "go" signal from play_files):
+    // blocked until it is started, then spinning only until it reads past
+    // zero (an audio clock's first buffer), not for the whole of the other
+    // subsystems' startup.
+    ctx.clock.wait_for_start_or_cancel(ctx.cancel_handle);
     while ctx.clock.elapsed() == Duration::ZERO {
         if ctx.cancel_handle.is_cancelled() {
             ctx.finished.store(true, Ordering::Relaxed);
