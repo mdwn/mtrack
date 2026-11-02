@@ -26,7 +26,6 @@
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -39,7 +38,7 @@ use crate::{
     lighting::{
         effects::{DmxCommand, EffectError},
         parser::LightShow,
-        timeline::{LightingTimeline, TimelineUpdate},
+        timeline::LightingTimeline,
         EffectEngine,
     },
 };
@@ -201,11 +200,6 @@ pub(super) struct Overlay {
     level: Level,
     /// The ambient show this one replaced, still under it while it fades in.
     inner: Option<Box<Overlay>>,
-    /// The fixtures its moves' groups stand for: a pass starting part way
-    /// replays its history with them, a move taking its heads from another
-    /// by the fixtures they share, under the overlay's lock (see
-    /// `Engine::resolve_groups`).
-    heads: HashMap<String, Vec<String>>,
     /// The instant its time was last moved on to: the frame renders there
     /// too, so the frame and its cues agree on where the show is (rendered
     /// a moment later, a frame could fall past the show's end before the
@@ -233,7 +227,6 @@ impl Overlay {
             length,
             level,
             inner: None,
-            heads: HashMap::new(),
             frame: now,
         }
     }
@@ -250,23 +243,12 @@ impl Overlay {
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
             // Its first cues fire before this frame renders.
-            restart = Some((
-                if elapsed.is_zero() {
-                    self.timeline.start();
-                    TimelineUpdate::default()
-                } else {
-                    let heads = &self.heads;
-                    self.timeline.start_at_resolving(elapsed, &mut |effect| {
-                        super::timeline::resolved_fixtures(heads, effect)
-                    })
-                },
-                elapsed,
-            ));
+            restart = Some(self.timeline.start_at(elapsed));
         }
         let update = self.timeline.update(elapsed);
         let epoch = self.timeline.epoch();
         out.push(match restart {
-            Some((history, at)) => Fired::restarted(epoch, history, at, update),
+            Some(history) => Fired::restarted(epoch, history, update),
             None => Fired::new(epoch, update),
         });
         if let Some(inner) = self.inner.as_mut() {
@@ -327,31 +309,14 @@ impl Overlay {
         self.level.to <= 0.0 && self.level.at(now) <= 0.0
     }
 
-    /// Takes the main engine's rig, as this one's inner overlay does, and
-    /// the fixtures its moves' groups now stand for: a pass starting part
-    /// way after a venue reload replays its history by the venue's.
-    fn adopt_rig(&mut self, main: &EffectEngine, resolve: &mut ResolveGroups) {
+    /// Takes the main engine's rig, as this one's inner overlay does.
+    fn adopt_rig(&mut self, main: &EffectEngine) {
         self.engine.adopt_rig(main);
-        self.heads = resolve(self.timeline.move_groups());
         if let Some(inner) = self.inner.as_mut() {
-            inner.adopt_rig(main, resolve);
+            inner.adopt_rig(main);
         }
-    }
-
-    /// The groups the moves of this overlay's show, and its inner one's,
-    /// target.
-    fn move_groups(&self) -> HashSet<String> {
-        let mut groups = self.timeline.move_groups();
-        if let Some(inner) = self.inner.as_ref() {
-            groups.extend(inner.move_groups());
-        }
-        groups
     }
 }
-
-/// Resolves move groups to the fixtures they stand for (see
-/// `Engine::resolve_groups`).
-pub(super) type ResolveGroups<'a> = dyn FnMut(HashSet<String>) -> HashMap<String, Vec<String>> + 'a;
 
 impl Engine {
     /// The player has gone idle: play the ambient light the player's
@@ -591,22 +556,11 @@ impl Engine {
     }
 
     /// The main engine's rig changed (a venue registration): ambient's
-    /// engine follows it, its moves' groups resolved by `resolve` -- the
-    /// caller may hold the lighting system already, and the overlay's lock
-    /// must not wait on it (see [`Self::resolve_groups`]).
-    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine, resolve: &mut ResolveGroups) {
+    /// engine follows it.
+    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine) {
         if let Some(o) = self.ambient_overlay.lock().as_mut() {
-            o.adopt_rig(main, resolve);
+            o.adopt_rig(main);
         }
-    }
-
-    /// The groups the moves of the ambient shows playing target.
-    pub(super) fn ambient_move_groups(&self) -> HashSet<String> {
-        self.ambient_overlay
-            .lock()
-            .as_ref()
-            .map(Overlay::move_groups)
-            .unwrap_or_default()
     }
 
     /// Fades ambient in to `ambient`: the overlay playing it rises from
@@ -626,7 +580,6 @@ impl Engine {
         // Locked in the effects loop's order: the engine, then the overlay.
         let engine = self.effect_engine.lock().sibling();
         let mut fresh = Overlay::new(ambient.clone(), engine, now);
-        fresh.heads = self.resolve_groups(fresh.timeline.move_groups());
         let mut overlay = self.ambient_overlay.lock();
         fresh.inner = overlay.take().map(Box::new);
         *overlay = Some(fresh);
@@ -2537,45 +2490,11 @@ mod tests {
                 channels,
                 None,
             )]);
-            engine.ambient_follows_rig(&main, &mut |groups| engine.resolve_groups(groups));
+            engine.ambient_follows_rig(&main);
         }
         engine.effects_loop_tick();
         let universe = engine.get_universe(5).unwrap();
         assert_eq!(universe.get_target_value(5), 255.0);
-        Ok(())
-    }
-
-    /// A venue reload while ambient plays resolves its moves' groups again:
-    /// a pass starting part way after it replays its history by the fixtures
-    /// the groups stand for now, not those they did when ambient came in.
-    #[test]
-    fn ambient_resolves_its_moves_again_on_a_venue_reload() -> Result<(), Box<dyn Error>> {
-        let show = "show \"ambient\" {\n    @0.000\n    wash: move pan: 90deg, tilt: 0deg, \
-                    duration: 1s\n}\n";
-        let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
-        engine.idle_ambient(None, false);
-        engine.effects_loop_tick();
-        let heads = || {
-            engine
-                .ambient_overlay
-                .lock()
-                .as_ref()
-                .map(|o| o.heads.clone())
-                .unwrap_or_default()
-        };
-        assert_eq!(heads().get("wash"), None, "no lighting system, by name");
-        for fixtures in [vec!["m1", "m2"], vec!["m3"]] {
-            let main = engine.effect_engine.lock();
-            engine.ambient_follows_rig(&main, &mut |groups| {
-                groups
-                    .into_iter()
-                    .map(|group| (group, fixtures.iter().map(|f| f.to_string()).collect()))
-                    .collect()
-            });
-            drop(main);
-            let expected: Vec<String> = fixtures.iter().map(|f| f.to_string()).collect();
-            assert_eq!(heads().get("wash"), Some(&expected));
-        }
         Ok(())
     }
 

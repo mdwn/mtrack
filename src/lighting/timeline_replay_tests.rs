@@ -35,10 +35,10 @@ fn live_running_at(src: &str, t: Duration) -> Vec<String> {
     let mut at = Duration::ZERO;
     while at <= t {
         let u = tl.update(at);
-        for s in &u.stop_sequences {
-            running.retain(|(sequence, ..)| sequence.as_deref() != Some(s.as_str()));
+        for (_, s) in u.stop_sequences() {
+            running.retain(|(sequence, ..)| sequence.as_deref() != Some(s));
         }
-        for e in u.effects {
+        for e in u.effects() {
             running.push((
                 e.sequence.clone(),
                 e.cue_time.unwrap(),
@@ -57,10 +57,12 @@ fn live_running_at(src: &str, t: Duration) -> Vec<String> {
 
 fn seek_running_at(src: &str, t: Duration) -> Vec<String> {
     let mut tl = LightingTimeline::new(parse(src));
-    tl.start_at(t)
-        .effects_with_elapsed
+    let mut engine = crate::lighting::EffectEngine::reckoner();
+    let _ = engine.start_from(tl.start_at(t), crate::lighting::engine::StopScope::Nothing);
+    engine
+        .get_active_effects()
         .values()
-        .map(|(e, _)| format!("{}@{:?}", e.target_fixtures.join(","), e.cue_time.unwrap()))
+        .map(|e| format!("{}@{:?}", e.target_fixtures.join(","), e.cue_time.unwrap()))
         .collect()
 }
 
@@ -128,7 +130,11 @@ fn replay_stop_then_restart_keeps_later_passes_after_seek() {
     let mut tl = LightingTimeline::new(parse(&looped));
     let _ = tl.start_at(Duration::from_secs(5));
     let later = tl.update(Duration::from_secs(15));
-    assert_eq!(later.effects.len(), 1, "the restarted sequence's 14 s pass");
+    assert_eq!(
+        later.effects().count(),
+        1,
+        "the restarted sequence's 14 s pass"
+    );
 }
 
 #[test]
@@ -203,15 +209,16 @@ fn replay_an_intensity_master_does_not_hold_a_look_at_its_end() {
     let src = "show \"s\" {\n    @00:00.000\n    w: static, color: \"blue\", duration: 2s\n    \
                @00:02.000\n    master(layer: background, intensity: 50%)\n}\n";
     let mut tl = LightingTimeline::new(parse(src));
-    let h = tl.start_at(Duration::from_secs(2));
+    let mut engine = crate::lighting::EffectEngine::reckoner();
+    let _ = engine.start_from(
+        tl.start_at(Duration::from_secs(2)),
+        crate::lighting::engine::StopScope::Nothing,
+    );
     assert_eq!(
-        h.effects_with_elapsed.len(),
+        engine.get_active_effects().len(),
         0,
-        "{:?}",
-        h.effects_with_elapsed
-            .values()
-            .map(|(_, e)| *e)
-            .collect::<Vec<_>>()
+        "{}",
+        engine.format_active_effects()
     );
 }
 

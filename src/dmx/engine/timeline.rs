@@ -12,10 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::{collections::HashMap, error::Error, time::Duration};
+use std::{error::Error, time::Duration};
 
 use tracing::{debug, error, warn};
 
+use crate::lighting::engine::StopScope;
 use crate::songs::Song;
 
 use super::pass::{OutgoingPass, PassClock};
@@ -33,9 +34,8 @@ use super::Engine;
 /// it is gone.
 pub(super) struct Fired {
     epoch: u64,
-    /// A history going in first, and where it starts: ambient's show
-    /// starting over at its end.
-    restart: Option<(crate::lighting::timeline::TimelineUpdate, Duration)>,
+    /// A history going in first: ambient's show starting over at its end.
+    restart: Option<crate::lighting::timeline::SeekHistory>,
     update: crate::lighting::timeline::TimelineUpdate,
 }
 
@@ -49,17 +49,15 @@ impl Fired {
         }
     }
 
-    /// The same, after `history` -- the state the timeline restarted at
-    /// `at` starts from.
+    /// The same, after `history` -- the state the timeline restarted from.
     pub(super) fn restarted(
         epoch: u64,
-        history: crate::lighting::timeline::TimelineUpdate,
-        at: Duration,
+        history: crate::lighting::timeline::SeekHistory,
         update: crate::lighting::timeline::TimelineUpdate,
     ) -> Fired {
         Fired {
             epoch,
-            restart: Some((history, at)),
+            restart: Some(history),
             update,
         }
     }
@@ -71,35 +69,20 @@ impl Fired {
 
     /// Nothing to apply.
     fn is_empty(&self) -> bool {
-        let update = &self.update;
-        self.restart.is_none()
-            && update.effects.is_empty()
-            && update.effects_with_elapsed.is_empty()
-            && update.layer_commands.is_empty()
-            && update.stop_sequences.is_empty()
+        self.restart.is_none() && self.update.is_empty()
     }
 
     /// Applies it to `engine`, the one its timeline drives.
     pub(super) fn apply(self, engine: &mut crate::lighting::EffectEngine) {
-        if let Some((history, at)) = self.restart {
+        let mut errors = match self.restart {
             // Its own show only: the MIDI DMX store is every engine's.
-            engine.stop_show_effects();
-            // A freeze in the history holds where the pass starts from,
-            // not where the last one ended.
-            engine.set_song_time(at);
-            apply_update(engine, history);
+            Some(history) => engine.start_from(history, StopScope::Show),
+            None => Vec::new(),
+        };
+        errors.extend(engine.apply_timeline_update(self.update));
+        for e in errors {
+            error!("Failed to start lighting effect: {}", e);
         }
-        apply_update(engine, self.update);
-    }
-}
-
-/// Applies a timeline update, its groups resolved, to `engine`.
-fn apply_update(
-    engine: &mut crate::lighting::EffectEngine,
-    update: crate::lighting::timeline::TimelineUpdate,
-) {
-    for e in engine.apply_timeline_update(update) {
-        error!("Failed to start lighting effect: {}", e);
     }
 }
 
@@ -180,18 +163,11 @@ impl Engine {
         // A pass begun late starts from the state its cues before `to` leave,
         // as a seek does, rather than firing them all in its first frame.
         // Groups are resolved here, with no lock held.
-        let mut history = None;
-        if let Some(timeline) = next.as_mut() {
-            if start.is_zero() {
-                timeline.start();
-            } else {
-                let heads = self.resolve_groups(timeline.move_groups());
-                let mut update = timeline
-                    .start_at_resolving(start, &mut |effect| resolved_fixtures(&heads, effect));
-                update.map_effects(|effect| self.resolve_effect_groups(effect));
-                history = Some(update);
-            }
-        }
+        let history = next.as_mut().map(|timeline| {
+            let mut history = timeline.start_at(start);
+            history.map_effects(|effect| self.resolve_effect_groups(effect));
+            history
+        });
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
         // crossfade before it began.
@@ -204,9 +180,8 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
-        if let Some(update) = history {
-            effect_engine.set_song_time(start);
-            for e in effect_engine.apply_timeline_update(update) {
+        if let Some(history) = history {
+            for e in effect_engine.start_from(history, StopScope::Nothing) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
@@ -317,7 +292,7 @@ impl Engine {
             .into_iter()
             .filter(|fired| !fired.is_empty())
             .map(|mut fired| {
-                if let Some((history, _)) = fired.restart.as_mut() {
+                if let Some(history) = fired.restart.as_mut() {
                     history.map_effects(|effect| self.resolve_effect_groups(effect));
                 }
                 fired
@@ -456,76 +431,113 @@ impl Engine {
     }
 
     fn restart_lighting_timeline(&self, start_time: Duration, midi: MidiDmxStart) {
-        let start_time = self.to_delayed_song_time(start_time);
+        self.rebuild_at(
+            self.to_delayed_song_time(start_time),
+            None,
+            StopScope::All,
+            midi,
+        );
+    }
 
-        // A move takes its heads from another by the fixtures they share,
-        // so the history needs its moves' groups resolved: here, with no
-        // timeline lock held, as the effects' groups are below.
-        let heads = if start_time == Duration::ZERO {
-            HashMap::new()
-        } else {
-            let groups = self
-                .current_song_timeline
-                .lock()
-                .as_ref()
-                .map(|timeline| timeline.move_groups())
-                .unwrap_or_default();
-            self.resolve_groups(groups)
-        };
-        let mut timeline_update = {
-            let mut current_timeline = self.current_song_timeline.lock();
-            if let Some(timeline) = current_timeline.as_mut() {
-                // Firing nothing until the state it starts from is in (below).
-                timeline.hold(true);
-                if start_time == Duration::ZERO {
-                    timeline.start();
-                    crate::lighting::timeline::TimelineUpdate::default()
-                } else {
-                    // Process historical cues to ensure deterministic state
-                    timeline.start_at_resolving(start_time, &mut |effect| {
-                        resolved_fixtures(&heads, effect)
-                    })
+    /// A show file edited live: `timeline`, its shows parsed again, takes
+    /// the current one's place, rebuilt where the lights are now, its
+    /// effects on `tempo_map`. Only the show's effects stop: the MIDI DMX
+    /// store goes on as MIDI set it, which nothing would put back mid-song
+    /// (#583).
+    pub(crate) fn reload_show(
+        &self,
+        timeline: crate::lighting::timeline::LightingTimeline,
+        tempo_map: Option<crate::lighting::tempo::TempoMap>,
+    ) {
+        // Where the lights are, not the transport: rebuilding at the
+        // undelayed time put the show the delay ahead of the rig, skipping
+        // the cues in between (#593).
+        self.rebuild_at(
+            self.to_delayed_song_time(self.get_song_time()),
+            Some((timeline, tempo_map)),
+            StopScope::Show,
+            MidiDmxStart::Leave,
+        );
+    }
+
+    /// Rebuilds the main show at `at` (delayed song time): the current
+    /// timeline armed there -- or `reload`'s, with its tempo, swapped in for
+    /// it -- and the state its cues before `at` leave put into the main
+    /// engine in place of what `scope` stops, `midi` done with the MIDI DMX
+    /// playbacks as it goes in. The one way a seek, a section's restart, a
+    /// song's start and a live reload rebuild the show.
+    ///
+    /// What goes and what comes in do so under the one lock, groups
+    /// resolved first with none held: a frame between the two would find
+    /// the channels unwritten and send them 0 -- a black flash at every seek
+    /// and section loop (#581). The timeline fires nothing until the state
+    /// is in; then its cues -- one at the start point too -- fire over it.
+    fn rebuild_at(
+        &self,
+        at: Duration,
+        reload: Option<(
+            crate::lighting::timeline::LightingTimeline,
+            Option<crate::lighting::tempo::TempoMap>,
+        )>,
+        scope: StopScope,
+        midi: MidiDmxStart,
+    ) {
+        // A reloaded timeline is armed before it goes in, with no lock held.
+        let reload = reload.map(|(mut timeline, tempo_map)| {
+            let history = timeline.start_at(at);
+            (timeline, tempo_map, history)
+        });
+        let (mut history, tempo_map) = {
+            let mut current = self.current_song_timeline.lock();
+            let (history, tempo_map) = match reload {
+                Some((mut timeline, tempo_map, history)) => {
+                    // The song's end bound belongs to the song, not the
+                    // show text.
+                    timeline.set_end_cap(current.as_ref().and_then(|t| t.end_cap()));
+                    timeline.hold(true);
+                    *current = Some(timeline);
+                    (history, Some(tempo_map))
                 }
-            } else {
-                crate::lighting::timeline::TimelineUpdate::default()
-            }
-        };
-
-        // A show that is loaded but exhausted the moment it is armed will not
-        // fire anything for the whole playback, and says nothing about it. That
-        // is the shape of #332, so it is worth a line in the log.
-        {
-            let timeline = self.current_song_timeline.lock();
-            if let Some(tl) = timeline.as_ref() {
+                None => {
+                    let history = match current.as_mut() {
+                        Some(timeline) => {
+                            timeline.hold(true);
+                            timeline.start_at(at)
+                        }
+                        None => crate::lighting::timeline::SeekHistory {
+                            at,
+                            ..Default::default()
+                        },
+                    };
+                    (history, None)
+                }
+            };
+            // A show that is loaded but exhausted the moment it is armed
+            // will not fire anything for the whole playback, and says
+            // nothing about it. That is the shape of #332, so it is worth a
+            // line in the log.
+            if let Some(tl) = current.as_ref() {
                 if tl.cue_count() > 0 && tl.cues_remaining() == 0 {
                     warn!(
                         cues = tl.cue_count(),
-                        start_time_ms = start_time.as_millis(),
+                        start_time_ms = at.as_millis(),
                         "lighting timeline armed with no cues ahead of the pointer — \
                          no cues will fire for this playback"
                     );
                 }
             }
-        }
-
-        // The previous song's effects go and the historical state comes in
-        // under the one lock, groups resolved first: a frame between the two
-        // would find the channels unwritten and send them 0 -- a black flash
-        // at every seek and section loop (#581). As the watcher's reload.
-        timeline_update.map_effects(|effect| self.resolve_effect_groups(effect));
+            (history, tempo_map)
+        };
+        history.map_effects(|effect| self.resolve_effect_groups(effect));
         let mut effect_engine = self.effect_engine.lock();
-        effect_engine.stop_all_effects();
-        // A freeze in the history holds at the start point, where the
-        // effects it replays are started from.
-        effect_engine.set_song_time(start_time);
-        self.start_midi_dmx(midi, start_time);
-        if start_time > Duration::ZERO {
-            for e in effect_engine.apply_timeline_update(timeline_update) {
-                error!("Failed to start lighting effect: {}", e);
-            }
+        if let Some(tempo_map) = tempo_map {
+            effect_engine.set_tempo_map(tempo_map);
         }
+        for e in effect_engine.start_from(history, scope) {
+            error!("Failed to start lighting effect: {}", e);
+        }
+        self.start_midi_dmx(midi, at);
         drop(effect_engine);
-        // Now its cues -- one at the start point too -- fire over that.
         if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
             timeline.hold(false);
         }
@@ -572,19 +584,6 @@ impl Engine {
         } else {
             effect
         }
-    }
-
-    /// Each of `groups` resolved to its fixtures, as
-    /// [`Self::resolve_effect_groups`] resolves an effect's. Empty with no
-    /// lighting system, where groups are fixtures by name.
-    pub(super) fn resolve_groups(
-        &self,
-        groups: impl IntoIterator<Item = String>,
-    ) -> HashMap<String, Vec<String>> {
-        let Some(lighting_system) = &self.lighting_system else {
-            return HashMap::new();
-        };
-        resolve_groups_in(&mut lighting_system.lock(), groups)
     }
 
     /// Stops the lighting timeline
@@ -700,36 +699,4 @@ impl Engine {
             Vec::new()
         }
     }
-}
-
-/// [`Engine::resolve_groups`] against a lighting system already locked.
-pub(super) fn resolve_groups_in(
-    lighting_system: &mut crate::lighting::system::LightingSystem,
-    groups: impl IntoIterator<Item = String>,
-) -> HashMap<String, Vec<String>> {
-    groups
-        .into_iter()
-        .map(|group| {
-            let fixtures = lighting_system.resolve_logical_group_graceful(&group);
-            (group, fixtures)
-        })
-        .collect()
-}
-
-/// The fixtures `effect`'s groups stand for, by `resolved` (see
-/// `Engine::resolve_groups`): a group it does not have is a fixture by name.
-pub(super) fn resolved_fixtures(
-    resolved: &HashMap<String, Vec<String>>,
-    effect: &crate::lighting::EffectInstance,
-) -> Vec<String> {
-    effect
-        .target_fixtures
-        .iter()
-        .flat_map(|group| {
-            resolved
-                .get(group)
-                .cloned()
-                .unwrap_or_else(|| vec![group.clone()])
-        })
-        .collect()
 }

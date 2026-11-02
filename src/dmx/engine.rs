@@ -763,14 +763,11 @@ impl Engine {
     /// Drops every registered fixture: what a restart gives for a venue that
     /// does not register, so what runs now is what runs after a reboot.
     fn clear_registered_fixtures(&self) {
-        // Resolved before the engine is locked: the venue's registration
-        // locks the lighting system first, then the engine.
-        let heads = self.resolve_groups(self.ambient_move_groups());
         let mut effect_engine = self.effect_engine.lock();
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
-        self.ambient_follows_rig(&effect_engine, &mut |_| heads.clone());
+        self.ambient_follows_rig(&effect_engine);
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -780,7 +777,7 @@ impl Engine {
     /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let mut lighting_system = lighting_system.lock();
+            let lighting_system = lighting_system.lock();
             let venue = lighting_system.current_venue().map(str::to_string);
             let fixture_infos = match lighting_system.get_current_venue_fixtures() {
                 Ok(infos) => {
@@ -874,9 +871,7 @@ impl Engine {
                     .unwrap_or_default(),
             );
             drop(midi_dmx_store);
-            self.ambient_follows_rig(&effect_engine, &mut |groups| {
-                timeline::resolve_groups_in(&mut lighting_system, groups)
-            });
+            self.ambient_follows_rig(&effect_engine);
         }
         Ok(())
     }
@@ -3974,7 +3969,7 @@ mod test {
             // restart put in.
             let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
             let (green, epoch) = fire_at(&engine, 2.0);
-            assert!(!green.effects.is_empty(), "the green cue fired");
+            assert!(green.effects().next().is_some(), "the green cue fired");
 
             engine.update_song_time(Duration::from_millis(500));
             engine.start_lighting_timeline_at(Duration::from_millis(500));
@@ -5989,23 +5984,22 @@ mod test {
             epoch
         }
         use crate::lighting::parser::{LayerCommand, LayerCommandType};
+        use crate::lighting::timeline::Step;
 
         #[test]
         fn applies_layer_commands() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![LayerCommand {
-                    command_type: LayerCommandType::Clear,
-                    layer: None,
-                    intensity: None,
-                    speed: None,
-                }],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(
+                    Duration::ZERO,
+                    Step::Command(LayerCommand {
+                        command_type: LayerCommandType::Clear,
+                        layer: None,
+                        intensity: None,
+                        speed: None,
+                    }),
+                )],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6017,67 +6011,7 @@ mod test {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec!["test_seq".to_string()],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
-            };
-
-            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
-            Ok(())
-        }
-
-        #[test]
-        fn applies_effects_with_elapsed() -> Result<(), Box<dyn Error>> {
-            let (engine, _cancel_handle) = create_engine()?;
-
-            // Register a fixture for the effect
-            let mut channels = std::collections::HashMap::new();
-            channels.insert("dimmer".to_string(), 1);
-            let fixture_info = crate::lighting::effects::FixtureInfo::new(
-                "test_fixture".to_string(),
-                1,
-                1,
-                "Generic".to_string(),
-                channels,
-                None,
-            );
-            {
-                let mut ee = engine.effect_engine.lock();
-                ee.register_fixture(fixture_info);
-            }
-
-            let effect = crate::lighting::EffectInstance::new(
-                "test_effect".to_string(),
-                crate::lighting::effects::EffectType::Static {
-                    parameters: {
-                        let mut p = std::collections::HashMap::new();
-                        p.insert("dimmer".to_string(), 0.5);
-                        p
-                    },
-                    duration: Duration::ZERO,
-                },
-                vec!["test_fixture".to_string()],
-                None,
-                None,
-                None,
-            );
-
-            let mut effects_with_elapsed = std::collections::HashMap::new();
-            effects_with_elapsed.insert(
-                "test_effect".to_string(),
-                (effect, std::time::Duration::from_secs(2)),
-            );
-
-            let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed,
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Stop("test_seq".to_string()))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6120,12 +6054,7 @@ mod test {
             );
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![effect],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Start(effect))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());

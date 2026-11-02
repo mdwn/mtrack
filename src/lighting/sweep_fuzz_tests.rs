@@ -187,15 +187,13 @@ fn played_run(src: &str, phase: u64, until_ms: u64) -> Vec<(u64, Vec<f64>, usize
         let t = Duration::from_millis(ms);
         let u = tl.update(t);
         let clears = u
-            .layer_commands
-            .iter()
-            .zip(&u.layer_command_times)
-            .filter(|(c, _)| c.command_type == LayerCommandType::Clear)
-            .map(|(_, at)| *at);
+            .layer_commands()
+            .filter(|(_, c)| c.command_type == LayerCommandType::Clear)
+            .map(|(at, _)| at);
         let cut = clears
-            .chain(u.stop_sequence_times.iter().copied())
+            .chain(u.stop_sequences().map(|(at, _)| at))
             .max()
-            .filter(|_| !u.effects.is_empty())
+            .filter(|_| u.effects().next().is_some())
             .map_or(0, |at| at.as_millis() as usize);
         apply_timeline_update(&mut engine, u, &mut |e| e);
         let _ = engine.update(step, Some(t));
@@ -217,8 +215,7 @@ fn seek_run(src: &str, seek_ms: u64, at: &[u64]) -> Vec<(u64, Vec<f64>)> {
     let mut engine = fresh();
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     let step = Duration::from_millis(10);
     let last = *at.iter().max().unwrap();
     let mut out = Vec::new();
