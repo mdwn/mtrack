@@ -109,7 +109,7 @@ pub struct LoopControl {
 /// follower reads it with a [`JumpCursor`] of its own.
 #[derive(Default)]
 pub struct SectionJumpLog {
-    jumps: parking_lot::Mutex<Vec<crate::section_loop::SectionJump>>,
+    jumps: parking_lot::Mutex<Jumps>,
     /// Who commits the jumps: nobody yet, the audio, or the playback's own
     /// publisher. One only, whatever happens to the audio at the start.
     publisher: std::sync::atomic::AtomicU8,
@@ -121,6 +121,47 @@ pub struct SectionJumpLog {
     /// notes or cues, since a section armed late, or one looping past them,
     /// takes them back.
     closed: AtomicBool,
+}
+
+/// The jumps of a [`SectionJumpLog`], with what they have put back counted
+/// as they come, and how many were due by the latest time asked about, so
+/// a status poll does not walk them all.
+#[derive(Default)]
+struct Jumps {
+    list: Vec<crate::section_loop::SectionJump>,
+    /// The time the jumps up to and including each put back, in all.
+    put_back: Vec<Duration>,
+    /// The latest time asked about, and how many jumps had fallen due by it.
+    due: Option<(Duration, usize)>,
+}
+
+impl Jumps {
+    fn push(&mut self, jump: crate::section_loop::SectionJump) {
+        let total = self.put_back.last().copied().unwrap_or_default() + jump.amount();
+        self.put_back.push(total);
+        self.list.push(jump);
+    }
+
+    /// How many jumps have fallen due by `at`: those from the first up to
+    /// one that falls later. Counted on from the latest time asked about,
+    /// when `at` is no earlier, as it is for the playback's own clock.
+    fn due_by(&mut self, at: Duration) -> usize {
+        let mut due = match self.due {
+            Some((asked, due)) if asked <= at => due,
+            _ => 0,
+        };
+        while self.list.get(due).is_some_and(|jump| jump.at <= at) {
+            due += 1;
+        }
+        self.due = Some((at, due));
+        due
+    }
+
+    /// The time the first `due` jumps put back.
+    fn put_back(&self, due: usize) -> Duration {
+        due.checked_sub(1)
+            .map_or(Duration::ZERO, |last| self.put_back[last])
+    }
 }
 
 /// Who commits a playback's section loop jumps.
@@ -171,13 +212,19 @@ impl SectionJumpLog {
     /// The time the jumps falling due by `at` (on the playback timeline) put
     /// back, and how many they are.
     pub fn put_back_by(&self, at: Duration) -> (Duration, usize) {
-        self.jumps
-            .lock()
-            .iter()
-            .take_while(|jump| jump.at <= at)
-            .fold((Duration::ZERO, 0), |(time, count), jump| {
-                (time + jump.amount(), count + 1)
-            })
+        let mut jumps = self.jumps.lock();
+        let due = jumps.due_by(at);
+        (jumps.put_back(due), due)
+    }
+
+    /// Where in the song playback is at `at` on the playback timeline, by
+    /// the jumps fallen due by then: `at` before any, and from the latest's
+    /// target on after one.
+    pub fn song_position(&self, at: Duration) -> Duration {
+        let mut jumps = self.jumps.lock();
+        let due = jumps.due_by(at);
+        due.checked_sub(1)
+            .map_or(at, |latest| jumps.list[latest].song_position(at))
     }
 
     /// Whether the audio has taken on committing the jumps.
@@ -190,9 +237,9 @@ impl SectionJumpLog {
     /// the song (its crossfade) that plays only as a pass crosses out.
     pub fn crossing_out(&self) -> Option<Duration> {
         let now = self.now()?;
-        let due = self.put_back_by(now).1;
-        let jumps = self.jumps.lock();
-        let latest = jumps.get(..due)?.last()?;
+        let mut jumps = self.jumps.lock();
+        let due = jumps.due_by(now);
+        let latest = jumps.list.get(due.checked_sub(1)?)?;
         latest.outgoing_position(now).filter(|_| latest.pass)
     }
 
@@ -203,16 +250,20 @@ impl SectionJumpLog {
         index: usize,
         pick: impl Fn(&crate::section_loop::SectionJump) -> bool,
     ) -> bool {
-        let due = self.put_back_now().1;
-        let jumps = self.jumps.lock();
+        let Some(now) = self.now() else {
+            return false;
+        };
+        let mut jumps = self.jumps.lock();
+        let due = jumps.due_by(now);
         jumps
-            .get(index..due.min(jumps.len()))
+            .list
+            .get(index..due)
             .is_some_and(|jumps| jumps.iter().any(pick))
     }
 
     /// How many jumps have been committed, fallen due or not.
     pub fn committed(&self) -> usize {
-        self.jumps.lock().len()
+        self.jumps.lock().list.len()
     }
 
     /// Records a jump committed to.
@@ -233,7 +284,7 @@ impl SectionJumpLog {
 
     /// The jump at `index`, if it has been committed to.
     fn get(&self, index: usize) -> Option<crate::section_loop::SectionJump> {
-        self.jumps.lock().get(index).cloned()
+        self.jumps.lock().list.get(index).cloned()
     }
 }
 
@@ -508,6 +559,60 @@ mod test {
             pass: false,
         });
         assert!(!log.due_since(1, |_| true), "committed, not yet due");
+    }
+
+    /// What the jumps falling due by a time put back, and the song position
+    /// then, come out as walking them all from the first would make them,
+    /// whatever order the times are asked in, jumps committed meanwhile and
+    /// one falling a moment before the jump ahead of it included.
+    #[test]
+    fn the_log_counts_what_is_due_as_a_walk_from_the_first_does() {
+        use crate::section_loop::SectionJump;
+        let ms = Duration::from_millis;
+        let walk = |jumps: &[SectionJump], at: Duration| {
+            jumps
+                .iter()
+                .take_while(|jump| jump.at <= at)
+                .fold((Duration::ZERO, 0), |(time, count), jump| {
+                    (time + jump.amount(), count + 1)
+                })
+        };
+        let jump = |at: u64, from: u64, to: u64| SectionJump {
+            at: ms(at),
+            from: ms(from),
+            to: ms(to),
+            overlap: Duration::ZERO,
+            pass: false,
+        };
+        let all = [
+            jump(18_000, 18_000, 10_000),
+            jump(26_000, 18_000, 10_000),
+            // Armed past its end a moment after a jump fired early.
+            jump(25_990, 17_990, 10_000),
+            jump(33_990, 18_000, 10_000),
+            jump(50_000, 34_010, 20_000),
+        ];
+        let log = SectionJumpLog::default();
+        let mut pushed = Vec::new();
+        let asks = [
+            0, 17_999, 18_000, 25_995, 26_000, 26_000, 20_000, 40_000, 33_990, 60_000, 1_000,
+            60_000,
+        ];
+        for (i, ask) in asks.into_iter().enumerate() {
+            if let Some(next) = all.get(i / 2) {
+                if i % 2 == 0 {
+                    log.push(next.clone());
+                    pushed.push(next.clone());
+                }
+            }
+            let at = ms(ask);
+            let (put_back, due) = walk(&pushed, at);
+            assert_eq!(log.put_back_by(at), (put_back, due), "asked at {ask}ms");
+            let position = due
+                .checked_sub(1)
+                .map_or(at, |latest| pushed[latest].song_position(at));
+            assert_eq!(log.song_position(at), position, "asked at {ask}ms");
+        }
     }
 
     #[test]
