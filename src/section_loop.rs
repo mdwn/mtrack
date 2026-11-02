@@ -1305,8 +1305,8 @@ mod jump_invariants {
         }
     }
 
-    /// A follower's cursor counts the song position from the jumps it has
-    /// passed as the time they put back does, and the log tells a pass
+    /// A follower's cursor, and the log, count the song position from the
+    /// jumps passed as the time they put back does, and the log tells a pass
     /// crossing out where the jump it leaves says it is.
     #[test]
     fn a_cursor_counts_the_song_position_as_the_time_put_back_does() {
@@ -1327,6 +1327,9 @@ mod jump_invariants {
                 );
                 let (put_back, due) = log.put_back_by(t);
                 assert_eq!(put_back, cursor.consumed(), "seed {seed} at {t:?}");
+                // The player's position reads the log's, which counts it so
+                // too.
+                assert_eq!(log.song_position(t), t - put_back, "seed {seed} at {t:?}");
                 let latest = due.checked_sub(1).map(|k| &jumps[k]);
                 let crossing = latest
                     .filter(|jump| jump.pass)

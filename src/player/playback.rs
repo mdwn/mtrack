@@ -1159,8 +1159,7 @@ impl Player {
                     Some(now) => now,
                     None => play_start_time.elapsed()?,
                 };
-                let (consumed, _) = log.put_back_by(raw);
-                Some(raw.saturating_sub(consumed))
+                Some(log.song_position(raw))
             }
             None => self.pending_start(),
         })
@@ -1527,7 +1526,7 @@ impl Player {
             let cut_samples = crate::audio::crossfade::default_crossfade_samples(rate);
             let (fade_samples, curve) = match &fade {
                 Some(fade) => (
-                    (fade.length.as_secs_f64() * rate as f64).round() as u64,
+                    crate::audio::duration_to_samples(fade.length, rate),
                     fade.curve,
                 ),
                 None => (cut_samples, crate::audio::crossfade::CrossfadeCurve::Linear),
