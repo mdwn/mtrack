@@ -144,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the ramp: the click, the beat clock, the beat grid and `@bar/beat` cues all move. Snaps
   and steady tempos are unchanged.
 
+- **A config change while a song plays is saved, and applied once the player is idle, on every
+  surface**: the web UI's config and profile saves answered 409 while a song played or was
+  paused, or an auto play waited, while the same change over gRPC or MCP was saved and its
+  hardware reload deferred. All three now save it and defer the reload, and the reply says so:
+  `applied: false` with a `message`, the web UI's status still 200 (201 for a new profile). A
+  reload that fails after the save is answered the same way on all three, with the new checksum
+  and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
+  leaving the client the old checksum of a config already saved.
+
 - **Songs and playlists reload from one place**: the paths songs and playlists are read from are
   resolved once, as mtrack starts, and every reload reads them, whichever surface asks. The web UI
   no longer loads a `playlist.yaml` beside the config that nothing configured (it used to on its

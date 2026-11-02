@@ -71,11 +71,6 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     if let Err(errors) = config_io::validate_player_config(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
-    // As for a profile save: the hardware is reloaded from the save, which
-    // it cannot be during playback.
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
 
     // The store persists its own copy of this file on every mutation: the
     // copy is read back from the save before any mutation can land, or the
@@ -127,7 +122,7 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     }
     // The running hardware was set up from the config before the save, and
     // matches it only once reloaded from the store's copy, which now holds it.
-    let reload = reload_hardware_after_mutation(&state).await;
+    let reload = apply_config_change(&state).await;
     (
         StatusCode::OK,
         Json(with_reload(json!({"status": "saved"}), reload)),
@@ -197,65 +192,33 @@ fn require_config_store(
     })
 }
 
-/// Returns a 409 Conflict response if the player is currently playing, is
-/// paused, or an auto play is waiting out its gap: the reload a save makes
-/// would leave the hardware initializing when the gap ends, and the song
-/// would not start. A reload waits for all three, so a save then would not
-/// take effect until the song stops. A position cued by a seek while stopped
-/// is not paused, and does not hold a save.
-pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
-    if state.player.is_playing().await
-        || state.player.auto_play_status().is_some()
-        || state.player.is_paused()
-    {
-        Some(
-            (
-                StatusCode::CONFLICT,
-                Json(json!({"error": "Cannot modify hardware config while a song is playing or paused"})),
-            )
-                .into_response(),
-        )
-    } else {
-        None
-    }
-}
-
-/// Reloads hardware and controllers from the updated config. Non-blocking —
-/// spawns async device discovery and returns immediately. The broadcast channel
-/// is already stored on the Player and will be wired when the DMX engine comes up.
-/// A song started since `reject_if_playing` defers the hardware reload until
-/// playback ends, so the save still answers 200: it takes effect then. Returns
-/// what the reply says of it: `applied`, and a `message` when it is not.
-pub(super) async fn reload_hardware_after_mutation(
+/// Applies a saved config change to the running hardware, as every
+/// surface does after a save (see [`crate::player::ConfigApply`]), and
+/// returns what the reply says of it: `applied`, and a `message` when it is
+/// not. A save is made whatever the player is doing: while a song plays, is
+/// paused or fading out, or an auto play waits out its gap, the hardware
+/// reload waits until the player is idle, and the save answers with
+/// `applied: false` and a message saying so. It used to be refused with a
+/// 409, though the gRPC and MCP config changes saved and deferred.
+/// Non-blocking: device discovery runs in the background.
+pub(super) async fn apply_config_change(
     state: &WebUiState,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let reload = state
-        .player
-        .reload_hardware()
-        .await
-        .map_err(|e| e.to_string());
+    config_apply_fields(&state.player.apply_config_change().await)
+}
+
+/// The reply's fields for what became of a saved config change.
+fn config_apply_fields(
+    outcome: &crate::player::ConfigApply,
+) -> serde_json::Map<String, serde_json::Value> {
     // The reload brings the controllers in line with the config itself,
     // restarting only those it changed, or whose MIDI device it reopened.
     // Forcing them all here as well tore down every OSC, gRPC and MCP
     // client for a change that was not theirs.
     let mut fields = serde_json::Map::new();
-    match reload {
-        Ok(reload) => {
-            fields.insert("applied".into(), json!(reload.applied()));
-            if let Some(message) = reload.message() {
-                fields.insert("message".into(), json!(message));
-            }
-        }
-        Err(e) => {
-            warn!("Hardware reload failed: {}", e);
-            fields.insert("applied".into(), json!(false));
-            fields.insert(
-                "message".into(),
-                json!(format!(
-                    "The config was saved, but the hardware reload failed: {e}"
-                )),
-            );
-        }
+    fields.insert("applied".into(), json!(outcome.applied()));
+    if let Some(message) = outcome.message() {
+        fields.insert("message".into(), json!(message));
     }
     fields
 }
@@ -344,7 +307,7 @@ fn deserialize_optional_section<T: serde::de::DeserializeOwned>(
 
 /// Shared preamble for optional, validatable config section updates.
 ///
-/// Handles: reject_if_playing, checksum extraction, deserialization, validation,
+/// Handles: checksum extraction, deserialization, validation,
 /// config store lookup. Returns the deserialized value, checksum, and store on
 /// success.
 #[allow(clippy::result_large_err)]
@@ -356,9 +319,6 @@ async fn prepare_optional_update<T>(
 where
     T: serde::de::DeserializeOwned + Validatable,
 {
-    if let Some(resp) = reject_if_playing(state).await {
-        return Err(resp);
-    }
     let checksum = extract_checksum(body)?;
     let value: Option<T> = deserialize_optional_section(body, field)?;
     if let Some(ref v) = value {
@@ -378,7 +338,7 @@ async fn finish_config_update(
 ) -> axum::response::Response {
     match result {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(state).await;
+            let reload = apply_config_change(state).await;
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -429,9 +389,6 @@ pub(super) async fn put_config_controllers(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
     let checksum = match extract_checksum(&body) {
         Ok(c) => c,
         Err(e) => return e,
@@ -463,7 +420,7 @@ pub(super) async fn put_config_controllers(
     };
     match store.update_controllers(controllers, &checksum).await {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -475,10 +432,6 @@ pub(super) async fn put_config_samples(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
     let checksum = match extract_checksum(&body) {
         Ok(c) => c,
         Err(e) => return e,
@@ -519,7 +472,7 @@ pub(super) async fn put_config_samples(
         .await
     {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -532,10 +485,6 @@ pub(super) async fn put_config_metronome(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
     let checksum = match extract_checksum(&body) {
         Ok(c) => c,
         Err(e) => return e,
@@ -568,7 +517,7 @@ pub(super) async fn put_config_metronome(
     let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             // The default-on flag is applied at song load; refresh both.
             state.player.set_default_metronome(default_enabled);
             if let Err(resp) = super::helpers::reload_songs(&state).await {
@@ -585,10 +534,6 @@ pub(super) async fn post_config_profile(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
     let checksum = match extract_checksum(&body) {
         Ok(c) => c,
         Err(e) => return e,
@@ -624,7 +569,7 @@ pub(super) async fn post_config_profile(
     };
     match store.add_profile(profile, &checksum).await {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             config_snapshot_response(snapshot, StatusCode::CREATED, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -637,10 +582,6 @@ pub(super) async fn put_config_profile(
     Path(index): Path<usize>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
     let checksum = match extract_checksum(&body) {
         Ok(c) => c,
         Err(e) => return e,
@@ -678,7 +619,7 @@ pub(super) async fn put_config_profile(
 
     match store.update_profile(index, profile, &checksum).await {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -691,10 +632,6 @@ pub(super) async fn delete_config_profile(
     Path(index): Path<usize>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
     let checksum = match params.get("expected_checksum") {
         Some(c) => c.to_string(),
         None => {
@@ -712,7 +649,7 @@ pub(super) async fn delete_config_profile(
     };
     match store.remove_profile(index, &checksum).await {
         Ok(snapshot) => {
-            let reload = reload_hardware_after_mutation(&state).await;
+            let reload = apply_config_change(&state).await;
             config_snapshot_response(snapshot, StatusCode::OK, reload)
         }
         Err(e) => config_store_error_response(e),
@@ -1329,9 +1266,9 @@ mod test {
         let (state, _dir) = test_state_with_audio_device("mock-device");
         set_store(&state);
 
-        assert!(super::reject_if_playing(&state).await.is_none());
+        assert!(!state.player.is_playing().await);
         state.player.play().await.unwrap();
-        let reload = super::reload_hardware_after_mutation(&state).await;
+        let reload = super::apply_config_change(&state).await;
         // The save's reply says it has not been applied yet.
         assert_eq!(reload["applied"], serde_json::json!(false), "{reload:?}");
         assert!(reload["message"]
@@ -1373,7 +1310,7 @@ mod test {
         let tasks = state.player.controller_tasks();
         assert_eq!(tasks.len(), 1);
 
-        let reload = super::reload_hardware_after_mutation(&state).await;
+        let reload = super::apply_config_change(&state).await;
         assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
         state.player.await_hardware_ready().await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1386,9 +1323,11 @@ mod test {
     }
 
     /// A save in an auto play's gap reset the hardware, and the song failed
-    /// to start when the gap ended (#578): the gap counts as playing.
+    /// to start when the gap ended (#578): the gap counts as playing. The
+    /// save is made, and its reload waits for the song, as a save while it
+    /// plays does; the reply says so.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_save_while_an_auto_play_waits_is_refused() {
+    async fn a_save_while_an_auto_play_waits_is_saved_and_waits() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("playlist.yaml");
         std::fs::write(
@@ -1419,14 +1358,23 @@ mod test {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert!(state.player.cancel_waiting_auto_play());
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        assert!(body["message"].as_str().is_some_and(|m| m.contains("idle")));
+        assert!(
+            state.player.hardware_status().init_done,
+            "the hardware was reset in the gap"
+        );
+        assert!(state.player.cancel_waiting_auto_play(), "still waiting");
     }
 
     /// A paused song is a show in progress, which a reload waits for, as for
-    /// a playing one: a save then is refused rather than left waiting.
+    /// a playing one. A save then used to be refused with a 409, though the
+    /// gRPC and MCP config changes saved and waited: it is saved, the reply
+    /// says the reload waits, and it runs once the song is stopped.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_save_while_a_song_is_paused_is_refused() {
+    async fn a_save_while_a_song_is_paused_is_saved_and_applied_once_stopped() {
         let (state, _dir) = test_state_with_audio_device("mock-device");
         set_store(&state);
         state.player.play().await.unwrap();
@@ -1443,9 +1391,20 @@ mod test {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["status"], "saved");
+        assert_eq!(body["applied"], serde_json::json!(false), "{body}");
+        assert!(state.player.is_paused(), "the pause was kept");
+        assert!(
+            state.player.audio_device().is_some(),
+            "the hardware was reset under the pause"
+        );
         state.player.stop().await;
-        assert!(super::reject_if_playing(&state).await.is_none());
+        crate::testutil::eventually(
+            || state.player.audio_device().is_none(),
+            "the saved config was never applied",
+        );
     }
 
     /// A position cued by a seek while stopped read as a pause, and a save
@@ -1461,7 +1420,29 @@ mod test {
             .await
             .unwrap();
         assert!(!state.player.is_playing().await);
-        assert!(super::reject_if_playing(&state).await.is_none());
+        let reload = super::apply_config_change(&state).await;
+        assert_eq!(reload["applied"], serde_json::json!(true), "{reload:?}");
+    }
+
+    /// The reply to a save says what became of it on the hardware, as the
+    /// gRPC and MCP replies do: applied, deferred with a message, or saved
+    /// and not applied because the reload failed, with the reason.
+    #[test]
+    fn a_saves_reply_says_what_became_of_it() {
+        use crate::player::ConfigApply;
+        let applied = super::config_apply_fields(&ConfigApply::Applied);
+        assert_eq!(applied["applied"], serde_json::json!(true));
+        assert!(!applied.contains_key("message"));
+        let deferred = super::config_apply_fields(&ConfigApply::Deferred);
+        assert_eq!(deferred["applied"], serde_json::json!(false));
+        assert!(deferred["message"].as_str().unwrap().contains("idle"));
+        let failed = super::config_apply_fields(&ConfigApply::Failed("no store".into()));
+        assert_eq!(failed["applied"], serde_json::json!(false));
+        let message = failed["message"].as_str().unwrap();
+        assert!(
+            message.contains("saved") && message.contains("no store"),
+            "{message}"
+        );
     }
 
     #[tokio::test]

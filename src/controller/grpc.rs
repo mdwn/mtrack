@@ -15,7 +15,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::{info, span, warn, Level};
+use tracing::{info, span, Level};
 
 use crate::{
     config,
@@ -165,53 +165,26 @@ impl PlayerServer {
         }))
     }
 
-    /// Reloads the hardware so a config mutation takes effect, then builds the
-    /// response.
+    /// Applies a saved config change to the running hardware, then builds
+    /// the response: the new checksum, and whether the change is applied.
     ///
     /// The web UI's mutation endpoints have always reloaded; these had not, so
     /// a client could change the audio device, receive a fresh checksum, and
-    /// find the running hardware unchanged until the process restarted. That
-    /// asymmetry is the same shape as the profile-file bug: the write is
-    /// acknowledged and quietly has no effect.
+    /// find the running hardware unchanged until the process restarted. The
+    /// reply says whether it was applied, deferred until the player is idle,
+    /// or not applied because the reload failed, as every surface's does (see
+    /// [`crate::player::ConfigApply`]).
     ///
-    /// Safe to do from inside a gRPC call because `start_controllers` leaves
-    /// each controller running whose config has not changed — otherwise this
+    /// Safe to do from inside a gRPC call because the reload leaves each
+    /// controller running whose config has not changed -- otherwise this
     /// would tear down the very transport carrying the response.
     #[allow(clippy::result_large_err)]
     async fn reload_and_respond(
         &self,
         snapshot: config::store::ConfigSnapshot,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        // Flattened immediately: `Box<dyn Error>` is not Send and must not live
-        // across the await that follows.
-        let reload = match self
-            .player
-            .reload_hardware()
-            .await
-            .map_err(|e| e.to_string())
-        {
-            Ok(reload) => reload,
-            Err(e) => {
-                // Reported, not just logged. Playback is not a cause —
-                // `reload_hardware` defers until it ends — but answering with a
-                // fresh checksum while nothing was applied or deferred is
-                // precisely the "acknowledged and quietly ineffective" behaviour
-                // this helper exists to end. The config *is* persisted at this
-                // point, so the message has to say so rather than implying the
-                // write was rolled back.
-                warn!("Hardware reload after config update failed: {}", e);
-                return Err(Status::failed_precondition(format!(
-                    "the config was saved but the running hardware was not reloaded, so it \
-                     will not take effect until the next reload or restart: {e}"
-                )));
-            }
-        };
-        // Deliberately not `reload_controllers`: that forces a restart, which
-        // would tear down the transport carrying this response. The hardware
-        // reload above already restarts controllers when their config actually
-        // changed, and leaves them alone when it did not — so a caller is only
-        // disconnected by a change it made to its own controller.
-        snapshot_to_update_response(snapshot, reload)
+        let outcome = self.player.apply_config_change().await;
+        snapshot_to_update_response(snapshot, outcome)
     }
 
     /// Why the player declined to start, determined from its current state
@@ -257,18 +230,19 @@ fn config_error_to_status(e: config::ConfigError) -> Status {
 }
 
 /// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to
-/// YAML, saying whether the hardware reload ran or waits for the player.
+/// YAML, saying what became of the change on the running hardware.
+#[allow(clippy::result_large_err)]
 fn snapshot_to_update_response(
     snapshot: config::store::ConfigSnapshot,
-    reload: crate::player::HardwareReload,
+    outcome: crate::player::ConfigApply,
 ) -> Result<Response<UpdateConfigResponse>, Status> {
     let yaml = crate::util::to_yaml_string(&snapshot.config)
         .map_err(|e| Status::internal(format!("serialization error: {}", e)))?;
     Ok(Response::new(UpdateConfigResponse {
         yaml,
         checksum: snapshot.checksum,
-        applied: reload.applied(),
-        message: reload.message().unwrap_or_default().to_string(),
+        applied: outcome.applied(),
+        message: outcome.message().unwrap_or_default(),
     }))
 }
 
@@ -1514,6 +1488,28 @@ mod test {
         assert!(applied.applied);
         assert!(applied.message.is_empty(), "{}", applied.message);
         Ok(())
+    }
+
+    /// A reload that fails after a save answers with the save, its new
+    /// checksum included, and says it was not applied and why, as the web
+    /// UI's and MCP's replies do. It used to answer failed_precondition,
+    /// leaving the client with the old checksum of a config already saved.
+    #[test]
+    fn a_config_update_whose_reload_fails_says_so_with_the_save() {
+        let snapshot = config::store::ConfigSnapshot {
+            config: config::Player::default(),
+            yaml: "songs: songs\n".to_string(),
+            checksum: "abc".to_string(),
+        };
+        let reply = super::snapshot_to_update_response(
+            snapshot,
+            crate::player::ConfigApply::Failed("no store".into()),
+        )
+        .unwrap()
+        .into_inner();
+        assert_eq!(reply.checksum, "abc");
+        assert!(!reply.applied);
+        assert!(reply.message.contains("no store"), "{}", reply.message);
     }
 
     /// A config change the next start would refuse, a second MIDI

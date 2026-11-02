@@ -4136,34 +4136,19 @@ pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
 
 impl McpServer {
     /// Applies a saved config change to the running hardware and answers
-    /// with the new snapshot, as the gRPC config updates do. A change saved
-    /// here was otherwise not applied until something else reloaded the
-    /// hardware or mtrack restarted. While a song plays or is paused the
-    /// reload waits for the player to be idle, and the reply says so, with
-    /// `applied: false`. Controllers are restarted only by a change to them.
+    /// with the new snapshot, as every surface's config change does. A
+    /// change saved here was otherwise not applied until something else
+    /// reloaded the hardware or mtrack restarted. While a song plays or is
+    /// paused the reload waits for the player to be idle, and a reload that
+    /// fails leaves the change for the next one; the reply says either with
+    /// `applied: false` and a `message`. Controllers are restarted only by a
+    /// change to them.
     async fn reload_and_respond(
         &self,
         snapshot: crate::config::store::ConfigSnapshot,
     ) -> Result<CallToolResult, McpError> {
-        let reload = match self
-            .player
-            .reload_hardware()
-            .await
-            .map_err(|e| e.to_string())
-        {
-            Ok(reload) => reload,
-            Err(e) => {
-                tracing::warn!("Hardware reload after config update failed: {}", e);
-                return Err(McpError::internal_error(
-                    format!(
-                        "the config was saved but the running hardware was not reloaded, so \
-                         it will not take effect until the next reload or restart: {e}"
-                    ),
-                    None,
-                ));
-            }
-        };
-        Ok(snapshot_response(&snapshot, reload))
+        let outcome = self.player.apply_config_change().await;
+        Ok(snapshot_response(&snapshot, &outcome))
     }
 }
 
@@ -4171,14 +4156,14 @@ impl McpServer {
 /// checksum, and whether the change has been applied to the hardware.
 pub(crate) fn snapshot_response(
     snapshot: &crate::config::store::ConfigSnapshot,
-    reload: crate::player::HardwareReload,
+    outcome: &crate::player::ConfigApply,
 ) -> CallToolResult {
     let mut response = json!({
         "yaml": snapshot.yaml,
         "checksum": snapshot.checksum,
-        "applied": reload.applied(),
+        "applied": outcome.applied(),
     });
-    if let Some(message) = reload.message() {
+    if let Some(message) = outcome.message() {
         response["message"] = json!(message);
     }
     ok_json(response)
@@ -4523,6 +4508,41 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod snapshot_response_tests {
+    use crate::player::ConfigApply;
+
+    fn reply(outcome: ConfigApply) -> serde_json::Value {
+        let snapshot = crate::config::store::ConfigSnapshot {
+            config: crate::config::Player::default(),
+            yaml: "songs: songs\n".to_string(),
+            checksum: "abc".to_string(),
+        };
+        let result = serde_json::to_value(super::snapshot_response(&snapshot, &outcome)).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap().to_string();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// A config change's reply says what became of it on the hardware, as
+    /// the web UI's and gRPC's do. A reload that failed after the save used
+    /// to answer with an error, leaving the client without the new checksum
+    /// of a change that was saved.
+    #[test]
+    fn a_config_changes_reply_says_what_became_of_it() {
+        let applied = reply(ConfigApply::Applied);
+        assert_eq!(applied["applied"], true);
+        assert_eq!(applied["checksum"], "abc");
+        assert!(applied.get("message").is_none());
+        let deferred = reply(ConfigApply::Deferred);
+        assert_eq!(deferred["applied"], false);
+        assert!(deferred["message"].as_str().unwrap().contains("idle"));
+        let failed = reply(ConfigApply::Failed("no store".into()));
+        assert_eq!(failed["applied"], false);
+        assert_eq!(failed["checksum"], "abc", "the save's checksum");
+        assert!(failed["message"].as_str().unwrap().contains("no store"));
+    }
 }
 
 #[cfg(test)]

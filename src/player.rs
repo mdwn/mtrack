@@ -16,7 +16,7 @@ mod navigation;
 mod playback;
 mod seek;
 
-pub use hardware::HardwareReload;
+pub use hardware::{ConfigApply, HardwareReload};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -3930,6 +3930,37 @@ mod test {
             "reload_hardware should fail without config store"
         );
 
+        Ok(())
+    }
+
+    /// A config change applied with no config store to reload from is not
+    /// applied, and says why; with one, and the player idle, it is.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_config_change_says_what_became_of_it() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        match player.apply_config_change().await {
+            ConfigApply::Failed(e) => assert!(e.contains("config store"), "{e}"),
+            other => panic!("applied with no store: {other:?}"),
+        }
+        let _store = set_store_without_audio(&player)?;
+        assert_eq!(player.apply_config_change().await, ConfigApply::Applied);
+        player.await_hardware_ready().await;
+        Ok(())
+    }
+
+    /// While a song plays, a config change is deferred until it stops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_config_change_waits_for_a_song() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        assert_eq!(player.apply_config_change().await, ConfigApply::Deferred);
+        assert!(player.audio_device().is_some(), "reset under the song");
+        player.stop().await;
+        crate::testutil::eventually(
+            || player.audio_device().is_none(),
+            "the deferred change was never applied",
+        );
         Ok(())
     }
 

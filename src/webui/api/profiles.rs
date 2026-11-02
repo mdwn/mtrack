@@ -24,7 +24,7 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use tracing::warn;
 
-use super::config_api::{reject_if_playing, reload_hardware_after_mutation, with_reload};
+use super::config_api::{apply_config_change, with_reload};
 use super::helpers::{
     require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
     validate_resource_name_to_write,
@@ -281,9 +281,6 @@ pub(super) async fn put_profile(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     validate_profile_filename(&filename)?;
-    if let Some(resp) = reject_if_playing(&state).await {
-        return Err(resp);
-    }
     let profiles_dir = require_configured_dir(
         &state.profiles_dir,
         "profiles",
@@ -408,7 +405,7 @@ pub(super) async fn put_profile(
                 .into_response());
         }
     }
-    let reload = reload_hardware_after_mutation(&state).await;
+    let reload = apply_config_change(&state).await;
 
     Ok::<_, axum::response::Response>(
         (
@@ -428,9 +425,6 @@ pub(super) async fn delete_profile_file(
     Path(filename): Path<String>,
 ) -> impl IntoResponse {
     validate_profile_filename(&filename)?;
-    if let Some(resp) = reject_if_playing(&state).await {
-        return Err(resp);
-    }
     let profiles_dir = require_configured_dir(
         &state.profiles_dir,
         "profiles",
@@ -486,7 +480,7 @@ pub(super) async fn delete_profile_file(
                 .into_response());
         }
     }
-    let reload = reload_hardware_after_mutation(&state).await;
+    let reload = apply_config_change(&state).await;
 
     Ok::<_, axum::response::Response>(
         (

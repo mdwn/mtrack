@@ -81,6 +81,44 @@ impl HardwareReload {
     }
 }
 
+/// What became of a saved config change on the running hardware: applied,
+/// deferred until the player is idle, or not applied because the reload
+/// failed. The change itself is saved in all three: every control surface
+/// answers it as saved, with the new checksum, and says which of these it
+/// was (`applied`, and a `message` when it is not). Errors before the save
+/// (a stale checksum, an invalid section) are the surfaces' own to answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigApply {
+    /// The hardware is coming up on the saved config.
+    Applied,
+    /// A song is playing, paused or fading out, or an auto play is waiting:
+    /// the reload runs once the player is idle.
+    Deferred,
+    /// The reload could not run, and the change takes effect at the next
+    /// reload or restart.
+    Failed(String),
+}
+
+impl ConfigApply {
+    /// Whether the change has been applied to the running hardware.
+    pub fn applied(&self) -> bool {
+        *self == ConfigApply::Applied
+    }
+
+    /// What a config change's reply says of the reload, when it is not
+    /// applied.
+    pub fn message(&self) -> Option<String> {
+        match self {
+            ConfigApply::Applied => None,
+            ConfigApply::Deferred => HardwareReload::Deferred.message().map(str::to_string),
+            ConfigApply::Failed(e) => Some(format!(
+                "The config was saved, but the hardware reload failed, so the change takes \
+                 effect at the next reload or restart: {e}"
+            )),
+        }
+    }
+}
+
 /// How often an unchanged init failure is repeated in the log.
 const FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -771,6 +809,27 @@ impl Player {
 
         info!("Hardware reload initiated");
         Ok(HardwareReload::Applied)
+    }
+
+    /// Applies a config change already saved to the config store to the
+    /// running hardware: the one path every control surface takes after a
+    /// save, so they agree on what a save while a song plays does. The
+    /// change is saved whatever the player is doing, and the hardware
+    /// reload waits for the player to be idle (see
+    /// [`Player::reload_hardware`]). The controllers are restarted only by
+    /// a change to them, so a surface's own transport survives a change
+    /// made over it.
+    pub async fn apply_config_change(self: &Arc<Self>) -> ConfigApply {
+        // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
+        // await this.
+        match self.reload_hardware().await.map_err(|e| e.to_string()) {
+            Ok(HardwareReload::Applied) => ConfigApply::Applied,
+            Ok(HardwareReload::Deferred) => ConfigApply::Deferred,
+            Err(e) => {
+                warn!("Hardware reload after a config change failed: {}", e);
+                ConfigApply::Failed(e)
+            }
+        }
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now
