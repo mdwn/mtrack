@@ -46,7 +46,7 @@ a phone, or any device with a browser — so you never have to babysit a compute
 - **Zero-config startup** — Point mtrack at a directory of songs and it works. No config file
   required.
 - **Lock mode** — Safety mechanism for live shows. Lock the player to prevent accidental
-  configuration changes while keeping playback controls active.
+  configuration changes from the web UI, gRPC, or MCP while keeping playback controls active.
 - **Multiple control interfaces** — Web UI, gRPC, OSC, and MIDI control. Use foot controllers,
   tablets, or custom software to drive playback.
 - **Hardware profiles** — Define per-machine hardware configurations that auto-select based on

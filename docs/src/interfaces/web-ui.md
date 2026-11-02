@@ -22,6 +22,11 @@ edits, playlist changes, configuration updates, file uploads) are blocked. Save 
 buttons across every editor become visibly disabled, with a tooltip explaining why. Playback
 controls (play, stop, next, previous, playlist switching) always work regardless of lock state.
 
+The lock holds on every control surface, not only the web UI. While locked, the gRPC config
+RPCs ([gRPC](grpc.md#lock-mode)) and the MCP tools that write config or project files
+([MCP](mcp.md#lock-mode)) are refused too; reads and playback controls stay open on all of
+them. The lock is toggled only from the web UI.
+
 Toggle the lock from the lock icon in the top nav (or, on phone, from the mini-player). When
 locked, a thin amber **LIVE — locked** stripe surfaces under the top nav as a constant
 reminder. Unlocking from the topnav requires a confirmation dialog ("Unlock during a live

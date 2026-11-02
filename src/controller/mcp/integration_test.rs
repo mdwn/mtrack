@@ -256,6 +256,8 @@ async fn build_assets_player() -> Result<Arc<Player>, Box<dyn Error>> {
         None,
     )?;
     player.await_hardware_ready().await;
+    // Players start locked; these tests exercise the tools, not the lock.
+    player.set_locked(false);
     Ok(player)
 }
 
@@ -636,6 +638,8 @@ async fn build_standalone_player(
     player.set_state_tx(state_tx);
 
     player.await_hardware_ready().await;
+    // Players start locked; these tests exercise the tools, not the lock.
+    player.set_locked(false);
     Ok(player)
 }
 
@@ -5910,5 +5914,167 @@ async fn mcp_config_update_while_paused_says_it_is_deferred() -> Result<(), Box<
 
     player.stop().await;
     controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Lock mode
+// ---------------------------------------------------------------------------
+
+/// The tools that write config or project files, refused while locked.
+const LOCKED_TOOLS: &[&str] = &[
+    "update_audio",
+    "update_midi",
+    "update_dmx",
+    "update_controllers",
+    "add_profile",
+    "update_profile",
+    "remove_profile",
+    "write_song",
+    "patch_song",
+    "write_playlist",
+    "patch_playlist",
+    "import_gdtf",
+    "import_mvr",
+    "export_mvr",
+    "write_venue",
+    "patch_venue",
+    "delete_venue",
+    "write_fixture_type",
+    "patch_fixture_type",
+    "delete_fixture_type",
+    "write_song_lighting",
+    "patch_song_lighting",
+    "delete_song_lighting",
+];
+
+/// Every file under `dir` with its contents, to tell whether a call wrote.
+fn snapshot_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.insert(path.clone(), std::fs::read(&path).expect("read"));
+            }
+        }
+    }
+    out
+}
+
+/// A locked player refuses every tool that writes config or files with a
+/// tool error saying it is locked, and writes nothing, while reads and
+/// playback controls still work. Every tool the server lists is either
+/// open while locked or in [`LOCKED_TOOLS`], so a new one gets classified.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
+    use crate::controller::mcp::service::OPEN_WHILE_LOCKED;
+
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    player.set_locked(true);
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player.clone(),
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let (_, list_resp) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    )
+    .await;
+    let mut listed: Vec<String> = list_resp["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    listed.sort();
+    let mut classified: Vec<String> = OPEN_WHILE_LOCKED
+        .iter()
+        .chain(LOCKED_TOOLS)
+        .map(|s| s.to_string())
+        .collect();
+    classified.sort();
+    assert_eq!(
+        listed, classified,
+        "every tool must be in exactly one of OPEN_WHILE_LOCKED or LOCKED_TOOLS"
+    );
+
+    let before = snapshot_tree(&fixture.root);
+    for (i, tool) in LOCKED_TOOLS.iter().enumerate() {
+        let resp = call_tool(&client, &url, &session, 100 + i as u64, tool, json!({})).await;
+        assert_eq!(resp["result"]["isError"], true, "{tool}: {resp}");
+        let text = tool_text(&resp);
+        assert!(text.contains("locked"), "{tool}: {text}");
+    }
+    // A well-formed write is refused just the same.
+    let resp = call_tool(
+        &client,
+        &url,
+        &session,
+        200,
+        "write_playlist",
+        json!({"yaml": "kind: playlist\nsongs: []\n"}),
+    )
+    .await;
+    assert_eq!(resp["result"]["isError"], true, "{resp}");
+    assert_eq!(snapshot_tree(&fixture.root), before, "a locked call wrote");
+
+    // Reads and playback controls stay open.
+    for (i, tool) in ["status", "list_songs", "get_config", "read_playlist"]
+        .iter()
+        .enumerate()
+    {
+        let resp = call_tool(&client, &url, &session, 300 + i as u64, tool, json!({})).await;
+        assert!(resp["error"].is_null(), "{tool}: {resp}");
+        assert_ne!(resp["result"]["isError"], true, "{tool}: {resp}");
+    }
+    // This fixture's show names groups its config lacks, so play fails
+    // validation; what matters is that it reaches the player at all.
+    let play = call_tool(&client, &url, &session, 400, "play", json!({})).await;
+    assert_ne!(play["result"]["isError"], true, "{play}");
+    assert!(!play.to_string().contains("locked"), "{play}");
+    for (i, tool) in [
+        "stop",
+        "stop_samples",
+        "stop_section_loop",
+        "cancel_auto_play",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let resp = call_tool(&client, &url, &session, 401 + i as u64, tool, json!({})).await;
+        assert!(resp["error"].is_null(), "{tool}: {resp}");
+        assert_ne!(resp["result"]["isError"], true, "{tool}: {resp}");
+    }
+
+    // Unlocked, the same write goes through.
+    player.set_locked(false);
+    let resp = call_tool(
+        &client,
+        &url,
+        &session,
+        500,
+        "write_playlist",
+        json!({"yaml": "kind: playlist\nsongs:\n- DSL Light Show Song\n"}),
+    )
+    .await;
+    assert!(resp["error"].is_null(), "{resp}");
+    assert_ne!(resp["result"]["isError"], true, "{resp}");
     Ok(())
 }

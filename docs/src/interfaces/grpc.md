@@ -77,6 +77,14 @@ empty cell means the RPC is available to gRPC clients only.
 | `UpdateProfile` | Updates the profile at an index. | |
 | `RemoveProfile` | Removes the profile at an index. | |
 
+## Lock mode
+
+While the player is [locked](web-ui.md#lock-mode), the config writes (`UpdateAudio`,
+`UpdateMidi`, `UpdateDmx`, `UpdateControllers`, `AddProfile`, `UpdateProfile` and
+`RemoveProfile`) are refused with `FAILED_PRECONDITION` and the message "Player is locked.
+Unlock to make changes." Every other RPC is a read or a playback control and works while
+locked. Unlock from the web UI.
+
 ## Security
 
 The gRPC server has no authentication. Do not run the player on a public network, and disable

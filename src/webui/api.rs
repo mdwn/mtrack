@@ -87,12 +87,8 @@ pub(crate) async fn lock_guard(
         return next.run(request).await;
     }
 
-    if state.player.is_locked() {
-        return (
-            StatusCode::LOCKED,
-            Json(json!({"error": "Player is locked. Unlock to make changes."})),
-        )
-            .into_response();
+    if let Err(e) = state.player.require_unlocked() {
+        return (StatusCode::LOCKED, Json(json!({"error": e.to_string()}))).into_response();
     }
 
     next.run(request).await

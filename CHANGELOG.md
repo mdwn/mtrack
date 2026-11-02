@@ -161,6 +161,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other subsystems to be ready at every start and seek, taking CPU from the audio and lighting
   preparation they were waiting for, most noticeably on a Raspberry Pi. They now sleep until
   the start, then wait at most one audio buffer for its first sample, as before.
+- **Lock mode holds on every control surface**: the lock was enforced only by the web UI's own
+  routes, so gRPC config writes (also reachable through the web UI's gRPC-Web endpoint) and MCP
+  writes went through while locked. Now gRPC `UpdateAudio`, `UpdateMidi`, `UpdateDmx`,
+  `UpdateControllers` and the profile RPCs answer `FAILED_PRECONDITION`, and every MCP tool that
+  writes config or project files answers a tool error saying the player is locked. Reads and
+  playback controls still work on both. Since mtrack starts locked, unlock it from the web UI
+  before editing over MCP.
 - **A loop break fades whatever the loop was doing**: a loop break's `fade_out` replaced each
   source's own envelope, so a break part way through a `loop_crossfade` held both passes where
   they stood and then cut the outgoing one dead where its crossfade would have ended, and a break
