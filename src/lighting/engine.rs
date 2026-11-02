@@ -1555,17 +1555,50 @@ impl EffectEngine {
     /// the song time there for the cues from it on. The one way every start
     /// installs its state, a start from the top included (an empty
     /// history). Returns the errors of the effects that would not start.
+    ///
+    /// In three steps, for a caller that holds this engine under a lock the
+    /// effects loop also takes: [`Self::scratch`] (cheap: the rig) and
+    /// [`Self::install`] (as many steps as effects running) under it, and
+    /// [`Self::prepare`], the replay itself, with it released.
     pub fn start_from(
         &mut self,
         history: crate::lighting::timeline::SeekHistory,
         scope: StopScope,
     ) -> Vec<EffectError> {
+        let prepared = self.scratch(scope).prepare(history);
+        self.install(prepared, scope)
+    }
+
+    /// The engine a start from history replays in, apart from this one:
+    /// its rig, and what of its state the stop `scope` leaves -- with
+    /// `StopScope::Nothing` all of it (its effects, layers and pose memory),
+    /// otherwise none. Its instant is this engine's, which
+    /// [`Self::install`] measures from.
+    pub fn scratch(&self, scope: StopScope) -> EffectEngine {
+        let mut scratch = EffectEngine {
+            current_time: self.current_time,
+            rigless: self.rigless,
+            ..self.sibling()
+        };
         match scope {
-            StopScope::Nothing => {}
-            StopScope::Show => self.stop_show_effects(),
-            StopScope::All => self.stop_all_effects(),
+            StopScope::Nothing => {
+                scratch.active_effects = self.active_effects.clone();
+                scratch.layer_state = self.layer_state.clone();
+                scratch.last_song_time = self.last_song_time;
+            }
+            // A stop releases pose memory.
+            StopScope::Show | StopScope::All => {
+                scratch.poses.clear();
+                scratch.goals.clear();
+            }
         }
-        let mut replay = Replay::new(self, history.at);
+        scratch
+    }
+
+    /// Replays `history` in this engine, a [`Self::scratch`]: the state it
+    /// leaves, for [`Self::install`] to put in the engine it came from.
+    pub fn prepare(mut self, history: crate::lighting::timeline::SeekHistory) -> Prepared {
+        let mut replay = Replay::new(&mut self, history.at);
         let mut steps = history.update.steps.into_iter().peekable();
         while let Some(&(time, _)) = steps.peek() {
             let group: Vec<Step> = std::iter::from_fn(|| steps.next_if(|(t, _)| *t == time))
@@ -1573,7 +1606,55 @@ impl EffectEngine {
                 .collect();
             replay.at(time, group);
         }
-        replay.finish()
+        let errors = replay.finish();
+        Prepared {
+            at: history.at,
+            instant: self.current_time,
+            effects: self.active_effects,
+            layer_state: self.layer_state,
+            poses: self.poses,
+            goals: self.goals,
+            errors,
+        }
+    }
+
+    /// Stops what `scope` reaches -- the same scope [`Self::scratch`] was
+    /// given -- and puts in what [`Self::prepare`] left: its effects, layers
+    /// and pose memory, their instants moved on by the time this engine has
+    /// run since the scratch was taken, and the song time at the start
+    /// point. Returns the errors of the effects that would not start.
+    pub fn install(&mut self, prepared: Prepared, scope: StopScope) -> Vec<EffectError> {
+        match scope {
+            StopScope::Nothing => {}
+            StopScope::Show => self.stop_show_effects(),
+            StopScope::All => self.stop_all_effects(),
+        }
+        let Prepared {
+            at,
+            instant,
+            mut effects,
+            mut layer_state,
+            poses,
+            goals,
+            errors,
+        } = prepared;
+        let rebase = |then: Instant| match self.current_time.checked_duration_since(instant) {
+            Some(later) => then + later,
+            None => then
+                .checked_sub(instant.duration_since(self.current_time))
+                .unwrap_or(then),
+        };
+        for effect in effects.values_mut() {
+            effect.start_time = effect.start_time.map(rebase);
+        }
+        layer_state.rebase(rebase);
+        self.active_effects = effects;
+        self.layer_state = layer_state;
+        self.poses = poses;
+        self.goals = goals;
+        self.last_song_time = Some(at);
+        self.cache.invalidate();
+        errors
     }
 
     /// Applies one step of what a timeline fired.
@@ -1817,6 +1898,19 @@ impl EffectEngine {
 
         output
     }
+}
+
+/// The state a start from history leaves, replayed apart from the engine it
+/// goes in (see [`EffectEngine::prepare`]).
+pub struct Prepared {
+    at: Duration,
+    /// The scratch engine's instant once replayed: that of `at`.
+    instant: Instant,
+    effects: HashMap<String, EffectInstance>,
+    layer_state: LayerState,
+    poses: HashMap<String, Pose>,
+    goals: HashMap<String, Pose>,
+    errors: Vec<EffectError>,
 }
 
 /// Where the stop before a start from history reaches (see

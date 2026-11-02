@@ -37,6 +37,7 @@ use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
     lighting::{
         effects::{DmxCommand, EffectError},
+        engine::StopScope,
         parser::LightShow,
         timeline::LightingTimeline,
         EffectEngine,
@@ -242,8 +243,12 @@ impl Overlay {
             let passes = (elapsed.as_nanos() / self.length.as_nanos()) as u32;
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
-            // Its first cues fire before this frame renders.
-            restart = Some(self.timeline.start_at(elapsed));
+            // Its first cues fire before this frame renders. Its own show
+            // only: the MIDI DMX store is every engine's.
+            restart = Some(super::timeline::Restart::Due(
+                self.timeline.start_at(elapsed),
+                Box::new(self.engine.scratch(StopScope::Show)),
+            ));
         }
         let update = self.timeline.update(elapsed);
         let epoch = self.timeline.epoch();

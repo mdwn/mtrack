@@ -225,7 +225,7 @@ impl LayerClock {
 }
 
 /// Layer control state: intensity masters, and each layer's clock.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct LayerState {
     /// Layer intensity masters (0.0 to 1.0) — multiplies effect output per layer.
     intensity_masters: HashMap<EffectLayer, f64>,
@@ -263,6 +263,16 @@ impl LayerState {
     /// The layer's clock, at rest for a layer nothing has set.
     pub(crate) fn clock(&self, layer: EffectLayer) -> LayerClock {
         self.clocks.get(&layer).copied().unwrap_or_default()
+    }
+
+    /// Moves the instants the layers froze at by `rebase`: state replayed
+    /// in one engine, put in another (see `EffectEngine::install`).
+    pub(crate) fn rebase(&mut self, rebase: impl Fn(Instant) -> Instant) {
+        for clock in self.clocks.values_mut() {
+            if let Some(frozen) = clock.frozen.as_mut() {
+                frozen.at = rebase(frozen.at);
+            }
+        }
     }
 
     pub(crate) fn clock_mut(&mut self, layer: EffectLayer) -> &mut LayerClock {

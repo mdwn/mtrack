@@ -35,8 +35,19 @@ use super::Engine;
 pub(super) struct Fired {
     epoch: u64,
     /// A history going in first: ambient's show starting over at its end.
-    restart: Option<crate::lighting::timeline::SeekHistory>,
+    restart: Option<Restart>,
     update: crate::lighting::timeline::TimelineUpdate,
+}
+
+/// A restart's history, before and after it is replayed: taken with its
+/// scratch engine under the timeline's lock, replayed with none held (in
+/// [`Engine::resolve_fired`]), put in under the engine's.
+pub(super) enum Restart {
+    Due(
+        crate::lighting::timeline::SeekHistory,
+        Box<crate::lighting::EffectEngine>,
+    ),
+    Ready(Box<crate::lighting::engine::Prepared>),
 }
 
 impl Fired {
@@ -49,15 +60,15 @@ impl Fired {
         }
     }
 
-    /// The same, after `history` -- the state the timeline restarted from.
+    /// The same, after `restart` -- the state the timeline restarted from.
     pub(super) fn restarted(
         epoch: u64,
-        history: crate::lighting::timeline::SeekHistory,
+        restart: Restart,
         update: crate::lighting::timeline::TimelineUpdate,
     ) -> Fired {
         Fired {
             epoch,
-            restart: Some(history),
+            restart: Some(restart),
             update,
         }
     }
@@ -74,9 +85,12 @@ impl Fired {
 
     /// Applies it to `engine`, the one its timeline drives.
     pub(super) fn apply(self, engine: &mut crate::lighting::EffectEngine) {
+        // Its own show only: the MIDI DMX store is every engine's.
         let mut errors = match self.restart {
-            // Its own show only: the MIDI DMX store is every engine's.
-            Some(history) => engine.start_from(history, StopScope::Show),
+            Some(Restart::Ready(prepared)) => engine.install(*prepared, StopScope::Show),
+            Some(Restart::Due(history, scratch)) => {
+                engine.install(scratch.prepare(history), StopScope::Show)
+            }
             None => Vec::new(),
         };
         errors.extend(engine.apply_timeline_update(self.update));
@@ -162,11 +176,14 @@ impl Engine {
         let start = self.to_delayed_song_time(to);
         // A pass begun late starts from the state its cues before `to` leave,
         // as a seek does, rather than firing them all in its first frame.
-        // Groups are resolved here, with no lock held.
-        let history = next.as_mut().map(|timeline| {
+        // Groups are resolved and the history replayed here, with no lock
+        // held but the engine's for a moment, to take its rig and pose
+        // memory, as the fresh engine below does.
+        let prepared = next.as_mut().map(|timeline| {
             let mut history = timeline.start_at(start);
             history.map_effects(|effect| self.resolve_effect_groups(effect));
-            history
+            let scratch = self.effect_engine.lock().sibling();
+            scratch.prepare(history)
         });
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
@@ -180,8 +197,8 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
-        if let Some(history) = history {
-            for e in effect_engine.start_from(history, StopScope::Nothing) {
+        if let Some(prepared) = prepared {
+            for e in effect_engine.install(prepared, StopScope::Nothing) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
@@ -292,8 +309,10 @@ impl Engine {
             .into_iter()
             .filter(|fired| !fired.is_empty())
             .map(|mut fired| {
-                if let Some(history) = fired.restart.as_mut() {
+                // A restart's history replayed here too, with no lock held.
+                if let Some(Restart::Due(mut history, scratch)) = fired.restart.take() {
                     history.map_effects(|effect| self.resolve_effect_groups(effect));
+                    fired.restart = Some(Restart::Ready(Box::new(scratch.prepare(history))));
                 }
                 fired
                     .update
@@ -474,7 +493,9 @@ impl Engine {
     /// song's start and a live reload rebuild the show.
     ///
     /// What goes and what comes in do so under the one lock, groups
-    /// resolved first with none held: a frame between the two would find
+    /// resolved and the history replayed first (scratch, then prepare), the
+    /// engine's lock held only to take the scratch and to install: a
+    /// frame between the two would find
     /// the channels unwritten and send them 0 -- a black flash at every seek
     /// and section loop (#581). The timeline fires nothing until the state
     /// is in; then its cues -- one at the start point too -- fire over it.
@@ -546,11 +567,18 @@ impl Engine {
             (history, tempo_map)
         };
         history.map_effects(|effect| self.resolve_effect_groups(effect));
+        // Replayed with the engine's lock released but for a moment to take
+        // its rig; a reload's on the tempo it brings.
+        let mut scratch = self.effect_engine.lock().scratch(scope);
+        if let Some(tempo_map) = tempo_map.as_ref() {
+            scratch.set_tempo_map(tempo_map.clone());
+        }
+        let prepared = scratch.prepare(history);
         let mut effect_engine = self.effect_engine.lock();
         if let Some(tempo_map) = tempo_map {
             effect_engine.set_tempo_map(tempo_map);
         }
-        for e in effect_engine.start_from(history, scope) {
+        for e in effect_engine.install(prepared, scope) {
             error!("Failed to start lighting effect: {}", e);
         }
         self.start_midi_dmx(midi, at);

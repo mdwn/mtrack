@@ -928,3 +928,69 @@ fn time_a_long_show_of_moves() {
     let (built, sought, resumed) = build_and_seek(n);
     eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects still running");
 }
+
+/// A seek into `R2N` cues of [`many_overlapping_moves`] (4000 by default)
+/// on eight real heads, timed by phase: `scratch` and `install`, which a
+/// DMX start runs under the engine's lock, and `prepare`, the replay, which
+/// it runs with the lock released.
+#[test]
+#[ignore]
+fn time_a_seeks_phases() {
+    let n: u64 = std::env::var("R2N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4000);
+    let heads: Vec<FixtureInfo> = (0..8u16)
+        .map(|i| mover_at(&format!("h{i}"), 1 + i * 16))
+        .collect();
+    let mut tl = LightingTimeline::new(shows(&many_overlapping_moves(n)));
+    let mut engine = fresh(&heads);
+    let scope = crate::lighting::engine::StopScope::All;
+    for _ in 0..5 {
+        let history = tl.start_at(Duration::from_millis(n * 50 - 100));
+        let t = std::time::Instant::now();
+        let scratch = engine.scratch(scope);
+        let scratched = t.elapsed();
+        let t = std::time::Instant::now();
+        let prepared = scratch.prepare(history);
+        let replayed = t.elapsed();
+        let t = std::time::Instant::now();
+        let errors = engine.install(prepared, scope);
+        let installed = t.elapsed();
+        eprintln!(
+            "{n} cues: scratch {scratched:?}, prepare {replayed:?}, install {installed:?}, \
+             {} running, {} errors",
+            engine.get_active_effects().len(),
+            errors.len()
+        );
+    }
+}
+
+/// A start prepared while the engine renders on installs as one done all
+/// at once: the frames between take nothing from it, and the head goes on
+/// from the same place.
+#[test]
+fn a_start_prepared_while_the_engine_renders_installs_the_same() {
+    let src = show(format!(
+        "    @0.000\n    m: move pan: 90deg, tilt: 0deg, duration: 4s\n    \
+         @1.000\n    freeze(layer: background)\n    @2.000\n    unfreeze(layer: background)\n{}",
+        st("3.000", "3s")
+    ));
+    let f = [mover("m"), rgb("w")];
+    let at = Duration::from_millis(3500);
+    let at_once = seek_play(&src, &f, 3500, 4500);
+
+    let mut tl = LightingTimeline::new(shows(&src));
+    let mut engine = fresh(&f);
+    let scope = crate::lighting::engine::StopScope::All;
+    let scratch = engine.scratch(scope);
+    for _ in 0..7 {
+        let _ = engine.update(Duration::from_millis(23), Some(Duration::ZERO));
+    }
+    let prepared = scratch.prepare(tl.start_at(at));
+    assert!(engine.install(prepared, scope).is_empty());
+    run_frames(&mut tl, &mut engine, 3500, 4500);
+
+    assert_eq!(pan_of(&engine), pan_of(&at_once));
+    assert_eq!(blue_of(&engine), blue_of(&at_once));
+}
