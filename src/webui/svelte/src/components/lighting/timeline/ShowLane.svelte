@@ -31,7 +31,7 @@
     snapToNearestGrid,
     computeAdjustedCuePositions,
     durationStringToMs,
-    getSequenceIterationMs,
+    getSequencePlayMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock from "./CueBlock.svelte";
@@ -137,9 +137,8 @@
             if (ref.stop) continue;
             const def = sequenceDefs.find((s) => s.name === ref.name);
             if (!def) continue;
-            const iterMs = getSequenceIterationMs(def, ms, tempo);
             const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-            const totalMs = iterMs * loopCount;
+            const totalMs = getSequencePlayMs(def, ms, tempo, loopCount);
             if (ms + totalMs > blockEndMs) blockEndMs = ms + totalMs;
           }
         }

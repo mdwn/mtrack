@@ -11,7 +11,7 @@
     effectTypeColor,
     durationStringToMs,
     msToDurationString,
-    getSequenceIterationMs,
+    getSequencePlayMs,
     snapDurationToGrid,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
@@ -135,9 +135,8 @@
       if (ref.stop) continue;
       const def = sequenceDefs.find((s) => s.name === ref.name);
       if (!def) continue;
-      const iterMs = getSequenceIterationMs(def, cueMs, tempo);
       const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-      return iterMs * loopCount;
+      return getSequencePlayMs(def, cueMs, tempo, loopCount);
     }
     return 0;
   });
@@ -149,7 +148,7 @@
       if (ref.stop) continue;
       const def = sequenceDefs.find((s) => s.name === ref.name);
       if (!def) continue;
-      return getSequenceIterationMs(def, cueMs, tempo);
+      return getSequencePlayMs(def, cueMs, tempo);
     }
     return 0;
   });

@@ -21,6 +21,7 @@ import {
   beatsToMs,
   computeAdjustedCuePositions,
   expandSequencesIntoCues,
+  getSequencePlayMs,
   getAdjustedGridLines,
   offsetMarkers,
   offsetTimeline,
@@ -38,6 +39,8 @@ import {
 } from "../../src/lib/lighting/timeline-state";
 import type {
   Cue,
+  CueEffect,
+  Sequence,
   TempoChange,
   TempoSection,
 } from "../../src/lib/lighting/types";
@@ -496,4 +499,40 @@ test("after a reset the grid and tempo lane follow the cues", () => {
   close(bar10!.ms, 18000);
   const bar6 = lines.filter((l) => l.type === "measure" && l.label === "6");
   close(bar6[0].ms, 18000);
+});
+
+test("a sequence is laid out in beats where it plays, as the player has it", () => {
+  // The values the server gives (sequences_tests.rs,
+  // a_sequence_counts_its_bars_at_one_tempo_whatever_the_songs_changes):
+  // the song slows to 60 at bar 2; the sequence's own bar 3 is 8 beats
+  // after its bar 1, so from the song's bar 1 it lands 2s + 4s in.
+  const t = tempo(120, [4, 4], [at(2, 1, { bpm: 60 })]);
+  const effect = (color: string): CueEffect => ({
+    groups: ["front_wash"],
+    effect: { type: "static", colors: [color], duration: "1beat" },
+  });
+  const seq: Sequence = {
+    name: "s",
+    cues: [
+      { ...cueAt(1, 1), effects: [effect("red")] },
+      { ...cueAt(3, 1), effects: [effect("blue")] },
+    ],
+  };
+  const show = (loop?: string) => [
+    { ...cueAt(1, 1), sequences: [{ name: "s", loop }] },
+  ];
+  const times = (cues: Cue[]) =>
+    cues.filter((c) => c.effects.length).map((c) => timestampToMs(c.timestamp));
+  const once = times(expandSequencesIntoCues(show(), [seq], t));
+  expect(once.length).toBe(2);
+  close(once[0], 0);
+  close(once[1], 6000);
+  // A pass is 9 beats (to the end of the last effect): the second starts
+  // on beat 9 (7s) and its second cue is on beat 17 (15s).
+  const twice = times(expandSequencesIntoCues(show("2"), [seq], t));
+  expect(twice.length).toBe(4);
+  close(twice[2], 7000);
+  close(twice[3], 15000);
+  // Two passes, 18 beats: 4 at 120 and 14 at 60.
+  close(getSequencePlayMs(seq, 0, t, 2), 2000 + 14000);
 });

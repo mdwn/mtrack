@@ -12,82 +12,31 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+// The lighting timeline's layout. Every position in it -- bars and beats
+// through tempo changes and ramps, offsets, sequences played from a cue -- is
+// computed by the player's own tempo map and cue clock, compiled to
+// WebAssembly (`../tempo-wasm`). What is here is the timeline's: its ms, its
+// grid lines and labels, snapping, and the offset markers it draws.
+
 import type {
   Timestamp,
   TempoSection,
-  TempoChange,
   Cue,
   Sequence,
   CueEffect,
 } from "./types";
 import { absoluteTimestamp } from "./types";
+import {
+  CueClock,
+  TempoMap,
+  rampDuration,
+  type TempoMapInput,
+  type TempoMapPosition,
+} from "../tempo-wasm";
 
-/** Where the tempo stands from one tempo change to the next.
- *
- *  Positions are counted as the server's tempo map counts them: in quarter
- *  notes from bar 1 beat 1, so `@bar/beat` beats are quarter notes in any
- *  metre (a bar of 6/8 holds three). A ramp moves the tempo linearly in time
- *  and spans exactly the beats it is written over, as a DAW renders it. */
-export interface TempoSegment {
-  /** Absolute ms where this segment starts */
-  startMs: number;
-  /** Measure number at the start of this segment (1-based) */
-  startMeasure: number;
-  /** Quarter-note beat within the start measure (1-based) */
-  startBeat: number;
-  /** Quarter notes from bar 1 beat 1 to the start of this segment */
-  startBeats: number;
-  /** The tempo from here, once any ramp in progress has reached it */
-  bpm: number;
-  /** A ramp still in progress at the start of this segment */
-  ramp?: TempoRamp;
-  /** The time signature's numerator, as written */
-  beatsPerMeasure: number;
-  /** The time signature's denominator, as written */
-  beatValue: number;
-}
-
-/** A gradual tempo change: linear in time from `fromBpm` to `toBpm`. */
-export interface TempoRamp {
-  fromBpm: number;
-  toBpm: number;
-  /** How long the whole ramp lasts */
-  totalMs: number;
-  /** How far into the ramp the segment it belongs to starts */
-  elapsedMs: number;
-}
-
-/** A time signature, governing from the downbeat of `measure` on. */
-interface MeterSpan {
-  measure: number;
-  /** Quarter notes from bar 1 beat 1 to that downbeat */
-  startBeats: number;
-  /** Quarter notes in each bar */
-  quarters: number;
-  /** The signature as written */
-  signature: [number, number];
-}
-
-/** The tempo map the timeline converts through. */
-interface TempoGrid {
-  segments: TempoSegment[];
-  meters: MeterSpan[];
-  /** The change that starts each segment after the first (`changes[i]`
-   *  starts `segments[i + 1]`), for walks that place them differently. */
-  changes: ResolvedChange[];
-  /** Whether any change is positioned in time rather than by bar */
-  anyTimed: boolean;
-  /** The walks for cues under each offset met so far */
-  offsetSegments: Map<number, TempoSegment[]>;
-}
-
-/** A change as the tempo walk applies it. */
-interface ResolvedChange {
-  timed: boolean;
-  bpm?: number;
-  /** A ramp's length in quarter notes, as sized; none for a snap */
-  rampBeats?: number;
-}
+const MS_PER_MINUTE = 60000;
+/** The tempo the player times a sequence at without any tempo map. */
+const DEFAULT_BPM = 120;
 
 /** Grid line for rendering on the ruler. */
 export interface GridLine {
@@ -96,8 +45,6 @@ export interface GridLine {
   label?: string;
 }
 
-const MS_PER_MINUTE = 60000;
-
 /** A beat position rounded to a millionth of a beat, as the server's
  *  `snap_beats` rounds one: below any float noise a time carries, far finer
  *  than anything musical. */
@@ -105,205 +52,73 @@ function snapBeats(beats: number): number {
   return Math.round(beats * 1e6) / 1e6;
 }
 
-function quartersPerMeasure([numerator, denominator]: [
-  number,
-  number,
-]): number {
-  return denominator > 0 ? (numerator * 4) / denominator : numerator;
-}
-
 /** How long a ramp from `fromBpm` to `toBpm` lasts when it spans `beats`
- *  beats: a tempo linear in time averages the two ends. */
+ *  beats, in ms. */
 export function rampDurationMs(
   fromBpm: number,
   toBpm: number,
   beats: number,
 ): number {
-  const mean = (fromBpm + toBpm) / 2;
-  return (beats * MS_PER_MINUTE) / (mean > 0 ? mean : fromBpm);
+  return rampDuration(fromBpm, toBpm, beats) * 1000;
 }
 
-/** Beats a ramp covers from `elapsed` ms in to its end. */
-function rampBeatsFrom(r: TempoRamp, elapsed: number): number {
-  const t = r.totalMs;
-  return (
-    (r.fromBpm * (t - elapsed) +
-      ((r.toBpm - r.fromBpm) * (t * t - elapsed * elapsed)) / (2 * t)) /
-    MS_PER_MINUTE
-  );
+/** A transition as the timeline writes it: a bare number of beats, `Nm`
+ *  measures, or none (a snap). */
+function parseTransition(
+  transition: string | undefined,
+): TempoMapInput["changes"][number]["transition"] {
+  const t = transition?.trim() ?? "";
+  const measures = t.match(/^(\d+(?:\.\d+)?)m$/);
+  if (measures) return { measures: parseFloat(measures[1]) };
+  if (/^\d+(?:\.\d+)?$/.test(t)) return { beats: parseFloat(t) };
+  return undefined;
 }
 
-/** Beats covered `dt` ms after the start of a segment. */
-function segmentBeatsIn(seg: TempoSegment, dt: number): number {
-  const r = seg.ramp;
-  if (!r) return (dt * seg.bpm) / MS_PER_MINUTE;
-  const left = r.totalMs - r.elapsedMs;
-  const remaining = rampBeatsFrom(r, r.elapsedMs);
-  if (dt >= left) return remaining + ((dt - left) * seg.bpm) / MS_PER_MINUTE;
-  return remaining - rampBeatsFrom(r, r.elapsedMs + dt);
-}
-
-/** Ms needed to cover `beats` beats from the start of a segment: the
- *  inverse of `segmentBeatsIn`. */
-function segmentMsFor(seg: TempoSegment, beats: number): number {
-  const r = seg.ramp;
-  if (!r) return (beats * MS_PER_MINUTE) / seg.bpm;
-  const remaining = rampBeatsFrom(r, r.elapsedMs);
-  if (beats > remaining) {
-    return (
-      r.totalMs - r.elapsedMs + ((beats - remaining) * MS_PER_MINUTE) / seg.bpm
-    );
-  }
-  // beats = b * dt + a * dt^2
-  const a = (r.toBpm - r.fromBpm) / (2 * r.totalMs * MS_PER_MINUTE);
-  const b =
-    (r.fromBpm + ((r.toBpm - r.fromBpm) * r.elapsedMs) / r.totalMs) /
-    MS_PER_MINUTE;
-  if (Math.abs(a) < 1e-15) return beats / b;
-  const disc = b * b + 4 * a * beats;
-  return (-b + Math.sqrt(Math.max(0, disc))) / (2 * a);
-}
-
-/** The tempo `dt` ms after the start of a segment. */
-function segmentBpmAt(seg: TempoSegment, dt: number): number {
-  const r = seg.ramp;
-  if (!r) return seg.bpm;
-  const t = Math.min(1, Math.max(0, (r.elapsedMs + dt) / r.totalMs));
-  return r.fromBpm + (r.toBpm - r.fromBpm) * t;
-}
-
-/** The ramp still in progress `dt` ms after the start of a segment. */
-function rampAfter(seg: TempoSegment, dt: number): TempoRamp | undefined {
-  const r = seg.ramp;
-  if (!r || r.elapsedMs + dt >= r.totalMs) return undefined;
-  return { ...r, elapsedMs: r.elapsedMs + dt };
-}
-
-function meterAtMeasure(meters: MeterSpan[], measure: number): MeterSpan {
-  return lastAtOrBefore(meters, measure, (m) => m.measure);
-}
-
-/** Quarter notes from bar 1 beat 1 to a bar and (quarter-note) beat. */
-function beatsAtMeasureBeat(
-  meters: MeterSpan[],
-  measure: number,
-  beat: number,
-): number {
-  const m = meterAtMeasure(meters, measure);
-  return m.startBeats + (measure - m.measure) * m.quarters + (beat - 1);
-}
-
-/** The bar and (quarter-note) beat of a position in quarter notes; bar 1
- *  for one before it. */
-function measureBeatAtBeats(
-  meters: MeterSpan[],
-  beats: number,
-): { measure: number; beat: number } {
-  const at = Math.max(0, Math.round(beats * 1e6) / 1e6);
-  const m = lastAtOrBefore(meters, at, (span) => span.startBeats);
-  const bars = Math.floor((at - m.startBeats) / m.quarters + 1e-9);
+/** A tempo section as the tempo map's input. */
+function mapInput(tempo: TempoSection): TempoMapInput {
   return {
-    measure: m.measure + bars,
-    beat: 1 + Math.max(0, at - m.startBeats - bars * m.quarters),
+    startSecs: durationToMs(tempo.start) / 1000,
+    bpm: tempo.bpm,
+    signature: tempo.time_signature,
+    changes: tempo.changes.map((c) => ({
+      at:
+        c.timestamp.type === "absolute"
+          ? { secs: (c.timestamp.ms ?? 0) / 1000 }
+          : {
+              measure: c.timestamp.measure ?? 1,
+              beat: c.timestamp.beat ?? 1,
+            },
+      bpm: c.bpm,
+      signature: c.time_signature,
+      transition: parseTransition(c.transition),
+    })),
   };
 }
 
-/** Measures elapsed (0 at bar 1 beat 1, fractional within a bar). */
-function measuresAtBeats(meters: MeterSpan[], beats: number): number {
-  if (beats < 0) return beats / meters[0].quarters;
-  const { measure, beat } = measureBeatAtBeats(meters, beats);
-  return measure - 1 + (beat - 1) / meterAtMeasure(meters, measure).quarters;
-}
-
-/** The inverse of `measuresAtBeats`. */
-function beatsAtMeasures(meters: MeterSpan[], measures: number): number {
-  if (measures < 0) return measures * meters[0].quarters;
-  const whole = Math.floor(measures);
-  const bar = whole + 1;
-  const quarters = meterAtMeasure(meters, bar).quarters;
-  return beatsAtMeasureBeat(meters, bar, 1 + (measures - whole) * quarters);
-}
-
-/** The last segment whose `key` is at or before `at`. */
-function lastAtOrBefore<T>(items: T[], at: number, key: (t: T) => number): T {
-  let lo = 0;
-  let hi = items.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (key(items[mid]) <= at) lo = mid;
-    else hi = mid - 1;
-  }
-  return items[lo];
-}
-
-function segmentAtMs(segments: TempoSegment[], ms: number): TempoSegment {
-  return lastAtOrBefore(segments, ms, (s) => s.startMs);
-}
-
-function segmentAtBeats(segments: TempoSegment[], beats: number): TempoSegment {
-  return lastAtOrBefore(segments, beats, (s) => s.startBeats);
-}
-
-/** Quarter notes from bar 1 beat 1 at an absolute ms position. */
-function beatsAtMs(grid: TempoGrid, ms: number): number {
-  const first = grid.segments[0];
-  if (ms < first.startMs) {
-    return ((ms - first.startMs) * first.bpm) / MS_PER_MINUTE;
-  }
-  const seg = segmentAtMs(grid.segments, ms);
-  return seg.startBeats + segmentBeatsIn(seg, ms - seg.startMs);
-}
-
-/** The absolute ms of a position in quarter notes from bar 1 beat 1. */
-function msAtBeats(grid: TempoGrid, beats: number): number {
-  const first = grid.segments[0];
-  if (beats < 0) return first.startMs + (beats * MS_PER_MINUTE) / first.bpm;
-  const seg = segmentAtBeats(grid.segments, beats);
-  return seg.startMs + segmentMsFor(seg, beats - seg.startBeats);
-}
-
-/** A transition's length in quarter notes: a bare number of beats, `Nm`
- *  measures (in `quarters` a bar), or none for a snap. */
-function transitionBeats(
-  transition: string | undefined,
-  quarters: number,
-): number | undefined {
-  if (!transition) return undefined;
-  const t = transition.trim();
-  const measures = t.match(/^(\d+(?:\.\d+)?)m$/);
-  const length = measures
-    ? parseFloat(measures[1]) * quarters
-    : /^\d+(?:\.\d+)?$/.test(t)
-      ? parseFloat(t)
-      : NaN;
-  return Number.isFinite(length) && length > 0 ? length : undefined;
-}
-
-function positiveBpm(bpm: number | undefined, fallback: number): number {
-  return bpm !== undefined && Number.isFinite(bpm) && bpm > 0 ? bpm : fallback;
-}
-
-/** Resolve a tempo section as the server's tempo map does: changes are taken
- *  in time order, each reached through the tempo (and any ramp) of those
- *  before it; a time signature set mid-bar governs from the next bar; a ramp
- *  over N beats spans exactly N beats, and one over N measures the beats in
- *  N bars of the signature set at its position. */
-function buildTempoGrid(tempo: TempoSection): TempoGrid {
-  const key = tempoKey(tempo);
-  const cached = gridCache.get(tempo);
-  if (cached && sameKey(cached.key, key)) return cached.grid;
-  const grid = resolveTempoGrid(tempo);
-  gridCache.set(tempo, { key, grid });
-  return grid;
-}
-
-/** Resolved grids by tempo section. A section can be edited in place, so
+/** Resolved maps by tempo section. A section can be edited in place, so
  *  each is kept with the values it was resolved from and checked against
  *  them: a walk over the changes, far cheaper than resolving them again. */
-const gridCache = new WeakMap<
+const mapCache = new WeakMap<
   TempoSection,
-  { key: (number | string | undefined)[]; grid: TempoGrid }
+  {
+    key: (number | string | undefined)[];
+    map: TempoMap;
+  }
 >();
+
+function cached(tempo: TempoSection) {
+  const key = tempoKey(tempo);
+  const hit = mapCache.get(tempo);
+  if (hit && sameKey(hit.key, key)) return hit;
+  const entry = { key, map: new TempoMap(mapInput(tempo)) };
+  mapCache.set(tempo, entry);
+  return entry;
+}
+
+/** The tempo map of a tempo section, as the player resolves it. */
+export function tempoMapOf(tempo: TempoSection): TempoMap {
+  return cached(tempo).map;
+}
 
 function tempoKey(tempo: TempoSection): (number | string | undefined)[] {
   const key: (number | string | undefined)[] = [
@@ -339,162 +154,21 @@ function sameKey(
   return true;
 }
 
-function resolveTempoGrid(tempo: TempoSection): TempoGrid {
-  const initialSig = tempo.time_signature;
-  const initialBpm = positiveBpm(tempo.bpm, 120);
-  const startMs = durationToMs(tempo.start);
-  const segments: TempoSegment[] = [
-    {
-      startMs,
-      startMeasure: 1,
-      startBeat: 1,
-      startBeats: 0,
-      bpm: initialBpm,
-      beatsPerMeasure: initialSig[0],
-      beatValue: initialSig[1],
-    },
-  ];
-  const meters: MeterSpan[] = [
-    {
-      measure: 1,
-      startBeats: 0,
-      quarters: quartersPerMeasure(initialSig),
-      signature: [initialSig[0], initialSig[1]],
-    },
-  ];
-  const changes: ResolvedChange[] = [];
-  const grid = {
-    segments,
-    meters,
-    changes,
-    anyTimed: tempo.changes.some((c) => c.timestamp.type === "absolute"),
-    offsetSegments: new Map<number, TempoSegment[]>(),
-  };
-
-  const timed = tempo.changes
-    .filter((c) => c.timestamp.type === "absolute")
-    .sort((a, b) => (a.timestamp.ms ?? 0) - (b.timestamp.ms ?? 0));
-  const barred = tempo.changes
-    .filter((c) => c.timestamp.type !== "absolute")
-    .sort(
-      (a, b) =>
-        (a.timestamp.measure ?? 1) - (b.timestamp.measure ?? 1) ||
-        (a.timestamp.beat ?? 1) - (b.timestamp.beat ?? 1),
-    );
-  const barredBeats = (c: TempoChange) =>
-    beatsAtMeasureBeat(meters, c.timestamp.measure ?? 1, c.timestamp.beat ?? 1);
-  let sig: [number, number] = [initialSig[0], initialSig[1]];
-
-  let ti = 0;
-  let bi = 0;
-  while (ti < timed.length || bi < barred.length) {
-    const cur = segments[segments.length - 1];
-    let change: TempoChange;
-    let beats: number;
-    let dt: number;
-    const barredAt =
-      bi < barred.length
-        ? cur.startMs +
-          segmentMsFor(cur, barredBeats(barred[bi]) - cur.startBeats)
-        : Infinity;
-    if (ti < timed.length && (timed[ti].timestamp.ms ?? 0) <= barredAt) {
-      change = timed[ti++];
-      // A change before bar 1 counts as at it.
-      dt = Math.max(0, (change.timestamp.ms ?? 0) - cur.startMs);
-      beats = cur.startBeats + segmentBeatsIn(cur, dt);
-    } else {
-      change = barred[bi++];
-      beats = barredBeats(change);
-      dt = barredAt - cur.startMs;
-    }
-
-    if (change.time_signature) {
-      sig = change.time_signature;
-      // As the server places it: a change written on a bar's beat 1
-      // governs from that bar, one written anywhere else (even past the
-      // bar's end) from the next; a timed change by where it falls.
-      const at =
-        change.timestamp.type === "absolute"
-          ? measureBeatAtBeats(meters, beats)
-          : {
-              measure: change.timestamp.measure ?? 1,
-              beat: change.timestamp.beat ?? 1,
-            };
-      const from = Math.abs(at.beat - 1) < 0.001 ? at.measure : at.measure + 1;
-      const span = {
-        measure: from,
-        startBeats: beatsAtMeasureBeat(meters, from, 1),
-        quarters: quartersPerMeasure(change.time_signature),
-        signature: change.time_signature,
-      };
-      const later = meters.findIndex((m) => m.measure >= from);
-      if (later >= 0) meters.splice(later);
-      meters.push(span);
-    }
-
-    const at = measureBeatAtBeats(meters, beats);
-    const next: TempoSegment = {
-      startMs: cur.startMs + dt,
-      startMeasure: at.measure,
-      startBeat: at.beat,
-      startBeats: beats,
-      bpm: cur.bpm,
-      ramp: rampAfter(cur, dt),
-      beatsPerMeasure: sig[0],
-      beatValue: sig[1],
-    };
-    if (change.bpm !== undefined && positiveBpm(change.bpm, 0) > 0) {
-      // A ramp in measures counts them in the signature set at its
-      // position, by its own change or another beside it of either kind,
-      // listed before or after it. Those still to come are at the fronts
-      // of the queues.
-      let sizingSig = sig;
-      if (change.transition?.trim().endsWith("m")) {
-        const changeMs = next.startMs;
-        for (let i = ti; i < timed.length; i++) {
-          if (Math.abs((timed[i].timestamp.ms ?? 0) - changeMs) > 1e-6) break;
-          const ts = timed[i].time_signature;
-          if (ts) sizingSig = ts;
-        }
-        for (let i = bi; i < barred.length; i++) {
-          if (barredBeats(barred[i]) > beats + 1e-9) break;
-          const ts = barred[i].time_signature;
-          if (ts) sizingSig = ts;
-        }
-      }
-      const length = transitionBeats(
-        change.transition,
-        quartersPerMeasure(sizingSig),
-      );
-      const fromBpm = segmentBpmAt(cur, dt);
-      next.ramp =
-        length === undefined
-          ? undefined
-          : {
-              fromBpm,
-              toBpm: change.bpm,
-              totalMs: rampDurationMs(fromBpm, change.bpm, length),
-              elapsedMs: 0,
-            };
-      next.bpm = change.bpm;
-      changes.push({
-        timed: change.timestamp.type === "absolute",
-        bpm: change.bpm,
-        rampBeats: length,
-      });
-    } else {
-      changes.push({ timed: change.timestamp.type === "absolute" });
-    }
-    segments.push(next);
-  }
-
-  return grid;
+/** Quarter notes from bar 1 beat 1 at an absolute ms position. */
+function beatsAtMs(map: TempoMap, ms: number, offsetMs = 0): number {
+  return map.beatsAt(ms / 1000, offsetMs / 1000);
 }
 
-/** Build a sorted array of tempo segments from a TempoSection: one per
- *  change, each carrying any ramp still in progress where it starts. */
-export function buildTempoSegments(tempo: TempoSection): TempoSegment[] {
-  return buildTempoGrid(tempo).segments;
+/** The absolute ms of a position in quarter notes from bar 1 beat 1, as a
+ *  cue there is placed under an offset of `offsetMs` (before the offset
+ *  itself is added). */
+function msAtBeats(map: TempoMap, beats: number, offsetMs = 0): number {
+  return map.timeAtBeats(beats, offsetMs / 1000) * 1000;
+}
+
+/** Quarter notes in bar `measure`. */
+function quartersIn(map: TempoMap, measure: number): number {
+  return map.beatsAtPosition(measure + 1, 1) - map.beatsAtPosition(measure, 1);
 }
 
 /** A stretch of the tempo lane with one label. */
@@ -509,31 +183,22 @@ export interface TempoLaneSpan {
  *  at the barline a mid-bar signature change governs from. Mid-ramp, a
  *  stretch shows the tempo where it starts and where the ramp goes. */
 export function tempoLaneSpans(tempo: TempoSection): TempoLaneSpan[] {
-  const grid = buildTempoGrid(tempo);
-  const bounds = new Set<number>();
-  for (const seg of grid.segments) {
-    bounds.add(seg.startMs);
-    if (seg.ramp)
-      bounds.add(seg.startMs + seg.ramp.totalMs - seg.ramp.elapsedMs);
-  }
-  for (const m of grid.meters) bounds.add(msAtBeats(grid, m.startBeats));
+  const map = tempoMapOf(tempo);
   const round = (bpm: number) => Math.round(bpm * 100) / 100;
   const spans: TempoLaneSpan[] = [];
-  for (const ms of [...bounds].sort((a, b) => a - b)) {
-    const seg = segmentAtMs(grid.segments, ms);
-    const dt = ms - seg.startMs;
-    const r = seg.ramp;
-    const inRamp = !!r && r.elapsedMs + dt < r.totalMs - 1e-6;
-    const bpm = inRamp
-      ? `${round(segmentBpmAt(seg, dt))} → ${round(r!.toBpm)}`
-      : `${round(seg.bpm)}`;
-    const { measure } = measureBeatAtBeats(grid.meters, beatsAtMs(grid, ms));
-    const [num, den] = meterAtMeasure(grid.meters, measure).signature;
+  for (const secs of map.boundaries()) {
+    const target = map.rampTargetAt(secs);
+    const now = round(map.bpmAt(secs));
+    const bpm = target === undefined ? `${now}` : `${now} → ${round(target)}`;
+    const { measure } = map.positionAtBeats(map.beatsAt(secs));
+    const [num, den] = map.signatureInMeasure(measure);
     const label = `${bpm} BPM, ${num}/${den}`;
     const last = spans[spans.length - 1];
     // A change that changes nothing yet (a signature set mid-bar) starts no
     // stretch of its own.
-    if (!last || last.label !== label) spans.push({ startMs: ms, label });
+    if (!last || last.label !== label) {
+      spans.push({ startMs: secs * 1000, label });
+    }
   }
   return spans;
 }
@@ -548,95 +213,6 @@ function durationToMs(d: { value: number; unit: string }): number {
     default:
       return 0;
   }
-}
-
-/** The segments the player walks for a cue under an offset of `offsetMs`:
- *  the tempo changes positioned in time are taken `offsetMs` later (each at
- *  the beat the unshifted map has there), those positioned by bar stay on
- *  their bars. Its walk, step for step, kept with the grid per offset. */
-function offsetSegments(grid: TempoGrid, offsetMs: number): TempoSegment[] {
-  const cached = grid.offsetSegments.get(offsetMs);
-  if (cached) return cached;
-  let cur: TempoSegment = { ...grid.segments[0], ramp: undefined };
-  const walk = [cur];
-  for (let i = 0; i < grid.changes.length; i++) {
-    const change = grid.changes[i];
-    const seg = grid.segments[i + 1];
-    const changeBeats = change.timed
-      ? Math.max(0, beatsAtMs(grid, seg.startMs + offsetMs))
-      : seg.startBeats;
-    const dt = Math.max(0, segmentMsFor(cur, changeBeats - cur.startBeats));
-    const bpmAtChange = segmentBpmAt(cur, dt);
-    const next: TempoSegment = {
-      ...cur,
-      startMs: cur.startMs + dt,
-      startBeats: changeBeats,
-      ramp: rampAfter(cur, dt),
-    };
-    if (change.bpm !== undefined) {
-      next.bpm = change.bpm;
-      next.ramp =
-        change.rampBeats === undefined
-          ? undefined
-          : {
-              fromBpm: bpmAtChange,
-              toBpm: change.bpm,
-              totalMs: rampDurationMs(
-                bpmAtChange,
-                change.bpm,
-                change.rampBeats,
-              ),
-              elapsedMs: 0,
-            };
-    }
-    walk.push(next);
-    cur = next;
-  }
-  if (grid.offsetSegments.size > 64) grid.offsetSegments.clear();
-  grid.offsetSegments.set(offsetMs, walk);
-  return walk;
-}
-
-/** The ms of a beat position for a cue under an offset of `offsetMs`, as
- *  the player places it (before the offset itself is added). With no
- *  offset, or no change positioned in time, the unshifted position. */
-function msAtBeatsOffset(
-  grid: TempoGrid,
-  beats: number,
-  offsetMs: number,
-): number {
-  if (offsetMs === 0 || !grid.anyTimed || beats < 0) {
-    return msAtBeats(grid, beats);
-  }
-  const walk = offsetSegments(grid, offsetMs);
-  // The player stops at the first change past the position.
-  let cur = walk[0];
-  for (let i = 1; i < walk.length && walk[i].startBeats <= beats; i++) {
-    cur = walk[i];
-  }
-  return cur.startMs + Math.max(0, segmentMsFor(cur, beats - cur.startBeats));
-}
-
-/** The inverse of `msAtBeatsOffset`: the beat position the player puts at
- *  a score time for a cue under an offset of `offsetMs`. */
-function beatsAtMsOffset(
-  grid: TempoGrid,
-  ms: number,
-  offsetMs: number,
-): number {
-  const first = grid.segments[0];
-  if (offsetMs === 0 || !grid.anyTimed || ms < first.startMs) {
-    return beatsAtMs(grid, ms);
-  }
-  const walk = offsetSegments(grid, offsetMs);
-  let cur = walk[0];
-  for (let i = 1; i < walk.length; i++) {
-    // Where the walk above would stop: a change before the last one's
-    // beat is never reached.
-    if (walk[i].startMs > ms || walk[i].startBeats < cur.startBeats) break;
-    cur = walk[i];
-  }
-  return cur.startBeats + segmentBeatsIn(cur, ms - cur.startMs);
 }
 
 /** Convert a Timestamp to absolute milliseconds: its place in the tempo
@@ -654,10 +230,10 @@ export function timestampToMs(
   // measure_beat type
   if (!tempo) return 0;
 
-  const grid = buildTempoGrid(tempo);
-  return msAtBeatsOffset(
-    grid,
-    beatsAtMeasureBeat(grid.meters, ts.measure ?? 1, ts.beat ?? 1),
+  const map = tempoMapOf(tempo);
+  return msAtBeats(
+    map,
+    map.beatsAtPosition(ts.measure ?? 1, ts.beat ?? 1),
     offsetMs,
   );
 }
@@ -678,14 +254,11 @@ export function msToTimestamp(
 
   // With `offsetMs`, `ms` is a score time under that offset, as
   // `timestampToMs(ts, tempo, offsetMs)` gives it.
-  const grid = buildTempoGrid(tempo);
-  const at = measureBeatAtBeats(
-    grid.meters,
-    beatsAtMsOffset(grid, ms, offsetMs),
-  );
+  const map = tempoMapOf(tempo);
+  const at = map.positionAtBeats(beatsAtMs(map, ms, offsetMs));
   let measure = at.measure;
   let beat = Math.round(at.beat);
-  if (beat - 1 >= meterAtMeasure(grid.meters, measure).quarters) {
+  if (beat - 1 >= quartersIn(map, measure)) {
     measure += 1;
     beat = 1;
   }
@@ -701,19 +274,17 @@ export function getGridLines(
   pixelsPerMs?: number,
 ): GridLine[] {
   const lines: GridLine[] = [];
-  const grid = buildTempoGrid(tempo);
+  const map = tempoMapOf(tempo);
   const MAX_LINES = 100000;
 
-  let measure = measureBeatAtBeats(
-    grid.meters,
-    beatsAtMs(grid, viewStartMs),
-  ).measure;
+  let measure = map.positionAtBeats(beatsAtMs(map, viewStartMs)).measure;
+  let barBeats = map.beatsAtPosition(measure, 1);
   while (lines.length < MAX_LINES) {
-    const quarters = meterAtMeasure(grid.meters, measure).quarters;
-    const barBeats = beatsAtMeasureBeat(grid.meters, measure, 1);
-    const barMs = msAtBeats(grid, barBeats);
+    const nextBeats = map.beatsAtPosition(measure + 1, 1);
+    const quarters = nextBeats - barBeats;
+    const barMs = msAtBeats(map, barBeats);
     if (!(barMs <= viewEndMs)) break;
-    const measureDurationMs = msAtBeats(grid, barBeats + quarters) - barMs;
+    const measureDurationMs = msAtBeats(map, nextBeats) - barMs;
 
     // Determine label and beat-line density based on pixels per measure.
     // At low zoom, skip labels and beat lines to avoid overlap.
@@ -741,12 +312,13 @@ export function getGridLines(
     }
     if (showBeats) {
       for (let q = 1; q < quarters - 1e-9; q++) {
-        const ms = msAtBeats(grid, barBeats + q);
+        const ms = msAtBeats(map, barBeats + q);
         if (ms > viewEndMs) break;
         if (ms >= viewStartMs) lines.push({ ms, type: "beat" });
       }
     }
     measure++;
+    barBeats = nextBeats;
   }
 
   return lines;
@@ -804,17 +376,16 @@ export function msToDurationString(
   atMs: number = 0,
 ): string {
   if (tempo) {
-    const grid = buildTempoGrid(tempo);
+    const map = tempoMapOf(tempo);
     // Rounded to a millionth of a beat, as the server's snap_beats does:
     // two positions read back from times carry float noise, and a span of
     // one beat must not come out 0.9999999999.
-    const startBeats = snapBeats(beatsAtMs(grid, atMs));
-    const endBeats = snapBeats(beatsAtMs(grid, atMs + ms));
+    const startBeats = snapBeats(beatsAtMs(map, atMs));
+    const endBeats = snapBeats(beatsAtMs(map, atMs + ms));
 
     // Prefer whole measures
     const measures = snapBeats(
-      measuresAtBeats(grid.meters, endBeats) -
-        measuresAtBeats(grid.meters, startBeats),
+      map.measuresAtBeats(endBeats) - map.measuresAtBeats(startBeats),
     );
     if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
       const rounded = Math.round(measures);
@@ -868,23 +439,19 @@ export function snapToNearestGrid(
 ): number {
   // With `offsetMs`, `ms` is a score time under that offset, and so is
   // the grid it snaps to.
-  const grid = buildTempoGrid(tempo);
-  const beats = beatsAtMsOffset(grid, ms, offsetMs);
+  const map = tempoMapOf(tempo);
+  const beats = beatsAtMs(map, ms, offsetMs);
   if (resolution === "measure") {
-    const measures = Math.round(measuresAtBeats(grid.meters, beats));
-    return msAtBeatsOffset(
-      grid,
-      beatsAtMeasures(grid.meters, measures),
-      offsetMs,
-    );
+    const measures = Math.round(map.measuresAtBeats(beats));
+    return msAtBeats(map, map.beatsAtMeasures(measures), offsetMs);
   }
   // Steps count from the bar's downbeat, so an odd metre's bar keeps its
   // subdivisions.
-  const { measure } = measureBeatAtBeats(grid.meters, beats);
-  const bar = beatsAtMeasureBeat(grid.meters, measure, 1);
+  const { measure } = map.positionAtBeats(beats);
+  const bar = map.beatsAtPosition(measure, 1);
   const step = SNAP_BEATS[resolution];
-  return msAtBeatsOffset(
-    grid,
+  return msAtBeats(
+    map,
     bar + Math.round((beats - bar) / step) * step,
     offsetMs,
   );
@@ -897,23 +464,21 @@ export function snapDurationToGrid(
   tempo: TempoSection,
   resolution: SnapResolution,
 ): number {
-  const grid = buildTempoGrid(tempo);
-  const startBeats = beatsAtMs(grid, atMs);
-  const endBeats = beatsAtMs(grid, atMs + durationMs);
+  const map = tempoMapOf(tempo);
+  const startBeats = beatsAtMs(map, atMs);
+  const endBeats = beatsAtMs(map, atMs + durationMs);
   if (resolution === "measure") {
-    const from = measuresAtBeats(grid.meters, startBeats);
-    const span = measuresAtBeats(grid.meters, endBeats) - from;
+    const from = map.measuresAtBeats(startBeats);
+    const span = map.measuresAtBeats(endBeats) - from;
     const measures = Math.max(1, Math.round(span));
-    return (
-      msAtBeats(grid, beatsAtMeasures(grid.meters, from + measures)) - atMs
-    );
+    return msAtBeats(map, map.beatsAtMeasures(from + measures)) - atMs;
   }
   const step = SNAP_BEATS[resolution];
   const beats = Math.max(
     step,
     Math.round((endBeats - startBeats) / step) * step,
   );
-  return msAtBeats(grid, startBeats + beats) - atMs;
+  return msAtBeats(map, startBeats + beats) - atMs;
 }
 
 /** An offset marker on the timeline. */
@@ -1076,13 +641,7 @@ export function offsetToMs(
   anchorMs: number,
   tempo: TempoSection,
 ): number {
-  const grid = buildTempoGrid(tempo);
-  const { measure } = measureBeatAtBeats(
-    grid.meters,
-    beatsAtMs(grid, anchorMs),
-  );
-  const quarters = meterAtMeasure(grid.meters, measure).quarters;
-  return (measures * quarters * MS_PER_MINUTE) / getTempoAtMs(anchorMs, tempo);
+  return tempoMapOf(tempo).offsetDuration(measures, anchorMs / 1000) * 1000;
 }
 
 /** How long the N measures from a given ms position last, through any
@@ -1092,9 +651,7 @@ export function measuresToMs(
   atMs: number,
   tempo: TempoSection,
 ): number {
-  const grid = buildTempoGrid(tempo);
-  const from = measuresAtBeats(grid.meters, beatsAtMs(grid, atMs));
-  return msAtBeats(grid, beatsAtMeasures(grid.meters, from + measures)) - atMs;
+  return tempoMapOf(tempo).measuresToDuration(measures, atMs / 1000) * 1000;
 }
 
 /** How long the N beats from a given ms position last, through any tempo
@@ -1104,59 +661,185 @@ export function beatsToMs(
   atMs: number,
   tempo: TempoSection,
 ): number {
-  const grid = buildTempoGrid(tempo);
-  return msAtBeats(grid, beatsAtMs(grid, atMs) + beats) - atMs;
+  return tempoMapOf(tempo).beatsToDuration(beats, atMs / 1000) * 1000;
+}
+
+/** Where a cue is written, as the cue clock takes it. */
+function cuePosition(ts: Timestamp): TempoMapPosition {
+  return ts.type === "absolute"
+    ? { secs: (ts.ms ?? 0) / 1000 }
+    : { measure: ts.measure ?? 1, beat: ts.beat ?? 1 };
 }
 
 /**
- * Compute adjusted cue positions for a show's cues, applying cumulative offsets
- * as the player does. Each cue's `offset` shifts all subsequent cues forward in
- * real time and a `reset_measures` drops the shift; an offset is sized at the
- * tempo where its cue sits in the tempo map, before any offset (or, for a cue
- * at 0, where the previous cue sits).
+ * Compute adjusted cue positions for a show's cues, placed as the player
+ * places them (its `CueClock`): each cue's `offset` shifts all subsequent
+ * cues forward in real time and a `reset_measures` drops the shift; an
+ * offset is sized at the tempo where its cue sits in the tempo map, before
+ * any offset (or, for a cue at 0, where the previous cue sits); under an
+ * offset, the tempo changes positioned in time move with it.
  */
 export function computeAdjustedCuePositions(
   cues: Cue[],
   tempo?: TempoSection,
 ): AdjustedCuePosition[] {
-  let cumulativeOffsetMs = 0;
-  let lastAbsMs: number | undefined;
-  const startMs = tempo ? durationToMs(tempo.start) : 0;
+  const map = tempo ? tempoMapOf(tempo) : undefined;
+  const clock = new CueClock();
   return cues.map((cue, index) => {
-    const rawMs = timestampToMs(cue.timestamp, tempo);
-    const applied = cumulativeOffsetMs;
-    // Placed as the player places it: under an offset, the tempo changes
-    // positioned in time move with it.
-    const adjustedMs =
-      (applied !== 0 ? timestampToMs(cue.timestamp, tempo, applied) : rawMs) +
-      applied;
-    let offsetMs = 0;
     const offsets =
       cue.offset_measures !== undefined && cue.offset_measures > 0;
-    if (tempo && (offsets || cue.reset_measures)) {
-      if (cue.reset_measures) cumulativeOffsetMs = 0;
-      if (offsets) {
-        const anchor =
-          rawMs !== 0
-            ? rawMs
-            : lastAbsMs !== undefined
-              ? Math.max(0, lastAbsMs - applied - startMs)
-              : 0;
-        offsetMs = offsetToMs(cue.offset_measures!, anchor, tempo);
-        cumulativeOffsetMs += offsetMs;
-      }
+    const placed = map
+      ? clock.place(
+          map,
+          cuePosition(cue.timestamp),
+          cue.offset_measures ?? 0,
+          offsets,
+          !!cue.reset_measures,
+        )
+      : undefined;
+    if (!placed) {
+      // No tempo map: a cue at a bar has no place (it is drawn at 0), and
+      // an offset needs a tempo to be sized.
+      const rawMs = timestampToMs(cue.timestamp, tempo);
+      return {
+        cue,
+        index,
+        adjustedMs: rawMs,
+        rawMs,
+        cumulativeOffsetMs: 0,
+        offsetMs: 0,
+        nextOffsetMs: 0,
+      };
     }
-    lastAbsMs = adjustedMs;
     return {
       cue,
       index,
-      adjustedMs,
-      rawMs,
-      cumulativeOffsetMs: applied,
-      offsetMs,
-      nextOffsetMs: cumulativeOffsetMs,
+      adjustedMs: placed.time * 1000,
+      rawMs:
+        placed.unshifted !== undefined
+          ? placed.unshifted * 1000
+          : timestampToMs(cue.timestamp, tempo),
+      cumulativeOffsetMs: placed.offset * 1000,
+      offsetMs: placed.issued * 1000,
+      nextOffsetMs: placed.after * 1000,
     };
   });
+}
+
+/** A sequence's cues and pass, in beats from its start, as the player
+ *  counts them (`Sequence::beats_from_start`, `Sequence::pass_beats`):
+ *  through the map it is timed in inside itself, which is the show's at its
+ *  starting tempo and time signature. A pass lasts its declared `length:`,
+ *  else until its last effect ends, else until its last cue starts. */
+interface SequencePass {
+  /** Each cue's start, in beats from the sequence's */
+  cueBeats: number[];
+  passBeats: number;
+  /** The same in ms, for a show without a tempo map */
+  cueMs: number[];
+  passMs: number;
+}
+
+function sequencePass(seq: Sequence, tempo?: TempoSection): SequencePass {
+  const steady = tempo && steadyTempo(tempo);
+  const map = steady && tempoMapOf(steady);
+  const cueAt = seq.cues.map((c) =>
+    map
+      ? msAtBeats(map, beatsAtTimestamp(map, c.timestamp))
+      : (c.timestamp.ms ?? 0),
+  );
+  const startMs = cueAt.length ? Math.min(...cueAt) : 0;
+  const beatsFromStart = (ms: number) =>
+    snapBeats(
+      map
+        ? beatsAtMs(map, ms) - beatsAtMs(map, startMs)
+        : ((ms - startMs) / MS_PER_MINUTE) * DEFAULT_BPM,
+    );
+
+  let endMs: number;
+  const length = seq.length
+    ? durationStringToMs(seq.length, steady, startMs)
+    : 0;
+  if (length > 0) {
+    endMs = startMs + length;
+  } else if (seq.cues.some((c) => c.effects.length > 0)) {
+    endMs = startMs;
+    seq.cues.forEach((c, i) => {
+      for (const e of c.effects) {
+        endMs = Math.max(
+          endMs,
+          cueAt[i] + effectDurationMs(e, steady, cueAt[i]),
+        );
+      }
+    });
+  } else {
+    endMs = Math.max(startMs, ...cueAt);
+  }
+  return {
+    cueBeats: cueAt.map(beatsFromStart),
+    passBeats: beatsFromStart(endMs),
+    cueMs: cueAt.map((ms) => ms - startMs),
+    passMs: endMs - startMs,
+  };
+}
+
+/** The beat position of a timestamp in `map`. */
+function beatsAtTimestamp(map: TempoMap, ts: Timestamp): number {
+  return ts.type === "absolute"
+    ? beatsAtMs(map, ts.ms ?? 0)
+    : map.beatsAtPosition(ts.measure ?? 1, ts.beat ?? 1);
+}
+
+/** A tempo section at its starting tempo and time signature, none of its
+ *  changes: the timing inside a sequence. */
+const steadyTempos = new WeakMap<TempoSection, TempoSection>();
+function steadyTempo(tempo: TempoSection): TempoSection {
+  let steady = steadyTempos.get(tempo);
+  if (
+    !steady ||
+    steady.bpm !== tempo.bpm ||
+    steady.start !== tempo.start ||
+    steady.time_signature !== tempo.time_signature
+  ) {
+    steady = { ...tempo, changes: [] };
+    steadyTempos.set(tempo, steady);
+  }
+  return steady;
+}
+
+/** How long an effect lasts, as the player has it (`Effect::total_duration`):
+ *  up, then its hold (or its own duration), then down. */
+function effectDurationMs(
+  e: CueEffect,
+  tempo: TempoSection | undefined,
+  atMs: number,
+): number {
+  const p = e.effect;
+  const ms = (d: string | undefined) => durationStringToMs(d, tempo, atMs);
+  if (p.type === "dimmer") return ms(p.duration);
+  return ms(p.up_time) + ms(p.hold_time ?? p.duration) + ms(p.down_time);
+}
+
+/** Where the cue at `cueBeats` in pass `pass` of a sequence played from
+ *  `refMs` lands: placed in beats through the show's tempo map from there,
+ *  as the player places it (`expand_sequence_call`). */
+function passCueMs(
+  pass: SequencePass,
+  index: number,
+  iteration: number,
+  refMs: number,
+  tempo?: TempoSection,
+): number {
+  if (!tempo) {
+    return (
+      refMs + iteration * pass.passMs + (index < 0 ? 0 : pass.cueMs[index])
+    );
+  }
+  const beats =
+    index < 0
+      ? iteration * pass.passBeats
+      : iteration * pass.passBeats + pass.cueBeats[index];
+  return refMs + beatsToMs(snapBeats(beats), refMs, tempo);
 }
 
 /**
@@ -1186,41 +869,26 @@ export function expandSequencesIntoCues(
       if (!seq || seq.cues.length === 0) continue;
 
       const refMs = timestampToMs(cue.timestamp, tempo);
+      const pass = sequencePass(seq, tempo);
+      // Passes of no length all start together: one is all there is to see.
+      const passes = pass.passBeats > 0 ? parseLoopCount(ref.loop) : 1;
 
-      const seqDurationMs = getSequenceIterationMs(seq, refMs, tempo);
-      const loopCount = parseLoopCount(ref.loop);
-
-      // BPM context for rescaling cue positions within the sequence
-      const seqBaseMs = timestampToMs(seq.cues[0].timestamp, tempo);
-      const seqParseBpm = getTempoAtMs(0, tempo);
-      const refBpm = getTempoAtMs(refMs, tempo);
-      const msPerBeatAtParse = 60000 / seqParseBpm;
-      const msPerBeatAtRef = 60000 / refBpm;
-
-      for (let iter = 0; iter < loopCount; iter++) {
-        const iterOffsetMs = refMs + iter * seqDurationMs;
-
-        for (const seqCue of seq.cues) {
-          // Convert this cue's position to a beat offset, then to ms at ref tempo
-          const scMs = timestampToMs(seqCue.timestamp, tempo);
-          const relBeats = (scMs - seqBaseMs) / msPerBeatAtParse;
-          const relMs = relBeats * msPerBeatAtRef;
-          const absoluteMs = iterOffsetMs + relMs;
-
-          if (seqCue.effects.length === 0) continue;
-
+      for (let iter = 0; iter < passes; iter++) {
+        seq.cues.forEach((seqCue, i) => {
+          if (seqCue.effects.length === 0) return;
           const taggedEffects: CueEffect[] = seqCue.effects.map((e) => ({
             ...e,
             sequenceName: ref.name,
           }));
-
           expanded.push({
-            timestamp: absoluteTimestamp(absoluteMs),
+            timestamp: absoluteTimestamp(
+              passCueMs(pass, i, iter, refMs, tempo),
+            ),
             effects: taggedEffects,
             commands: [],
             sequences: [],
           });
-        }
+        });
       }
     }
   }
@@ -1235,54 +903,28 @@ export function expandSequencesIntoCues(
 }
 
 /**
- * Compute the duration of a single iteration of a sequence in ms,
- * rescaled to the tempo active at a given reference point.
+ * How long `passes` passes of a sequence played from `refMs` last, through
+ * the show's tempo map from there.
  */
-export function getSequenceIterationMs(
+export function getSequencePlayMs(
   seq: Sequence,
   refMs: number,
   tempo?: TempoSection,
+  passes = 1,
 ): number {
-  if (seq.cues.length === 0) return 1000;
-  // A declared `length:` is the pass length, however long the effects run.
-  if (seq.length) {
-    const lengthMs = durationStringToMs(seq.length, tempo, refMs);
-    if (lengthMs > 0) return lengthMs;
-  }
-
-  const seqBaseMs = timestampToMs(seq.cues[0].timestamp, tempo);
-  const seqParseBpm = getTempoAtMs(0, tempo);
-  const refBpm = getTempoAtMs(refMs, tempo);
-  const msPerBeatAtParse = 60000 / seqParseBpm;
-  const msPerBeatAtRef = 60000 / refBpm;
-
-  let maxBeats = 0;
-  for (const sc of seq.cues) {
-    const scMs = timestampToMs(sc.timestamp, tempo);
-    const relBeats = (scMs - seqBaseMs) / msPerBeatAtParse;
-    for (const eff of sc.effects) {
-      const durStr = eff.effect.duration ?? eff.effect.hold_time;
-      const durMs = durationStringToMs(durStr, tempo, refMs);
-      const durBeats = durMs / msPerBeatAtRef;
-      const endBeats = relBeats + durBeats;
-      if (endBeats > maxBeats) maxBeats = endBeats;
-    }
-    if (relBeats > maxBeats) maxBeats = relBeats;
-  }
-  if (maxBeats <= 0) maxBeats = 4;
-
-  return maxBeats * msPerBeatAtRef;
+  if (seq.cues.length === 0) return 0;
+  return passCueMs(sequencePass(seq, tempo), -1, passes, refMs, tempo) - refMs;
 }
 
 /** Get the BPM at a given ms position (mid-ramp, the ramp's tempo there). */
 export function getTempoAtMs(ms: number, tempo?: TempoSection): number {
   if (!tempo) return 120; // default
-  const grid = buildTempoGrid(tempo);
-  const seg = segmentAtMs(grid.segments, ms);
-  return segmentBpmAt(seg, Math.max(0, ms - seg.startMs));
+  return tempoMapOf(tempo).bpmAt(ms / 1000);
 }
 
-function parseLoopCount(loop?: string): number {
+/** The passes a sequence reference plays: `loop: N`, or a practical limit
+ *  for display for `loop: loop`. */
+export function parseLoopCount(loop?: string): number {
   if (!loop) return 1;
   const n = parseInt(loop, 10);
   if (!isNaN(n) && n > 0) return n;
