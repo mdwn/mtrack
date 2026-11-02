@@ -106,10 +106,7 @@ fn analyze_between(
     fallback_tempo_map: Option<&TempoMap>,
     boundaries: &[Duration],
 ) -> Analysis {
-    let tempo_map = timeline
-        .tempo_map()
-        .cloned()
-        .or_else(|| fallback_tempo_map.cloned());
+    let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
     if boundaries.is_empty() {
         return Analysis {
             cue_count,

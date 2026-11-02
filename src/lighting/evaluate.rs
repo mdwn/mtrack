@@ -19,8 +19,8 @@
 //! song in real time through the PA and the rig, once per check.
 //!
 //! Each requested time is evaluated independently against a fresh engine, by
-//! the same reconstruction the seek path uses: replay the cue history up to T,
-//! start each surviving effect at its elapsed offset, then render one frame.
+//! the same start the seek path uses: replay the cue history up to T through
+//! the engine, then render one frame and snapshot it as a live engine is.
 //! Nothing accumulates between samples, so evaluating `[10.0, 200.0]` costs the
 //! same as `[200.0, 10.0]` and neither perturbs the other.
 
@@ -116,20 +116,7 @@ where
     F: FnMut(EffectInstance) -> EffectInstance,
 {
     let mut timeline = LightingTimeline::new(shows);
-    let tempo_map = timeline
-        .tempo_map()
-        .cloned()
-        .or_else(|| fallback_tempo_map.cloned());
-
-    // Which fixtures own a dedicated dimmer channel decides whether their RGB
-    // values get scaled by the virtual dimmer. Same input the live sampler uses.
-    let has_dimmer: HashMap<String, bool> = fixtures
-        .iter()
-        .map(|f| (f.name.clone(), f.channels.contains_key("dimmer")))
-        .collect();
-
-    // Held under a second name because `fixtures` is shadowed inside the closure.
-    let venue_fixtures = fixtures;
+    let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
     times
         .iter()
         .map(|&time| {
@@ -140,73 +127,18 @@ where
                 engine.register_fixture(fixture.clone());
             }
 
-            // Replay everything before `time`, then fire the cues landing exactly
-            // on it. `start_at` stops short of `time` by design, so both halves
-            // are needed for a cue at the requested instant to count.
-            // A move takes its heads from another by the fixtures they
-            // share, so the history needs the groups resolved too.
-            let history = timeline.start_at_resolving(time, &mut |effect| {
-                resolve_groups(effect.clone()).target_fixtures
-            });
-            // A freeze in the history holds at `time`, as the live start
-            // paths have it.
-            engine.set_song_time(time);
-            apply_timeline_update(&mut engine, history, &mut resolve_groups);
+            // Start from everything before `time`, then fire the cues
+            // landing exactly on it. `start_at` stops short of `time` by
+            // design, so both halves are needed for a cue at the requested
+            // instant to count.
+            start_from(&mut engine, timeline.start_at(time), &mut resolve_groups);
             let now = timeline.update(time);
             apply_timeline_update(&mut engine, now, &mut resolve_groups);
 
             // Render a single frame at `time`. A zero delta keeps the engine's
-            // clock exactly where the elapsed offsets were computed against.
+            // clock exactly where the history left it.
             let _ = engine.update(Duration::ZERO, Some(time));
-
-            let mut fixtures = crate::state::fixture_snapshots_with_cells(
-                &engine.get_fixture_states(),
-                &has_dimmer,
-                engine.get_fixture_registry(),
-            );
-            fill_dark_fixtures(&mut fixtures, venue_fixtures.iter());
-            let mut active_effects: Vec<EvaluatedEffect> = engine
-                .get_active_effects()
-                .values()
-                .map(|effect| {
-                    let mut fixtures = effect.target_fixtures.clone();
-                    fixtures.sort();
-                    EvaluatedEffect {
-                        id: effect.id.clone(),
-                        effect_type: effect.effect_type.name(),
-                        layer: effect.layer,
-                        // As the engine renders it: less its time frozen,
-                        // at its layer's speed (#589).
-                        elapsed: engine.elapsed_at(effect, Some(time)),
-                        duration: effect.total_duration(),
-                        fixtures,
-                    }
-                })
-                .collect();
-            // Ordered by nothing that depends on the id. Ids come from a
-            // process-global counter and were compared as strings, so
-            // `song_effect_10` sorted before `song_effect_9` and the order
-            // shifted as the counter advanced — two evaluations of the same
-            // instant in one call could disagree, contradicting the
-            // independence this module promises. Elapsed descending puts the
-            // earliest-started effect first; the rest of the key is stable
-            // content.
-            active_effects.sort_by(|a, b| {
-                b.elapsed
-                    .cmp(&a.elapsed)
-                    .then_with(|| a.layer.cmp(&b.layer))
-                    .then_with(|| a.effect_type.cmp(b.effect_type))
-                    .then_with(|| a.fixtures.cmp(&b.fixtures))
-            });
-
-            let poses =
-                crate::state::compute_pose_snapshots(engine.poses(), engine.get_fixture_registry());
-            Evaluation {
-                time,
-                fixtures,
-                active_effects,
-                poses,
-            }
+            snapshot(&engine, time)
         })
         .collect()
 }
@@ -396,8 +328,12 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
             }
         })
         .collect();
-    // Same stable ordering as `evaluate_show`, so predicted and live output
-    // can be compared line for line.
+    // Ordered by nothing that depends on the id. Ids come from a
+    // process-global counter and were compared as strings, so
+    // `song_effect_10` sorted before `song_effect_9` and the order shifted as
+    // the counter advanced -- two evaluations of the same instant in one call
+    // could disagree. Elapsed descending puts the earliest-started effect
+    // first; the rest of the key is stable content.
     active_effects.sort_by(|a, b| {
         b.elapsed
             .cmp(&a.elapsed)
@@ -438,6 +374,20 @@ pub(crate) fn apply_timeline_update<F>(
     // That is a fact about the show worth surfacing elsewhere (#340), not a
     // reason to abandon the sample.
     let _ = engine.apply_timeline_update(update);
+}
+
+/// Starts a fresh engine from a seek's history, as the live start paths do
+/// (see [`EffectEngine::start_from`]), its groups resolved first.
+pub(crate) fn start_from<F>(
+    engine: &mut EffectEngine,
+    mut history: crate::lighting::timeline::SeekHistory,
+    resolve_groups: &mut F,
+) where
+    F: FnMut(EffectInstance) -> EffectInstance,
+{
+    history.map_effects(resolve_groups);
+    // As above: an effect that will not start is no reason to abandon it.
+    let _ = engine.start_from(history, crate::lighting::engine::StopScope::Nothing);
 }
 
 #[cfg(test)]

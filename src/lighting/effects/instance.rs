@@ -64,22 +64,6 @@ pub struct EffectInstance {
     /// The sequence this effect was cued from, if any: `stop sequence`
     /// takes out the effects of that sequence by name, and only those.
     pub sequence: Option<String>,
-    /// For a move a seek's history cut short before it arrived -- by a
-    /// clear, a stop of its sequence or a later move on the same heads --
-    /// where each cut left it. Live, a cut head holds the last pose it was
-    /// shown at, so the engine commits that pose for the fixtures cut and
-    /// runs the move on the rest, if any. Empty otherwise.
-    pub cuts: Vec<MoveCut>,
-}
-
-/// Where a seek's history cut a move short (see `EffectInstance::cuts`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct MoveCut {
-    /// The move's own elapsed at the cut. `None` for one cut on its own
-    /// cue's time, which never rendered: the heads stay where they were.
-    pub elapsed: Option<Duration>,
-    /// The fixtures cut, or every one it still has for `None`.
-    pub fixtures: Option<Vec<String>>,
 }
 
 impl EffectInstance {
@@ -130,7 +114,6 @@ impl EffectInstance {
             elapsed_from: Duration::ZERO,
             engine_timed: false,
             sequence: None,
-            cuts: Vec::new(),
         }
     }
 
@@ -215,17 +198,14 @@ impl EffectInstance {
             + self.down_time.unwrap_or(Duration::ZERO)
     }
 
-    /// Determine if the effect has reached its intended terminal state for the given elapsed time.
+    /// Whether the effect has run its course at `elapsed` of its own time:
+    /// exactly at its end, not a margin before it. A microsecond's grace
+    /// used to retire every effect early, so one ending on the downbeat the
+    /// next cue starts on left the rig dark for that microsecond (#536).
+    /// Cued effects are judged on score time, which is exact, and an expired
+    /// effect is removed, so there is nothing to flap.
     pub fn has_reached_terminal_state(&self, elapsed: Duration) -> bool {
-        // Exactly at its end, not a margin before it. A microsecond's grace
-        // used to retire every effect early, so one ending on the downbeat
-        // the next cue starts on left the rig dark for that microsecond
-        // (#536). Cued effects are judged on score time, which is exact, and
-        // an expired effect is removed, so there is nothing to flap.
-        match &self.effect_type {
-            EffectType::Dimmer { duration, .. } => elapsed >= *duration,
-            _ => elapsed >= self.total_duration(),
-        }
+        elapsed >= self.total_duration()
     }
 }
 

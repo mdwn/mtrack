@@ -28,7 +28,8 @@ use std::time::Duration;
 use crate::audio::click_analysis::BeatGrid;
 use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
 use crate::lighting::parser::LightShow;
-use crate::lighting::parser::{Cue, Effect, LayerCommandType};
+use crate::lighting::parser::{Cue, Effect};
+use crate::lighting::timeline::EffectEnd;
 
 /// A non-fatal finding.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,14 +182,17 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
         cues_beyond_the_tempo_map(show, ctx, &mut warnings);
     }
     // Across all shows at once, for the same reason the stomp check is: a
-    // `clear` in one show of a file ends effects in its siblings.
-    effects_past_end_of_song(shows, ctx, &mut warnings);
+    // `clear` in one show of a file ends effects in its siblings. Each
+    // effect's real end, as the show plays (#595).
+    let cues: Vec<&Cue> = shows.iter().flat_map(|show| show.cues.iter()).collect();
+    let ends = crate::lighting::timeline::effect_ends(cues.iter().copied());
+    effects_past_end_of_song(&cues, &ends, ctx, &mut warnings);
     parameters_the_effect_ignores(shows, &mut warnings);
     // Across all shows at once, not per show: `LightingTimeline` merges every
     // show in a file into one cue list and plays them together, so two shows
     // both driving `wash` on the background layer stomp each other exactly as
     // two cues in one show would. Checking them separately misses that.
-    stomping_replace_effects(shows, &mut warnings);
+    stomping_replace_effects(&cues, &ends, &mut warnings);
     warnings
 }
 
@@ -487,7 +491,18 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
 
 /// An effect whose duration runs past the end of the song. Playback truncates
 /// it, which is usually not what the author meant.
-fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Vec<Warning>) {
+///
+/// By its real end (see `timeline::effect_ends`), not the written one: a long
+/// bed cut by a `clear` or a `stop sequence`, or taken off its heads by a
+/// later move, does not overrun the song, and warning that it does is a false
+/// positive; a freeze or a slowed layer carries an effect past its written
+/// end. One held for good by a freeze runs to the end it was written with.
+fn effects_past_end_of_song(
+    cues: &[&Cue],
+    ends: &[EffectEnd],
+    ctx: &LintContext,
+    out: &mut Vec<Warning>,
+) {
     let Some(song_end) = ctx.song_duration else {
         return;
     };
@@ -496,36 +511,25 @@ fn effects_past_end_of_song(shows: &[LightShow], ctx: &LintContext, out: &mut Ve
     if song_end.is_zero() {
         return;
     }
-    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
-    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
-        for effect in &cue.effects {
-            // The authored end is not the real one. A long bed cut by a
-            // `clear` or a `stop sequence` does not overrun the song, and
-            // warning that it does is a false positive.
-            let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            let end = cuts.effective_end(
-                cue.time + effect.total_duration(),
-                cue.time,
-                layer,
-                effect.sequence_name.as_deref(),
-            );
-            // Under a frame past the end is rounding against the audio's
-            // length, not an effect cut short: nothing that brief can be seen.
-            if end <= song_end + PAST_END_TOLERANCE {
-                continue;
-            }
-            out.push(Warning::new(
-                "past-end-of-song",
-                format!(
-                    "an effect on `{}` at {:.3}s runs to {:.3}s, past the song's {:.3}s — \
-                     it will be cut short",
-                    effect.groups.join(", "),
-                    cue.time.as_secs_f64(),
-                    end.as_secs_f64(),
-                    song_end.as_secs_f64(),
-                ),
-            ));
+    for end in ends {
+        let (cue, effect) = (cues[end.cue], &cues[end.cue].effects[end.effect]);
+        let end = end.until();
+        // Under a frame past the end is rounding against the audio's
+        // length, not an effect cut short: nothing that brief can be seen.
+        if end <= song_end + PAST_END_TOLERANCE {
+            continue;
         }
+        out.push(Warning::new(
+            "past-end-of-song",
+            format!(
+                "an effect on `{}` at {:.3}s runs to {:.3}s, past the song's {:.3}s — \
+                 it will be cut short",
+                effect.groups.join(", "),
+                cue.time.as_secs_f64(),
+                end.as_secs_f64(),
+                song_end.as_secs_f64(),
+            ),
+        ));
     }
 }
 
@@ -548,41 +552,34 @@ type Span<'a> = (Duration, Duration, &'a Effect);
 /// Two `replace`-blend effects overlapping on the same layer *and* group. Last
 /// writer wins with no diagnostic, which is the easiest way to author a cue
 /// that appears to do nothing because something else is stomping it.
-fn stomping_replace_effects(shows: &[LightShow], out: &mut Vec<Warning>) {
-    let cuts = Cuts::new(shows.iter().flat_map(|show| show.cues.iter()));
-
+///
+/// By their real spans (see `timeline::effect_ends`): a `clear` on the layer,
+/// a `stop sequence` naming the effect's sequence or a later move taking its
+/// heads ends it there, and comparing written spans would report a stomp
+/// between two effects that never coexist.
+fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<Warning>) {
     // (layer, group) -> the spans replace-blend effects occupy on it, with the
     // effect occupying each.
     let mut spans: BTreeMap<(EffectLayer, String), Vec<Span>> = BTreeMap::new();
 
-    for cue in shows.iter().flat_map(|show| show.cues.iter()) {
-        for effect in &cue.effects {
-            // Both default to the same values the engine applies when the DSL
-            // omits them, so an unannotated effect is checked as it will run.
-            let blend = effect.blend_mode.unwrap_or(BlendMode::Replace);
-            if blend != BlendMode::Replace {
-                continue;
-            }
-            let layer = effect.layer.unwrap_or(EffectLayer::Background);
-            // The authored end is not the real one: a `clear` on this layer,
-            // or a `stop sequence` naming this effect's sequence, ends it
-            // there. Comparing authored spans would report a stomp between two
-            // effects that never coexist.
-            let end = cuts.effective_end(
-                cue.time + effect.total_duration(),
-                cue.time,
-                layer,
-                effect.sequence_name.as_deref(),
-            );
-            if end <= cue.time {
-                continue;
-            }
-            for group in &effect.groups {
-                spans
-                    .entry((layer, group.clone()))
-                    .or_default()
-                    .push((cue.time, end, effect));
-            }
+    for end in ends {
+        let (cue, effect) = (cues[end.cue], &cues[end.cue].effects[end.effect]);
+        // Both default to the same values the engine applies when the DSL
+        // omits them, so an unannotated effect is checked as it will run.
+        let blend = effect.blend_mode.unwrap_or(BlendMode::Replace);
+        if blend != BlendMode::Replace {
+            continue;
+        }
+        let layer = effect.layer.unwrap_or(EffectLayer::Background);
+        let end = end.until();
+        if end <= cue.time {
+            continue;
+        }
+        for group in &effect.groups {
+            spans
+                .entry((layer, group.clone()))
+                .or_default()
+                .push((cue.time, end, effect));
         }
     }
 
@@ -624,77 +621,6 @@ fn restates(earlier: &Effect, later: &Effect) -> bool {
         && earlier.effect_type.parameters() == later.effect_type.parameters()
         && earlier.per_cell == later.per_cell
         && earlier.spread == later.spread
-}
-
-/// When each layer is cleared and each sequence stopped, in time order and
-/// looked up by layer and by name, so that an effect's real end is a search
-/// rather than a scan of every clear and stop. A sequence on `loop: loop`
-/// stops itself at each of its 10,000 passes, and scanning those for every
-/// effect it starts took seconds to build a timeline (#595).
-#[derive(Default)]
-pub(crate) struct Cuts {
-    /// `clear()` with no layer, which clears every layer.
-    all: Vec<Duration>,
-    layers: HashMap<EffectLayer, Vec<Duration>>,
-    stops: HashMap<String, Vec<Duration>>,
-}
-
-impl Cuts {
-    pub(crate) fn new<'a>(cues: impl IntoIterator<Item = &'a Cue>) -> Self {
-        let mut cuts = Self::default();
-        for cue in cues {
-            for cmd in &cue.layer_commands {
-                if cmd.command_type != LayerCommandType::Clear {
-                    continue;
-                }
-                match cmd.layer {
-                    Some(layer) => cuts.layers.entry(layer).or_default().push(cue.time),
-                    None => cuts.all.push(cue.time),
-                }
-            }
-            for name in &cue.stop_sequences {
-                cuts.stops.entry(name.clone()).or_default().push(cue.time);
-            }
-        }
-        cuts.all.sort();
-        for times in cuts.layers.values_mut().chain(cuts.stops.values_mut()) {
-            times.sort();
-        }
-        cuts
-    }
-
-    /// An effect's real end: the earliest of its authored end, a `clear`
-    /// affecting its layer, and a `stop sequence` naming the sequence it came
-    /// from.
-    ///
-    /// The lint's checks and the show's end all go through here rather than
-    /// each capping by the mechanisms it happens to remember. They did not
-    /// always: the stomp check capped by clears and stops while the past-end
-    /// check capped by clears alone, so the two disagreed about the same
-    /// effect — one treating a stopped bed as ending at the stop, the other
-    /// warning that it overran the song by the difference.
-    pub(crate) fn effective_end(
-        &self,
-        authored_end: Duration,
-        start: Duration,
-        layer: EffectLayer,
-        sequence: Option<&str>,
-    ) -> Duration {
-        // The first of `times` after the effect starts: one at its very
-        // start does not cut it.
-        let next =
-            |times: &Vec<Duration>| times.get(times.partition_point(|at| *at <= start)).copied();
-        // `LightingEngine::stop_sequence` drops every effect cued from the
-        // sequence, so a stop really is an end.
-        let stopped = sequence.and_then(|name| self.stops.get(name));
-        [Some(&self.all), self.layers.get(&layer), stopped]
-            .into_iter()
-            .flatten()
-            .filter_map(next)
-            .filter(|at| *at < authored_end)
-            .min()
-            .unwrap_or(authored_end)
-    }
 }
 
 /// A `tempo` block that disagrees with the click-derived grid. Silent, and
@@ -1293,6 +1219,38 @@ show "T" {
         assert!(lint_shows(&shows(source), &ctx).is_empty());
     }
 
+    /// By the effect's real end, as the show plays (the lint used to cap
+    /// the written end by clears and stops alone): a layer slowed to half
+    /// speed carries a bed past the song, and a move another takes the heads
+    /// from ends there.
+    #[test]
+    fn past_the_song_is_judged_by_the_real_end() {
+        let ctx = LintContext {
+            song_duration: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let slowed = r#"
+show "T" {
+    @00:00.000
+    master(layer: background, speed: 0.5)
+    wash: static color: "blue", duration: 8s
+}
+"#;
+        assert_eq!(
+            kinds(&lint_shows(&shows(slowed), &ctx)),
+            ["past-end-of-song"]
+        );
+        let taken = r#"
+show "T" {
+    @00:00.000
+    movers: move pan: 90deg, tilt: 0deg, duration: 30s
+    @00:05.000
+    movers: move pan: 0deg, tilt: 0deg, duration: 2s
+}
+"#;
+        assert!(lint_shows(&shows(taken), &ctx).is_empty());
+    }
+
     // ── stomping replace effects ───────────────────────────────────
 
     #[test]
@@ -1309,6 +1267,39 @@ show "T" {
         let warnings = lint_shows(&shows(source), &LintContext::default());
         assert_eq!(kinds(&warnings), ["replace-overlap"]);
         assert!(warnings[0].message.contains("wash"), "{warnings:?}");
+    }
+
+    /// By real spans: a bed the speed master runs at double speed is over
+    /// before the next look comes in, and a sequence's pass that never fires,
+    /// the sequence stopped first, stomps nothing.
+    #[test]
+    fn overlaps_are_judged_by_the_real_spans() {
+        let sped = r#"
+show "T" {
+    @00:00.000
+    master(layer: background, speed: 2)
+    wash: static color: "blue", duration: 4s
+    @00:03.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        assert!(lint_shows(&shows(sped), &LintContext::default()).is_empty());
+        let stopped = r#"
+sequence "s" {
+    @00:00.000
+    wash: static color: "blue", duration: 4s
+}
+
+show "T" {
+    @00:00.000
+    sequence "s", loop: 3
+    @00:01.000
+    stop sequence "s"
+    @00:05.000
+    wash: static color: "red", duration: 4s
+}
+"#;
+        assert!(lint_shows(&shows(stopped), &LintContext::default()).is_empty());
     }
 
     /// An overlap shorter than a millisecond is rounding, not a stomp (#534).

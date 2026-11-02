@@ -42,6 +42,7 @@ use super::universe::Universe;
 
 mod ambient;
 mod midi_playback;
+mod pass;
 mod playback;
 mod test_output;
 mod timeline;
@@ -131,12 +132,9 @@ pub struct Engine {
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// The pass a crossfading song loop is fading out of, while it does.
-    pub(super) outgoing_pass: Mutex<Option<timeline::OutgoingPass>>,
-    /// Loop breaks' fades still going out, oldest first: each crosses out
-    /// over everything after it at its own length, so nothing that comes
-    /// later -- another pass's crossfade, another break, a stop's dark --
-    /// cuts it short or drops it. Locked after `outgoing_pass`.
-    pub(super) break_fades: Mutex<Vec<timeline::OutgoingPass>>,
+    pub(super) outgoing_pass: Mutex<Option<pass::OutgoingPass>>,
+    /// Loop breaks' fades still going out. Locked after `outgoing_pass`.
+    pub(super) break_fades: Mutex<pass::BreakFades>,
     /// The channels (universe, 1-based channel) the last frame wrote. A
     /// channel lit but not among them is held by the universe from an
     /// effect long gone, which nothing will write again (#573).
@@ -156,6 +154,23 @@ pub struct Engine {
     pub(super) timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
     pub(super) broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     pub(super) watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
+    /// Which show file watcher may reload the show: the one started for
+    /// the song now playing. Bumped, under the timeline's lock, whenever
+    /// one is let go, so an edit it took in before it went cannot reload
+    /// the last song's show into the next (see `Engine::reload_show`).
+    pub(super) watcher_generation: AtomicU64,
+    /// The show rebuild lock: rebuilds one at a time, and what would cut
+    /// across one waits for it (see `Engine::rebuilding`). Outermost: taken
+    /// before the timeline's lock and the engine's.
+    pub(super) rebuild_lock: Mutex<()>,
+    /// A show rebuild is under way: the main engine's frame holds its last
+    /// (see `Engine::rebuild_at`). What the effects loop reads in place of
+    /// the lock, which it never waits on.
+    pub(super) rebuild_hold: AtomicBool,
+    /// Run once by the next show rebuild between its replay and its
+    /// install, for a test to come in between.
+    #[cfg(test)]
+    pub(super) rebuild_hook: Mutex<Option<RebuildHook>>,
     pub(super) midi_dmx_store: Arc<parking_lot::RwLock<MidiDmxStore>>,
     pub(super) midi_dmx_playbacks: Mutex<Vec<MidiDmxPlayback>>,
     pub(super) effects_loop_heartbeat: Arc<AtomicU64>,
@@ -175,6 +190,10 @@ pub struct Engine {
     /// `effect_engine`, `outgoing_pass` and `break_fades`, never before.
     ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
+
+/// What a test runs between a show rebuild's replay and its install.
+#[cfg(test)]
+pub(super) type RebuildHook = Box<dyn FnOnce(&Engine) + Send>;
 
 /// A MIDI DMX light show being played back from the effects loop.
 pub(super) struct MidiDmxPlayback {
@@ -281,7 +300,7 @@ impl Engine {
             ola_http_port: config.ola_http_port(),
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
-            break_fades: Mutex::new(Vec::new()),
+            break_fades: Mutex::new(Default::default()),
             last_written: Mutex::new(HashSet::new()),
             playback_generation,
             current_song_time,
@@ -289,6 +308,11 @@ impl Engine {
             timeline_cancel_handle,
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
+            watcher_generation: AtomicU64::new(0),
+            rebuild_lock: Mutex::new(()),
+            rebuild_hold: AtomicBool::new(false),
+            #[cfg(test)]
+            rebuild_hook: Mutex::new(None),
             midi_dmx_store,
             midi_dmx_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
@@ -552,6 +576,10 @@ impl Engine {
         // What a channel no frame writes any more goes to, below: 0 for a
         // level or colour.
         let levels = effect_engine.level_channels();
+        // The main engine's frame, with each layer of light still crossing
+        // over it folded on in turn by the one blend (`pass::cross`): a
+        // looping song's outgoing pass, the loop breaks' fades, ambient.
+        //
         // Mid-crossfade between passes of a looping song: render the outgoing
         // pass too, a pass ahead in song time, and cross the two frames over
         // the overlap. The outgoing pass goes once the overlap is over (among
@@ -562,19 +590,17 @@ impl Engine {
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
             match outgoing.as_mut() {
                 Some(pass) => {
-                    let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
-                    let (t, time) = pass.timing(song_time);
-                    match pass.render(dt, time) {
-                        Ok(old) => {
-                            let blended = effect_engine.crossfade_commands(&old, &incoming, t);
-                            // What goes out is the blend, so that is what the
-                            // rig shows to the web UI and get_fixture_state
-                            // too (#555).
-                            let shown = (t < 1.0)
-                                .then(|| effect_engine.crossfade_states(&pass.effect_engine, t));
-                            effect_engine.set_shown(shown);
+                    let incoming = self.main_frame(&mut effect_engine, dt, song_time)?.to_vec();
+                    match pass.render(dt, song_time) {
+                        Ok((t, old)) => {
                             done = t >= 1.0;
-                            std::borrow::Cow::Owned(blended)
+                            std::borrow::Cow::Owned(pass::cross(
+                                &old,
+                                &pass.effect_engine,
+                                &mut effect_engine,
+                                &incoming,
+                                t,
+                            ))
                         }
                         Err(e) => {
                             error!("A loop pass's crossfade failed to render, and goes: {e}");
@@ -583,76 +609,24 @@ impl Engine {
                         }
                     }
                 }
-                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
+                None => self.main_frame(&mut effect_engine, dt, song_time)?,
             };
         if done {
             if let Some(pass) = outgoing.take() {
-                self.retire_pass(pass);
+                self.break_fades.lock().retire(pass);
             }
         }
         drop(outgoing);
 
         // Loop breaks' fades go out over all of that, each at its own
-        // length: the newest first, so the oldest crosses outermost. One
-        // that is over goes only once every older one has: what it holds of
-        // a mover's position is what the older ones cross onto. One that
-        // fails to render goes at once, rather than stopping every frame
-        // after it.
+        // length.
         let mut fades = self.break_fades.lock();
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> = if fades.is_empty()
         {
             commands
         } else {
-            let mut blended = commands.into_owned();
-            let mut shown = (
-                effect_engine.shown_fixture_states().clone(),
-                effect_engine.shown_poses().clone(),
-            );
-            // Newest first: (over, failed) for each.
-            let mut ends = Vec::with_capacity(fades.len());
-            for fade in fades.iter_mut().rev() {
-                let (t, time) = fade.timing(song_time);
-                let old = match fade.render(dt, time) {
-                    Ok(old) => old,
-                    Err(e) => {
-                        error!("A loop break's fade failed to render, and goes: {e}");
-                        ends.push((true, true));
-                        continue;
-                    }
-                };
-                blended = effect_engine.crossfade_commands(&old, &blended, t);
-                shown = effect_engine.crossfade_states_onto(
-                    &fade.effect_engine,
-                    (&shown.0, &shown.1),
-                    t,
-                );
-                ends.push((t >= 1.0, false));
-            }
-            // What goes out is the blend, so that is what the rig shows
-            // too (#555).
-            effect_engine.set_shown(Some(shown));
-            // Oldest first: the over ones until the first still going, and
-            // any that failed.
-            let mut still_older = false;
-            let keep: Vec<bool> = ends
-                .into_iter()
-                .rev()
-                .map(|(over, failed)| {
-                    let keep = !failed && (still_older || !over);
-                    still_older |= keep;
-                    keep
-                })
-                .collect();
-            let mut keep = keep.into_iter();
-            fades.retain(|_| keep.next().unwrap_or(true));
-            // One over but kept for an older one is held: its song's show
-            // has faded out, and must not go on firing cues under it.
-            for fade in fades.iter_mut().filter(|f| !f.held) {
-                if fade.timing(song_time).0 >= 1.0 {
-                    fade.hold();
-                }
-            }
-            std::borrow::Cow::Owned(blended)
+            let under = commands.into_owned();
+            std::borrow::Cow::Owned(fades.render_over(&mut effect_engine, dt, song_time, under))
         };
         drop(fades);
 
@@ -725,6 +699,27 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    /// The main engine's own frame at `song_time` -- or, while a show
+    /// rebuild is on its way in, the last one held (see
+    /// `Engine::rebuild_at`): rendered there, the old show's effects at the
+    /// time the rebuild goes to snapped moves and fades to their start.
+    fn main_frame<'a>(
+        &self,
+        engine: &'a mut EffectEngine,
+        dt: Duration,
+        song_time: Duration,
+    ) -> Result<
+        std::borrow::Cow<'a, [crate::lighting::effects::DmxCommand]>,
+        crate::lighting::effects::EffectError,
+    > {
+        if self.rebuild_holding() {
+            return Ok(std::borrow::Cow::Borrowed(engine.last_commands()));
+        }
+        Ok(std::borrow::Cow::Borrowed(
+            engine.update(dt, Some(song_time))?,
+        ))
     }
 
     /// Starts a lighting effect
@@ -815,14 +810,11 @@ impl Engine {
     /// Drops every registered fixture: what a restart gives for a venue that
     /// does not register, so what runs now is what runs after a reboot.
     fn clear_registered_fixtures(&self) {
-        // Resolved before the engine is locked: the venue's registration
-        // locks the lighting system first, then the engine.
-        let heads = self.resolve_groups(self.ambient_move_groups());
         let mut effect_engine = self.effect_engine.lock();
         self.midi_dmx_store.write().retain_channels(|_, _| false);
         effect_engine.replace_fixtures(Vec::new());
         effect_engine.set_focus_points(HashMap::new());
-        self.ambient_follows_rig(&effect_engine, &mut |_| heads.clone());
+        self.ambient_follows_rig(&effect_engine);
     }
 
     /// Registers all fixtures from the current venue (thread-safe version).
@@ -832,7 +824,7 @@ impl Engine {
     /// an older venue's, and records why ([`Self::venue_registration`]).
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let mut lighting_system = lighting_system.lock();
+            let lighting_system = lighting_system.lock();
             let venue = lighting_system.current_venue().map(str::to_string);
             let fixture_infos = match lighting_system.get_current_venue_fixtures() {
                 Ok(infos) => {
@@ -926,9 +918,7 @@ impl Engine {
                     .unwrap_or_default(),
             );
             drop(midi_dmx_store);
-            self.ambient_follows_rig(&effect_engine, &mut |groups| {
-                timeline::resolve_groups_in(&mut lighting_system, groups)
-            });
+            self.ambient_follows_rig(&effect_engine);
         }
         Ok(())
     }
@@ -1950,6 +1940,61 @@ mod test {
         )?;
 
         assert_lighting_state_cleared(&engine);
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_without_a_show_stops_the_last_songs_watcher() -> Result<(), Box<dyn Error>> {
+        // A song with no show of its own dropped the last song's timeline
+        // and tempo but left its file watcher running, whose reload on an
+        // edit put the last song's show back under this one. Going dark
+        // between songs dropped it; now a song's release does either way.
+        let (engine, cancel_handle) = create_engine()?;
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("last.light");
+        std::fs::write(
+            &dsl_path,
+            "show \"last\" {\n    @0.000\n    wash: static, color: \"blue\", duration: 60s\n}\n",
+        )?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            Arc::downgrade(&engine),
+            0,
+            vec![dsl_path],
+            None,
+            tx,
+        )?);
+
+        let song_config = crate::config::Song::new(
+            "No lights",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            engine.watcher_handle.lock().is_none(),
+            "the last song's show watcher outlived it"
+        );
         Ok(())
     }
 
@@ -3967,7 +4012,7 @@ mod test {
             // restart put in.
             let (engine, _cancel_handle) = wash_running(RED_THEN_GREEN)?;
             let (green, epoch) = fire_at(&engine, 2.0);
-            assert!(!green.effects.is_empty(), "the green cue fired");
+            assert!(green.effects().next().is_some(), "the green cue fired");
 
             engine.update_song_time(Duration::from_millis(500));
             engine.start_lighting_timeline_at(Duration::from_millis(500));
@@ -5177,14 +5222,10 @@ mod test {
             engine.update_song_time(Duration::from_secs(10));
 
             crate::dmx::watcher::reload_timeline(
+                &engine,
                 std::slice::from_ref(&dsl_path),
-                &engine.effect_engine,
-                &engine.current_song_timeline,
-                &engine.current_song_time,
-                engine.playback_delay,
                 None,
-                None,
-                None,
+                0,
             )?;
             let next_cue = |engine: &Engine| engine.lighting_arming_state().and_then(|s| s.3);
             assert_eq!(
@@ -5982,23 +6023,22 @@ mod test {
             epoch
         }
         use crate::lighting::parser::{LayerCommand, LayerCommandType};
+        use crate::lighting::timeline::Step;
 
         #[test]
         fn applies_layer_commands() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![LayerCommand {
-                    command_type: LayerCommandType::Clear,
-                    layer: None,
-                    intensity: None,
-                    speed: None,
-                }],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(
+                    Duration::ZERO,
+                    Step::Command(LayerCommand {
+                        command_type: LayerCommandType::Clear,
+                        layer: None,
+                        intensity: None,
+                        speed: None,
+                    }),
+                )],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6010,67 +6050,7 @@ mod test {
             let (engine, _cancel_handle) = create_engine()?;
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec!["test_seq".to_string()],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
-            };
-
-            assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
-            Ok(())
-        }
-
-        #[test]
-        fn applies_effects_with_elapsed() -> Result<(), Box<dyn Error>> {
-            let (engine, _cancel_handle) = create_engine()?;
-
-            // Register a fixture for the effect
-            let mut channels = std::collections::HashMap::new();
-            channels.insert("dimmer".to_string(), 1);
-            let fixture_info = crate::lighting::effects::FixtureInfo::new(
-                "test_fixture".to_string(),
-                1,
-                1,
-                "Generic".to_string(),
-                channels,
-                None,
-            );
-            {
-                let mut ee = engine.effect_engine.lock();
-                ee.register_fixture(fixture_info);
-            }
-
-            let effect = crate::lighting::EffectInstance::new(
-                "test_effect".to_string(),
-                crate::lighting::effects::EffectType::Static {
-                    parameters: {
-                        let mut p = std::collections::HashMap::new();
-                        p.insert("dimmer".to_string(), 0.5);
-                        p
-                    },
-                    duration: Duration::ZERO,
-                },
-                vec!["test_fixture".to_string()],
-                None,
-                None,
-                None,
-            );
-
-            let mut effects_with_elapsed = std::collections::HashMap::new();
-            effects_with_elapsed.insert(
-                "test_effect".to_string(),
-                (effect, std::time::Duration::from_secs(2)),
-            );
-
-            let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![],
-                effects_with_elapsed,
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Stop("test_seq".to_string()))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());
@@ -6113,12 +6093,7 @@ mod test {
             );
 
             let update = crate::lighting::timeline::TimelineUpdate {
-                effects: vec![effect],
-                effects_with_elapsed: std::collections::HashMap::new(),
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                layer_command_times: vec![],
-                stop_sequence_times: vec![],
+                steps: vec![(Duration::ZERO, Step::Start(effect))],
             };
 
             assert!(engine.apply_timeline_update(update, armed(&engine)).is_ok());

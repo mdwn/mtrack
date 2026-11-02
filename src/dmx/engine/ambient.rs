@@ -26,20 +26,20 @@
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use tracing::{error, info};
 
-use super::Engine;
+use super::{timeline::Fired, Engine};
 use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
     lighting::{
         effects::{DmxCommand, EffectError},
+        engine::StopScope,
         parser::LightShow,
-        timeline::{LightingTimeline, TimelineUpdate},
+        timeline::LightingTimeline,
         EffectEngine,
     },
 };
@@ -107,11 +107,28 @@ pub(super) struct AmbientState {
     ambient: Option<LoadedAmbient>,
     phase: Phase,
     mode: AmbientMode,
-    /// A song with lights of its own is playing (or paused) under ambient.
-    song_lit: bool,
-    /// Between songs, what ambient covers -- the last song's frame -- is
-    /// gone, so ambient fading out leaves the stage dark.
-    under_dark: bool,
+    stage: Stage,
+}
+
+/// What is under ambient light: what it covers, and what it leaves as it
+/// goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Stage {
+    /// Between songs, the last song's frame, as it was left.
+    #[default]
+    LastFrame,
+    /// Between songs, the last song's frame gone: ambient fading out leaves
+    /// the stage dark.
+    Dark,
+    /// A song with lights of its own, playing (or paused).
+    Song,
+}
+
+/// Ambient light's `fade_out`, or the default with none to play.
+fn fade_out(ambient: Option<&LoadedAmbient>) -> Duration {
+    ambient.map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
+        a.settings.fade_out
+    })
 }
 
 /// What ambient light is doing, for status.
@@ -184,24 +201,11 @@ pub(super) struct Overlay {
     level: Level,
     /// The ambient show this one replaced, still under it while it fades in.
     inner: Option<Box<Overlay>>,
-    /// The fixtures its moves' groups stand for: a pass starting part way
-    /// replays its history with them, a move taking its heads from another
-    /// by the fixtures they share, under the overlay's lock (see
-    /// `Engine::resolve_groups`).
-    heads: HashMap<String, Vec<String>>,
     /// The instant its time was last moved on to: the frame renders there
     /// too, so the frame and its cues agree on where the show is (rendered
     /// a moment later, a frame could fall past the show's end before the
     /// show started again, and go dark).
     frame: Instant,
-}
-
-/// What one overlay's timeline fired in a tick: a restart's state (the show
-/// starting again) and the cues now due.
-struct OverlayUpdate {
-    /// A new pass's history, and where in the show it starts.
-    restart: Option<(TimelineUpdate, Duration)>,
-    update: TimelineUpdate,
 }
 
 impl Overlay {
@@ -224,7 +228,6 @@ impl Overlay {
             length,
             level,
             inner: None,
-            heads: HashMap::new(),
             frame: now,
         }
     }
@@ -232,7 +235,7 @@ impl Overlay {
     /// Moves this overlay's time to `now` -- starting the show again at its
     /// end, as a looping song does -- and an inner one's, collecting what
     /// they fire: this one's first.
-    fn advance(&mut self, now: Instant, out: &mut Vec<OverlayUpdate>) {
+    fn advance(&mut self, now: Instant, out: &mut Vec<Fired>) {
         self.frame = now;
         let mut elapsed = now.saturating_duration_since(self.started);
         let mut restart = None;
@@ -240,44 +243,31 @@ impl Overlay {
             let passes = (elapsed.as_nanos() / self.length.as_nanos()) as u32;
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
-            // Its first cues fire before this frame renders.
-            restart = Some((
-                if elapsed.is_zero() {
-                    self.timeline.start();
-                    TimelineUpdate::default()
-                } else {
-                    let heads = &self.heads;
-                    self.timeline.start_at_resolving(elapsed, &mut |effect| {
-                        super::timeline::resolved_fixtures(heads, effect)
-                    })
-                },
-                elapsed,
+            // Its first cues fire before this frame renders. Its own show
+            // only: the MIDI DMX store is every engine's.
+            restart = Some(super::timeline::Restart::Due(
+                self.timeline.start_at(elapsed),
+                Box::new(self.engine.scratch(StopScope::Show)),
             ));
         }
         let update = self.timeline.update(elapsed);
-        out.push(OverlayUpdate { restart, update });
+        let epoch = self.timeline.epoch();
+        out.push(match restart {
+            Some(history) => Fired::restarted(epoch, history, update),
+            None => Fired::new(epoch, update),
+        });
         if let Some(inner) = self.inner.as_mut() {
             inner.advance(now, out);
         }
     }
 
-    /// Applies what [`Self::advance`] collected, its groups resolved, in
-    /// the same order.
-    fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
-        if let Some(OverlayUpdate { restart, update }) = updates.next() {
-            if let Some((restart, at)) = restart {
-                // Its own show only: the MIDI DMX store is every engine's.
-                self.engine.stop_show_effects();
-                // A freeze in the history holds where the pass starts from,
-                // not where the last one ended.
-                self.engine.set_song_time(at);
-                apply_update(&mut self.engine, restart);
-            }
-            apply_update(&mut self.engine, update);
+    /// The engine of the overlay, this one or an inner one, whose timeline
+    /// is armed as `epoch`.
+    fn engine_of(&mut self, epoch: u64) -> Option<&mut EffectEngine> {
+        if self.timeline.epoch() == epoch {
+            return Some(&mut self.engine);
         }
-        if let Some(inner) = self.inner.as_mut() {
-            inner.apply(updates);
-        }
+        self.inner.as_mut().and_then(|inner| inner.engine_of(epoch))
     }
 
     /// This overlay's frame crossed over `under` (the commands below it and
@@ -312,9 +302,7 @@ impl Overlay {
         let own = engine
             .update(dt, Some(now.saturating_duration_since(*started)))?
             .to_vec();
-        let blended = engine.crossfade_commands(&base, &own, t);
-        let shown = engine.crossfade_states(base_engine, t);
-        engine.set_shown(Some(shown));
+        let blended = super::pass::cross(&base, base_engine, engine, &own, t);
         if t >= 1.0 {
             self.inner = None;
         }
@@ -326,37 +314,12 @@ impl Overlay {
         self.level.to <= 0.0 && self.level.at(now) <= 0.0
     }
 
-    /// Takes the main engine's rig, as this one's inner overlay does, and
-    /// the fixtures its moves' groups now stand for: a pass starting part
-    /// way after a venue reload replays its history by the venue's.
-    fn adopt_rig(&mut self, main: &EffectEngine, resolve: &mut ResolveGroups) {
+    /// Takes the main engine's rig, as this one's inner overlay does.
+    fn adopt_rig(&mut self, main: &EffectEngine) {
         self.engine.adopt_rig(main);
-        self.heads = resolve(self.timeline.move_groups());
         if let Some(inner) = self.inner.as_mut() {
-            inner.adopt_rig(main, resolve);
+            inner.adopt_rig(main);
         }
-    }
-
-    /// The groups the moves of this overlay's show, and its inner one's,
-    /// target.
-    fn move_groups(&self) -> HashSet<String> {
-        let mut groups = self.timeline.move_groups();
-        if let Some(inner) = self.inner.as_ref() {
-            groups.extend(inner.move_groups());
-        }
-        groups
-    }
-}
-
-/// Resolves move groups to the fixtures they stand for (see
-/// `Engine::resolve_groups`).
-pub(super) type ResolveGroups<'a> = dyn FnMut(HashSet<String>) -> HashMap<String, Vec<String>> + 'a;
-
-/// Applies a timeline update, its groups resolved, to `engine`, as
-/// [`Engine::apply_timeline_update`] does to the main one.
-fn apply_update(engine: &mut EffectEngine, update: TimelineUpdate) {
-    for e in engine.apply_timeline_update(update) {
-        error!("Failed to start ambient effect: {}", e);
     }
 }
 
@@ -369,8 +332,15 @@ impl Engine {
     /// out. Mode `On` skips the delay; mode `Off` plays nothing.
     pub fn idle_ambient(&self, playlist: Option<&PlaylistAmbient>, hold: bool) {
         let loaded = self.load_ambient(playlist);
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
-        state.song_lit = false;
+        if state.stage == Stage::Song {
+            state.stage = Stage::LastFrame;
+        }
         let now = Instant::now();
         match (state.mode, state.phase, loaded) {
             (AmbientMode::Off, _, loaded) => {
@@ -379,19 +349,7 @@ impl Engine {
                 // out over it -- a graceful ending's, or a vamp's under the
                 // song stopped -- goes on at its own length (#571), since it
                 // crosses out over everything after it.
-                let fade = loaded
-                    .as_ref()
-                    .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                        a.settings.fade_out
-                    });
-                if state.under_dark {
-                    // Already dark under: what ambient at full left as it
-                    // was, if anything, goes now.
-                    self.fade_out_stale(fade);
-                } else {
-                    self.darken_under(fade, true);
-                    state.under_dark = true;
-                }
+                self.darken_stage(&rebuilding, &mut state, fade_out(loaded.as_ref()));
                 state.phase = Phase::Off;
                 state.ambient = loaded;
             }
@@ -403,7 +361,7 @@ impl Engine {
             }
             (_, Phase::Playing, None) | (AmbientMode::On, _, None) => {
                 info!("Ambient light fades out: none here.");
-                self.lower_overlay(&mut state, now);
+                self.lower_overlay(&rebuilding, &mut state, now);
                 state.phase = Phase::Off;
                 state.ambient = None;
             }
@@ -433,14 +391,7 @@ impl Engine {
     /// if that is sooner, rather than holding what they lit that nothing
     /// after them does (#572).
     pub fn cut_break_fade_lights(&self) {
-        let fade = self
-            .ambient
-            .lock()
-            .ambient
-            .as_ref()
-            .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                a.settings.fade_out
-            });
+        let fade = fade_out(self.ambient.lock().ambient.as_ref());
         self.hurry_break_fade(fade);
     }
 
@@ -449,15 +400,19 @@ impl Engine {
     /// called off -- unless the mode is `On`, which holds it over the song.
     /// Returns whether ambient was playing.
     pub(super) fn leave_ambient(&self) -> bool {
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
-        state.song_lit = true;
-        state.under_dark = false;
+        state.stage = Stage::Song;
         let was_playing = state.phase == Phase::Playing;
         if state.mode == AmbientMode::On {
             return was_playing;
         }
         if was_playing {
-            self.lower_overlay(&mut state, Instant::now());
+            self.lower_overlay(&rebuilding, &mut state, Instant::now());
         }
         state.phase = Phase::Off;
         was_playing
@@ -469,6 +424,11 @@ impl Engine {
     /// `Auto` goes back to playing it between songs, crossing back to a
     /// song playing under it.
     pub fn set_ambient_mode(&self, mode: AmbientMode) {
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
         info!(mode = mode.as_str(), "Ambient light mode set.");
         state.mode = mode;
@@ -481,24 +441,17 @@ impl Engine {
                 }
             }
             AmbientMode::Off => {
-                self.lower_overlay(&mut state, now);
                 // Between songs with no ambient up -- still waiting out its
-                // delay, or none to play -- the last song's frame goes dark
-                // too, as Off is.
-                if !state.song_lit && !state.under_dark {
-                    let fade = state
-                        .ambient
-                        .as_ref()
-                        .map_or(crate::config::ambient::DEFAULT_AMBIENT_FADE_OUT, |a| {
-                            a.settings.fade_out
-                        });
-                    self.darken_under(fade, true);
-                    state.under_dark = true;
+                // delay, or none to play -- the stage goes dark too, as Off
+                // is.
+                if !self.lower_overlay(&rebuilding, &mut state, now) {
+                    let fade = fade_out(state.ambient.as_ref());
+                    self.darken_stage(&rebuilding, &mut state, fade);
                 }
                 state.phase = Phase::Off;
             }
-            AmbientMode::Auto if state.song_lit => {
-                self.lower_overlay(&mut state, now);
+            AmbientMode::Auto if state.stage == Stage::Song => {
+                self.lower_overlay(&rebuilding, &mut state, now);
                 state.phase = Phase::Off;
             }
             AmbientMode::Auto => {
@@ -513,7 +466,7 @@ impl Engine {
     /// Whether the stage has gone dark between songs.
     #[cfg(test)]
     pub(crate) fn gone_dark(&self) -> bool {
-        self.ambient.lock().under_dark
+        self.ambient.lock().stage == Stage::Dark
     }
 
     /// Ambient light's mode.
@@ -575,18 +528,27 @@ impl Engine {
             }
         }
         self.advance_overlay(now);
-        if state.phase == Phase::Playing && !state.song_lit && !state.under_dark {
+        if state.phase == Phase::Playing && state.stage == Stage::LastFrame {
             let full = self
                 .ambient_overlay
                 .lock()
                 .as_ref()
                 .is_some_and(|o| o.level.at(now) >= 1.0);
-            if full {
+            // The effects loop never waits on a show rebuild: with one under
+            // way, this goes at a later tick.
+            let rebuilding = full.then(|| self.try_rebuilding()).flatten();
+            if let Some(rebuilding) = rebuilding {
                 // A loop break's fade going out goes on at its own length:
                 // ambient covers only what it lights, and what it does not
                 // is still fading in view.
-                self.darken_under(Duration::ZERO, false);
-                state.under_dark = true;
+                self.release_song_rebuilding(
+                    &rebuilding,
+                    super::playback::Release::Dark {
+                        fade: Duration::ZERO,
+                        floor: false,
+                    },
+                );
+                state.stage = Stage::Dark;
             }
         }
     }
@@ -620,22 +582,11 @@ impl Engine {
     }
 
     /// The main engine's rig changed (a venue registration): ambient's
-    /// engine follows it, its moves' groups resolved by `resolve` -- the
-    /// caller may hold the lighting system already, and the overlay's lock
-    /// must not wait on it (see [`Self::resolve_groups`]).
-    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine, resolve: &mut ResolveGroups) {
+    /// engine follows it.
+    pub(super) fn ambient_follows_rig(&self, main: &EffectEngine) {
         if let Some(o) = self.ambient_overlay.lock().as_mut() {
-            o.adopt_rig(main, resolve);
+            o.adopt_rig(main);
         }
-    }
-
-    /// The groups the moves of the ambient shows playing target.
-    pub(super) fn ambient_move_groups(&self) -> HashSet<String> {
-        self.ambient_overlay
-            .lock()
-            .as_ref()
-            .map(Overlay::move_groups)
-            .unwrap_or_default()
     }
 
     /// Fades ambient in to `ambient`: the overlay playing it rises from
@@ -655,67 +606,64 @@ impl Engine {
         // Locked in the effects loop's order: the engine, then the overlay.
         let engine = self.effect_engine.lock().sibling();
         let mut fresh = Overlay::new(ambient.clone(), engine, now);
-        fresh.heads = self.resolve_groups(fresh.timeline.move_groups());
         let mut overlay = self.ambient_overlay.lock();
         fresh.inner = overlay.take().map(Box::new);
         *overlay = Some(fresh);
     }
 
     /// Fades ambient out from where it is, over its `fade_out`. Between
-    /// songs, a last song's frame still under it fades to dark with it.
-    fn lower_overlay(&self, state: &mut AmbientState, now: Instant) {
+    /// songs, the stage goes dark with it. Returns whether there was
+    /// ambient to fade.
+    fn lower_overlay(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        state: &mut AmbientState,
+        now: Instant,
+    ) -> bool {
         let fade = {
             let mut overlay = self.ambient_overlay.lock();
             let Some(o) = overlay.as_mut() else {
-                return;
+                return false;
             };
             let fade = o.ambient.settings.fade_out;
             o.level.toward(now, 0.0, fade);
             fade
         };
-        if !state.song_lit {
-            if state.under_dark {
-                // Ambient at full left what it does not light as it was;
-                // with ambient going, that goes too.
-                self.fade_out_stale(fade);
-            } else {
-                self.darken_under(fade, true);
-                state.under_dark = true;
+        self.darken_stage(rebuilding, state, fade);
+        true
+    }
+
+    /// Between songs, takes the stage dark over `fade`. The last song's
+    /// frame still under goes, with whatever that song left -- its show,
+    /// file watcher, MIDI DMX and tempo -- and what the rig holds lit that
+    /// nothing writes. A stage already dark has only the last of those to
+    /// lose: what ambient at full left as it was, where it does not light.
+    /// A song's show stays.
+    fn darken_stage(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        state: &mut AmbientState,
+        fade: Duration,
+    ) {
+        match state.stage {
+            Stage::Song => {}
+            Stage::Dark => self.fade_out_stale(rebuilding, fade),
+            Stage::LastFrame => {
+                self.release_song_rebuilding(
+                    rebuilding,
+                    super::playback::Release::Dark { fade, floor: true },
+                );
+                state.stage = Stage::Dark;
             }
         }
     }
 
-    /// Fades the main engine to dark over `fade`: whatever the last song
-    /// left -- its show, file watcher, MIDI DMX and tempo -- is done with.
-    fn darken_under(&self, fade: Duration, to_dark: bool) {
-        // Going dark, what the rig holds lit that the last frame did not
-        // write -- left by effects that ended, which nothing writes again --
-        // fades out with the rest (#573). Under ambient at full it stays as
-        // it was, what ambient does not light still in view.
-        // MIDI DMX playback stops first, so nothing it writes after
-        // relights what fades.
-        self.watcher_handle.lock().take();
-        self.midi_dmx_playbacks.lock().clear();
-        let floor = if to_dark {
-            self.dark_floor(fade)
-        } else {
-            Vec::new()
-        };
-        // Nothing lit, nothing to fade: a fade over nothing would only cross
-        // the next song in from black.
-        let lit = !self.effect_engine.lock().last_commands().is_empty();
-        if lit || !floor.is_empty() {
-            self.begin_break_fade_over(fade, floor);
-        }
-        self.effect_engine.lock().set_tempo_map(None);
-    }
-
     /// Fades out over `fade` what the rig holds lit that nothing writes any
     /// more, under a stage already dark otherwise.
-    fn fade_out_stale(&self, fade: Duration) {
+    fn fade_out_stale(&self, rebuilding: &super::timeline::Rebuilding, fade: Duration) {
         let floor = self.dark_floor(fade);
         if !floor.is_empty() {
-            self.begin_break_fade_over(fade, floor);
+            self.begin_break_fade_over(rebuilding, fade, floor);
         }
     }
 
@@ -725,7 +673,7 @@ impl Engine {
     /// rather than taking it dark, so it would only come back as stale
     /// again. What MIDI DMX holds through the store fades in the store
     /// itself, over the same `fade`.
-    fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
+    pub(super) fn dark_floor(&self, fade: Duration) -> Vec<crate::lighting::effects::DmxCommand> {
         let written = self.last_written.lock().clone();
         let positions = self.effect_engine.lock().position_channels();
         let floor = self
@@ -754,32 +702,25 @@ impl Engine {
     /// Moves the overlay's time on and starts what its timeline fires, its
     /// groups resolved with no overlay lock held, as for the outgoing pass.
     fn advance_overlay(&self, now: Instant) {
-        let mut updates = Vec::new();
+        let mut fired = Vec::new();
         {
             let mut overlay = self.ambient_overlay.lock();
             let Some(o) = overlay.as_mut() else {
                 return;
             };
-            o.advance(now, &mut updates);
+            o.advance(now, &mut fired);
         }
-        let mut resolved = updates
-            .into_iter()
-            .map(|mut u| {
-                if let Some((restart, _)) = u.restart.as_mut() {
-                    self.resolve_update_groups(restart);
-                }
-                self.resolve_update_groups(&mut u.update);
-                u
-            })
-            .collect::<Vec<_>>()
-            .into_iter();
+        let fired = self.resolve_fired(fired);
+        if fired.is_empty() {
+            return;
+        }
         if let Some(o) = self.ambient_overlay.lock().as_mut() {
-            o.apply(&mut resolved);
+            for fired in fired {
+                if let Some(engine) = o.engine_of(fired.epoch()) {
+                    fired.apply(engine);
+                }
+            }
         }
-    }
-
-    fn resolve_update_groups(&self, update: &mut TimelineUpdate) {
-        update.map_effects(|effect| self.resolve_effect_groups(effect));
     }
 
     /// Resolves and reads the ambient light for `playlist`, `None` when there
@@ -1162,6 +1103,340 @@ mod tests {
         )?;
         assert_eq!(engine.ambient_status().unwrap().state, "playing");
         assert_eq!(tick(&engine), (0.0, 0.0, 255.0));
+        Ok(())
+    }
+
+    /// A show the wash plays green from the top, then red fading in over
+    /// 2 s from 4 s.
+    const GREEN_THEN_RED_FADE: &str = "show \"song\" {\n    @0.000\n    wash: static, color: \"green\", duration: 60s\n    @4.000\n    wash: static red: 100%, up_time: 2s, hold_time: 60s\n}\n";
+
+    /// Runs `hook` in the next show rebuild, between its replay and its
+    /// install.
+    fn between_replay_and_install(engine: &Engine, hook: impl FnOnce(&Engine) + Send + 'static) {
+        *engine.rebuild_hook.lock() = Some(Box::new(hook));
+    }
+
+    /// Starts `contender` on a thread of its own while a rebuild is under
+    /// way, and checks it waits for that rebuild: the thread, to join once
+    /// the rebuild is in.
+    fn contend<T: Send + 'static>(
+        engine: &Arc<Engine>,
+        contender: impl FnOnce(&Engine) -> T + Send + 'static,
+    ) -> Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<T>>>> {
+        let slot = Arc::new(parking_lot::Mutex::new(None));
+        let theirs = slot.clone();
+        let engine_for = engine.clone();
+        between_replay_and_install(engine, move |_| {
+            let thread = std::thread::spawn(move || contender(&engine_for));
+            sleep(Duration::from_millis(100));
+            assert!(!thread.is_finished(), "it did not wait for the rebuild");
+            *theirs.lock() = Some(thread);
+        });
+        slot
+    }
+
+    fn joined<T>(slot: Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<T>>>>) -> T {
+        slot.lock()
+            .take()
+            .expect("the rebuild ran the contender")
+            .join()
+            .expect("the contender panicked")
+    }
+
+    /// Restarts the section at `secs`, as the jump follower does.
+    fn restart_at(engine: &Engine, secs: u64) {
+        engine.restart_section_rewinding(Duration::from_secs(secs), &|| {
+            engine.update_song_time(Duration::from_secs(secs))
+        });
+    }
+
+    #[test]
+    fn a_section_restart_holds_the_frame_until_its_state_is_in() -> Result<(), Box<dyn Error>> {
+        // The song time went back before the section's state went in, and
+        // with the replay off the engine's lock the effects loop rendered
+        // the old effects at the section's start meanwhile: the red fade,
+        // cued after it, at its first frame -- a step down and back.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        for secs in [0.5, 4.0, 4.5] {
+            song_frame(&engine, secs);
+        }
+        let before = song_frame(&engine, 5.0);
+        assert!(
+            before.0 > 50.0 && before.0 < 230.0,
+            "red fading in: {before:?}"
+        );
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let frames = seen.clone();
+        between_replay_and_install(&engine, move |engine| {
+            for _ in 0..3 {
+                frames.lock().push(tick(engine));
+            }
+        });
+        restart_at(&engine, 1);
+        assert_eq!(*seen.lock(), vec![before; 3], "the frame did not hold");
+        assert!(!engine.rebuild_holding());
+        assert_eq!(song_frame(&engine, 1.0), (0.0, 255.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_rebuild_unwinding_lets_the_frame_and_the_lock_go() -> Result<(), Box<dyn Error>> {
+        // However a rebuild ends, the rig is not left held, nor the next
+        // rebuild waiting.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        between_replay_and_install(&engine, |_| panic!("a rebuild unwinding"));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            restart_at(&engine, 1);
+        }));
+        assert!(unwound.is_err());
+        assert!(!engine.rebuild_holding(), "the rig held for a rebuild gone");
+        assert!(engine.try_rebuilding().is_some(), "the rebuild lock kept");
+        restart_at(&engine, 1);
+        assert_eq!(song_frame(&engine, 1.0), (0.0, 255.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn rebuilds_wait_their_turn() -> Result<(), Box<dyn Error>> {
+        // Two rebuilds at once -- a reload and a section's restart on the
+        // jump follower -- each replaced the engine's state whole as it
+        // went in: the older going in last put back the state of its time
+        // under a timeline at the newer's. One at a time, the later wins.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        let later = contend(&engine, |engine| restart_at(engine, 6));
+        restart_at(&engine, 1);
+        joined(later);
+        assert!(!engine.rebuild_holding());
+        assert_eq!(
+            song_frame(&engine, 6.0),
+            (255.0, 255.0, 0.0),
+            "the later's state"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_effects_loop_ticks_on_while_off_waits_on_a_rebuild() -> Result<(), Box<dyn Error>> {
+        // Off set during a rebuild's replay waited on the rebuild lock
+        // holding the ambient state, and the effects loop's next tick waited
+        // on that: no frames, fades frozen, MIDI DMX stopped, for the rest
+        // of the replay.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let ticked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = ticked.clone();
+        let theirs = engine.clone();
+        let off = Arc::new(parking_lot::Mutex::new(None));
+        let off_slot = off.clone();
+        between_replay_and_install(&engine, move |_| {
+            let mode = theirs.clone();
+            let off_thread = std::thread::spawn(move || mode.set_ambient_mode(AmbientMode::Off));
+            sleep(Duration::from_millis(100));
+            let loop_engine = theirs.clone();
+            let tick_thread = std::thread::spawn(move || {
+                loop_engine.effects_loop_tick();
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            sleep(Duration::from_millis(300));
+            assert!(
+                tick_thread.is_finished(),
+                "the effects loop waited on the rebuild"
+            );
+            *off_slot.lock() = Some(off_thread);
+        });
+        restart_at(&engine, 1);
+        off.lock().take().unwrap().join().unwrap();
+        assert!(ticked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(engine.gone_dark(), "Off went dark once the rebuild was in");
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_reload_during_a_restart_leaves_its_cues_firing() -> Result<(), Box<dyn Error>> {
+        // A reload from a watcher since let go, coming in during a
+        // section's restart, overtook it and went no further: the restart's
+        // timeline stayed held, and no cue fired for the rest of the song.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        let stale = engine.retire_watcher();
+        engine.retire_watcher();
+        let reload = contend(&engine, move |engine| {
+            engine.reload_show(timeline(RED), None, stale)
+        });
+        restart_at(&engine, 1);
+        assert!(!joined(reload), "the stale reload went in");
+        for secs in [1.5, 4.0, 4.5] {
+            song_frame(&engine, secs);
+        }
+        let red = song_frame(&engine, 5.0).0;
+        assert!(red > 50.0, "the cue at 4 s did not fire: red {red}");
+        assert_eq!(engine.lighting_arming_state().map(|s| s.2), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_reload_waiting_on_a_restart_goes_in_after_it() -> Result<(), Box<dyn Error>> {
+        // A live edit that met a section's jump came back false, which the
+        // watcher took for its own end: the edit lost, and hot reload with
+        // it for the rest of the song. It waits its turn now.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        let generation = engine.retire_watcher();
+        let reload = contend(&engine, move |engine| {
+            engine.reload_show(timeline(RED), None, generation)
+        });
+        restart_at(&engine, 1);
+        assert!(joined(reload), "the edit was dropped");
+        assert_eq!(engine.get_timeline_cues().len(), 1, "the edited show");
+        assert_eq!(song_frame(&engine, 1.5), (255.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_let_go_during_a_reload_goes_after_it() -> Result<(), Box<dyn Error>> {
+        // A song let go while a reload replayed went first, and the reload
+        // then put its show and tempo back under the next song. The song
+        // goes once the reload is in, and an edit after reloads nothing.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let generation = engine.retire_watcher();
+        let release = contend(&engine, |engine| {
+            engine.release_song(super::super::playback::Release::Replaced)
+        });
+        assert!(engine.reload_show(timeline(RED), None, generation));
+        joined(release);
+        assert!(engine.current_song_timeline.lock().is_none());
+        assert!(!engine.effect_engine.lock().has_tempo_map());
+        assert!(!engine.reload_show(timeline(RED), None, generation));
+        assert!(engine.current_song_timeline.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_change_lets_the_last_watcher_go_before_its_show_goes_in() -> Result<(), Box<dyn Error>>
+    {
+        // A song with lights let the last song's watcher go only after its
+        // own timeline was in: a reload from it meanwhile replaced the new
+        // song's show with the last one's.
+        let (dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let last = dir.path().join("last.light");
+        std::fs::write(&last, RED)?;
+        let next = dir.path().join("next.light");
+        std::fs::write(&next, GREEN_THEN_RED_FADE)?;
+        let old = engine.retire_watcher();
+        let reload = contend(&engine, move |engine| {
+            crate::dmx::watcher::reload_timeline(engine, &[last], None, old).unwrap_or(true)
+        });
+        let song_config = config::Song::new(
+            "Next",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![config::LightingShow::new(
+                next.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        let cancel = crate::playsync::CancelHandle::new();
+        cancel.cancel();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle: cancel,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            !joined(reload),
+            "the last song's watcher reloaded over the next song's start"
+        );
+        assert_eq!(engine.get_timeline_cues().len(), 2, "the next song's show");
+        Ok(())
+    }
+
+    #[test]
+
+    fn a_song_without_lights_under_ambient_stops_the_last_songs_watcher(
+    ) -> Result<(), Box<dyn Error>> {
+        // A song with no lights of its own, ambient still fading in over
+        // the last song's frame, left that song's show file watcher running
+        // until ambient was all the way in: an edit meanwhile reloaded the
+        // last song's show under the new song.
+        let (dir, engine) = ambient_engine(BLUE, ("0s", "10s", "0s"))?;
+        engine.idle_ambient(None, false);
+        tick(&engine);
+        assert_eq!(engine.ambient_status().unwrap().state, "playing");
+        let dsl_path = dir.path().join("last.light");
+        std::fs::write(&dsl_path, RED)?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(4);
+        let generation = engine.retire_watcher();
+        *engine.watcher_handle.lock() = Some(crate::dmx::watcher::start_watching(
+            Arc::downgrade(&engine),
+            generation,
+            vec![dsl_path.clone()],
+            None,
+            tx,
+        )?);
+
+        let song_config = config::Song::new(
+            "No Light",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle: crate::playsync::CancelHandle::new(),
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            engine.watcher_handle.lock().is_none(),
+            "the last song's watcher outlived it"
+        );
+        // An edit it took in before it went reloads nothing.
+        assert!(!crate::dmx::watcher::reload_timeline(
+            &engine,
+            &[dsl_path],
+            None,
+            generation
+        )?);
+        assert!(engine.current_song_timeline.lock().is_none());
+        assert_eq!(engine.ambient_status().unwrap().state, "playing");
         Ok(())
     }
 
@@ -1589,9 +1864,8 @@ mod tests {
         start_song(&engine, BLUE);
         let inner_held = |engine: &Engine| {
             engine.break_fades.lock()[0]
-                .inner
-                .as_ref()
-                .map(|inner| inner.held)
+                .inner()
+                .map(|inner| inner.is_held())
         };
         song_frame(&engine, 0.01);
         assert_eq!(inner_held(&engine), Some(false), "still crossing");
@@ -1641,6 +1915,41 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_crossfade_ending_shows_what_it_sends() -> Result<(), Box<dyn Error>> {
+        // The frame a loop pass's crossfade ended in sent the blend -- a
+        // mover only the outgoing pass drove holding its pan -- but showed
+        // the incoming pass alone, without the mover, where every other
+        // layer's blend shows what it sends (#555).
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        add_mover(&engine);
+        start_song(&engine, &pan_show("80%"));
+        song_frame(&engine, 0.5);
+        engine.begin_loop_crossfade(
+            Some(timeline(GREEN)),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            Duration::from_millis(50),
+        );
+        // Past the overlap: the crossfade ends in this frame.
+        song_frame(&engine, 0.2);
+        assert!(engine.outgoing_pass.lock().is_none());
+        let sent = pan(&engine);
+        assert_eq!(sent, 204.0, "the pan held");
+        let shown = engine
+            .effect_engine
+            .lock()
+            .shown_fixture_states()
+            .get("mover")
+            .and_then(|state| state.channels.get("pan"))
+            .map(|pan| pan.value * 255.0);
+        assert!(
+            shown.is_some_and(|shown| (shown - sent).abs() < 3.0),
+            "shows {shown:?} but sends {sent}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_fade_over_under_an_older_one_fires_no_more_cues() -> Result<(), Box<dyn Error>> {
         // A fade that was over, kept for an older one still going out, went
         // on playing its song's show: B's cue at 1 s moved the mover under
@@ -1661,7 +1970,7 @@ mod tests {
         assert_pan_glides(&engine, 1.5, 100.0);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
-        assert!(fades[1].held, "B's fade, over, is held");
+        assert!(fades[1].is_held(), "B's fade, over, is held");
         Ok(())
     }
 
@@ -1687,7 +1996,7 @@ mod tests {
         song_frame(&engine, 1.2);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
-        assert!(fades[1].held, "B's fade, over, is held");
+        assert!(fades[1].is_held(), "B's fade, over, is held");
         let pan = fades[1]
             .last
             .iter()
@@ -1721,7 +2030,7 @@ mod tests {
         }
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2, "the fade, and one held pass");
-        assert!(fades[1].held);
+        assert!(fades[1].is_held());
         Ok(())
     }
 
@@ -2245,6 +2554,31 @@ mod tests {
     }
 
     #[test]
+    fn off_over_a_dark_stage_takes_what_is_lit_since_out() -> Result<(), Box<dyn Error>> {
+        // Off set over a stage already dark, with no ambient up, did
+        // nothing, where going idle while Off -- and ambient leaving --
+        // took out what the rig held lit that nothing writes. Off is dark
+        // between songs either way now.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        engine.idle_ambient(None, true);
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        assert!(engine.gone_dark());
+        // Lit by what no frame writes, straight to the universe.
+        engine
+            .get_universe(5)
+            .unwrap()
+            .update_effect_commands(vec![(1, 255)]);
+        assert_eq!(tick(&engine), (255.0, 0.0, 0.0));
+        engine.set_ambient_mode(AmbientMode::Off);
+        tick(&engine);
+        sleep(Duration::from_millis(300));
+        tick(&engine);
+        assert_eq!(tick(&engine), (0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
     fn off_after_ambient_with_no_show_goes_dark() -> Result<(), Box<dyn Error>> {
         // Auto with no show for the playlist held the last song's frame, and
         // Off set after left it there.
@@ -2529,45 +2863,11 @@ mod tests {
                 channels,
                 None,
             )]);
-            engine.ambient_follows_rig(&main, &mut |groups| engine.resolve_groups(groups));
+            engine.ambient_follows_rig(&main);
         }
         engine.effects_loop_tick();
         let universe = engine.get_universe(5).unwrap();
         assert_eq!(universe.get_target_value(5), 255.0);
-        Ok(())
-    }
-
-    /// A venue reload while ambient plays resolves its moves' groups again:
-    /// a pass starting part way after it replays its history by the fixtures
-    /// the groups stand for now, not those they did when ambient came in.
-    #[test]
-    fn ambient_resolves_its_moves_again_on_a_venue_reload() -> Result<(), Box<dyn Error>> {
-        let show = "show \"ambient\" {\n    @0.000\n    wash: move pan: 90deg, tilt: 0deg, \
-                    duration: 1s\n}\n";
-        let (_dir, engine) = ambient_engine(show, ("0s", "0s", "0s"))?;
-        engine.idle_ambient(None, false);
-        engine.effects_loop_tick();
-        let heads = || {
-            engine
-                .ambient_overlay
-                .lock()
-                .as_ref()
-                .map(|o| o.heads.clone())
-                .unwrap_or_default()
-        };
-        assert_eq!(heads().get("wash"), None, "no lighting system, by name");
-        for fixtures in [vec!["m1", "m2"], vec!["m3"]] {
-            let main = engine.effect_engine.lock();
-            engine.ambient_follows_rig(&main, &mut |groups| {
-                groups
-                    .into_iter()
-                    .map(|group| (group, fixtures.iter().map(|f| f.to_string()).collect()))
-                    .collect()
-            });
-            drop(main);
-            let expected: Vec<String> = fixtures.iter().map(|f| f.to_string()).collect();
-            assert_eq!(heads().get("wash"), Some(&expected));
-        }
         Ok(())
     }
 

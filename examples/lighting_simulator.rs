@@ -17,9 +17,9 @@ use clap::Parser;
 extern crate mtrack;
 use mtrack::lighting::{
     effects::{EffectInstance, FixtureInfo},
-    engine::EffectEngine,
-    parser::{parse_light_shows, LayerCommandType, LightShow, LightShows},
-    timeline::{LightingTimeline, TimelineUpdate},
+    engine::{EffectEngine, StopScope},
+    parser::{parse_light_shows, LightShow, LightShows},
+    timeline::LightingTimeline,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -111,16 +111,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Start timeline
     let start_time = Duration::from_secs_f64(args.start_time);
-    let mut timeline_update = timeline.start_at(start_time);
-
-    // Process layer commands from historical cues (e.g., clear() calls)
-    apply_layer_commands(&mut effect_engine, &timeline_update);
-
-    // Start effects that should be active at start_time
-    for (effect, elapsed_time) in timeline_update.effects_with_elapsed.values() {
-        if let Err(e) = effect_engine.start_effect_with_elapsed(effect.clone(), *elapsed_time) {
-            eprintln!("Error starting effect: {}", e);
-        }
+    // The state the cues before start_time leave, as a seek has it.
+    for e in effect_engine.start_from(timeline.start_at(start_time), StopScope::Nothing) {
+        eprintln!("Error starting effect: {}", e);
     }
 
     // Simulate time progression
@@ -142,15 +135,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     while current_time <= end_time && !timeline.is_finished() {
         // Update timeline
-        timeline_update = timeline.update(current_time);
+        let timeline_update = timeline.update(current_time);
 
-        // Process layer commands (clear, freeze, master) before starting new effects
-        apply_layer_commands(&mut effect_engine, &timeline_update);
-
-        // Start new effects (sequence effects first so show effects win conflicts)
-        let mut effects = timeline_update.effects.clone();
-        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-        for effect in &effects {
+        // The effects it starts, in the order the engine applies them.
+        for effect in timeline_update.effects() {
             if !args.events_only {
                 println!(
                     "[{:.3}s] Starting effect: {} (cue_time={:.3}s, hold_time={:?})",
@@ -167,10 +155,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     effect.cue_time.map(|t| t.as_secs_f64()).unwrap_or(0.0)
                 );
             }
-
-            if let Err(e) = effect_engine.start_effect(effect.clone()) {
-                eprintln!("Error starting effect: {}", e);
-            }
+        }
+        for e in effect_engine.apply_timeline_update(timeline_update) {
+            eprintln!("Error starting effect: {}", e);
         }
 
         // Update effect engine
@@ -239,43 +226,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Timeline finished: {}", timeline.is_finished());
 
     Ok(())
-}
-
-fn apply_layer_commands(effect_engine: &mut EffectEngine, timeline_update: &TimelineUpdate) {
-    for cmd in &timeline_update.layer_commands {
-        match cmd.command_type {
-            LayerCommandType::Clear => {
-                if let Some(layer) = cmd.layer {
-                    effect_engine.clear_layer(layer);
-                } else {
-                    effect_engine.clear_all_layers();
-                }
-            }
-            LayerCommandType::Freeze => {
-                if let Some(layer) = cmd.layer {
-                    effect_engine.freeze_layer(layer);
-                }
-            }
-            LayerCommandType::Unfreeze => {
-                if let Some(layer) = cmd.layer {
-                    effect_engine.unfreeze_layer(layer);
-                }
-            }
-            LayerCommandType::Master => {
-                if let Some(layer) = cmd.layer {
-                    if let Some(intensity) = cmd.intensity {
-                        effect_engine.set_layer_intensity_master(layer, intensity);
-                    }
-                    if let Some(speed) = cmd.speed {
-                        effect_engine.set_layer_speed_master(layer, speed);
-                    }
-                }
-            }
-        }
-    }
-    for sequence_name in &timeline_update.stop_sequences {
-        effect_engine.stop_sequence(sequence_name);
-    }
 }
 
 fn collect_fixture_names(shows: &LightShows) -> Vec<String> {

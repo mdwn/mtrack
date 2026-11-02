@@ -37,6 +37,11 @@ pub(crate) const TARGET_HZ: f64 = 44.0;
 /// value, or none.
 type TestChannels = Option<Vec<(usize, u8)>>;
 
+/// The 0-based index of a 1-based DMX channel; channel 0 is taken as 1.
+fn channel_index(channel: u16) -> usize {
+    usize::from(channel.max(1) - 1)
+}
+
 /// A DMX universe.
 pub(crate) struct Universe {
     /// The current DMX state.
@@ -93,7 +98,7 @@ impl Universe {
             channels
                 .iter()
                 .filter(|(channel, _)| (1..=UNIVERSE_SIZE as u16).contains(channel))
-                .map(|(channel, value)| (usize::from(channel - 1), *value))
+                .map(|(channel, value)| (channel_index(*channel), *value))
                 .collect()
         });
         self.test_generation.fetch_add(1, Ordering::SeqCst);
@@ -149,13 +154,20 @@ impl Universe {
         }
     }
 
+    /// A 1-based DMX channel about to be written: the universe thread's
+    /// range grows to cover it, and its 0-based index comes back.
+    fn touch(&self, channel: u16) -> usize {
+        let _ =
+            self.max_channels
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
+                    (channel >= current_channel).then_some(channel + 1)
+                });
+        channel_index(channel)
+    }
+
     /// Updates the universe with the DMX channel/value.
     pub fn update_channel_data(&self, channel: u16, value: u8, dim: bool) {
-        let channel_index = if channel > 0 {
-            usize::from(channel - 1) // Convert from 1-based DMX to 0-based OLA
-        } else {
-            0 // Handle channel 0 case - map to index 0
-        };
+        let channel_index = self.touch(channel);
         let value = f64::from(value);
         // The rate first, with no other lock held: an assignment evaluates
         // its value before its place, so reading `current` inside it held
@@ -168,15 +180,6 @@ impl Universe {
         };
         self.target.write()[channel_index] = value;
         self.rates.write()[channel_index] = rate;
-
-        let _ =
-            self.max_channels
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
-                    if channel >= current_channel {
-                        return Some(channel + 1);
-                    }
-                    None
-                });
     }
 
     /// Puts a channel back where the MIDI writes before a playback's start
@@ -186,20 +189,12 @@ impl Universe {
     /// reached leaves `current` to the thread, which sends a channel only
     /// as it moves: set there too, it would never go out.
     pub fn restore_channel_data(&self, channel: u16, current: f64, target: f64, rate: f64) {
-        let channel_index = usize::from(channel.max(1) - 1);
+        let channel_index = self.touch(channel);
         self.target.write()[channel_index] = target;
         self.rates.write()[channel_index] = rate;
         if rate != 0.0 {
             self.current.write()[channel_index] = current;
         }
-        let _ =
-            self.max_channels
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
-                    if channel >= current_channel {
-                        return Some(channel + 1);
-                    }
-                    None
-                });
     }
 
     /// Updates the universe with effect commands (bypasses dimming).
@@ -214,27 +209,12 @@ impl Universe {
         let mut rates = self.rates.write();
 
         for (channel, value) in commands {
-            let idx = if channel > 0 {
-                usize::from(channel - 1)
-            } else {
-                0
-            };
+            let idx = channel_index(channel);
             let value_f = f64::from(value);
             if target[idx] != value_f || rates[idx] != 0.0 {
+                self.touch(channel);
                 target[idx] = value_f;
                 rates[idx] = 0.0; // instant (no dimming for effect commands)
-
-                let _ = self.max_channels.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |current_channel| {
-                        if channel >= current_channel {
-                            Some(channel + 1)
-                        } else {
-                            None
-                        }
-                    },
-                );
             }
         }
     }

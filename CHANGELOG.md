@@ -150,6 +150,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The lint judges an effect by when it really ends**: `past-end-of-song` and `replace-overlap`
+  now take each effect's end as the show plays it, the same end the show's end and `analyze_show`
+  use. A freeze or a slowed layer carries an effect past its written end (now reported if that
+  overruns the song), a sped-up one ends early, a move another takes every head from ends there,
+  and a sequence's passes that never fire, the sequence stopped first, are not checked. They used
+  to cap the written end by clears and stops alone.
+- **A show that leaves a look frozen for good ends by its other looks' real ends**: without audio
+  to cap it, such a show ran to the latest written end of any of its effects; now an effect the
+  speed master sped up counts by when it really ends, as in a show without a held look, and the
+  held look by the end it was written with.
+
 - **A tempo ramp spans exactly its beats**: a ramp written over N beats now lasts exactly N beats,
   as a DAW plays it. One over N measures lasts exactly the beats in those bars. It used to last as
   long as N beats at the starting tempo, so it covered more or fewer beats than written. A ramp
@@ -208,6 +219,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A song without a show no longer brings the last song's back on an edit**: the last song's
+  light show file watcher went on running under a song with no show of its own (MIDI DMX only,
+  or no lights, and with ambient light fading in over the last song until it was all the way in),
+  and saving that file put its show back on the rig. It stops with the song now, as it already
+  did when the stage went dark between songs, and an edit it took in just before the song
+  changed reloads nothing.
+- **Ambient Off over a dark stage takes out what was lit since**: setting the mode Off again,
+  with the stage already dark between songs and no ambient up, left lit what nothing writes
+  (MIDI DMX on an unpatched channel, say); going idle while Off already took it out. Both do now.
+- **The web UI shows a loop crossfade's last frame as it goes out**: in the frame a crossfading
+  loop's pass ended, the visualizer and `get_fixture_state` showed the new pass alone -- a mover
+  only the old pass drove dropped from the view -- while the rig got the blend.
 - **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
   playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
   effects loop wedged holding its lock hung them too. Every surface now reads the player's status
