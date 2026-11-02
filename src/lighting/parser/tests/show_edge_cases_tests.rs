@@ -1985,3 +1985,41 @@ show "Empty" {
     let show = shows.get("Empty").unwrap();
     assert!(show.cues.is_empty());
 }
+
+/// Under an offset, a tempo change positioned in time moves with it while
+/// one positioned by bar stays on its bar: a bar-positioned cue after an
+/// offset is placed through the shifted timed change. The web UI timeline
+/// (timeline-tempo-math.spec.ts) places it the same way.
+#[test]
+fn test_offset_shifts_time_positioned_tempo_changes() {
+    // Snap: the change at 6s is taken at 8s, beat 14 of the unshifted map,
+    // so bar 5 (beat 16) is 7s + 2s, plus the 2s offset. Ramp: the change
+    // is taken at beat 15.25, so the 4-beat ramp from 120 has 0.75 beats to
+    // run before bar 5.
+    for (transition, want_secs) in [("", 11.0), (", transition: 4", 10.014_201_009)] {
+        let content = format!(
+            r#"tempo {{
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+    @00:06.000 {{ bpm: 60{transition} }}
+    ]
+}}
+
+show "S" {{
+    @1/1
+    front_wash: static color: "red", duration: 1s
+    offset 1 measures
+
+    @5/1
+    front_wash: static color: "blue", duration: 1s
+}}
+"#
+        );
+        let shows = parse_light_shows(&content).unwrap();
+        let show = shows.get("S").unwrap();
+        let at = show.cues[1].time.as_secs_f64();
+        assert!((at - want_secs).abs() < 1e-6, "{transition}: {at}");
+    }
+}

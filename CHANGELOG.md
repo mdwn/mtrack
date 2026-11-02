@@ -135,6 +135,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+### Changed
+
+- **A tempo ramp spans exactly its beats**: a ramp written over N beats now lasts exactly N beats,
+  as a DAW plays it. One over N measures lasts exactly the beats in those bars. It used to last as
+  long as N beats at the starting tempo, so it covered more or fewer beats than written. A ramp
+  from 120 to 180 over 8 beats covered 10. Existing songs and shows with a ramp shift their timing
+  after the ramp: the click, the beat clock, the beat grid and `@bar/beat` cues all move. Snaps
+  and steady tempos are unchanged.
+
 ### Removed
 
 - **The live MIDI to DMX pass-through** (`midi.midi_to_dmx`, with its `note_mapper` and
@@ -144,6 +153,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
+
+- **A tempo of 0 or a ramp of no length is refused in a lighting show**: the `tempo` block took
+  `bpm: 0` and `transition: 0` (or `0m`). A ramp of no length gave the beat walks no number, and
+  a tempo of 0 put every later beat infinitely far away. The show now fails to parse, with the
+  same messages as a song's `tempo:` config.
+
+- **The lighting timeline follows tempo ramps**: the web UI's timeline editor took every tempo
+  change as a snap, so after a ramp its grid, its `@bar/beat` positions and its snapping disagreed
+  with the player. It now sizes and follows each ramp as the server does. It also counts beats in
+  quarter notes, as the `tempo` block does, so a bar of 6/8 holds three. It places bars after a
+  time signature change in the new signature, and a change mid-bar from the next bar. A
+  signature change written past its bar's end governs from the bar it falls in, as the server
+  has it. The tempo lane marks a signature change from the barline it governs from, and labels
+  a stretch inside a ramp with the tempo there.
+
+- **The lighting timeline places offsets as the player does**: an `offset` lasts its bars at
+  the tempo where its cue sits, before any earlier offset. The timeline used the cue's shifted
+  position, so an offset issued before a tempo change could take the later tempo. A
+  `reset_measures` now drops the offset for the cues after it, and effect durations are timed
+  from the cue's own place in the tempo map, as the server times them. Under an offset, a tempo
+  change positioned in time moves with the offset while one positioned by bar stays on its bar,
+  as the player has it, so a bar-positioned cue lands where it plays. Placing a cue with a
+  double-click, or dragging one, goes through the same tempo map, so it lands where it was put.
+  The ruler, the grid and the tempo lane drop the offset at a `reset_measures` as the cues do. A
+  resize snapped to one beat or one bar saves as `1beat` or `1measure`; float noise could save it
+  as milliseconds or beats.
+
+- **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
+  had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.
+  It is now a parse error saying the change is before the start. A tempo map built some other
+  way counts such a change as at bar 1.
+
+- **A mid-bar time signature change takes effect from the next bar everywhere**: a time
+  signature change on a beat other than 1 governs from the next bar in the beat grid and the
+  beat clock, but the tempo map placed later bar-positioned changes as if it governed at once,
+  and the show's time signature lookups (an `offset`, an effect's rate in measures) switched to
+  it at once too. A tempo change a few bars after one (`@2/3 { time_signature: 3/4 }`, then
+  `@4/1 { bpm: 60 }`) came in at the wrong time, out of step with the grid and the clock. Both
+  now follow the grid: the new signature from the next barline, the later change on the bar the
+  grid puts it on. Likewise, bar-positioned changes after a time-positioned signature change now
+  resolve where the grid puts them.
+
+- **Tempo changes resolve in time order, whichever way they are positioned**: a tempo map took
+  every time-positioned change (`@10.000`) ahead of every bar-positioned one (`@20/1`), and
+  counted the time before a time-positioned change at the tempo it changed to. A bar-positioned
+  change after one came in at the wrong time (bar 20 after `@10.000 { bpm: 60 }` at 76s rather
+  than 66s), and one before it could crash the parser. Changes are now taken in the order they
+  fall, each reached through the tempo, and any ramp, of those before it; the beat grid and the
+  clock likewise count a time-positioned change after an unfinished ramp through the ramp, so it
+  comes in at its own time, and a time-positioned signature change after one governs from the bar
+  its position falls in. The bar and beat a time is reported at (the lint, show diffs and
+  analysis, the MCP tools) are counted the same way, through ramps and mid-bar signature changes.
 
 - **A crossfading song's pass begun late crosses the lights over with the audio**: a start, seek
   or section break inside a looping song's `loop_crossfade` begins the next pass part way in,

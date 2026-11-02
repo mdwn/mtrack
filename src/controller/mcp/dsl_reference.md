@@ -217,7 +217,10 @@ beat 1, `@3/2.5` is bar 3 halfway between beats 2 and 3. Durations may use
 `Nbeats`, `Nbeat`, `Nmeasures`, or `Nmeasure` (no whitespace). Tempo-change
 transition durations use a slightly different syntax: a bare number means
 beats, and `Nm` means measures (`transition: 4` = 4 beats; `transition: 2m`
-= 2 measures; `transition: snap` for an instantaneous change).
+= 2 measures; `transition: snap` for an instantaneous change). A ramp moves
+the tempo linearly in time and spans exactly the beats written (or the beats
+in the measures written), as a DAW renders it: `@16/1 { bpm: 160,
+transition: 4 }` reaches 160 exactly on bar 17 beat 1 in 4/4.
 
 A block is not always required. A show with none inherits the song's tempo —
 its `tempo:` config if it has one, otherwise a map derived from the click
