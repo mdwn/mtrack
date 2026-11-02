@@ -1669,8 +1669,11 @@ impl EffectEngine {
     /// goes: its effects stay as they are beside the history's, its layers
     /// over the history's, and its pose memory where the history set none --
     /// and should a pose the history started a move from have moved on since
-    /// the scratch, the history replays again here, from it. Returns the
-    /// errors of the effects that would not start.
+    /// the scratch, the history replays again here, from it. Every rendered
+    /// frame rewrites a moving head's pose, so while movers move that is
+    /// most such installs, a history move reading one: the replay then runs
+    /// under the caller's lock after all, at a plain replay's cost. Returns
+    /// the errors of the effects that would not start.
     pub fn install(&mut self, prepared: Prepared) -> Vec<EffectError> {
         let Prepared {
             at,
