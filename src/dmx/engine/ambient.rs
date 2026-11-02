@@ -332,6 +332,11 @@ impl Engine {
     /// out. Mode `On` skips the delay; mode `Off` plays nothing.
     pub fn idle_ambient(&self, playlist: Option<&PlaylistAmbient>, hold: bool) {
         let loaded = self.load_ambient(playlist);
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
         if state.stage == Stage::Song {
             state.stage = Stage::LastFrame;
@@ -344,7 +349,7 @@ impl Engine {
                 // out over it -- a graceful ending's, or a vamp's under the
                 // song stopped -- goes on at its own length (#571), since it
                 // crosses out over everything after it.
-                self.darken_stage(&mut state, fade_out(loaded.as_ref()));
+                self.darken_stage(&rebuilding, &mut state, fade_out(loaded.as_ref()));
                 state.phase = Phase::Off;
                 state.ambient = loaded;
             }
@@ -356,7 +361,7 @@ impl Engine {
             }
             (_, Phase::Playing, None) | (AmbientMode::On, _, None) => {
                 info!("Ambient light fades out: none here.");
-                self.lower_overlay(&mut state, now);
+                self.lower_overlay(&rebuilding, &mut state, now);
                 state.phase = Phase::Off;
                 state.ambient = None;
             }
@@ -395,6 +400,11 @@ impl Engine {
     /// called off -- unless the mode is `On`, which holds it over the song.
     /// Returns whether ambient was playing.
     pub(super) fn leave_ambient(&self) -> bool {
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
         state.stage = Stage::Song;
         let was_playing = state.phase == Phase::Playing;
@@ -402,7 +412,7 @@ impl Engine {
             return was_playing;
         }
         if was_playing {
-            self.lower_overlay(&mut state, Instant::now());
+            self.lower_overlay(&rebuilding, &mut state, Instant::now());
         }
         state.phase = Phase::Off;
         was_playing
@@ -414,6 +424,11 @@ impl Engine {
     /// `Auto` goes back to playing it between songs, crossing back to a
     /// song playing under it.
     pub fn set_ambient_mode(&self, mode: AmbientMode) {
+        // The rebuild lock before the ambient state's (see
+        // `Engine::rebuilding`): going dark swaps the main engine, and must
+        // not wait on a rebuild holding this state -- which the effects loop
+        // would then wait on.
+        let rebuilding = self.rebuilding();
         let mut state = self.ambient.lock();
         info!(mode = mode.as_str(), "Ambient light mode set.");
         state.mode = mode;
@@ -429,14 +444,14 @@ impl Engine {
                 // Between songs with no ambient up -- still waiting out its
                 // delay, or none to play -- the stage goes dark too, as Off
                 // is.
-                if !self.lower_overlay(&mut state, now) {
+                if !self.lower_overlay(&rebuilding, &mut state, now) {
                     let fade = fade_out(state.ambient.as_ref());
-                    self.darken_stage(&mut state, fade);
+                    self.darken_stage(&rebuilding, &mut state, fade);
                 }
                 state.phase = Phase::Off;
             }
             AmbientMode::Auto if state.stage == Stage::Song => {
-                self.lower_overlay(&mut state, now);
+                self.lower_overlay(&rebuilding, &mut state, now);
                 state.phase = Phase::Off;
             }
             AmbientMode::Auto => {
@@ -599,7 +614,12 @@ impl Engine {
     /// Fades ambient out from where it is, over its `fade_out`. Between
     /// songs, the stage goes dark with it. Returns whether there was
     /// ambient to fade.
-    fn lower_overlay(&self, state: &mut AmbientState, now: Instant) -> bool {
+    fn lower_overlay(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        state: &mut AmbientState,
+        now: Instant,
+    ) -> bool {
         let fade = {
             let mut overlay = self.ambient_overlay.lock();
             let Some(o) = overlay.as_mut() else {
@@ -609,7 +629,7 @@ impl Engine {
             o.level.toward(now, 0.0, fade);
             fade
         };
-        self.darken_stage(state, fade);
+        self.darken_stage(rebuilding, state, fade);
         true
     }
 
@@ -619,17 +639,18 @@ impl Engine {
     /// nothing writes. A stage already dark has only the last of those to
     /// lose: what ambient at full left as it was, where it does not light.
     /// A song's show stays.
-    fn darken_stage(&self, state: &mut AmbientState, fade: Duration) {
-        if state.stage == Stage::Song {
-            return;
-        }
-        let rebuilding = self.rebuilding();
+    fn darken_stage(
+        &self,
+        rebuilding: &super::timeline::Rebuilding,
+        state: &mut AmbientState,
+        fade: Duration,
+    ) {
         match state.stage {
             Stage::Song => {}
-            Stage::Dark => self.fade_out_stale(&rebuilding, fade),
+            Stage::Dark => self.fade_out_stale(rebuilding, fade),
             Stage::LastFrame => {
                 self.release_song_rebuilding(
-                    &rebuilding,
+                    rebuilding,
                     super::playback::Release::Dark { fade, floor: true },
                 );
                 state.stage = Stage::Dark;
@@ -1196,6 +1217,45 @@ mod tests {
             (255.0, 255.0, 0.0),
             "the later's state"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_effects_loop_ticks_on_while_off_waits_on_a_rebuild() -> Result<(), Box<dyn Error>> {
+        // Off set during a rebuild's replay waited on the rebuild lock
+        // holding the ambient state, and the effects loop's next tick waited
+        // on that: no frames, fades frozen, MIDI DMX stopped, for the rest
+        // of the replay.
+        let (_dir, engine) = ambient_engine(BLUE, ("10s", "100ms", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        engine.stop_lighting_timeline();
+        engine.idle_ambient(None, true);
+        let ticked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = ticked.clone();
+        let theirs = engine.clone();
+        let off = Arc::new(parking_lot::Mutex::new(None));
+        let off_slot = off.clone();
+        between_replay_and_install(&engine, move |_| {
+            let mode = theirs.clone();
+            let off_thread = std::thread::spawn(move || mode.set_ambient_mode(AmbientMode::Off));
+            sleep(Duration::from_millis(100));
+            let loop_engine = theirs.clone();
+            let tick_thread = std::thread::spawn(move || {
+                loop_engine.effects_loop_tick();
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            sleep(Duration::from_millis(300));
+            assert!(
+                tick_thread.is_finished(),
+                "the effects loop waited on the rebuild"
+            );
+            *off_slot.lock() = Some(off_thread);
+        });
+        restart_at(&engine, 1);
+        off.lock().take().unwrap().join().unwrap();
+        assert!(ticked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(engine.gone_dark(), "Off went dark once the rebuild was in");
         Ok(())
     }
 

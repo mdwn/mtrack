@@ -505,6 +505,11 @@ impl Engine {
         midi: MidiDmxStart,
         before_arm: &dyn Fn(),
     ) {
+        // Waits for a rebuild under way: a section's jump that meets a live
+        // edit's reload goes once the reload's replay is in, the lights that
+        // much behind the audio's jump. Only while editing a show live over
+        // a loop -- a rehearsal, not a show -- and the price of one rebuild
+        // at a time.
         let rebuilding = self.rebuilding();
         self.rebuild_at(
             &rebuilding,
