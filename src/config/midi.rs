@@ -38,6 +38,27 @@ pub struct Midi {
     /// stops, until the next song starts. Only meaningful when `beat_clock` is
     /// enabled.
     persist_tempo: Option<bool>,
+
+    /// What the beat clock does where a loop goes back (a section loop's
+    /// jump, a looping song's next pass). Only meaningful when `beat_clock`
+    /// is enabled.
+    beat_clock_seams: Option<BeatClockSeams>,
+}
+
+/// What the beat clock does where a loop goes back.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BeatClockSeams {
+    /// Its pulses run straight on through the seam, from the first in the
+    /// stretch gone back to; nothing else is sent. Gear counting pulses
+    /// counts on past the loop.
+    #[default]
+    RunThrough,
+    /// Stop, then a Song Position Pointer to where the loop goes back to (the
+    /// nearest 16th note) and Continue, or Start at the top of the song, so
+    /// gear that follows song position goes back with it. Some gear treats
+    /// Continue as Start, or cuts its notes at Stop.
+    Relocate,
 }
 
 impl Midi {
@@ -48,6 +69,7 @@ impl Midi {
             playback_delay,
             beat_clock: None,
             persist_tempo: None,
+            beat_clock_seams: None,
         }
     }
 
@@ -70,6 +92,11 @@ impl Midi {
     /// tempo once a song stops, until the next song starts.
     pub fn persist_tempo(&self) -> bool {
         self.persist_tempo.unwrap_or(false)
+    }
+
+    /// What the beat clock does where a loop goes back.
+    pub fn beat_clock_seams(&self) -> BeatClockSeams {
+        self.beat_clock_seams.unwrap_or_default()
     }
 
     /// Validates the MIDI configuration for semantic issues.
@@ -517,6 +544,40 @@ mod test {
             .build()?
             .try_deserialize()?;
         assert!(midi.persist_tempo());
+        Ok(())
+    }
+
+    #[test]
+    fn beat_clock_seams_default_runs_through() {
+        let midi = super::Midi::new("dev", None);
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::RunThrough);
+    }
+
+    #[test]
+    fn beat_clock_seams_round_trips() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+            beat_clock_seams: relocate
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::Relocate);
+        let written = serde_json::to_value(&midi)?;
+        assert_eq!(written["beat_clock_seams"], "relocate");
+        let back: super::Midi = serde_json::from_value(written)?;
+        assert_eq!(back.beat_clock_seams(), super::BeatClockSeams::Relocate);
+        let yaml = r#"
+            device: test
+            beat_clock_seams: run_through
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(midi.beat_clock_seams(), super::BeatClockSeams::RunThrough);
         Ok(())
     }
 
