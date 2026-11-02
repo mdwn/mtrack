@@ -35,7 +35,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    --target wasm32-unknown-unknown
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install buf for protobuf code generation.
@@ -53,9 +54,12 @@ COPY benches/ benches/
 # the harness is a hardware-verification tool with no place in this image, and
 # the build below is scoped to mtrack so its sources are never needed.
 COPY harness/Cargo.toml harness/Cargo.toml
+# The web UI's tempo map: the player's src/tempo.rs compiled to WebAssembly.
+# Built in full, so its sources come too.
+COPY crates/ crates/
 
 # Build the Svelte frontend (embedded into the Rust binary).
-RUN cd src/webui/svelte && npm ci && buf generate && npm run build
+RUN cd src/webui/svelte && npm ci && buf generate && npm run gen:wasm && npm run build
 
 RUN cargo build --release -p mtrack --bin mtrack
 

@@ -63,6 +63,7 @@ comments:
       - pest
       - ts
       - js
+      - mjs
     commenter:
       type: line
       comment_char: "//"

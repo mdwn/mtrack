@@ -106,9 +106,12 @@ cd "$PROJECT_ROOT" || { echo "Cannot enter $PROJECT_ROOT" >&2; exit 1; }
 # rather than fails: the UI simply is not what this run vetted.
 SVELTE_DIR="$PROJECT_ROOT/src/webui/svelte"
 # The same hash as the Makefile's FRONTEND_HASH, so its stamp compares:
-# generated src/gen left out, as it is there.
+# generated src/gen left out, as it is there, and the tempo map's Rust (which
+# the UI runs as WebAssembly) in.
 ui_hash() {
-    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" -type f -not -path "$SVELTE_DIR/src/gen/*" \
+    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" "$PROJECT_ROOT/src/tempo.rs" \
+        "$PROJECT_ROOT/src/tempo" "$PROJECT_ROOT/crates/mtrack-tempo-wasm" \
+        -type f -not -path "$SVELTE_DIR/src/gen/*" \
         2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin
 }
 if [[ "$SKIP_BUILD" != "true" ]] && command -v npm >/dev/null 2>&1; then
