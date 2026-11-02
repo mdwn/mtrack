@@ -175,3 +175,21 @@ where
             .into_response()),
     }
 }
+
+/// Reloads the player's songs and playlists after a change on disk. A
+/// reload that fails leaves the player with the songs it had, so the change
+/// is answered with a 500 saying so, rather than as made.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn reload_songs(
+    state: &super::super::server::WebUiState,
+) -> Result<(), axum::response::Response> {
+    state.player.reload_songs().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("the change was written, but the player could not reload its songs: {e}")
+            })),
+        )
+            .into_response()
+    })
+}

@@ -169,7 +169,7 @@ pub(super) async fn put_playlist_by_name(
     validate_playlist_name(&name)?;
     let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
-        require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
+        require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
     // Before `resolve_resource_path`, which canonicalizes the directory and
     // fails if it is missing -- a creation after that call can never run.
@@ -276,11 +276,7 @@ pub(super) async fn put_playlist_by_name(
     .await?;
 
     // Reload songs to pick up the new playlist.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -299,7 +295,7 @@ pub(super) async fn delete_playlist_by_name(
     validate_playlist_name(&name)?;
     let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
-        require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
+        require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in resolve_resource_path.
@@ -322,11 +318,7 @@ pub(super) async fn delete_playlist_by_name(
         .await?;
 
     // Reload songs to remove the playlist.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -349,12 +341,11 @@ pub(super) async fn activate_playlist(
         )
             .into_response(),
         Err(e) => {
-            let status = if e.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::CONFLICT
+            let status = match e {
+                crate::player::SwitchPlaylistError::NotFound(_) => StatusCode::NOT_FOUND,
+                crate::player::SwitchPlaylistError::Playing => StatusCode::CONFLICT,
             };
-            (status, Json(json!({"error": e}))).into_response()
+            (status, Json(json!({"error": e.to_string()}))).into_response()
         }
     }
 }
@@ -374,14 +365,10 @@ mod test {
         let (state, _dir) = test_state();
         // Create a playlist file with an empty songs list so it loads without
         // requiring actual song directories on disk.
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         std::fs::write(playlists_dir.join("mylist.yaml"), "songs: []\n").unwrap();
         // Reload songs so the player picks up the new playlist.
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -424,7 +411,7 @@ mod test {
     #[tokio::test]
     async fn put_playlist_by_name_creates_file() {
         let (state, _dir) = test_state();
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -454,7 +441,7 @@ mod test {
     /// returns the status and the file after.
     async fn put_body_over(existing: &str, body: &str) -> (StatusCode, String) {
         let (state, _dir) = test_state_with_registry(songs_abc());
-        let path = state.playlists_dir.clone().unwrap().join("mylist.yaml");
+        let path = state.playlists_dir().clone().unwrap().join("mylist.yaml");
         std::fs::write(&path, existing).unwrap();
         let app = router().with_state(state);
         let response = app
@@ -532,7 +519,7 @@ mod test {
         // all but one got a 500.
         let (state, _dir) = test_state();
         // On disk, so it is still there after each save's rescan.
-        let song_dir = state.songs_path.join("song_a");
+        let song_dir = state.songs_path().join("song_a");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
             .unwrap();
@@ -541,7 +528,7 @@ mod test {
             "name: Song A\ntracks:\n- name: kick\n  file: kick.wav\n",
         )
         .unwrap();
-        state.player.reload_songs(&state.songs_path, None, None);
+        state.player.reload_songs().await.unwrap();
         let puts: Vec<_> = (0..12)
             .map(|i| {
                 let app = router().with_state(state.clone());
@@ -772,7 +759,7 @@ mod test {
     #[tokio::test]
     async fn get_playlist_reports_its_fades_and_each_songs_tracks() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("song_a");
+        let song_dir = state.songs_path().join("song_a");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
             .unwrap();
@@ -782,15 +769,11 @@ mod test {
         )
         .unwrap();
         std::fs::write(
-            state.playlists_dir.clone().unwrap().join("testlist.yaml"),
+            state.playlists_dir().clone().unwrap().join("testlist.yaml"),
             "songs:\n- song: Song A\n  fade_out: {length: 1measure, exclude: [kick]}\n- Song A\n",
         )
         .unwrap();
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -892,7 +875,7 @@ mod test {
             ("Encore .yaml", "/playlists/Encore%20"),
         ] {
             let (state, _dir) = test_state();
-            let playlists_dir = state.playlists_dir.clone().unwrap();
+            let playlists_dir = state.playlists_dir().clone().unwrap();
             let app = router().with_state(state);
             let send = |method: &str, body: &'static str| {
                 let request = http::Request::builder()
@@ -921,7 +904,7 @@ mod test {
     #[tokio::test]
     async fn delete_playlist_by_name_success() {
         let (state, _dir) = test_state();
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         // Create a playlist file first.
         std::fs::write(
             playlists_dir.join("mylist.yaml"),
@@ -1022,6 +1005,27 @@ mod test {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    /// A switch refused because a song plays is a conflict, told apart from
+    /// a playlist not found by the error's kind, not its message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activate_playlist_while_playing_is_a_conflict() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        state.player.play().await.unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlists/all_songs/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        state.player.stop().await;
+    }
+
     #[test]
     fn validate_playlist_name_rejects_empty() {
         assert!(super::validate_playlist_name("").is_err());
@@ -1037,15 +1041,11 @@ mod test {
     #[tokio::test]
     async fn get_playlist_by_name_success() {
         let (state, _dir) = test_state();
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         // Use an empty song list so the playlist loads without requiring actual songs on disk.
         std::fs::write(playlists_dir.join("testlist.yaml"), "songs: []\n").unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -1071,17 +1071,13 @@ mod test {
     #[tokio::test]
     async fn get_playlist_reports_its_ambient() {
         let (state, _dir) = test_state();
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         std::fs::write(
             playlists_dir.join("testlist.yaml"),
             "songs: []\nambient:\n  show: a.light\n  delay: 3s\n",
         )
         .unwrap();
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1103,15 +1099,11 @@ mod test {
     #[tokio::test]
     async fn get_playlist_by_name_yml_extension() {
         let (state, _dir) = test_state();
-        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
         // Write a .yml file (not .yaml) with an empty song list.
         std::fs::write(playlists_dir.join("ymllist.yml"), "songs: []\n").unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app

@@ -40,7 +40,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
             // so the frontend can construct lighting API paths.
             let base_dir = song
                 .base_path()
-                .strip_prefix(&state.songs_path)
+                .strip_prefix(state.songs_path())
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
@@ -51,7 +51,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .iter()
                 .filter_map(|show| {
                     show.file_path()
-                        .strip_prefix(&state.songs_path)
+                        .strip_prefix(state.songs_path())
                         .ok()
                         .map(|p| p.to_string_lossy().to_string())
                 })
@@ -63,7 +63,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .iter()
                 .filter_map(|show| {
                     show.dmx_file_path()
-                        .strip_prefix(&state.songs_path)
+                        .strip_prefix(state.songs_path())
                         .ok()
                         .map(|p| p.to_string_lossy().to_string())
                 })
@@ -107,7 +107,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
         .map(|f| {
             let base_dir = f
                 .base_path()
-                .strip_prefix(&state.songs_path)
+                .strip_prefix(state.songs_path())
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
@@ -285,12 +285,12 @@ pub(super) async fn import_file_to_song(
         .or_else(|| source.file_name().and_then(|n| n.to_str()))
         .unwrap_or("unknown");
 
-    let exists = song_has_file(&state.player, &state.songs_path, &name, filename);
+    let exists = song_has_file(&state.player, &state.songs_path(), &name, filename);
     if let Err(e) = validate_track_filename(filename, exists) {
         return *e;
     }
 
-    let song_dir = match resolve_or_create_song_dir(&state.player, &state.songs_path, &name) {
+    let song_dir = match resolve_or_create_song_dir(&state.player, &state.songs_path(), &name) {
         Ok(d) => d,
         Err(e) => return *e,
     };
@@ -310,11 +310,9 @@ pub(super) async fn import_file_to_song(
         return *e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
 
     (
         StatusCode::OK,
@@ -361,7 +359,7 @@ pub(super) async fn delete_song(
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song directory through the registry with path verification.
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
+    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
         Ok(p) => p,
         Err(e) => return *e,
     };
@@ -377,8 +375,8 @@ pub(super) async fn delete_song(
 
     let cp = config_path.clone();
     let song_name = name.clone();
-    let pl_dir = state.playlists_dir.clone();
-    let legacy_pl = state.legacy_playlist_path.clone();
+    let pl_dir = state.playlists_dir().clone();
+    let legacy_pl = state.legacy_playlist_path().clone();
     if let Err(e) = super::helpers::spawn_blocking_io("delete song", move || {
         std::fs::remove_file(&cp)?;
         // Remove the song from any playlist files on disk so they stay valid.
@@ -391,11 +389,9 @@ pub(super) async fn delete_song(
     }
 
     // Refresh the player's song state.
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
 
     (
         StatusCode::OK,
@@ -653,7 +649,7 @@ pub(super) async fn post_song(
 ) -> impl IntoResponse {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let root = match VerifiedRoot::new(&state.songs_path) {
+    let root = match VerifiedRoot::new(&state.songs_path()) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
@@ -692,11 +688,9 @@ pub(super) async fn post_song(
         return e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
     (
         StatusCode::CREATED,
         Json(json!({"status": "created", "song": name})),
@@ -716,7 +710,7 @@ pub(super) async fn put_song(
     // not written back.
     let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual path (handles nested dirs).
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path, &name) {
+    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
         Ok(p) => p,
         Err(e) => return *e,
     };
@@ -738,11 +732,9 @@ pub(super) async fn put_song(
         return e;
     }
 
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    if let Err(resp) = super::helpers::reload_songs(&state).await {
+        return resp;
+    }
     (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
 }
 
@@ -755,10 +747,10 @@ pub(super) async fn upload_track_single(
     Path((name, filename)): Path<(String, String)>,
     body: Bytes,
 ) -> impl IntoResponse {
-    let exists = song_has_file(&state.player, &state.songs_path, &name, &filename);
+    let exists = song_has_file(&state.player, &state.songs_path(), &name, &filename);
     validate_track_filename(&filename, exists).map_err(|e| *e)?;
     let song_dir =
-        resolve_or_create_song_dir(&state.player, &state.songs_path, &name).map_err(|e| *e)?;
+        resolve_or_create_song_dir(&state.player, &state.songs_path(), &name).map_err(|e| *e)?;
 
     let file_path = song_dir.join_filename(&filename);
     let replaced = file_path.exists();
@@ -767,11 +759,7 @@ pub(super) async fn upload_track_single(
     super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>((
         StatusCode::OK,
@@ -793,7 +781,7 @@ pub(super) async fn upload_tracks_multipart(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let song_dir =
-        resolve_or_create_song_dir(&state.player, &state.songs_path, &name).map_err(|e| *e)?;
+        resolve_or_create_song_dir(&state.player, &state.songs_path(), &name).map_err(|e| *e)?;
 
     let mut uploaded: Vec<String> = Vec::new();
 
@@ -842,11 +830,7 @@ pub(super) async fn upload_tracks_multipart(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state.player.reload_songs(
-        &state.songs_path,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
+    super::helpers::reload_songs(&state).await?;
 
     Ok((
         StatusCode::OK,
@@ -1163,8 +1147,12 @@ mod test {
 
     #[tokio::test]
     async fn put_song_missing_songs_dir() {
-        let (mut state, _dir) = test_state();
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let (state, _dir) = test_state();
+        {
+            let mut sources = state.player.song_sources().unwrap_or_default();
+            sources.songs = std::path::PathBuf::from("/nonexistent/songs");
+            state.player.set_song_sources(sources);
+        }
         let app = router().with_state(state);
 
         let response = app
@@ -1203,7 +1191,7 @@ mod test {
     #[tokio::test]
     async fn get_songs_with_wav_files() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("TestSong");
+        let song_dir = state.songs_path().join("TestSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1213,11 +1201,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
 
@@ -1243,18 +1227,14 @@ mod test {
     #[tokio::test]
     async fn get_song_with_config_file() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("MySong");
+        let song_dir = state.songs_path().join("MySong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
         let song_yaml = "name: MySong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yaml"), song_yaml).unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -1275,7 +1255,7 @@ mod test {
     #[tokio::test]
     async fn get_song_no_config_file_returns_json_summary() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("NoConfig");
+        let song_dir = state.songs_path().join("NoConfig");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1285,11 +1265,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         std::fs::rename(song_dir.join("song.yaml"), song_dir.join("song.bak")).unwrap();
 
@@ -1314,18 +1290,14 @@ mod test {
     #[tokio::test]
     async fn get_song_with_yml_extension() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("YmlSong");
+        let song_dir = state.songs_path().join("YmlSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
         let song_yaml = "name: YmlSong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yml"), song_yaml).unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1345,7 +1317,7 @@ mod test {
     #[tokio::test]
     async fn put_song_valid() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("EditSong");
+        let song_dir = state.songs_path().join("EditSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1374,7 +1346,7 @@ mod test {
     #[tokio::test]
     async fn put_song_invalid_yaml() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("BadSong");
+        let song_dir = state.songs_path().join("BadSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1402,7 +1374,7 @@ mod test {
     #[tokio::test]
     async fn get_song_no_config_yaml_returns_summary() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("CustomSong");
+        let song_dir = state.songs_path().join("CustomSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1412,11 +1384,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1438,7 +1406,7 @@ mod test {
     #[tokio::test]
     async fn get_song_with_yml_config() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("YmlOnlySong");
+        let song_dir = state.songs_path().join("YmlOnlySong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1448,11 +1416,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1515,8 +1479,12 @@ mod test {
 
     #[tokio::test]
     async fn put_song_songs_dir_failure_returns_500() {
-        let (mut state, _dir) = test_state();
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let (state, _dir) = test_state();
+        {
+            let mut sources = state.player.song_sources().unwrap_or_default();
+            sources.songs = std::path::PathBuf::from("/nonexistent/songs");
+            state.player.set_song_sources(sources);
+        }
         let app = router().with_state(state);
 
         let response = app
@@ -1582,8 +1550,8 @@ mod test {
         assert_eq!(parsed["song"], "NewSong");
         assert_eq!(parsed["file"], "track1.wav");
 
-        assert!(state.songs_path.join("NewSong/track1.wav").exists());
-        assert!(state.songs_path.join("NewSong/song.yaml").exists());
+        assert!(state.songs_path().join("NewSong/track1.wav").exists());
+        assert!(state.songs_path().join("NewSong/song.yaml").exists());
     }
 
     #[tokio::test]
@@ -1665,8 +1633,8 @@ mod test {
         assert_eq!(parsed["song"], "MultiSong");
         assert_eq!(parsed["files"][0], "track1.wav");
 
-        assert!(state.songs_path.join("MultiSong/track1.wav").exists());
-        assert!(state.songs_path.join("MultiSong/song.yaml").exists());
+        assert!(state.songs_path().join("MultiSong/track1.wav").exists());
+        assert!(state.songs_path().join("MultiSong/song.yaml").exists());
     }
 
     #[tokio::test]
@@ -1701,7 +1669,7 @@ mod test {
     async fn upload_track_single_adds_to_existing_song() {
         let (state, _dir) = test_state();
 
-        let song_dir = state.songs_path.join("ExistingSong");
+        let song_dir = state.songs_path().join("ExistingSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -1750,15 +1718,15 @@ mod test {
         assert_eq!(parsed["status"], "created");
         assert_eq!(parsed["song"], "BrandNew");
 
-        assert!(state.songs_path.join("BrandNew").is_dir());
-        assert!(state.songs_path.join("BrandNew/song.yaml").exists());
+        assert!(state.songs_path().join("BrandNew").is_dir());
+        assert!(state.songs_path().join("BrandNew/song.yaml").exists());
     }
 
     #[tokio::test]
     async fn post_song_conflict_if_exists() {
         let (state, _dir) = test_state();
 
-        let song_dir = state.songs_path.join("Existing");
+        let song_dir = state.songs_path().join("Existing");
         std::fs::create_dir(&song_dir).unwrap();
         std::fs::write(song_dir.join("song.yaml"), "name: Existing\ntracks: []\n").unwrap();
 
@@ -1829,7 +1797,7 @@ mod test {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let content = std::fs::read_to_string(state.songs_path.join("MySong/song.yaml")).unwrap();
+        let content = std::fs::read_to_string(state.songs_path().join("MySong/song.yaml")).unwrap();
         assert!(content.contains("MySong Renamed"));
     }
 
@@ -1866,7 +1834,7 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
 
         let content =
-            std::fs::read_to_string(state.songs_path.join("CustomSong/song.yaml")).unwrap();
+            std::fs::read_to_string(state.songs_path().join("CustomSong/song.yaml")).unwrap();
         assert!(content.contains("My Custom Song"));
         assert!(content.contains("Lead Guitar"));
     }
@@ -1906,7 +1874,7 @@ mod test {
         assert_eq!(parsed["song"], "TestSong");
 
         // Verify the file was copied into the song directory.
-        assert!(state.songs_path.join("TestSong/import_me.wav").exists());
+        assert!(state.songs_path().join("TestSong/import_me.wav").exists());
     }
 
     #[tokio::test]
@@ -1994,7 +1962,10 @@ mod test {
         assert_eq!(parsed["file"], "dmx_lightshow.mid");
 
         // Verify the file was saved with the overridden name.
-        assert!(state.songs_path.join("TestSong/dmx_lightshow.mid").exists());
+        assert!(state
+            .songs_path()
+            .join("TestSong/dmx_lightshow.mid")
+            .exists());
     }
 
     #[tokio::test]
@@ -2064,7 +2035,7 @@ mod test {
         let (state, _dir) = test_state();
 
         // Create a song on disk so that it appears in the response.
-        let song_dir = state.songs_path.join("BaseDirSong");
+        let song_dir = state.songs_path().join("BaseDirSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2074,11 +2045,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2111,7 +2078,7 @@ mod test {
         let (state, _dir) = test_state();
 
         // Create a song with a DSL lighting show.
-        let song_dir = state.songs_path.join("LitSong");
+        let song_dir = state.songs_path().join("LitSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2122,11 +2089,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2163,7 +2126,7 @@ mod test {
         let (state, _dir) = test_state();
 
         // Create a song with a legacy dmx_*.mid light show.
-        let song_dir = state.songs_path.join("LegacySong");
+        let song_dir = state.songs_path().join("LegacySong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2179,11 +2142,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2218,7 +2177,7 @@ mod test {
     #[tokio::test]
     async fn get_song_waveform_success() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("WaveSong");
+        let song_dir = state.songs_path().join("WaveSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2228,11 +2187,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2273,7 +2228,7 @@ mod test {
     #[tokio::test]
     async fn get_song_waveform_cached() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("CachedSong");
+        let song_dir = state.songs_path().join("CachedSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2283,11 +2238,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         // First call — computes and caches.
         let app = router().with_state(state.clone());
@@ -2323,7 +2274,7 @@ mod test {
     #[tokio::test]
     async fn get_song_files_success() {
         let (state, _dir) = test_state();
-        let song_dir = state.songs_path.join("FilesSong");
+        let song_dir = state.songs_path().join("FilesSong");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
             .unwrap();
@@ -2339,11 +2290,7 @@ mod test {
         )
         .unwrap();
 
-        state.player.reload_songs(
-            &state.songs_path,
-            state.playlists_dir.as_deref(),
-            state.legacy_playlist_path.as_deref(),
-        );
+        state.player.reload_songs().await.unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -2416,7 +2363,7 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["status"], "uploaded");
         assert_eq!(parsed["file"], "notes.mid");
-        assert!(state.songs_path.join("MidiSong/notes.mid").exists());
+        assert!(state.songs_path().join("MidiSong/notes.mid").exists());
     }
 
     #[tokio::test]
@@ -2442,7 +2389,7 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["status"], "uploaded");
         assert_eq!(parsed["file"], "show.light");
-        assert!(state.songs_path.join("LightSong/show.light").exists());
+        assert!(state.songs_path().join("LightSong/show.light").exists());
     }
 
     #[tokio::test]
@@ -2470,7 +2417,7 @@ mod test {
             // Nothing made, not even the "Artist" above the bad name.
             let first = dirname.split('/').next().unwrap();
             assert!(
-                !state.songs_path.join(first).exists(),
+                !state.songs_path().join(first).exists(),
                 "{uri}: created {first:?}"
             );
         }
@@ -2492,7 +2439,7 @@ mod test {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(
-            !state.songs_path.join(".hidden").exists(),
+            !state.songs_path().join(".hidden").exists(),
             ".hidden song dir created"
         );
     }

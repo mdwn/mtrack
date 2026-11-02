@@ -278,12 +278,13 @@
   async function addUniverse(universe: number) {
     outputMsg = null;
     try {
-      const profile = await addUniverseToRunningProfile(universe);
+      const { profile, notice } = await addUniverseToRunningProfile(universe);
+      const added = $t("lighting.fit.output.added", {
+        values: { universe, profile },
+      });
       outputMsg = {
-        ok: true,
-        text: $t("lighting.fit.output.added", {
-          values: { universe, profile },
-        }),
+        ok: notice?.kind !== "failed",
+        text: notice ? `${added} ${notice.text}` : added,
       };
       await refresh();
     } catch (e) {

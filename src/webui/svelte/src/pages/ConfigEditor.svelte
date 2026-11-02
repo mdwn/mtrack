@@ -43,6 +43,11 @@
     writeProfile,
   } from "../lib/profileStore";
   import { playbackStore } from "../lib/ws/stores";
+  import {
+    reloadNotice,
+    settleNotice,
+    type ReloadNotice,
+  } from "../lib/configReload";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
   import SamplesSection, {
@@ -90,6 +95,20 @@
   let saving = $state(false);
   let saveMsg = $state("");
   let saveOk = $state(false);
+  /** A save's reload waiting for playback to stop, or why it failed. */
+  let saveNotice = $state<ReloadNotice | null>(null);
+
+  // A deferred notice goes once the reload it waits for has started.
+  $effect(() => {
+    const reloads = {
+      started: $playbackStore.hardware_reload_started,
+      refused: $playbackStore.hardware_reload_refused,
+      process: $playbackStore.process_id,
+    };
+    saveNotice = settleNotice(saveNotice, reloads);
+    samplesNotice = settleNotice(samplesNotice, reloads);
+    metronomeNotice = settleNotice(metronomeNotice, reloads);
+  });
   let dirty = $state(false);
   let audioDevices = $state<AudioDeviceInfo[]>([]);
   let midiDevices = $state<MidiDeviceInfo[]>([]);
@@ -132,6 +151,7 @@
   let samplesDirty = $state(false);
   let samplesSaving = $state(false);
   let samplesSaveMsg = $state("");
+  let samplesNotice = $state<ReloadNotice | null>(null);
   let samplesSaveOk = $state(false);
   let samplesSnapshot = $state("");
   let maxSampleVoices = $state<number | undefined>(undefined);
@@ -145,6 +165,7 @@
   let metronomeDirty = $state(false);
   let metronomeSaving = $state(false);
   let metronomeSaveMsg = $state("");
+  let metronomeNotice = $state<ReloadNotice | null>(null);
   let metronomeSaveOk = $state(false);
 
   $effect(() => {
@@ -254,6 +275,7 @@
     isNew = true;
     dirty = false;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     suppressAutoSelect = true;
     updateConfigUrl(urlName);
@@ -273,6 +295,7 @@
   async function selectFileProfile(filename: string, section?: string) {
     saving = false;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     dirty = false;
     isNew = false;
@@ -311,6 +334,7 @@
     }
     saving = true;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     try {
       const written = await writeProfile(
@@ -324,8 +348,7 @@
 
       isNew = false;
       dirty = false;
-      saveOk = true;
-      setTimeout(() => (saveOk = false), 2000);
+      showSaved(reloadNotice(written.reload));
       await loadProfileFiles();
     } catch (e: any) {
       if (e instanceof ConflictError && selectedFilename) {
@@ -351,8 +374,9 @@
       return;
     saving = true;
     saveMsg = "";
+    saveNotice = null;
     try {
-      await deleteProfileFile(selectedFilename);
+      saveNotice = reloadNotice(await deleteProfileFile(selectedFilename));
       selectedIndex = null;
       selectedFilename = null;
       isNew = false;
@@ -374,6 +398,7 @@
     dirty = false;
     updateConfigUrl();
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
   }
 
@@ -385,6 +410,7 @@
 
     dirty = false;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     const name = inlineProfileName(profiles[index], index);
     updateConfigUrl(name, section);
@@ -405,6 +431,7 @@
     isNew = false;
     dirty = false;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     updateConfigUrl();
   }
@@ -412,6 +439,17 @@
   function onProfileChange() {
     if (selectedIndex !== null) {
       dirty = true;
+    }
+  }
+
+  /** Says a profile save was made: "Saved" for a moment, or, when its
+   *  hardware reload waits for playback to stop or failed, that notice
+   *  until the next save. */
+  function showSaved(notice: ReloadNotice | null) {
+    saveNotice = notice;
+    if (!notice) {
+      saveOk = true;
+      setTimeout(() => (saveOk = false), 2000);
     }
   }
 
@@ -429,20 +467,21 @@
     }
     saving = true;
     saveMsg = "";
+    saveNotice = null;
     saveOk = false;
     try {
       const profile = profiles[selectedIndex];
-      const { snapshot } = await writeProfile(
+      const written = await writeProfile(
         { kind: "inline", index: selectedIndex },
         profile,
         checksum,
         isNew,
       );
+      const snapshot = written.snapshot;
       if (snapshot) applySnapshot(snapshot);
       isNew = false;
       dirty = false;
-      saveOk = true;
-      setTimeout(() => (saveOk = false), 2000);
+      showSaved(reloadNotice(written.reload));
     } catch (e: any) {
       saveMsg = e.message;
     } finally {
@@ -460,9 +499,11 @@
       return;
     saving = true;
     saveMsg = "";
+    saveNotice = null;
     try {
       const snapshot = await deleteProfile(selectedIndex, checksum);
       applySnapshot(snapshot);
+      saveNotice = reloadNotice(snapshot);
       selectedIndex = null;
       isNew = false;
       dirty = false;
@@ -488,6 +529,7 @@
     }
     samplesSaving = true;
     samplesSaveMsg = "";
+    samplesNotice = null;
     samplesSaveOk = false;
     try {
       const snapshot = await updateSamples(
@@ -499,8 +541,11 @@
       samplesSnapshot = JSON.stringify(samplesMap);
       maxSampleVoicesSnapshot = maxSampleVoices;
       samplesDirty = false;
-      samplesSaveOk = true;
-      setTimeout(() => (samplesSaveOk = false), 2000);
+      samplesNotice = reloadNotice(snapshot);
+      if (!samplesNotice) {
+        samplesSaveOk = true;
+        setTimeout(() => (samplesSaveOk = false), 2000);
+      }
     } catch (e: any) {
       samplesSaveMsg = e.message;
     } finally {
@@ -521,6 +566,7 @@
     }
     metronomeSaving = true;
     metronomeSaveMsg = "";
+    metronomeNotice = null;
     metronomeSaveOk = false;
     try {
       const snapshot = await updateMetronomeDefaults(
@@ -536,8 +582,11 @@
         metronomeVolume,
       ]);
       metronomeDirty = false;
-      metronomeSaveOk = true;
-      setTimeout(() => (metronomeSaveOk = false), 2000);
+      metronomeNotice = reloadNotice(snapshot);
+      if (!metronomeNotice) {
+        metronomeSaveOk = true;
+        setTimeout(() => (metronomeSaveOk = false), 2000);
+      }
     } catch (e: any) {
       metronomeSaveMsg = e.message;
     } finally {
@@ -672,6 +721,7 @@
         isNew = false;
         dirty = false;
         saveMsg = "";
+        saveNotice = null;
         saveOk = false;
       }
       return;
@@ -699,6 +749,15 @@
   });
 </script>
 
+{#snippet reloadNoticeSpan(notice: ReloadNotice)}
+  <span
+    class="save-msg"
+    class:save-notice={notice.kind === "deferred"}
+    class:save-error={notice.kind === "failed"}
+    role="status">{notice.text}</span
+  >
+{/snippet}
+
 {#snippet metronomeDefaults()}
   <!-- Player-wide metronome defaults -->
   <div class="samples-top-section">
@@ -707,6 +766,8 @@
       <div class="toolbar-actions">
         {#if metronomeSaveOk}
           <span class="save-msg">{$t("common.saved")}</span>
+        {:else if metronomeNotice}
+          {@render reloadNoticeSpan(metronomeNotice)}
         {:else if metronomeSaveMsg}
           <span class="save-msg save-error">{metronomeSaveMsg}</span>
         {/if}
@@ -770,6 +831,8 @@
         <div class="toolbar-actions">
           {#if saveOk}
             <span class="save-msg">{$t("common.saved")}</span>
+          {:else if saveNotice}
+            {@render reloadNoticeSpan(saveNotice)}
           {:else if saveMsg}
             <span class="save-msg save-error">{saveMsg}</span>
           {/if}
@@ -824,6 +887,9 @@
       <div class="list-header">
         <h2>{$t("config.hardwareProfiles")}</h2>
         <div class="toolbar-actions">
+          {#if saveNotice}
+            {@render reloadNoticeSpan(saveNotice)}
+          {/if}
           <button
             class="btn btn-primary"
             onclick={addNewFileProfile}
@@ -881,6 +947,8 @@
             {:else}
               {#if samplesSaveOk}
                 <span class="save-msg">{$t("common.saved")}</span>
+              {:else if samplesNotice}
+                {@render reloadNoticeSpan(samplesNotice)}
               {:else if samplesSaveMsg}
                 <span class="save-msg save-error">{samplesSaveMsg}</span>
               {/if}
@@ -956,6 +1024,8 @@
       <div class="toolbar-actions">
         {#if saveOk}
           <span class="save-msg">{$t("common.saved")}</span>
+        {:else if saveNotice}
+          {@render reloadNoticeSpan(saveNotice)}
         {:else if saveMsg}
           <span class="save-msg save-error">{saveMsg}</span>
         {/if}
@@ -1013,6 +1083,9 @@
   <div class="list-view">
     <div class="list-header">
       <h2>{$t("config.hardwareProfiles")}</h2>
+      {#if saveNotice}
+        {@render reloadNoticeSpan(saveNotice)}
+      {/if}
       <button
         class="btn btn-primary"
         onclick={addNewProfile}
@@ -1049,6 +1122,8 @@
           {:else}
             {#if samplesSaveOk}
               <span class="save-msg">{$t("common.saved")}</span>
+            {:else if samplesNotice}
+              {@render reloadNoticeSpan(samplesNotice)}
             {:else if samplesSaveMsg}
               <span class="save-msg save-error">{samplesSaveMsg}</span>
             {/if}
@@ -1224,6 +1299,9 @@
   }
   .save-error {
     color: var(--red);
+  }
+  .save-notice {
+    color: var(--yellow);
   }
   .samples-top-section {
     margin-top: 16px;

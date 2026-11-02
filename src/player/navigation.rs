@@ -24,7 +24,9 @@ use crate::{
     songs::{self, Song, Songs},
 };
 
-use super::{Player, PlaylistDirection};
+use super::{
+    LoopExit, Player, PlaylistDirection, ReloadSongsError, SongSources, SwitchPlaylistError,
+};
 
 impl Player {
     /// Plays a specific song by name, starting from the given time.
@@ -38,15 +40,15 @@ impl Player {
         song_name: &str,
         start_time: Duration,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        // Reject playback if hardware hasn't finished initializing.
-        if !*self.init_done_tx.borrow() {
-            return Err("Hardware is still initializing".into());
-        }
-
         let mut join = self.join.lock().await;
         if join.is_some() {
             info!("Player is already playing a song.");
             return Ok(None);
+        }
+        // Asked before the playlist moves, so a start turned down leaves it
+        // where it was; the start asks again, as every start does.
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
         }
 
         // A start the song cannot play from is turned down before the
@@ -89,7 +91,7 @@ impl Player {
         let mut join = self.join.lock().await;
         if join.is_some() {
             // A looping song ending: stopped a moment from now.
-            if self.loop_end.load(Ordering::Relaxed) {
+            if self.loop_exit() == LoopExit::End {
                 info!("The song is ending; {} once it has.", direction);
                 return self.get_playlist().current();
             }
@@ -110,23 +112,7 @@ impl Player {
             // one still fading out (#545).
             if self.is_current_song_looping() {
                 info!("Breaking out of song loop via {} navigation.", direction);
-                // Between the playback's loop jumps: one already scheduled
-                // is made under the fade, and none is after it.
-                let jumps = join.as_ref().map(|handles| handles.cancel.hold_jumps());
-                let target = join.as_ref().and_then(|handles| {
-                    self.fade_out_for_loop_break(
-                        &handles.cancel,
-                        direction == PlaylistDirection::Prev,
-                    )
-                });
-                self.loop_break_to_prev
-                    .store(direction == PlaylistDirection::Prev, Ordering::Relaxed);
-                self.loop_break.store(true, Ordering::Relaxed);
-                if let Some(ref handles) = *join {
-                    handles.cancel.cancel();
-                }
-                drop(jumps);
-                return target;
+                return self.break_loop(&join, back);
             }
             let current = self.get_playlist().current();
             if let Some(ref song) = current {
@@ -173,7 +159,7 @@ impl Player {
         let ending = self.end_ending();
         let moved = playlist.entry() != from;
         if moved {
-            self.past_last_entry.store(false, Ordering::Relaxed);
+            self.transport.lock().past_last_entry = false;
         }
         // Stopped on another entry: the gap is now before it, and its
         // ambient light, if that is another, comes up in place of the one
@@ -207,7 +193,7 @@ impl Player {
     /// Switches the active playlist by name. Returns an error if the name
     /// doesn't exist in the map or if the player is currently playing.
     /// Switching to "all_songs" is session-only (not persisted to config).
-    pub async fn switch_to_playlist(&self, name: &str) -> Result<(), String> {
+    pub async fn switch_to_playlist(&self, name: &str) -> Result<(), SwitchPlaylistError> {
         // Held from the check through the switch: let go between them, a
         // play could start a song from the playlist being left, which the
         // switch then took out from under it.
@@ -219,14 +205,14 @@ impl Player {
                     "Can't switch to {}, player is active.", name
                 );
             }
-            return Err("Cannot switch playlist while playing".to_string());
+            return Err(SwitchPlaylistError::Playing);
         }
 
         // Validate the name exists.
         {
             let playlists = self.playlists.read();
             if !playlists.contains_key(name) {
-                return Err(format!("Playlist '{}' not found", name));
+                return Err(SwitchPlaylistError::NotFound(name.to_string()));
             }
         }
 
@@ -235,7 +221,7 @@ impl Player {
         // the entry that took its place.
         self.move_playlist(|playlist| playlist.settle());
         *self.active_playlist.write() = name.to_string();
-        self.past_last_entry.store(false, Ordering::Relaxed);
+        self.transport.lock().past_last_entry = false;
         self.clear_pending_start();
         self.section_loop.reset();
         self.cancel_auto_play();
@@ -335,31 +321,72 @@ impl Player {
     }
 
     /// Reinitializes all song-related state by rescanning songs from disk and
-    /// rebuilding all playlists. Call this after any mutation that affects songs
-    /// (import, create, config edit, etc.).
-    pub fn reload_songs(
-        &self,
-        songs_path: &std::path::Path,
-        playlists_dir: Option<&std::path::Path>,
-        legacy_playlist_path: Option<&std::path::Path>,
-    ) {
-        let new_songs =
-            match songs::get_all_songs_with_defaults(songs_path, self.default_metronome()) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("Failed to rescan songs: {}", e);
-                    return;
-                }
-            };
+    /// rebuilding all playlists, from the player's song sources. Call this
+    /// after any mutation that affects songs (import, create, config edit,
+    /// etc.). The rescan reads every song from disk, so it runs on the
+    /// blocking pool rather than on the caller's runtime worker. A rescan
+    /// or rebuild that fails leaves the songs as they were, and says why, so
+    /// the caller does not report a change the player has not taken up.
+    ///
+    /// The sources are resolved again from the config store, under the scan
+    /// lock and from the config as it is then, so a runtime change to
+    /// `songs:` or `playlists_dir:` is taken up, and become the player's
+    /// once the reload from them succeeds, still under the lock: two
+    /// rescans can neither leave the songs from one and the sources of the
+    /// other, nor an older config's rescan swap in last.
+    pub async fn reload_songs(&self) -> Result<(), ReloadSongsError> {
+        let player = self.clone();
+        tokio::task::spawn_blocking(move || player.reload_songs_now())
+            .await
+            .map_err(|e| ReloadSongsError::Interrupted(e.to_string()))?
+    }
 
-        let new_playlists =
-            match super::load_playlists(playlists_dir, legacy_playlist_path, new_songs.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to rebuild playlists: {}", e);
-                    return;
-                }
-            };
+    /// [`Player::reload_songs`], on the calling (blocking) thread.
+    fn reload_songs_now(&self) -> Result<(), ReloadSongsError> {
+        let _scan = self.song_scans.lock();
+        let sources = match self.config_store() {
+            Some(store) => SongSources::resolve(
+                &store.blocking_read_config(),
+                store.path(),
+                self.cli_playlist.read().as_deref(),
+            ),
+            None => self.song_sources().ok_or(ReloadSongsError::NoSources)?,
+        };
+        self.rescan_locked(&sources)?;
+        self.set_song_sources(sources);
+        Ok(())
+    }
+
+    /// [`Player::reload_songs`] from `sources`, on the calling thread, for
+    /// a test's player.
+    #[cfg(test)]
+    pub(crate) fn reload_songs_from(&self, sources: &SongSources) -> Result<(), ReloadSongsError> {
+        let _scan = self.song_scans.lock();
+        self.rescan_locked(sources)?;
+        self.set_song_sources(sources.clone());
+        Ok(())
+    }
+
+    /// Rescans the songs from `sources` and swaps them in, the scan lock
+    /// held by the caller: one scan at a time, from its scan to its swap.
+    fn rescan_locked(&self, sources: &SongSources) -> Result<(), ReloadSongsError> {
+        let new_songs =
+            songs::get_all_songs_with_defaults(&sources.songs, self.default_metronome()).map_err(
+                |e| {
+                    warn!("Failed to rescan songs: {}", e);
+                    ReloadSongsError::Songs(e.to_string())
+                },
+            )?;
+
+        let new_playlists = super::load_playlists(
+            sources.playlists_dir.as_deref(),
+            sources.legacy_playlist.as_deref(),
+            new_songs.clone(),
+        )
+        .map_err(|e| {
+            warn!("Failed to rebuild playlists: {}", e);
+            ReloadSongsError::Playlists(e.to_string())
+        })?;
 
         // Copying each playlist's place and swapping the new ones in is one
         // step to a move of the active playlist's place, such as a song's
@@ -422,6 +449,7 @@ impl Player {
         if called_off || (idle && self.gap_ambient() != ambient_before) {
             self.idle_ambient(true);
         }
+        Ok(())
     }
 
     /// The ambient light for the gap the player is in, and whose settings

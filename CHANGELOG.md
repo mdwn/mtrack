@@ -157,6 +157,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the ramp: the click, the beat clock, the beat grid and `@bar/beat` cues all move. Snaps
   and steady tempos are unchanged.
 
+- **A config change while a song plays is saved, and applied once the player is idle, on every
+  surface**: the web UI's config and profile saves answered 409 while a song played or was
+  paused, or an auto play waited, while the same change over gRPC or MCP was saved and its
+  hardware reload deferred. All three now save it and defer the reload, and the reply says so:
+  `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
+  `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
+  saves (profiles, samples, metronome, groups, Fit's added output) show "Saved. The hardware
+  reloads when playback stops." for a deferred save until that reload has started: the save's reply
+  names the deferred reload it waits for (`awaits_reload`), and the playback updates count those
+  started (`hardware_reload_started`), so the notice clears even when the song stopped before the
+  page's next update. The notice covers the wait for playback to stop and nothing after it: how
+  each device then comes up, a failure arriving late included, is shown per subsystem on the
+  status page, as for any reload. A reload that cannot start at all is known at once
+  (`hardware_reload_refused`, the recent ones by generation) and turns that save's notice into its
+  reason. The generations are the process's (`process_id`, `awaits_process`): after a restart,
+  which loads the saved config, the notice goes. A failed hardware or song
+  reload is said, both when there are both. A
+  reload that fails after the save is answered the same way on all three, with the new checksum
+  and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
+  leaving the client the old checksum of a config already saved.
+
+- **Songs and playlists reload from one place**: the paths songs and playlists are read from are
+  resolved by one resolver, from the config as it is now, whichever surface asks. The web UI no
+  longer loads a `playlist.yaml` beside the config that nothing configured (it used to on its
+  first song or playlist edit, though mtrack had not loaded it at startup), MCP's playlist tools
+  read and write the playlist named with `--playlist` on the command line rather than ignoring it,
+  and a config change to `songs:` or `playlists_dir:` no longer has the web UI and MCP reloading
+  different sets: the save reloads the new set at once, making a new songs directory inside the
+  project as startup does, and both read and write it from then on (the web UI used to keep the
+  startup paths until a restart). A config that moves `songs:` or `playlists_dir:` somewhere that
+  cannot be used (a songs directory outside the project that is not there, or one that cannot be
+  read) is refused before it is saved, with a 400 saying why, and the config, songs and song paths
+  are left as they were; only the web UI's whole-config save can change them, and a save that
+  leaves them where they are is not checked. A move read in some other way (a hand edit) has the
+  same check, and the songs directory made inside the project, before its songs are reloaded. A song reload that fails after a
+  save all the same is reported beside the hardware's outcome (`songs_error`), not in place of
+  it. A song or playlist
+  change whose reload fails (the songs directory unreadable, say) is now answered with an error
+  saying the change was written but not taken up -- a 500 from the web UI, an `internal_error`
+  from MCP -- rather than as saved while the player kept its old songs.
+
 ### Removed
 
 - **The live MIDI to DMX pass-through** (`midi.midi_to_dmx`, with its `note_mapper` and
@@ -166,6 +207,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI-file light shows (`dmx_file`) are unaffected.
 
 ### Fixed
+
+- **Status answers while the effects loop is stalled**: the gRPC `Status` call and the web UI's
+  playback updates read the ambient light without a bound (the web UI on a runtime worker), so an
+  effects loop wedged holding its lock hung them too. Every surface now reads the player's status
+  one way, its reads of the lights bounded at 500 ms as MCP's `status` already was: a read that
+  does not answer leaves the ambient light out (gRPC, web UI) or says so (MCP), and a read still
+  outstanding is waited on by the next status rather than started again, so a stalled lock holds
+  one thread, not one per poll. The web UI's
+  position no longer wraps within an armed section on its own: the position every surface reports
+  is already the song's, every loop jump put back as it falls due.
 
 - **MIDI notes on the beat clock's grid**: on a rig with audio, a song's notes took the first
   audio buffer after the start for their zero, and then went out only as the audio clock moved,

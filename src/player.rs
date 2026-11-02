@@ -15,8 +15,10 @@ mod hardware;
 mod navigation;
 mod playback;
 mod seek;
+mod status;
 
-pub use hardware::HardwareReload;
+pub use hardware::{process_id, ConfigApply, ConfigChange, DeferredReloads, HardwareReload};
+pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -365,6 +367,22 @@ pub struct Player {
     span: Span,
     /// Mutable configuration store for runtime config changes.
     config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
+    /// Where songs and playlists are read from: resolved from the config
+    /// store by one resolver, again as the config changes, and read by
+    /// every surface's reload and file access alike.
+    song_sources: Arc<parking_lot::RwLock<Option<SongSources>>>,
+    /// The legacy playlist named on the command line, which wins over the
+    /// config's whenever the sources are resolved.
+    cli_playlist: Arc<parking_lot::RwLock<Option<PathBuf>>>,
+    /// Held by a song rescan from its scan to its swap, on the blocking
+    /// thread it runs on: a rescan outlives a request dropped mid-way, and
+    /// one let go with the request's lock overlapped the next, the older
+    /// scan swapping its songs in last.
+    song_scans: Arc<parking_lot::Mutex<()>>,
+    /// The status's reads of the DMX engine outstanding, one of each kind
+    /// at most (see `status::InflightRead`).
+    ambient_reads: Arc<status::InflightRead<dmx::engine::AmbientReport>>,
+    lighting_reads: Arc<status::InflightRead<Option<LightingStatus>>>,
     /// Player-wide "metronome on by default" flag, applied when (re)loading
     /// songs (see `Song::apply_metronome_default`).
     default_metronome: Arc<std::sync::atomic::AtomicBool>,
@@ -387,6 +405,8 @@ pub struct Player {
     /// waited, which runs once the player is idle. Refusing it instead left
     /// a config save acknowledged while the rig kept the old config (#578).
     hardware_reload_pending: Arc<AtomicBool>,
+    /// The deferred hardware reloads started or refused, counted.
+    deferred_reloads: Arc<parking_lot::Mutex<hardware::DeferredReloads>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
     broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Watch channel to signal hardware init completion.
@@ -404,41 +424,40 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
-    /// Signal to break out of a song loop gracefully (not a hard cancel).
-    /// Set by play()/next() when the current song is looping. The playback
-    /// loop checks this flag and exits cleanly, allowing the cleanup task
-    /// to advance the playlist and start the next song.
+    /// The transport's state machine, behind one lock: what a loop break
+    /// asked of the looping song does, a looping song ending, an auto play
+    /// waiting out its gap, the position kept for the next play, whether
+    /// the last entry has played out, and when a song fading out is out.
+    /// Read and changed together, they cannot be seen half changed.
+    ///
+    /// Lock ordering: this lock is taken after `join`, `play_start_time`,
+    /// `reload_lock` and `playlist_moves` when they are held, never before
+    /// them, and nothing awaits while it is held. Only
+    /// [`Player::set_ambient_mode`] holds it across another call, into the
+    /// ambient light (the hardware, ambient mode, playlist and ambient source
+    /// locks, and the DMX engine), none of which takes it in turn.
+    transport: Arc<parking_lot::Mutex<TransportState>>,
+    /// The engines' copy of whether a loop break is asked of the song
+    /// playing: the audio, MIDI and DMX threads poll it through the
+    /// playback's `LoopControl`, so it is an atomic of its own rather than a
+    /// read of `transport`. Set and cleared only with
+    /// `TransportState::loop_exit`, under the transport lock, so the two
+    /// always agree.
     loop_break: Arc<AtomicBool>,
-    /// Set with `loop_break` when the break came from previous rather than
-    /// next or play, so the cleanup moves the playlist back, not on.
-    loop_break_to_prev: Arc<AtomicBool>,
-    /// Set with `loop_break` when the break ends the song rather than moving
-    /// on (a stop, or next or previous at the end of the list): the cleanup
-    /// leaves the playlist where it is and starts nothing.
-    loop_end: Arc<AtomicBool>,
-    /// A looping song ending, fading out with nothing after it, if one is.
-    ending: Arc<parking_lot::Mutex<EndingState>>,
-    /// A playlist entry's `auto_play` waiting out its gap, if one is.
-    auto_play: Arc<parking_lot::Mutex<AutoPlayState>>,
     /// Ambient light's mode, kept here so an engine a reload brings in
     /// takes it up.
     ambient_mode: Arc<parking_lot::Mutex<dmx::engine::AmbientMode>>,
-    /// The song at the playlist's entry played to its end with nowhere to
-    /// move on to: the gap is after the last entry, not before it, and the
-    /// playlist's ambient light plays rather than the entry's.
-    past_last_entry: Arc<AtomicBool>,
     /// Whose settings the ambient light the player last brought up plays.
     ambient_source: Arc<parking_lot::Mutex<Option<crate::playlist::AmbientSource>>>,
     /// A looping song fading out after a loop break (a playlist `fade_out`):
     /// when the break came and how long the fade lasts. The audio monitor
-    /// reads it to carry the fade across a loop boundary.
+    /// reads it to carry the fade across a loop boundary. Shared with the
+    /// audio threads through the playback's `LoopControl`, so it is not part
+    /// of `transport`, as are `break_fade_ids` and `start_fade`.
     break_fade: Arc<parking_lot::Mutex<Option<crate::playsync::BreakFade>>>,
     /// The mixer sources fading out after a loop break, which a stop or seek
     /// cuts rather than letting them finish.
     break_fade_ids: Arc<parking_lot::Mutex<Vec<u64>>>,
-    /// When a song fading out after a loop break, or as it ends, is out,
-    /// audio and lights both. A hardware reload waits for it.
-    fading_until: Arc<parking_lot::Mutex<Option<std::time::Instant>>>,
     /// How the song a loop break moves to fades in under the one fading out
     /// (a playlist `fade_in`), taken by the audio device as it starts.
     start_fade: Arc<parking_lot::Mutex<Option<crate::playsync::StartFade>>>,
@@ -448,10 +467,6 @@ pub struct Player {
     /// The playing song's section loop jumps (its playback's log): the
     /// position counts them as they fall due, exactly.
     section_jumps: Arc<parking_lot::Mutex<Arc<crate::playsync::SectionJumpLog>>>,
-    /// Start position for the next play(), set by a pause or by seeking
-    /// while stopped.
-    /// Cleared when the playlist position changes.
-    pending_start: Arc<parking_lot::Mutex<Option<seek::PendingStart>>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
     /// Pending debounced task persisting track gains to the config store.
@@ -522,8 +537,9 @@ pub struct LockedError;
 
 /// Bounds of an active section loop.
 ///
-/// Used together with `section_loop_break: Arc<AtomicBool>` to form a
-/// state machine shared by the audio, MIDI, and DMX engine threads:
+/// Used together with the section loop's break flag to form a state machine
+/// shared by the audio, MIDI, and DMX engine threads, which see the two as
+/// `LoopControl::active_section` and `LoopControl::section_loop_break`:
 ///
 /// | State    | `active_section`  | `section_loop_break` |
 /// |----------|-------------------|----------------------|
@@ -532,9 +548,10 @@ pub struct LockedError;
 /// | Breaking | `Some(bounds)`*   | `true`               |
 ///
 /// Transitions:
-///   - `start_section_loop()`: Idle → Looping (sets `active_section`,
-///     clears `section_loop_break`)
-///   - `stop_section_loop()`: Looping → Breaking → Idle (sets
+///   - [`Player::loop_section`], or [`Player::section_ack`] on a section
+///     offered: Idle → Looping (sets `active_section`, clears
+///     `section_loop_break`)
+///   - [`Player::stop_section_loop`]: Looping → Breaking → Idle (sets
 ///     `section_loop_break` first, then clears `active_section`)
 ///   - Each engine thread detects the break and exits its loop
 ///
@@ -719,11 +736,17 @@ impl Player {
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
+            song_sources: Arc::new(parking_lot::RwLock::new(None)),
+            cli_playlist: Arc::new(parking_lot::RwLock::new(None)),
+            song_scans: Arc::new(parking_lot::Mutex::new(())),
+            ambient_reads: Arc::default(),
+            lighting_reads: Arc::default(),
             default_metronome: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
             init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
+            deferred_reloads: Arc::default(),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
@@ -731,21 +754,15 @@ impl Player {
             gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
+            transport: Arc::new(parking_lot::Mutex::new(TransportState::default())),
             loop_break: Arc::new(AtomicBool::new(false)),
-            loop_break_to_prev: Arc::new(AtomicBool::new(false)),
-            loop_end: Arc::new(AtomicBool::new(false)),
-            ending: Arc::new(parking_lot::Mutex::new(EndingState::default())),
-            auto_play: Arc::new(parking_lot::Mutex::new(AutoPlayState::default())),
             ambient_mode: Arc::new(parking_lot::Mutex::new(Default::default())),
-            past_last_entry: Arc::new(AtomicBool::new(false)),
             ambient_source: Arc::new(parking_lot::Mutex::new(None)),
             break_fade: Arc::new(parking_lot::Mutex::new(None)),
             break_fade_ids: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            fading_until: Arc::new(parking_lot::Mutex::new(None)),
             start_fade: Arc::new(parking_lot::Mutex::new(None)),
             section_loop: SectionLoop::default(),
             section_jumps: Arc::new(parking_lot::Mutex::new(Default::default())),
-            pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
                 44100,
             )),
@@ -928,31 +945,13 @@ impl Player {
         self.transport_tx.subscribe()
     }
 
-    /// Computes the current transport snapshot from live player state.
+    /// Computes the current transport snapshot from live player state: the
+    /// player's status, without its DMX reads.
     ///
     /// `is_playing()` briefly acquires the play-join lock, so this should
     /// not be called from contexts that hold that lock.
     pub async fn compute_transport_snapshot(&self) -> TransportSnapshot {
-        let playlist = self.get_playlist();
-        let playlist_name = playlist.name().to_string();
-        let current_song = playlist.current().map(|s| s.name().to_string());
-        let playing = self.is_playing().await;
-        let section_loop = self
-            .section_loop
-            .active
-            .read()
-            .as_ref()
-            .map(|b| b.name.clone());
-        let reactive_loop_state = ReactiveLoopStateKind::from(&*self.section_loop.reactive.read());
-        let locked = self.is_locked();
-        TransportSnapshot {
-            playlist_name,
-            current_song,
-            playing,
-            section_loop,
-            reactive_loop_state,
-            locked,
-        }
+        self.transport_status().await.transport()
     }
 
     /// Recomputes the transport snapshot and broadcasts it iff it differs
@@ -971,13 +970,73 @@ impl Player {
     }
 
     /// Sets the config store on the player. Called once after startup.
+    /// The song sources are resolved from it at once.
     pub fn set_config_store(&self, store: Arc<config::ConfigStore>) {
+        if let Some(config) = store.try_read_config() {
+            *self.song_sources.write() = Some(SongSources::resolve(
+                &config,
+                store.path(),
+                self.cli_playlist.read().as_deref(),
+            ));
+        }
         *self.config_store.lock() = Some(store);
     }
 
     /// Returns the config store, if one has been set.
     pub fn config_store(&self) -> Option<Arc<config::ConfigStore>> {
         self.config_store.lock().clone()
+    }
+
+    /// Sets where songs and playlists are read from, for a player with no
+    /// config store to resolve them from (a test's). A config store, once
+    /// set, resolves them in their place.
+    pub fn set_song_sources(&self, sources: SongSources) {
+        *self.song_sources.write() = Some(sources);
+    }
+
+    /// Sets the legacy playlist named on the command line, which wins over
+    /// the config's each time the sources are resolved. Set before the
+    /// config store.
+    pub fn set_cli_playlist(&self, playlist: Option<PathBuf>) {
+        *self.cli_playlist.write() = playlist;
+    }
+
+    /// Where songs and playlists are read from, as last resolved.
+    pub fn song_sources(&self) -> Option<SongSources> {
+        self.song_sources.read().clone()
+    }
+
+    /// The song sources the config store's current config names, with the
+    /// command line's playlist over its own, without taking them up: they
+    /// become the player's only once songs have been reloaded from them, so
+    /// a `songs:` naming a directory that cannot be read leaves every surface
+    /// on the songs it has. Without a config store, the sources set.
+    pub async fn resolve_song_sources(&self) -> Option<SongSources> {
+        let Some(store) = self.config_store() else {
+            return self.song_sources();
+        };
+        let config = store.read_config().await;
+        Some(SongSources::resolve(
+            &config,
+            store.path(),
+            self.cli_playlist.read().as_deref(),
+        ))
+    }
+
+    /// [`SongSources::prepare`] for a config about to be saved to this
+    /// player's config store, with the command line's playlist.
+    /// Only when the songs or playlists `config` names are not the ones the
+    /// player has: a save that leaves them as they are is not refused for a
+    /// location already in use that has since become unreadable. Returns the
+    /// songs directory if this made it.
+    pub fn prepare_song_sources(&self, config: &config::Player) -> Result<Option<PathBuf>, String> {
+        let store = self.config_store().ok_or("No config store available")?;
+        let cli = self.cli_playlist.read().clone();
+        let resolved = SongSources::resolve(config, store.path(), cli.as_deref());
+        if Some(&resolved) == self.song_sources().as_ref() {
+            return Ok(None);
+        }
+        SongSources::prepare(config, store.path(), cli.as_deref()).map(|(_, made)| made)
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -1192,9 +1251,87 @@ impl StatusEvents {
 #[derive(Default)]
 struct AutoPlayState {
     generation: u64,
-    pending: bool,
     /// The song waiting and when it starts, while one is.
     waiting: Option<(String, std::time::Instant)>,
+}
+
+/// What a loop break asked of the looping song playing does once its loop
+/// lets go: nothing asked, move on to the next entry, move back to the one
+/// before, or end the song where it is (a stop, or next or previous at the
+/// end of the list), starting nothing. One value, so a break cannot be both
+/// an ending and a move back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LoopExit {
+    #[default]
+    None,
+    Next,
+    Prev,
+    End,
+}
+
+/// The transport's state machine, kept behind the player's one transport
+/// lock (see `Player::transport` for the lock ordering).
+#[derive(Default)]
+struct TransportState {
+    /// What a loop break asked of the song playing does. Mirrored into
+    /// `Player::loop_break` for the engines.
+    loop_exit: LoopExit,
+    /// A looping song ending, fading out with nothing after it, if one is.
+    ending: EndingState,
+    /// A playlist entry's `auto_play` waiting out its gap, if one is.
+    auto_play: AutoPlayState,
+    /// Start position for the next play(), set by a pause or by seeking
+    /// while stopped. Cleared when the playlist position changes.
+    pending_start: Option<seek::PendingStart>,
+    /// The song at the playlist's entry played to its end with nowhere to
+    /// move on to: the gap is after the last entry, not before it, and the
+    /// playlist's ambient light plays rather than the entry's.
+    past_last_entry: bool,
+    /// When a song fading out after a loop break, or as it ends, is out,
+    /// audio and lights both. A hardware reload waits for it.
+    fading_until: Option<std::time::Instant>,
+}
+
+impl TransportState {
+    /// The looping song ending, and how long until its fade is over, while
+    /// one is.
+    fn ending_status(&self) -> Option<(String, Duration)> {
+        self.ending.fading.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+    }
+
+    /// The song an auto play is waiting to start, and how long until it
+    /// does, while one is.
+    fn auto_play_status(&self) -> Option<(String, Duration)> {
+        self.auto_play.waiting.as_ref().map(|(song, at)| {
+            (
+                song.clone(),
+                at.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+    }
+
+    /// Whether a song is paused: stopped by a pause, with a position to
+    /// resume from.
+    fn is_paused(&self) -> bool {
+        self.pending_start.is_some_and(|p| p.paused)
+    }
+
+    /// How long until a song fading out is out, while one is: a looping
+    /// song ending, or one a loop break moved on from. A hardware reload
+    /// waits for it, as the reset would cut it short.
+    fn fading_out(&self) -> Option<Duration> {
+        let ending = self.ending_status().map(|(_, left)| left);
+        let fading = self
+            .fading_until
+            .map(|until| until.saturating_duration_since(std::time::Instant::now()))
+            .filter(|left| !left.is_zero());
+        ending.max(fading)
+    }
 }
 
 /// A looping song ending: each ending takes the next generation, and one
@@ -1288,6 +1425,117 @@ fn resolve_playback_outcome(
     } else {
         Ok(())
     }
+}
+
+/// Where the player's songs and playlists are read from, resolved from the
+/// config by one resolver, [`SongSources::resolve`], whichever surface asks.
+/// Resolved per surface, the web UI and MCP reloaded different sets after a
+/// config change, MCP ignored a playlist named on the command line, and the
+/// web UI loaded a `playlist.yaml` beside the config that nothing had
+/// configured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SongSources {
+    /// The songs directory, resolved.
+    pub songs: PathBuf,
+    /// The playlists directory: the configured `playlists_dir`, else
+    /// `playlists/` beside the config.
+    pub playlists_dir: Option<PathBuf>,
+    /// The legacy single playlist file, if one is configured (the command
+    /// line's over the config's), made absolute against the config's
+    /// directory.
+    pub legacy_playlist: Option<PathBuf>,
+}
+
+impl SongSources {
+    /// Checks the songs and playlists `config` names can be used, before a
+    /// config naming them is saved or taken up, and makes the songs
+    /// directory where startup would (inside the project): a config whose
+    /// songs cannot be read is refused, rather than saved with the player
+    /// left on songs from somewhere else. Returns the sources, resolved,
+    /// and the songs directory if this made it, for a save that does not
+    /// happen after all to take away again.
+    pub fn prepare(
+        config: &config::Player,
+        config_path: &Path,
+        cli_playlist: Option<&Path>,
+    ) -> Result<(SongSources, Option<PathBuf>), String> {
+        let mut sources = SongSources::resolve(config, config_path, cli_playlist);
+        let made = (!sources.songs.exists()).then(|| sources.songs.clone());
+        let project = crate::util::project_dir_of(config_path);
+        let created = crate::util::create_dir_within(&sources.songs, &project)
+            .map_err(|e| format!("songs: {e}"))?;
+        std::fs::read_dir(created.as_path())
+            .map_err(|e| format!("songs: {}: {e}", created.as_path().display()))?;
+        sources.songs = crate::util::resolved_dir(created.as_path());
+        if let Some(dir) = &sources.playlists_dir {
+            if dir.exists() {
+                std::fs::read_dir(dir)
+                    .map_err(|e| format!("playlists_dir: {}: {e}", dir.display()))?;
+            }
+        }
+        if let Some(file) = &sources.legacy_playlist {
+            if file.exists() && !file.is_file() {
+                return Err(format!("playlist: {} is not a file", file.display()));
+            }
+        }
+        let made = made.map(|_| sources.songs.clone());
+        Ok((sources, made))
+    }
+
+    /// Resolves the sources from `config`, read from `config_path`: the
+    /// songs directory it names, resolved as far as the filesystem allows,
+    /// and the playlist named on the command line, if one is, over the
+    /// config's.
+    pub fn resolve(
+        config: &config::Player,
+        config_path: &Path,
+        cli_playlist: Option<&Path>,
+    ) -> SongSources {
+        let project_dir = crate::util::project_dir_of(config_path);
+        let playlists_dir = config
+            .playlists_dir(config_path)
+            .unwrap_or_else(|| project_dir.join("playlists"));
+        let legacy_playlist = cli_playlist
+            .map(Path::to_path_buf)
+            .or_else(|| config.playlist())
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    project_dir.join(path)
+                }
+            });
+        SongSources {
+            songs: crate::util::resolved_dir(&config.songs(config_path)),
+            playlists_dir: Some(playlists_dir),
+            legacy_playlist,
+        }
+    }
+}
+
+/// Why [`Player::switch_to_playlist`] did not switch. Matched by the
+/// surfaces to choose their answer, never by its message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SwitchPlaylistError {
+    #[error("Cannot switch playlist while playing")]
+    Playing,
+    #[error("Playlist '{0}' not found")]
+    NotFound(String),
+}
+
+/// Why [`Player::reload_songs`] left the songs as they were.
+#[derive(Debug, thiserror::Error)]
+pub enum ReloadSongsError {
+    /// The player was given no song sources and has no config store to
+    /// resolve them from.
+    #[error("no songs directory is configured for the player")]
+    NoSources,
+    #[error("failed to rescan songs: {0}")]
+    Songs(String),
+    #[error("failed to rebuild playlists: {0}")]
+    Playlists(String),
+    #[error("the song reload did not finish: {0}")]
+    Interrupted(String),
 }
 
 /// Loads all playlists from a directory and/or legacy playlist path.
@@ -2159,6 +2407,35 @@ mod test {
         Ok(())
     }
 
+    /// A kept position the song can no longer play from -- a reload has
+    /// shortened it -- is dropped by the Play it fails, so the next Play
+    /// starts the song rather than failing on it for good.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_kept_position_past_the_songs_end_is_dropped_by_play() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let end = player.get_playlist().current().expect("a song").length();
+        player.pause_at_for_test(end + Duration::from_secs(5));
+        assert!(player.play().await.is_err(), "a start past the end");
+        assert_eq!(player.pending_start(), None, "the position was kept");
+        assert!(player.play().await?.is_some(), "Play failed for good");
+        player.stop().await;
+        Ok(())
+    }
+
+    /// A start turned down while the hardware initializes keeps the kept
+    /// position, for the Play after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_while_hardware_initializes_keeps_the_position() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let paused_at = Duration::from_millis(100);
+        player.pause_at_for_test(paused_at);
+        player.init_done_tx.send_modify(|v| *v = false);
+        assert!(player.play().await.is_err());
+        assert_eq!(player.pending_start(), Some(paused_at));
+        player.init_done_tx.send_modify(|v| *v = true);
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_seek_to_section_unknown_errors() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
@@ -2470,6 +2747,39 @@ mod test {
         Ok(())
     }
 
+    /// The status reads the DMX engine, its ambient light and the song's
+    /// lighting, as every surface shows them, and agrees with the transport
+    /// snapshot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_status_reads_the_lights_and_agrees_with_the_transport(
+    ) -> Result<(), Box<dyn Error>> {
+        let (_dir, player) = ambient_player().await?;
+        eventually(
+            || {
+                player
+                    .dmx_engine()
+                    .and_then(|engine| engine.ambient_status())
+                    .is_some_and(|s| s.state == "playing")
+            },
+            "ambient at startup",
+        );
+        let status = player.status_snapshot().await;
+        match &status.ambient {
+            Some(DmxRead::Read(ambient)) => {
+                assert_eq!(ambient.report.state, "playing");
+                assert!(ambient.source.is_some(), "a show plays someone's settings");
+            }
+            other => panic!("the ambient light was not read: {other:?}"),
+        }
+        assert!(matches!(status.lighting, Some(DmxRead::Read(_))));
+        assert!(!status.playing);
+        assert_eq!(
+            status.transport(),
+            player.compute_transport_snapshot().await
+        );
+        Ok(())
+    }
+
     /// A player on a playlist of half-second songs "One" and "Two", each
     /// with a red show of its own, laid out by `songs` (the playlist's
     /// `songs:` list, with `{green}` for the path of a green ambient show).
@@ -2631,7 +2941,13 @@ mod test {
         let green = dir.path().join("green.light").display().to_string();
         let path = dir.path().join("playlist.yaml");
         fs::write(&path, yaml.replace("{green}", &green)).unwrap();
-        player.reload_songs(&dir.path().join("songs"), None, Some(&path));
+        player
+            .reload_songs_from(&SongSources {
+                songs: dir.path().join("songs"),
+                playlists_dir: None,
+                legacy_playlist: Some(path),
+            })
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3664,6 +3980,82 @@ mod test {
         Ok(())
     }
 
+    /// A deferred config change names the deferred reload generation it
+    /// waits for, and the status counts it started once the reload starts:
+    /// a surface that missed every update in between still sees the wait is
+    /// over. One that cannot start at all is counted too, refused, with why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_counts_its_generation_started_or_refused(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _dir = set_store_without_audio(&player)?;
+        assert_eq!(player.deferred_reloads(), DeferredReloads::default());
+        player.play().await?;
+        let change = player.apply_config_change().await;
+        assert_eq!(change.hardware, ConfigApply::Deferred);
+        assert_eq!(change.awaits, Some(1));
+        // A second save in the same wait waits for the same reload.
+        assert_eq!(player.apply_config_change().await.awaits, Some(1));
+        player.stop().await;
+        eventually(
+            || player.deferred_reloads().started >= 1,
+            "the deferred reload never started",
+        );
+        assert!(player.deferred_reloads().refused.is_empty());
+        player.await_hardware_ready().await;
+
+        // Deferred again, with nothing to reload from by the time it runs.
+        player.play().await?;
+        assert_eq!(player.apply_config_change().await.awaits, Some(2));
+        *player.config_store.lock() = None;
+        player.stop().await;
+        eventually(
+            || player.deferred_reloads().started >= 2,
+            "the refused reload was not counted",
+        );
+        let (generation, why) = player
+            .deferred_reloads()
+            .refused
+            .back()
+            .cloned()
+            .expect("refused");
+        assert_eq!(generation, 2);
+        assert!(why.contains("config store"), "{why}");
+        assert!(!player.hardware_reload_pending());
+        // The generations are this process's, named by an id that holds.
+        assert_eq!(process_id(), process_id());
+        Ok(())
+    }
+
+    /// A deferred reload is no longer pending once it starts applying, even
+    /// when a device it waits for is not there and its round retries: it
+    /// read as waiting for playback to stop, for good, while idle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waiting_on_an_absent_device_is_not_pending(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "songs: songs\nprofiles:\n  - audio:\n      device: no-such-device-anywhere\n",
+        )?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path,
+        )));
+        player.play().await?;
+        player.reload_hardware().await?;
+        assert!(player.hardware_reload_pending());
+        player.stop().await;
+        eventually(
+            || !player.hardware_reload_pending(),
+            "pending while the round retries",
+        );
+        assert!(!player.hardware_status().init_done, "the round is retrying");
+        Ok(())
+    }
+
     /// The deferred reload runs when a song ends by itself, too.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_deferred_reload_runs_when_the_song_ends() -> Result<(), Box<dyn Error>> {
@@ -3766,6 +4158,136 @@ mod test {
             "reload_hardware should fail without config store"
         );
 
+        Ok(())
+    }
+
+    /// A config change applied with no config store to reload from is not
+    /// applied, and says why; with one, and the player idle, it is.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_config_change_says_what_became_of_it() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        match player.apply_config_change().await.hardware {
+            ConfigApply::Failed(e) => assert!(e.contains("config store"), "{e}"),
+            other => panic!("applied with no store: {other:?}"),
+        }
+        let _store = set_store_without_audio(&player)?;
+        assert_eq!(
+            player.apply_config_change().await.hardware,
+            ConfigApply::Applied
+        );
+        player.await_hardware_ready().await;
+        Ok(())
+    }
+
+    /// Two rescans overlapping across a change to `songs:` both read the
+    /// config as it is when each scans, under the scan lock, and take their
+    /// sources up under it too: the songs and the sources the player ends
+    /// with are the same set, the newest config's. Resolved before the lock,
+    /// the first could swap in the old set last, or leave the songs of one
+    /// and the sources of the other.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn overlapping_rescans_end_on_the_newest_configs_songs() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        for (set, song) in [("songs_a", "Song A"), ("songs_b", "Song B")] {
+            let song_dir = dir.path().join(set).join("one");
+            fs::create_dir_all(&song_dir)?;
+            crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)?;
+            fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: {song}\ntracks:\n- name: kick\n  file: kick.wav\n"),
+            )?;
+        }
+        let path = dir.path().join("mtrack.yaml");
+        fs::write(&path, "songs: songs_a\n")?;
+        let player = Arc::new(make_bare_player()?);
+        player.set_config_store(Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path.clone(),
+        )));
+
+        // The scan lock held while both rescans are asked for, and the
+        // config changed between them.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (locked, is_locked) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let scans = player.song_scans.clone();
+            std::thread::spawn(move || {
+                let _scan = scans.lock();
+                locked.send(()).unwrap();
+                held.recv().unwrap();
+            })
+        };
+        is_locked.recv()?;
+        let first = {
+            let player = player.clone();
+            tokio::spawn(async move { player.reload_songs().await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        fs::write(&path, "songs: songs_b\n")?;
+        let store = player.config_store().expect("a store");
+        store.lock_for_disk_write().await.reload().await?;
+        let second = {
+            let player = player.clone();
+            tokio::spawn(async move { player.reload_songs().await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        release.send(())?;
+        holder.join().unwrap();
+        first.await??;
+        second.await??;
+
+        let sources = player.song_sources().expect("sources");
+        assert!(sources.songs.ends_with("songs_b"), "{:?}", sources.songs);
+        assert!(player.songs().get("Song B").is_ok(), "the newest set");
+        assert!(
+            player.songs().get("Song A").is_err(),
+            "the old set swapped in"
+        );
+        Ok(())
+    }
+
+    /// A song reload that fails beside a hardware reload is carried with
+    /// it: neither hides the other.
+    #[test]
+    fn a_config_change_carries_the_songs_beside_the_hardware() {
+        let change = ConfigChange {
+            hardware: ConfigApply::Deferred,
+            songs_error: Some("unreadable".into()),
+            awaits: None,
+        };
+        assert!(!change.applied());
+        assert_eq!(change.kind(), "deferred");
+        let message = change.message().unwrap();
+        assert!(
+            message.contains("idle") && message.contains("unreadable"),
+            "{message}"
+        );
+        let change = ConfigChange {
+            hardware: ConfigApply::Applied,
+            songs_error: Some("unreadable".into()),
+            awaits: None,
+        };
+        assert!(!change.applied());
+        assert!(change.message().unwrap().contains("unreadable"));
+        assert!(ConfigChange::from(ConfigApply::Applied).applied());
+    }
+
+    /// While a song plays, a config change is deferred until it stops.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_config_change_waits_for_a_song() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let _store = set_store_without_audio(&player)?;
+        player.play().await?;
+        assert_eq!(
+            player.apply_config_change().await.hardware,
+            ConfigApply::Deferred
+        );
+        assert!(player.audio_device().is_some(), "reset under the song");
+        player.stop().await;
+        crate::testutil::eventually(
+            || player.audio_device().is_none(),
+            "the deferred change was never applied",
+        );
         Ok(())
     }
 
@@ -3875,7 +4397,12 @@ mod test {
             "name: \"New Test Song\"\ntracks:\n  - name: click\n    file: ../1Channel44.1k.wav\n";
         fs::write(songs_dir.join("newsong.yaml"), new_song_yaml)?;
 
-        player.reload_songs(&songs_dir, None, None);
+        player.set_song_sources(SongSources {
+            songs: songs_dir,
+            playlists_dir: None,
+            legacy_playlist: None,
+        });
+        player.reload_songs().await?;
         assert!(
             player.songs().len() > initial_count,
             "reload_songs should discover the new song (was {}, now {})",
@@ -3883,6 +4410,61 @@ mod test {
             player.songs().len(),
         );
         Ok(())
+    }
+
+    /// A reload that cannot rescan says so, and leaves the songs as they
+    /// were: a surface answering "saved" over it left the player on stale
+    /// songs with nothing said.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_that_cannot_rescan_says_so_and_keeps_the_songs() -> Result<(), Box<dyn Error>>
+    {
+        let player = make_bare_player()?;
+        let before = player.songs().len();
+        assert!(before > 0);
+        let dir = tempfile::tempdir()?;
+        player.set_song_sources(SongSources {
+            songs: dir.path().join("no such songs"),
+            playlists_dir: None,
+            legacy_playlist: None,
+        });
+        let err = player
+            .reload_songs()
+            .await
+            .expect_err("a rescan of nothing");
+        assert!(matches!(err, ReloadSongsError::Songs(_)), "{err}");
+        assert_eq!(player.songs().len(), before, "the songs were kept");
+        Ok(())
+    }
+
+    /// A player with no song sources and no config store has nothing to
+    /// reload from, and says so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_with_no_sources_says_so() -> Result<(), Box<dyn Error>> {
+        let player = make_bare_player()?;
+        assert!(matches!(
+            player.reload_songs().await,
+            Err(ReloadSongsError::NoSources)
+        ));
+        Ok(())
+    }
+
+    /// The song sources resolve the songs and playlists directories,
+    /// defaulting beside the config, and the command line's playlist over
+    /// the config's, against the config's directory.
+    #[test]
+    fn song_sources_resolve_against_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(dir.join("songs")).unwrap();
+        let path = dir.join("mtrack.yaml");
+        let mut config = config::Player::default();
+        config.set_songs("songs");
+        let sources = SongSources::resolve(&config, &path, None);
+        assert_eq!(sources.songs, dir.join("songs"));
+        assert_eq!(sources.playlists_dir, Some(dir.join("playlists")));
+        assert_eq!(sources.legacy_playlist, None);
+        let sources = SongSources::resolve(&config, &path, Some(Path::new("setlist.yaml")));
+        assert_eq!(sources.legacy_playlist, Some(dir.join("setlist.yaml")));
     }
 
     #[test]
@@ -4814,7 +5396,13 @@ mod test {
     fn edit_playlist(player: &Player, dir: &tempfile::TempDir, yaml: &str) {
         let playlist_path = dir.path().join("playlist.yaml");
         std::fs::write(&playlist_path, yaml).unwrap();
-        player.reload_songs(&dir.path().join("songs"), None, Some(&playlist_path));
+        player
+            .reload_songs_from(&SongSources {
+                songs: dir.path().join("songs"),
+                playlists_dir: None,
+                legacy_playlist: Some(playlist_path),
+            })
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4866,7 +5454,11 @@ mod test {
         let (player, dir) = player_looping_b().await?;
         let empty = dir.path().join("playlists");
         std::fs::create_dir_all(&empty)?;
-        player.reload_songs(&dir.path().join("songs"), Some(&empty), None);
+        player.reload_songs_from(&SongSources {
+            songs: dir.path().join("songs"),
+            playlists_dir: Some(empty),
+            legacy_playlist: None,
+        })?;
         assert_eq!(player.get_playlist().name(), "all_songs");
         assert_eq!(current_name(&player).await, "B", "B is still playing");
         assert!(player.is_current_song_looping());
@@ -4898,14 +5490,20 @@ mod test {
             let player = player.clone();
             let songs = dir.path().join("songs");
             let playlist = dir.path().join("playlist.yaml");
-            std::thread::spawn(move || player.reload_songs(&songs, None, Some(&playlist)))
+            std::thread::spawn(move || {
+                player.reload_songs_from(&SongSources {
+                    songs,
+                    playlists_dir: None,
+                    legacy_playlist: Some(playlist),
+                })
+            })
         };
         let (_, moved) = player.move_playlist(|playlist| {
             // The reload runs to its end here unless the move holds it off.
             std::thread::sleep(Duration::from_millis(300));
             playlist.next().map(|song| song.name().to_string())
         });
-        reload.join().unwrap();
+        reload.join().unwrap()?;
         assert_eq!(moved.as_deref(), Some("C"));
         assert_eq!(current_name(&player).await, "C");
         Ok(())
@@ -5543,7 +6141,7 @@ mod test {
             // As pause() does it, under the lock.
             let mut join = hold_join_over_a_songs_own_end(&player).await?;
             player.stop_for_pause(&mut join).await;
-            *player.pending_start.lock() = Some(seek::PendingStart {
+            player.transport.lock().pending_start = Some(seek::PendingStart {
                 position: paused_at,
                 paused: true,
             });
@@ -5732,7 +6330,7 @@ mod test {
         let pause = {
             let join = player.join.lock().await;
             // Next's break, as navigate asks it.
-            player.loop_break.store(true, Ordering::Relaxed);
+            player.set_loop_exit(LoopExit::Next);
             join.as_ref().unwrap().cancel.cancel();
             drop(join);
             // B winds down, so its cleanup queues on the lock first...
@@ -5846,7 +6444,8 @@ mod test {
     async fn a_deferred_reload_waits_for_a_loop_breaks_fade() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
         let _store = set_store_without_audio(&player)?;
-        *player.fading_until.lock() = Some(std::time::Instant::now() + Duration::from_millis(800));
+        player.transport.lock().fading_until =
+            Some(std::time::Instant::now() + Duration::from_millis(800));
         player.reload_hardware().await?;
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(

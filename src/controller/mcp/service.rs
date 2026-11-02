@@ -858,7 +858,7 @@ impl McpServer {
         self.player
             .switch_to_playlist(&args.name)
             .await
-            .map_err(|e| McpError::invalid_params(e, None))?;
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(ok_json(json!({ "active_playlist": args.name })))
     }
 
@@ -892,7 +892,7 @@ impl McpServer {
             .await
             .map_err(internal_err)?;
         Ok(ok_json(
-            json!({ "ambient": ambient_json(&self.player).await }),
+            json!({ "ambient": ambient_json(self.player.ambient_status().await.as_ref()) }),
         ))
     }
 
@@ -1298,7 +1298,7 @@ impl McpServer {
         staged_write_string(&yaml_path, &args.yaml).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": yaml_path.display().to_string(),
             "bytes": args.yaml.len(),
@@ -1379,7 +1379,7 @@ impl McpServer {
         staged_write_string(&path, &args.yaml).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.yaml.len(),
@@ -2469,7 +2469,7 @@ impl McpServer {
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
         remove_lighting_file(&path).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
             "deleted": path.display().to_string(),
@@ -2622,7 +2622,7 @@ impl McpServer {
         // a real path, and a rig that does nothing.
         let registration = self.register_song_lighting(&song, &path).await?;
 
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -2701,7 +2701,7 @@ impl McpServer {
         )?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -2725,7 +2725,7 @@ impl McpServer {
         )?;
         self.validate_playlist(&updated)?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -2774,7 +2774,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
         staged_write_string(&path, &updated).await?;
-        self.reload_songs_from_config().await?;
+        self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -3599,48 +3599,11 @@ pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
     })
 }
 
-/// Parses an `mm:ss.mmm` or `Ns` / `N.Ns` time string into a [`Duration`].
+/// Parses an `mm:ss.mmm` or `Ns` / `N.Ns` time string into a [`Duration`],
+/// as every surface parses a playback position (see
+/// [`crate::util::parse_position`]).
 pub(crate) fn parse_duration(value: &str) -> Result<std::time::Duration, McpError> {
-    let trimmed = value.trim();
-    let seconds = if let Some(stripped) = trimmed
-        .strip_suffix('s')
-        .or_else(|| trimmed.strip_suffix('S'))
-    {
-        if stripped.contains(':') {
-            parse_mm_ss(stripped)?
-        } else {
-            stripped
-                .parse::<f64>()
-                .map_err(|e| McpError::invalid_params(format!("invalid seconds: {e}"), None))?
-        }
-    } else if trimmed.contains(':') {
-        parse_mm_ss(trimmed)?
-    } else {
-        trimmed
-            .parse::<f64>()
-            .map_err(|e| McpError::invalid_params(format!("invalid duration: {e}"), None))?
-    };
-    // Too large a number is turned down with the rest: converting it
-    // panicked, failing the request with no answer.
-    crate::util::duration_from_secs(seconds).ok_or_else(|| {
-        McpError::invalid_params(
-            "duration must be a finite, non-negative number of seconds in range",
-            None,
-        )
-    })
-}
-
-fn parse_mm_ss(s: &str) -> Result<f64, McpError> {
-    let (mm, ss) = s
-        .split_once(':')
-        .ok_or_else(|| McpError::invalid_params("expected mm:ss.mmm", None))?;
-    let minutes: u64 = mm
-        .parse()
-        .map_err(|e| McpError::invalid_params(format!("invalid minutes: {e}"), None))?;
-    let seconds: f64 = ss
-        .parse()
-        .map_err(|e| McpError::invalid_params(format!("invalid seconds: {e}"), None))?;
-    Ok((minutes as f64) * 60.0 + seconds)
+    crate::util::parse_position(value).map_err(|e| McpError::invalid_params(e, None))
 }
 
 /// Wraps a domain error into [`McpError::internal_error`].
@@ -3715,86 +3678,71 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
 /// reference cycle through `subscriptions` → `SubscriptionHandle` →
 /// `AbortHandle` and silently defeat abort-on-Drop).
 async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
-    let playlist = player.get_playlist();
-    let current = playlist.current();
-    let playing = player.is_playing().await;
-    let elapsed = player
-        .elapsed()
-        .await
+    // The player's one status, its DMX reads bounded: `status` is the
+    // diagnostic of last resort, and must answer if the effects loop wedges
+    // holding the timeline lock.
+    let status = player.status_snapshot().await;
+    let elapsed = status
+        .elapsed
+        .clone()
         .map_err(internal_err)?
         .unwrap_or_default();
     // Whether the lighting will actually fire, answerable here rather than by
-    // polling for effects and inferring from their absence (#332).
-    //
-    // The timeline mutex is shared with the effects loop thread, so this reads
-    // it on the blocking pool rather than parking a tokio worker on it.
-    let lighting = match player.dmx_engine() {
-        Some(dmx) => {
-            // Bounded, because this is the diagnostic of last resort: if the
-            // effects loop wedges holding the timeline mutex, `status` must
-            // still answer rather than hang alongside it. A timeout or a
-            // panicked task is reported as such, not silently flattened into
-            // "no show loaded" — that is the one field meant to tell those
-            // apart.
-            let read = tokio::task::spawn_blocking(move || dmx.lighting_arming_state());
-            match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
-                Ok(Ok(Some((armed, total, remaining, next)))) => Some(json!({
-                    "armed": armed,
-                    "cues_total": total,
-                    "cues_remaining": remaining,
-                    "next_cue_seconds": next.map(|t| t.as_secs_f64()),
-                })),
-                Ok(Ok(None)) => None,
-                Ok(Err(e)) => Some(json!({
-                    "available": false,
-                    "reason": format!("lighting state read failed: {e}"),
-                })),
-                Err(_) => Some(json!({
-                    "available": false,
-                    "reason": "timed out reading lighting state — the effects \
-                               loop may be stalled holding the timeline lock",
-                })),
-            }
-        }
-        None => None,
+    // polling for effects and inferring from their absence (#332). A timeout
+    // or a panicked read is reported as such, not silently flattened into
+    // "no show loaded" -- that is the one field meant to tell those apart.
+    let lighting = match &status.lighting {
+        Some(crate::player::DmxRead::Read(Some(lighting))) => Some(json!({
+            "armed": lighting.armed,
+            "cues_total": lighting.cues_total,
+            "cues_remaining": lighting.cues_remaining,
+            "next_cue_seconds": lighting.next_cue.map(|t| t.as_secs_f64()),
+        })),
+        Some(crate::player::DmxRead::Read(None)) | None => None,
+        Some(crate::player::DmxRead::Failed(e)) => Some(json!({
+            "available": false,
+            "reason": format!("lighting state read failed: {e}"),
+        })),
+        Some(crate::player::DmxRead::TimedOut) => Some(json!({
+            "available": false,
+            "reason": "timed out reading lighting state — the effects \
+                       loop may be stalled holding the timeline lock",
+        })),
     };
-    let ambient = ambient_json(player).await;
+    let playlist = &status.playlist;
 
     Ok(json!({
         "playlist_name": playlist.name(),
-        "current_song": current.as_ref().map(|s| song_summary(s)),
-        "playing": playing,
+        "current_song": status.current_song.as_ref().map(|s| song_summary(s)),
+        "playing": status.playing,
         "elapsed": format_duration(elapsed),
         "lighting": lighting,
-        "ambient": ambient,
-        "auto_play": player.auto_play_status().map(|(song, starts_in)| json!({
+        "ambient": ambient_json(status.ambient.as_ref()),
+        "auto_play": status.auto_play.as_ref().map(|(song, starts_in)| json!({
             "song": song,
             "starts_in_seconds": starts_in.as_secs_f64(),
         })),
-        "ending": player.ending_status().map(|(song, remaining)| json!({
+        "ending": status.ending.as_ref().map(|(song, remaining)| json!({
             "song": song,
             "remaining_seconds": remaining.as_secs_f64(),
         })),
-        "transitions": transitions_json(&playlist),
+        "transitions": transitions_json(playlist),
     }))
 }
 
 /// Ambient light's mode and state for `status`, `null` without a DMX
-/// engine. Bounded on the blocking pool: the effects loop holds the ambient
-/// lock while it starts the show.
-async fn ambient_json(player: &Player) -> Value {
-    let Some(dmx) = player.dmx_engine() else {
-        return Value::Null;
-    };
-    let read = tokio::task::spawn_blocking(move || dmx.ambient_report());
-    match tokio::time::timeout(std::time::Duration::from_millis(500), read).await {
-        Ok(Ok(report)) => json!({
-            "mode": report.mode.as_str(),
-            "source": report.show.as_ref().and(player.ambient_source()).map(|s| s.as_str()),
-            "show": report.show.map(|show| show.display().to_string()),
-            "state": report.state,
+/// engine, as the player's status read it (bounded on the blocking pool:
+/// the effects loop holds the ambient lock while it starts the show).
+fn ambient_json(ambient: Option<&crate::player::DmxRead<crate::player::AmbientStatus>>) -> Value {
+    match ambient {
+        None => Value::Null,
+        Some(crate::player::DmxRead::Read(ambient)) => json!({
+            "mode": ambient.report.mode.as_str(),
+            "source": ambient.source.map(|s| s.as_str()),
+            "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
+            "state": ambient.report.state,
         }),
-        _ => json!({
+        Some(_) => json!({
             "available": false,
             "reason": "could not read the ambient light's state",
         }),
@@ -3999,8 +3947,12 @@ impl McpServer {
     ) -> Result<crate::webui::safe_path::VerifiedRoot, McpError> {
         let store = self.config_store()?;
         let path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
-        let songs = cfg.songs(&path);
+        // The songs directory the player's songs were loaded from, so a
+        // song written here is one its reload picks up.
+        let songs = match self.player.song_sources() {
+            Some(sources) => sources.songs,
+            None => store.read_config().await.songs(&path),
+        };
         // Created only when it is inside the project. A `songs:` pointing
         // elsewhere is the operator's to set up -- see `create_dir_within`.
         let project = crate::util::project_dir_of(&path);
@@ -4059,36 +4011,17 @@ impl McpServer {
     /// Rescans songs from disk and rebuilds the player's playlists. Used after
     /// any tool that creates, edits, or removes a song file so subsequent
     /// `list_songs` / `read_song` / `write_song_lighting` calls see the new
-    /// state without requiring an mtrack restart. Mirrors the resolution
-    /// logic in `cli::local::start`.
-    pub(crate) async fn reload_songs_from_config(&self) -> Result<(), McpError> {
-        let store = self.config_store()?;
-        let config_path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
-
-        // Resolved, like songs_root_verified: the configured spelling is not
-        // always usable now that the stray intermediate is not created, and a
-        // rescan that fails here only logs a warning -- every write tool would
-        // report success while the player kept stale songs.
-        let songs_path = crate::util::resolved_dir(&cfg.songs(&config_path));
-        let playlists_dir = cfg
-            .playlists_dir(&config_path)
-            .or_else(|| Some(crate::util::project_dir_of(&config_path).join("playlists")));
-
-        let legacy_playlist_path = cfg.playlist().map(|rel| {
-            if rel.is_absolute() {
-                rel
-            } else {
-                crate::util::project_dir_of(&config_path).join(rel)
-            }
-        });
-
-        self.player.reload_songs(
-            &songs_path,
-            playlists_dir.as_deref(),
-            legacy_playlist_path.as_deref(),
-        );
-        Ok(())
+    /// state without requiring an mtrack restart. Reads the player's song
+    /// sources, as every surface's reload does, and reports a reload that
+    /// failed: every write tool reported success while the player kept
+    /// stale songs.
+    pub(crate) async fn reload_player_songs(&self) -> Result<(), McpError> {
+        self.player.reload_songs().await.map_err(|e| {
+            McpError::internal_error(
+                format!("the change was written, but the player could not reload its songs: {e}"),
+                None,
+            )
+        })
     }
 
     /// Checks a playlist about to be written: that it parses, and that its
@@ -4112,27 +4045,27 @@ impl McpServer {
     ) -> Result<std::path::PathBuf, McpError> {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
+        // The playlists the player reloads from, so a playlist written here
+        // is one it picks up: the command line's legacy playlist included.
+        let sources = match self.player.song_sources() {
+            Some(sources) => sources,
+            None => {
+                crate::player::SongSources::resolve(&store.read_config().await, &config_path, None)
+            }
+        };
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
                 // The same default the loader uses: `playlists/` beside the
                 // config when no `playlists_dir` is configured.
-                let dir = cfg
-                    .playlists_dir(&config_path)
+                let dir = sources
+                    .playlists_dir
                     .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
                 Ok(dir.join(format!("{n}.yaml")))
             }
-            None => {
-                let rel = cfg.playlist().ok_or_else(|| {
-                    McpError::invalid_params("no top-level playlist file configured", None)
-                })?;
-                if rel.is_absolute() {
-                    Ok(rel)
-                } else {
-                    Ok(crate::util::project_dir_of(&config_path).join(rel))
-                }
-            }
+            None => sources.legacy_playlist.ok_or_else(|| {
+                McpError::invalid_params("no top-level playlist file configured", None)
+            }),
         }
     }
 }
@@ -4151,34 +4084,19 @@ pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
 
 impl McpServer {
     /// Applies a saved config change to the running hardware and answers
-    /// with the new snapshot, as the gRPC config updates do. A change saved
-    /// here was otherwise not applied until something else reloaded the
-    /// hardware or mtrack restarted. While a song plays or is paused the
-    /// reload waits for the player to be idle, and the reply says so, with
-    /// `applied: false`. Controllers are restarted only by a change to them.
+    /// with the new snapshot, as every surface's config change does. A
+    /// change saved here was otherwise not applied until something else
+    /// reloaded the hardware or mtrack restarted. While a song plays or is
+    /// paused the reload waits for the player to be idle, and a reload that
+    /// fails leaves the change for the next one; the reply says either with
+    /// `applied: false` and a `message`. Controllers are restarted only by a
+    /// change to them.
     async fn reload_and_respond(
         &self,
         snapshot: crate::config::store::ConfigSnapshot,
     ) -> Result<CallToolResult, McpError> {
-        let reload = match self
-            .player
-            .reload_hardware()
-            .await
-            .map_err(|e| e.to_string())
-        {
-            Ok(reload) => reload,
-            Err(e) => {
-                tracing::warn!("Hardware reload after config update failed: {}", e);
-                return Err(McpError::internal_error(
-                    format!(
-                        "the config was saved but the running hardware was not reloaded, so \
-                         it will not take effect until the next reload or restart: {e}"
-                    ),
-                    None,
-                ));
-            }
-        };
-        Ok(snapshot_response(&snapshot, reload))
+        let outcome = self.player.apply_config_change().await;
+        Ok(snapshot_response(&snapshot, &outcome))
     }
 }
 
@@ -4186,15 +4104,18 @@ impl McpServer {
 /// checksum, and whether the change has been applied to the hardware.
 pub(crate) fn snapshot_response(
     snapshot: &crate::config::store::ConfigSnapshot,
-    reload: crate::player::HardwareReload,
+    outcome: &crate::player::ConfigChange,
 ) -> CallToolResult {
     let mut response = json!({
         "yaml": snapshot.yaml,
         "checksum": snapshot.checksum,
-        "applied": reload.applied(),
+        "applied": outcome.applied(),
     });
-    if let Some(message) = reload.message() {
+    if let Some(message) = outcome.message() {
         response["message"] = json!(message);
+    }
+    if let Some(songs_error) = &outcome.songs_error {
+        response["songs_error"] = json!(songs_error);
     }
     ok_json(response)
 }
@@ -4538,6 +4459,42 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod snapshot_response_tests {
+    use crate::player::ConfigApply;
+
+    fn reply(outcome: ConfigApply) -> serde_json::Value {
+        let snapshot = crate::config::store::ConfigSnapshot {
+            config: crate::config::Player::default(),
+            yaml: "songs: songs\n".to_string(),
+            checksum: "abc".to_string(),
+        };
+        let result =
+            serde_json::to_value(super::snapshot_response(&snapshot, &outcome.into())).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap().to_string();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// A config change's reply says what became of it on the hardware, as
+    /// the web UI's and gRPC's do. A reload that failed after the save used
+    /// to answer with an error, leaving the client without the new checksum
+    /// of a change that was saved.
+    #[test]
+    fn a_config_changes_reply_says_what_became_of_it() {
+        let applied = reply(ConfigApply::Applied);
+        assert_eq!(applied["applied"], true);
+        assert_eq!(applied["checksum"], "abc");
+        assert!(applied.get("message").is_none());
+        let deferred = reply(ConfigApply::Deferred);
+        assert_eq!(deferred["applied"], false);
+        assert!(deferred["message"].as_str().unwrap().contains("idle"));
+        let failed = reply(ConfigApply::Failed("no store".into()));
+        assert_eq!(failed["applied"], false);
+        assert_eq!(failed["checksum"], "abc", "the save's checksum");
+        assert!(failed["message"].as_str().unwrap().contains("no store"));
+    }
 }
 
 #[cfg(test)]

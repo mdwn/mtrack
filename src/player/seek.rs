@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use super::Player;
+use super::{LoopExit, Player};
 use crate::songs::Song;
 
 /// How long a seek waits for the previous playback to wind down before
@@ -59,9 +59,7 @@ impl Player {
         // nothing to resume, and a pause stops it as a stop does. Kept
         // paused, the song was ending and paused at once, and the next play
         // resumed it.
-        if (join.is_some() && self.loop_end.load(Ordering::Relaxed))
-            || self.ending_status().is_some()
-        {
+        if (join.is_some() && self.loop_exit() == LoopExit::End) || self.ending_status().is_some() {
             info!("The song is ending: a pause stops it.");
             self.cut_locked(&mut join).await;
             return Ok(None);
@@ -119,7 +117,7 @@ impl Player {
             return position;
         }
         info!(song = song.name(), position = ?position, "Paused; play resumes here");
-        *self.pending_start.lock() = Some(PendingStart {
+        self.transport.lock().pending_start = Some(PendingStart {
             position,
             paused: true,
         });
@@ -148,7 +146,7 @@ impl Player {
 
         // A looping song ending: stopped a moment from now, and nothing to
         // restart.
-        if join.is_some() && self.loop_end.load(Ordering::Relaxed) {
+        if join.is_some() && self.loop_exit() == LoopExit::End {
             return Err("Cannot seek: the song is ending".into());
         }
 
@@ -160,7 +158,7 @@ impl Player {
                 // paused.
                 // It exits any section loop, as a seek while playing does.
                 self.section_loop.reset();
-                let mut pending = self.pending_start.lock();
+                let pending = &mut self.transport.lock().pending_start;
                 let paused = pending.is_some_and(|p| p.paused);
                 *pending = Some(PendingStart { position, paused });
                 return Ok(());
@@ -250,34 +248,29 @@ impl Player {
     /// Returns the pending start position set by a pause or by seeking while
     /// stopped, if any.
     pub fn pending_start(&self) -> Option<Duration> {
-        self.pending_start.lock().map(|p| p.position)
+        self.transport.lock().pending_start.map(|p| p.position)
     }
 
     /// Whether a song is paused: stopped by a pause, with a position to
     /// resume from, until a play, a stop or a move off the song.
     pub fn is_paused(&self) -> bool {
-        self.pending_start.lock().is_some_and(|p| p.paused)
+        self.transport.lock().is_paused()
     }
 
     /// Leaves the current song paused at `position`, as a pause leaves it,
     /// for a test whose song cannot play.
     #[cfg(test)]
     pub(crate) fn pause_at_for_test(&self, position: Duration) {
-        *self.pending_start.lock() = Some(PendingStart {
+        self.transport.lock().pending_start = Some(PendingStart {
             position,
             paused: true,
         });
     }
 
-    /// Takes (consumes) the pending start position.
-    pub(super) fn take_pending_start(&self) -> Option<Duration> {
-        self.pending_start.lock().take().map(|p| p.position)
-    }
-
     /// Clears the pending start position. Called when the playlist position
     /// changes so a stale seek doesn't apply to a different song.
     pub(super) fn clear_pending_start(&self) {
-        *self.pending_start.lock() = None;
+        self.transport.lock().pending_start = None;
     }
 }
 

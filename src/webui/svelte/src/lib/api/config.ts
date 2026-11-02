@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { ConfigReload } from "../configReload";
 import { BadAnswerError, readJson } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import { parseFit, type Fit } from "../lighting/fit";
@@ -83,7 +84,9 @@ export interface MidiDeviceInfo {
   has_output: boolean;
 }
 
-export interface ConfigSnapshot {
+/** The config after a change, with what became of its hardware reload
+ *  (`ConfigReload`) when the change was a save. */
+export interface ConfigSnapshot extends ConfigReload {
   yaml: string;
   checksum: string;
 }
@@ -221,12 +224,12 @@ export async function fetchProfileFile(
 
 /** Saves a profile file. `version` is the one the file was read at; a file
  *  that has changed since is refused with a `ConflictError`. Returns the
- *  file's new version. */
+ *  file's new version, and what became of the hardware reload. */
 export async function saveProfileFile(
   filename: string,
   profile: object,
   version?: string,
-): Promise<string | null> {
+): Promise<{ version: string | null; reload: ConfigReload }> {
   const res = await put(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
@@ -234,12 +237,16 @@ export async function saveProfileFile(
   );
   if (!res.ok) throw await versionedError(res, "Failed to save profile");
   const body = await res.json().catch(() => ({}));
-  return body?.version ?? null;
+  return { version: body?.version ?? null, reload: body ?? {} };
 }
 
-export async function deleteProfileFile(filename: string): Promise<void> {
+/** Deletes a profile file. Returns what became of the hardware reload. */
+export async function deleteProfileFile(
+  filename: string,
+): Promise<ConfigReload> {
   const res = await del(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to delete profile");
+  return res.json().catch(() => ({}));
 }
 
 // Samples API

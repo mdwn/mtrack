@@ -81,6 +81,146 @@ impl HardwareReload {
     }
 }
 
+/// What became of a saved config change on the running hardware: applied,
+/// deferred until the player is idle, or not applied because the reload
+/// failed. The change itself is saved in all three: every control surface
+/// answers it as saved, with the new checksum, and says which of these it
+/// was (`applied`, and a `message` when it is not). Errors before the save
+/// (a stale checksum, an invalid section) are the surfaces' own to answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigApply {
+    /// The hardware is coming up on the saved config.
+    Applied,
+    /// A song is playing, paused or fading out, or an auto play is waiting:
+    /// the reload runs once the player is idle.
+    Deferred,
+    /// The reload could not run, and the change takes effect at the next
+    /// reload or restart.
+    Failed(String),
+}
+
+impl ConfigApply {
+    /// Whether the change has been applied to the running hardware.
+    pub fn applied(&self) -> bool {
+        *self == ConfigApply::Applied
+    }
+
+    /// Which it was, as a reply's `reload` field names it: `applied`,
+    /// `deferred` or `failed`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ConfigApply::Applied => "applied",
+            ConfigApply::Deferred => "deferred",
+            ConfigApply::Failed(_) => "failed",
+        }
+    }
+
+    /// What a config change's reply says of the reload, when it is not
+    /// applied.
+    pub fn message(&self) -> Option<String> {
+        match self {
+            ConfigApply::Applied => None,
+            ConfigApply::Deferred => HardwareReload::Deferred.message().map(str::to_string),
+            ConfigApply::Failed(e) => Some(format!(
+                "The config was saved, but the hardware reload failed, so the change takes \
+                 effect at the next reload or restart: {e}"
+            )),
+        }
+    }
+}
+
+/// What became of a saved config change: its hardware reload, and, when the
+/// change moved the songs or playlists, or asks for them to be reloaded (a
+/// metronome default), a song reload that failed. Both are carried, so one
+/// does not hide the other. The surfaces map it to `applied`, `reload` (the
+/// hardware's), `message`, and, from the web UI and MCP, `songs_error`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigChange {
+    pub hardware: ConfigApply,
+    /// Why the songs could not be reloaded, when they could not: the player
+    /// keeps the songs, and the song paths, it had.
+    pub songs_error: Option<String>,
+    /// For a deferred hardware reload, the deferred reload generation it
+    /// waits for (see [`DeferredReloads`]): it has started once
+    /// `DeferredReloads::started` reaches it.
+    pub awaits: Option<u64>,
+}
+
+impl From<ConfigApply> for ConfigChange {
+    fn from(hardware: ConfigApply) -> Self {
+        ConfigChange {
+            hardware,
+            songs_error: None,
+            awaits: None,
+        }
+    }
+}
+
+/// The deferred hardware reloads, counted: each time one starts, or is
+/// refused (it cannot start at all), the generation goes up. A config save
+/// deferred waits for the generation after the one started when it was
+/// deferred, so a surface knows its wait for playback to stop is over once
+/// `started` reaches it, whatever it saw in between. What the reload's round
+/// then makes of each device is the hardware status's to say, per
+/// subsystem, not this.
+///
+/// The count starts over with the process: a surface holding a generation
+/// from before a restart tells by [`process_id`] that the wait is over (the
+/// restarted process loaded the saved config).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeferredReloads {
+    /// The last generation started or refused.
+    pub started: u64,
+    /// The recent refusals, oldest first, each with its generation and why:
+    /// a save is told of its own, not of one that came after it.
+    pub refused: std::collections::VecDeque<(u64, String)>,
+}
+
+/// How many refusals [`DeferredReloads`] keeps.
+const REFUSALS_KEPT: usize = 8;
+
+/// This process's id, the same for its whole life and another for the next:
+/// a deferred reload generation is this process's, and one from another
+/// process names nothing still to wait for.
+pub fn process_id() -> u64 {
+    static ID: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or_default();
+        nanos ^ (u64::from(std::process::id()) << 32)
+    })
+}
+
+impl ConfigChange {
+    /// Whether the change has been taken up in full: the hardware applied,
+    /// and the songs, if they were reloaded, reloaded.
+    pub fn applied(&self) -> bool {
+        self.hardware.applied() && self.songs_error.is_none()
+    }
+
+    /// The hardware reload's kind (see [`ConfigApply::kind`]).
+    pub fn kind(&self) -> &'static str {
+        self.hardware.kind()
+    }
+
+    /// What the reply says, when the change is not taken up in full: the
+    /// hardware's, then the songs'.
+    pub fn message(&self) -> Option<String> {
+        let songs = self.songs_error.as_ref().map(|e| {
+            format!(
+                "The config was saved, but the songs could not be reloaded, so the player \
+                 keeps the songs it had: {e}"
+            )
+        });
+        match (self.hardware.message(), songs) {
+            (Some(hardware), Some(songs)) => Some(format!("{hardware} {songs}")),
+            (hardware, songs) => hardware.or(songs),
+        }
+    }
+}
+
 /// How often an unchanged init failure is repeated in the log.
 const FAILURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -665,6 +805,15 @@ impl Player {
     /// would cut the fade short. Returns which it did, for a config change's
     /// reply to say.
     pub async fn reload_hardware(self: &Arc<Self>) -> Result<HardwareReload, Box<dyn Error>> {
+        Ok(self.reload_hardware_awaiting().await?.0)
+    }
+
+    /// [`Player::reload_hardware`], with the deferred reload generation a
+    /// deferral waits for, taken under the join lock a deferred reload
+    /// starts under, so it is never one already started.
+    async fn reload_hardware_awaiting(
+        self: &Arc<Self>,
+    ) -> Result<(HardwareReload, Option<u64>), Box<dyn Error>> {
         let store = self.config_store().ok_or("No config store available")?;
 
         // Held until this reload has spawned its round, so a concurrent reload
@@ -684,14 +833,20 @@ impl Player {
         // So does a paused song: a show in progress, its lights held, which
         // must resume at once. A position cued by a seek while stopped is
         // not: nothing plays, and nothing is held.
-        let playing = join.is_some() || self.auto_play_status().is_some() || self.is_paused();
-        let fading = self.fading_out();
+        let (playing, fading, ending) = {
+            let transport = self.transport.lock();
+            (
+                join.is_some() || transport.auto_play.waiting.is_some() || transport.is_paused(),
+                transport.fading_out(),
+                transport.ending.fading.is_some(),
+            )
+        };
         if playing || fading.is_some() {
             self.hardware_reload_pending.store(true, Ordering::Relaxed);
             // An ending runs the reload once its fade is over. A loop break's
             // fade outlasting the song it moved to has nothing that would,
             // with the player idle: a timer does.
-            if let (false, Some(left), None) = (playing, fading, self.ending_status()) {
+            if let (false, Some(left), false) = (playing, fading, ending) {
                 let player = self.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(left).await;
@@ -699,10 +854,16 @@ impl Player {
                 });
             }
             info!("Hardware reload deferred until playback ends");
-            return Ok(HardwareReload::Deferred);
+            let awaits = self.deferred_reloads.lock().started + 1;
+            return Ok((HardwareReload::Deferred, Some(awaits)));
         }
-        // This reload covers one deferred before it.
-        self.hardware_reload_pending.store(false, Ordering::Relaxed);
+        // This reload covers one deferred before it: the deferral is over,
+        // and the next generation has started. The reload is applying from
+        // here: a device not present retries in the round, perhaps for good,
+        // and the hardware status shows that per subsystem.
+        if self.hardware_reload_pending.swap(false, Ordering::Relaxed) {
+            self.deferred_reloads.lock().started += 1;
+        }
 
         // Cancel the previous init round and take the replacement token here,
         // so the round spawned below carries it from the start.
@@ -764,7 +925,85 @@ impl Player {
         drop(join);
 
         info!("Hardware reload initiated");
-        Ok(HardwareReload::Applied)
+        Ok((HardwareReload::Applied, None))
+    }
+
+    /// Whether a hardware reload a config change asked for is deferred
+    /// until the player is idle.
+    #[cfg(test)]
+    pub(crate) fn hardware_reload_pending(&self) -> bool {
+        self.hardware_reload_pending.load(Ordering::Relaxed)
+    }
+
+    /// The deferred hardware reloads started or refused so far, for the
+    /// status (see [`DeferredReloads`]).
+    pub fn deferred_reloads(&self) -> DeferredReloads {
+        self.deferred_reloads.lock().clone()
+    }
+
+    /// Applies a config change already saved to the config store to the
+    /// running hardware: the one path every control surface takes after a
+    /// save, so they agree on what a save while a song plays does. The
+    /// change is saved whatever the player is doing, and the hardware
+    /// reload waits for the player to be idle (see
+    /// [`Player::reload_hardware`]). The controllers are restarted only by
+    /// a change to them, so a surface's own transport survives a change
+    /// made over it.
+    pub async fn apply_config_change(self: &Arc<Self>) -> ConfigChange {
+        // A change to where songs or playlists live is taken up at once, as
+        // a song edit's reload would take it up. Where they live was checked
+        // before the save ([`crate::player::SongSources::prepare`]); a reload that fails all
+        // the same (a scan error) leaves the player, and every surface's song
+        // paths, as they were, and the reply carries it beside the
+        // hardware's outcome.
+        let songs_error = match self.resolve_song_sources().await {
+            Some(sources) if Some(&sources) != self.song_sources().as_ref() => {
+                info!("The songs or playlists moved: reloading them");
+                // A config changed outside the whole-config save (a hand
+                // edit, read in by a profile save) has had no check: the
+                // same one, which makes the songs directory where startup
+                // would, runs here, and a location it refuses is not
+                // reloaded from.
+                let prepared = match self.config_store() {
+                    Some(store) => {
+                        let config = store.read_config().await;
+                        let player = self.clone();
+                        tokio::task::spawn_blocking(move || player.prepare_song_sources(&config))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                            .map(|_| ())
+                    }
+                    None => Ok(()),
+                };
+                let reloaded = match prepared {
+                    Ok(()) => self.reload_songs().await.map_err(|e| e.to_string()),
+                    Err(e) => Err(format!("the songs or playlists cannot be used: {e}")),
+                };
+                reloaded.err().inspect(|e| {
+                    warn!("Reloading songs after a config change failed: {}", e);
+                })
+            }
+            _ => None,
+        };
+        // Flattened at once: `Box<dyn Error>` is not Send, and the surfaces
+        // await this.
+        let (hardware, awaits) = match self
+            .reload_hardware_awaiting()
+            .await
+            .map_err(|e| e.to_string())
+        {
+            Ok((HardwareReload::Applied, _)) => (ConfigApply::Applied, None),
+            Ok((HardwareReload::Deferred, awaits)) => (ConfigApply::Deferred, awaits),
+            Err(e) => {
+                warn!("Hardware reload after a config change failed: {}", e);
+                (ConfigApply::Failed(e), None)
+            }
+        };
+        ConfigChange {
+            hardware,
+            songs_error,
+            awaits,
+        }
     }
 
     /// Runs a hardware reload deferred by playback, if one is pending, now
@@ -786,8 +1025,27 @@ impl Player {
                 return;
             }
             info!("Playback has ended: running the deferred hardware reload");
-            if let Err(e) = player.reload_hardware().await {
+            if let Err(e) = player.reload_hardware().await.map_err(|e| e.to_string()) {
                 warn!("Deferred hardware reload failed: {}", e);
+                // Nothing will make it run now: the generation is over,
+                // refused, and the status says why. Under the reload and join
+                // locks a deferral and a start are made under, so a deferral
+                // in between is not wiped, and one already covered is not
+                // counted twice.
+                let _reload = player.reload_lock.clone().lock_owned().await;
+                let _join = player.join.lock().await;
+                if player
+                    .hardware_reload_pending
+                    .swap(false, Ordering::Relaxed)
+                {
+                    let mut reloads = player.deferred_reloads.lock();
+                    reloads.started += 1;
+                    let generation = reloads.started;
+                    reloads.refused.push_back((generation, e));
+                    while reloads.refused.len() > REFUSALS_KEPT {
+                        reloads.refused.pop_front();
+                    }
+                }
             }
         });
     }
@@ -1036,7 +1294,7 @@ impl Player {
             }
         };
         let join = self.join.clone();
-        let auto_play = self.auto_play.clone();
+        let transport = self.transport.clone();
 
         Some(tokio::spawn(async move {
             while !cancel.is_cancelled() {
@@ -1048,7 +1306,7 @@ impl Player {
                         break;
                     }
 
-                    let auto_play_waiting = auto_play.lock().waiting.is_some();
+                    let auto_play_waiting = transport.lock().auto_play.waiting.is_some();
                     let emit_result: Result<(), Box<dyn Error>> = status_events
                         .current(join.is_some(), auto_play_waiting)
                         .iter()

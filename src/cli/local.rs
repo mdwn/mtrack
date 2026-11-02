@@ -14,7 +14,9 @@
 
 use std::collections::HashSet;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -218,49 +220,22 @@ pub async fn start(
     let default_metronome = player_config.metronome().is_some_and(|m| m.enabled);
     let songs = songs::get_all_songs_with_defaults(&songs_path, default_metronome)?;
 
-    // Resolve playlists directory from config, defaulting to {config_dir}/playlists/.
-    let playlists_dir = player_config
-        .playlists_dir(player_path)
-        .or_else(|| player_path.parent().map(|p| p.join("playlists")));
-
-    // Resolve legacy playlist path.
-    let mut legacy_playlist_path = playlist_path
-        .as_ref()
-        .map(PathBuf::from)
-        .or(player_config.playlist());
-
-    // Make legacy playlist path absolute if relative.
-    if let Some(ref mut pp) = legacy_playlist_path {
-        if !pp.is_absolute() {
-            *pp = if let Some(parent) = player_path.parent() {
-                parent.join(&pp)
-            } else {
-                return Err(format!(
-                    "Unable to determine playlist path (config base path has no parent): {}. \
-                     Please specify the playlist path using an absolute path.",
-                    pp.display()
-                )
-                .into());
-            };
-        }
-    }
+    // Where songs and playlists are read from, by the one resolver the
+    // player uses again as the config changes: the playlists directory from
+    // the config, defaulting to {config_dir}/playlists/, and the legacy
+    // playlist the command line names over the config's.
+    let cli_playlist = playlist_path.as_ref().map(std::path::PathBuf::from);
+    let song_sources =
+        crate::player::SongSources::resolve(&player_config, player_path, cli_playlist.as_deref());
 
     // Load all playlists from directory + legacy file.
     let playlists = crate::player::load_playlists(
-        playlists_dir.as_deref(),
-        legacy_playlist_path.as_deref(),
+        song_sources.playlists_dir.as_deref(),
+        song_sources.legacy_playlist.as_deref(),
         songs.clone(),
     )?;
 
     let active_playlist = player_config.active_playlist().to_string();
-
-    // Default legacy_playlist_path for web UI backward compat (so config writes have somewhere to go).
-    let legacy_playlist_path = legacy_playlist_path.unwrap_or_else(|| {
-        player_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("playlist.yaml")
-    });
 
     // `.parent()` answers `Some("")` for a bare config filename, which is
     // harmless for plain joins but fails the first consumer that
@@ -273,6 +248,7 @@ pub async fn start(
         &player_config,
         Some(project_dir.as_path()),
     )?;
+    player.set_cli_playlist(cli_playlist);
     player.set_config_store(config_store);
     player.set_default_metronome(default_metronome);
 
@@ -299,13 +275,6 @@ pub async fn start(
                 state_rx: state_rx.clone(),
                 broadcast_tx,
                 config_path: player_path.to_path_buf(),
-                // The directory that exists, not the configured spelling --
-                // which no longer resolves when it holds a `..`, and left every
-                // web UI songs endpoint answering "Root directory not found"
-                // while the player itself worked fine.
-                songs_path: songs_path.as_path().to_path_buf(),
-                playlists_dir: playlists_dir.clone(),
-                legacy_playlist_path: Some(legacy_playlist_path.clone()),
                 profiles_dir,
                 waveform_cache: crate::webui::state::new_waveform_cache(),
             });

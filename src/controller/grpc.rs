@@ -15,7 +15,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::{info, span, warn, Level};
+use tracing::{info, span, Level};
 
 use crate::{
     config,
@@ -116,27 +116,6 @@ impl PlayerServer {
         }
     }
 
-    /// Ambient light's mode and state, without a DMX engine `None`. Read on
-    /// the blocking pool: the effects loop holds the ambient lock while it
-    /// starts the show.
-    async fn ambient_status(&self) -> Option<AmbientStatus> {
-        let dmx = self.player.dmx_engine()?;
-        let report = tokio::task::spawn_blocking(move || dmx.ambient_report())
-            .await
-            .ok()?;
-        let source = report
-            .show
-            .as_ref()
-            .and(self.player.ambient_source())
-            .map(|source| source.as_str().to_string());
-        Some(AmbientStatus {
-            mode: report.mode.as_str().to_string(),
-            state: report.state.to_string(),
-            show: report.show.map(|show| show.display().to_string()),
-            source,
-        })
-    }
-
     /// Converts a play/play_from result into a gRPC response.
     ///
     /// `Ok(None)` means the player declined to start, and it declines for more
@@ -165,53 +144,26 @@ impl PlayerServer {
         }))
     }
 
-    /// Reloads the hardware so a config mutation takes effect, then builds the
-    /// response.
+    /// Applies a saved config change to the running hardware, then builds
+    /// the response: the new checksum, and whether the change is applied.
     ///
     /// The web UI's mutation endpoints have always reloaded; these had not, so
     /// a client could change the audio device, receive a fresh checksum, and
-    /// find the running hardware unchanged until the process restarted. That
-    /// asymmetry is the same shape as the profile-file bug: the write is
-    /// acknowledged and quietly has no effect.
+    /// find the running hardware unchanged until the process restarted. The
+    /// reply says whether it was applied, deferred until the player is idle,
+    /// or not applied because the reload failed, as every surface's does (see
+    /// [`crate::player::ConfigApply`]).
     ///
-    /// Safe to do from inside a gRPC call because `start_controllers` leaves
-    /// each controller running whose config has not changed — otherwise this
+    /// Safe to do from inside a gRPC call because the reload leaves each
+    /// controller running whose config has not changed -- otherwise this
     /// would tear down the very transport carrying the response.
     #[allow(clippy::result_large_err)]
     async fn reload_and_respond(
         &self,
         snapshot: config::store::ConfigSnapshot,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        // Flattened immediately: `Box<dyn Error>` is not Send and must not live
-        // across the await that follows.
-        let reload = match self
-            .player
-            .reload_hardware()
-            .await
-            .map_err(|e| e.to_string())
-        {
-            Ok(reload) => reload,
-            Err(e) => {
-                // Reported, not just logged. Playback is not a cause —
-                // `reload_hardware` defers until it ends — but answering with a
-                // fresh checksum while nothing was applied or deferred is
-                // precisely the "acknowledged and quietly ineffective" behaviour
-                // this helper exists to end. The config *is* persisted at this
-                // point, so the message has to say so rather than implying the
-                // write was rolled back.
-                warn!("Hardware reload after config update failed: {}", e);
-                return Err(Status::failed_precondition(format!(
-                    "the config was saved but the running hardware was not reloaded, so it \
-                     will not take effect until the next reload or restart: {e}"
-                )));
-            }
-        };
-        // Deliberately not `reload_controllers`: that forces a restart, which
-        // would tear down the transport carrying this response. The hardware
-        // reload above already restarts controllers when their config actually
-        // changed, and leaves them alone when it did not — so a caller is only
-        // disconnected by a change it made to its own controller.
-        snapshot_to_update_response(snapshot, reload)
+        let outcome = self.player.apply_config_change().await;
+        snapshot_to_update_response(snapshot, outcome)
     }
 
     /// Why the player declined to start, determined from its current state
@@ -246,6 +198,33 @@ impl PlayerServer {
     }
 }
 
+/// A playback position a request sent, the start of the song when it sent
+/// none. A negative one is turned down, as every surface turns it down.
+#[allow(clippy::result_large_err)]
+fn position_arg(position: Option<prost_types::Duration>) -> Result<std::time::Duration, Status> {
+    position
+        .map(std::time::Duration::try_from)
+        .transpose()
+        .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))
+        .map(Option::unwrap_or_default)
+}
+
+/// Ambient light's mode and state, as the player's status read it: absent
+/// without a DMX engine, or with a read that did not answer in time.
+fn ambient_to_proto(
+    ambient: Option<crate::player::DmxRead<crate::player::AmbientStatus>>,
+) -> Option<AmbientStatus> {
+    match ambient? {
+        crate::player::DmxRead::Read(ambient) => Some(AmbientStatus {
+            mode: ambient.report.mode.as_str().to_string(),
+            state: ambient.report.state.to_string(),
+            show: ambient.report.show.map(|show| show.display().to_string()),
+            source: ambient.source.map(|source| source.as_str().to_string()),
+        }),
+        _ => None,
+    }
+}
+
 /// Converts a ConfigError to a gRPC Status.
 fn config_error_to_status(e: config::ConfigError) -> Status {
     match e {
@@ -257,18 +236,19 @@ fn config_error_to_status(e: config::ConfigError) -> Status {
 }
 
 /// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to
-/// YAML, saying whether the hardware reload ran or waits for the player.
+/// YAML, saying what became of the change on the running hardware.
+#[allow(clippy::result_large_err)]
 fn snapshot_to_update_response(
     snapshot: config::store::ConfigSnapshot,
-    reload: crate::player::HardwareReload,
+    outcome: crate::player::ConfigChange,
 ) -> Result<Response<UpdateConfigResponse>, Status> {
     let yaml = crate::util::to_yaml_string(&snapshot.config)
         .map_err(|e| Status::internal(format!("serialization error: {}", e)))?;
     Ok(Response::new(UpdateConfigResponse {
         yaml,
         checksum: snapshot.checksum,
-        applied: reload.applied(),
-        message: reload.message().unwrap_or_default().to_string(),
+        applied: outcome.applied(),
+        message: outcome.message().unwrap_or_default(),
     }))
 }
 
@@ -283,13 +263,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<PlayFromRequest>,
     ) -> Result<Response<PlayResponse>, Status> {
-        let start_time = request
-            .into_inner()
-            .start_time
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let start_time = position_arg(request.into_inner().start_time)?;
 
         self.play_response(
             self.player
@@ -305,12 +279,7 @@ impl PlayerService for PlayerServer {
         request: Request<PlaySongFromRequest>,
     ) -> Result<Response<PlayResponse>, Status> {
         let req = request.into_inner();
-        let start_time = req
-            .start_time
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let start_time = position_arg(req.start_time)?;
 
         self.play_response(
             self.player
@@ -322,13 +291,7 @@ impl PlayerService for PlayerServer {
     }
 
     async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
-        let position = request
-            .into_inner()
-            .position
-            .map(std::time::Duration::try_from)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
-            .unwrap_or(std::time::Duration::ZERO);
+        let position = position_arg(request.into_inner().position)?;
 
         self.player
             .seek_to(position)
@@ -419,40 +382,33 @@ impl PlayerService for PlayerServer {
         self.player
             .switch_to_playlist(&playlist_name)
             .await
-            .map_err(|e| {
-                if e.contains("not found") {
-                    Status::not_found(e)
-                } else {
-                    Status::failed_precondition(e)
+            .map_err(|e| match e {
+                crate::player::SwitchPlaylistError::NotFound(_) => Status::not_found(e.to_string()),
+                crate::player::SwitchPlaylistError::Playing => {
+                    Status::failed_precondition(e.to_string())
                 }
             })?;
         Ok(Response::new(SwitchToPlaylistResponse {}))
     }
 
     async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
-        let playlist_name = self.player.get_playlist().name().to_string();
+        // The player's one status, its DMX reads bounded: a wedged effects
+        // loop leaves the ambient light out rather than hanging the call.
+        let status = self.player.playback_status().await;
 
-        let elapsed = {
-            let elapsed = self.player.elapsed().await;
-            match elapsed {
-                Ok(play_start_time) => match play_start_time {
-                    Some(play_start_time) => match prost_types::Duration::try_from(play_start_time)
-                    {
-                        Ok(play_start_time) => Some(play_start_time),
-                        Err(e) => return Err(Status::from_error(Box::new(e))),
-                    },
-                    None => None,
-                },
-                Err(e) => return Err(Status::internal(e.to_string())),
-            }
+        let elapsed = match status.elapsed {
+            Ok(Some(elapsed)) => Some(
+                prost_types::Duration::try_from(elapsed)
+                    .map_err(|e| Status::from_error(Box::new(e)))?,
+            ),
+            Ok(None) => None,
+            Err(e) => return Err(Status::internal(e)),
         };
 
-        let current_song = match self.player.get_playlist().current() {
+        let current_song = match &status.current_song {
             Some(song) => Some(song.to_proto()?),
             None => None,
         };
-
-        let playing = self.player.is_playing().await;
 
         // Hardware health travels with playback state so a remote monitor can
         // tell "silent because nothing is playing" from "silent and it should
@@ -470,7 +426,7 @@ impl PlayerService for PlayerServer {
                 last_error: h.last_error,
             });
 
-        let auto_play = match self.player.auto_play_status() {
+        let auto_play = match status.auto_play {
             Some((song, starts_in)) => Some(AutoPlayStatus {
                 song,
                 starts_in: Some(
@@ -481,13 +437,15 @@ impl PlayerService for PlayerServer {
             None => None,
         };
 
+        let ambient = ambient_to_proto(status.ambient);
+
         Ok(Response::new(StatusResponse {
-            playlist_name: playlist_name.to_string(),
+            playlist_name: status.playlist.name().to_string(),
             current_song,
-            playing,
+            playing: status.playing,
             elapsed,
             audio_health,
-            ambient: self.ambient_status().await,
+            ambient,
             auto_play,
         }))
     }
@@ -768,7 +726,7 @@ impl PlayerService for PlayerServer {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(SetAmbientModeResponse {
-            ambient: self.ambient_status().await,
+            ambient: ambient_to_proto(self.player.ambient_status().await),
         }))
     }
 
@@ -1514,6 +1472,28 @@ mod test {
         assert!(applied.applied);
         assert!(applied.message.is_empty(), "{}", applied.message);
         Ok(())
+    }
+
+    /// A reload that fails after a save answers with the save, its new
+    /// checksum included, and says it was not applied and why, as the web
+    /// UI's and MCP's replies do. It used to answer failed_precondition,
+    /// leaving the client with the old checksum of a config already saved.
+    #[test]
+    fn a_config_update_whose_reload_fails_says_so_with_the_save() {
+        let snapshot = config::store::ConfigSnapshot {
+            config: config::Player::default(),
+            yaml: "songs: songs\n".to_string(),
+            checksum: "abc".to_string(),
+        };
+        let reply = super::snapshot_to_update_response(
+            snapshot,
+            crate::player::ConfigApply::Failed("no store".into()).into(),
+        )
+        .unwrap()
+        .into_inner();
+        assert_eq!(reply.checksum, "abc");
+        assert!(!reply.applied);
+        assert!(reply.message.contains("no store"), "{}", reply.message);
     }
 
     /// A config change the next start would refuse, a second MIDI

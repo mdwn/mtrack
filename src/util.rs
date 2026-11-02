@@ -52,6 +52,45 @@ pub fn duration_from_secs(secs: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(secs).ok()
 }
 
+/// A playback position a client sent as text: seconds (`90`, `90s`,
+/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`). The one parser for
+/// a position as text; a position sent as a number of seconds goes through
+/// [`duration_from_secs`], as this does. Errors are the reason, for the
+/// surface to answer with.
+pub fn parse_position(value: &str) -> Result<Duration, String> {
+    let trimmed = value.trim();
+    let seconds = if let Some(stripped) = trimmed
+        .strip_suffix('s')
+        .or_else(|| trimmed.strip_suffix('S'))
+    {
+        if stripped.contains(':') {
+            parse_mm_ss(stripped)?
+        } else {
+            stripped
+                .parse::<f64>()
+                .map_err(|e| format!("invalid seconds: {e}"))?
+        }
+    } else if trimmed.contains(':') {
+        parse_mm_ss(trimmed)?
+    } else {
+        trimmed
+            .parse::<f64>()
+            .map_err(|e| format!("invalid duration: {e}"))?
+    };
+    // Too large a number is turned down with the rest: converting it
+    // panicked, failing the request with no answer.
+    duration_from_secs(seconds)
+        .ok_or_else(|| "duration must be a finite, non-negative number of seconds in range".into())
+}
+
+/// The seconds in an `mm:ss.mmm` time.
+fn parse_mm_ss(s: &str) -> Result<f64, String> {
+    let (mm, ss) = s.split_once(':').ok_or("expected mm:ss.mmm")?;
+    let minutes: u64 = mm.parse().map_err(|e| format!("invalid minutes: {e}"))?;
+    let seconds: f64 = ss.parse().map_err(|e| format!("invalid seconds: {e}"))?;
+    Ok((minutes as f64) * 60.0 + seconds)
+}
+
 /// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
 /// and PascalCase by inserting hyphens at word boundaries and lowercasing.
 pub fn to_kebab_case(s: &str) -> String {

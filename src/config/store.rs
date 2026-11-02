@@ -150,6 +150,18 @@ impl ConfigStore {
         })
     }
 
+    /// A clone of the current config, without waiting: `None` while a
+    /// mutation holds the store. For a synchronous caller that can retry.
+    pub fn try_read_config(&self) -> Option<Player> {
+        self.inner.try_read().ok().map(|guard| guard.clone())
+    }
+
+    /// A clone of the current config, for a blocking thread (never one of
+    /// the runtime's workers, where it panics).
+    pub fn blocking_read_config(&self) -> Player {
+        self.inner.blocking_read().clone()
+    }
+
     /// Returns a clone of the current config.
     pub async fn read_config(&self) -> Player {
         self.inner.read().await.clone()
@@ -705,8 +717,15 @@ impl ConfigStore {
         // The profiles are untouched here, so this is only ever "nothing
         // changed" and no profile file is rewritten.
         let profiles_before = serialized_profiles(&guard)?;
+        let rollback = guard.clone();
         guard.set_active_playlist(name);
-        self.persist(&guard, &profiles_before)?;
+        // A choice that could not be written is not served from memory
+        // either: it would be lost at the next start, and the checksum would
+        // have moved under the operator's next save.
+        if let Err(e) = self.persist(&guard, &profiles_before) {
+            *guard = rollback;
+            return Err(e);
+        }
         let _ = self.change_tx.send(());
         Ok(())
     }
@@ -1200,6 +1219,30 @@ profiles:
         );
         let reloaded = Player::deserialize(&main_path).unwrap();
         assert!(reloaded.all_profiles()[0].trigger().is_some());
+    }
+
+    /// A playlist choice that could not be written was served from memory
+    /// all the same: lost at the next start, with the checksum moved under
+    /// the operator's next save. It is rolled back, as a gain change is.
+    #[tokio::test]
+    async fn set_active_playlist_that_cannot_be_written_is_rolled_back() {
+        let dir = tempfile::tempdir().unwrap();
+        // A config whose directory is gone: the write cannot land.
+        let path = dir.path().join("gone").join("mtrack.yaml");
+        let store = ConfigStore::new(Player::default(), path);
+        let (_, before) = store.read_yaml().await.unwrap();
+        let active = store.read_config().await.active_playlist().to_string();
+
+        assert!(store
+            .set_active_playlist("alternate".to_string())
+            .await
+            .is_err());
+        assert_eq!(store.read_config().await.active_playlist(), active);
+        assert_eq!(
+            store.read_yaml().await.unwrap().1,
+            before,
+            "the checksum moved"
+        );
     }
 
     /// Switching playlist happens constantly during a show and goes through a
