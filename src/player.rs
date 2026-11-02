@@ -405,9 +405,6 @@ pub struct Player {
     /// waited, which runs once the player is idle. Refusing it instead left
     /// a config save acknowledged while the rig kept the old config (#578).
     hardware_reload_pending: Arc<AtomicBool>,
-    /// The init round of a reload that had been deferred is under way: the
-    /// deferral is over, the reload not yet.
-    deferred_round_running: Arc<AtomicBool>,
     /// Why the last hardware reload failed, if it did.
     hardware_reload_error: Arc<parking_lot::Mutex<Option<String>>>,
     /// Broadcast channel sender, stored so async init can wire DMX engine.
@@ -749,7 +746,6 @@ impl Player {
             init_round: Arc::new(parking_lot::Mutex::new(None)),
             reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             hardware_reload_pending: Arc::new(AtomicBool::new(false)),
-            deferred_round_running: Arc::new(AtomicBool::new(false)),
             hardware_reload_error: Arc::new(parking_lot::Mutex::new(None)),
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
@@ -1029,9 +1025,18 @@ impl Player {
 
     /// [`SongSources::prepare`] for a config about to be saved to this
     /// player's config store, with the command line's playlist.
-    pub fn prepare_song_sources(&self, config: &config::Player) -> Result<(), String> {
+    /// Only when the songs or playlists `config` names are not the ones the
+    /// player has: a save that leaves them as they are is not refused for a
+    /// location already in use that has since become unreadable. Returns the
+    /// songs directory if this made it.
+    pub fn prepare_song_sources(&self, config: &config::Player) -> Result<Option<PathBuf>, String> {
         let store = self.config_store().ok_or("No config store available")?;
-        SongSources::prepare(config, store.path(), self.cli_playlist.read().as_deref()).map(|_| ())
+        let cli = self.cli_playlist.read().clone();
+        let resolved = SongSources::resolve(config, store.path(), cli.as_deref());
+        if Some(&resolved) == self.song_sources().as_ref() {
+            return Ok(None);
+        }
+        SongSources::prepare(config, store.path(), cli.as_deref()).map(|(_, made)| made)
     }
 
     /// Sets the player-wide "metronome on by default" flag. Takes effect on
@@ -1443,16 +1448,19 @@ pub struct SongSources {
 
 impl SongSources {
     /// Checks the songs and playlists `config` names can be used, before a
-    /// config naming them is saved, and makes the songs directory where
-    /// startup would (inside the project): a config whose songs cannot be
-    /// read is refused, rather than saved with the player left on songs
-    /// from somewhere else. Returns the sources, resolved.
+    /// config naming them is saved or taken up, and makes the songs
+    /// directory where startup would (inside the project): a config whose
+    /// songs cannot be read is refused, rather than saved with the player
+    /// left on songs from somewhere else. Returns the sources, resolved,
+    /// and the songs directory if this made it, for a save that does not
+    /// happen after all to take away again.
     pub fn prepare(
         config: &config::Player,
         config_path: &Path,
         cli_playlist: Option<&Path>,
-    ) -> Result<SongSources, String> {
+    ) -> Result<(SongSources, Option<PathBuf>), String> {
         let mut sources = SongSources::resolve(config, config_path, cli_playlist);
+        let made = (!sources.songs.exists()).then(|| sources.songs.clone());
         let project = crate::util::project_dir_of(config_path);
         let created = crate::util::create_dir_within(&sources.songs, &project)
             .map_err(|e| format!("songs: {e}"))?;
@@ -1470,7 +1478,8 @@ impl SongSources {
                 return Err(format!("playlist: {} is not a file", file.display()));
             }
         }
-        Ok(sources)
+        let made = made.map(|_| sources.songs.clone());
+        Ok((sources, made))
     }
 
     /// Resolves the sources from `config`, read from `config_path`: the
@@ -3984,15 +3993,36 @@ mod test {
         player.stop().await;
         eventually(
             || !player.hardware_reload_pending(),
-            "the deferred reload never finished",
+            "the deferred reload never ran",
         );
+        player.await_hardware_ready().await;
         assert_eq!(player.hardware_reload_error(), None);
 
         // Deferred again, with nothing to reload from by the time it runs.
         player.play().await?;
         player.reload_hardware().await?;
         *player.config_store.lock() = None;
+        // Read as a status reads it, all the while it fails: never over
+        // with no error.
+        let watch = {
+            let player = player.clone();
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while std::time::Instant::now() < deadline {
+                    let pending = player.hardware_reload_pending();
+                    let error = player.hardware_reload_error();
+                    if !pending {
+                        return error.is_some();
+                    }
+                }
+                false
+            })
+        };
         player.stop().await;
+        assert!(
+            watch.join().unwrap(),
+            "the reload read as over with no error"
+        );
         eventually(
             || player.hardware_reload_error().is_some(),
             "the failed reload was not kept",
@@ -4001,6 +4031,35 @@ mod test {
         assert!(player
             .hardware_reload_error()
             .is_some_and(|e| e.contains("config store")));
+        Ok(())
+    }
+
+    /// A deferred reload is no longer pending once it starts applying, even
+    /// when a device it waits for is not there and its round retries: it
+    /// read as waiting for playback to stop, for good, while idle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_reload_waiting_on_an_absent_device_is_not_pending(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "songs: songs\nprofiles:\n  - audio:\n      device: no-such-device-anywhere\n",
+        )?;
+        player.set_config_store(std::sync::Arc::new(config::ConfigStore::new(
+            config::Player::deserialize(&path)?,
+            path,
+        )));
+        player.play().await?;
+        player.reload_hardware().await?;
+        assert!(player.hardware_reload_pending());
+        player.stop().await;
+        eventually(
+            || !player.hardware_reload_pending(),
+            "pending while the round retries",
+        );
+        assert!(!player.hardware_status().init_done, "the round is retrying");
         Ok(())
     }
 

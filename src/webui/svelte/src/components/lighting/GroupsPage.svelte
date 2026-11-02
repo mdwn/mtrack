@@ -16,8 +16,8 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     DeferredReloadWatch,
-    deferredFailedNotice,
     reloadNotice,
+    settledNotice,
     type ReloadNotice,
   } from "../../lib/configReload";
   import { t } from "svelte-i18n";
@@ -70,8 +70,9 @@
       $playbackStore.hardware_reload_failed,
     );
     if (outcome) {
-      // Done: the notice goes. Failed: it says so, and why.
-      saveNotice = outcome.failed ? deferredFailedNotice(outcome.reason) : null;
+      // Done: the notice goes, or keeps a songs failure it carried.
+      // Failed: it says so, and why.
+      if (saveNotice) saveNotice = settledNotice(saveNotice, outcome);
     }
   });
   let selectEl: HTMLSelectElement | undefined = $state();

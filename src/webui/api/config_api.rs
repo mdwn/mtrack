@@ -75,7 +75,10 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     // songs directory made where startup would: a config whose songs cannot
     // be read is refused, leaving the config, the song paths and the songs
     // as they were, rather than saved with the player on songs from
-    // somewhere else.
+    // somewhere else. Only a save that moves them is checked: one that
+    // leaves them as they are is not refused for a location in use that has
+    // since become unreadable.
+    let mut made_songs_dir = None;
     if state.player.config_store().is_some() {
         let player = state.player.clone();
         let yaml = body.clone();
@@ -85,14 +88,24 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        if let Err(e) = checked {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("the songs or playlists cannot be used: {e}")})),
-            )
-                .into_response();
+        match checked {
+            Ok(made) => made_songs_dir = made,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("the songs or playlists cannot be used: {e}")})),
+                )
+                    .into_response();
+            }
         }
     }
+    // A songs directory the check made for a save that then does not
+    // happen goes again, while it is still empty.
+    let unmake = move || {
+        if let Some(dir) = made_songs_dir {
+            let _ = std::fs::remove_dir(dir);
+        }
+    };
 
     // The store persists its own copy of this file on every mutation: the
     // copy is read back from the save before any mutation can land, or the
@@ -116,7 +129,10 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     .await
     {
         Ok(previous) => previous,
-        Err(e) => return e,
+        Err(e) => {
+            unmake();
+            return e;
+        }
     };
     if let Some(disk_write) = disk_write {
         // The store keeps its own copy and checksum, and a failed reload
@@ -133,6 +149,7 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
         };
         if let Err(e) = disk_write.reload_or_restore(restore).await {
             warn!("Config reload after config write failed: {}", e);
+            unmake();
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
@@ -1526,6 +1543,18 @@ mod test {
         assert_eq!(store.read_yaml().await.unwrap().1, checksum);
         assert_eq!(state.songs_path(), before, "the song paths moved");
         assert_eq!(state.player.songs().len(), songs);
+    }
+
+    /// A save that leaves the songs where they are is not refused because
+    /// the location in use has become unreadable: only a save that moves
+    /// them is checked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_leaving_the_songs_where_they_are_is_not_checked() {
+        let (state, _dir) = test_state();
+        set_store(&state);
+        std::fs::remove_dir_all(state.songs_path()).unwrap();
+        let (status, body) = put_whole_config(&state, "songs: songs\n").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     /// A metronome save whose song reload fails is still answered with the

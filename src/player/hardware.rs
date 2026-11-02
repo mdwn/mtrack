@@ -807,10 +807,13 @@ impl Player {
         }
         // This reload covers one deferred before it: the deferral is over,
         // and the round below says once it is done how the reload went.
-        if self.hardware_reload_pending.swap(false, Ordering::Relaxed) {
-            self.deferred_round_running.store(true, Ordering::Relaxed);
-        }
+        // The error cleared before the flag, so a status read never finds
+        // the reload over with the last one's error. The reload is applying
+        // from here: a device not present retries in the round, perhaps for
+        // good, and the status shows that per subsystem, not as a reload
+        // still waiting for playback to stop.
         *self.hardware_reload_error.lock() = None;
+        self.hardware_reload_pending.store(false, Ordering::Release);
 
         // Cancel the previous init round and take the replacement token here,
         // so the round spawned below carries it from the start.
@@ -885,9 +888,6 @@ impl Player {
                     (!errors.is_empty()).then(|| errors.join("; "))
                 };
                 *init_player.hardware_reload_error.lock() = failed;
-                init_player
-                    .deferred_round_running
-                    .store(false, Ordering::Relaxed);
             }
         });
         drop(join);
@@ -896,12 +896,11 @@ impl Player {
         Ok(HardwareReload::Applied)
     }
 
-    /// Whether a hardware reload a config change asked for is still to
-    /// finish: deferred until the player is idle, or its init round under
-    /// way. The status shows it, so a surface can say when it is over.
+    /// Whether a hardware reload a config change asked for is deferred
+    /// until the player is idle. Cleared as the reload starts applying. The
+    /// status shows it, so a surface can say when the wait is over.
     pub fn hardware_reload_pending(&self) -> bool {
-        self.hardware_reload_pending.load(Ordering::Relaxed)
-            || self.deferred_round_running.load(Ordering::Relaxed)
+        self.hardware_reload_pending.load(Ordering::Acquire)
     }
 
     /// Why the last hardware reload failed, if it did: one that could not
@@ -929,9 +928,28 @@ impl Player {
         let songs_error = match self.resolve_song_sources().await {
             Some(sources) if Some(&sources) != self.song_sources().as_ref() => {
                 info!("The songs or playlists moved: reloading them");
-                self.reload_songs().await.err().map(|e| {
+                // A config changed outside the whole-config save (a hand
+                // edit, read in by a profile save) has had no check: the
+                // same one, which makes the songs directory where startup
+                // would, runs here, and a location it refuses is not
+                // reloaded from.
+                let prepared = match self.config_store() {
+                    Some(store) => {
+                        let config = store.read_config().await;
+                        let player = self.clone();
+                        tokio::task::spawn_blocking(move || player.prepare_song_sources(&config))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                            .map(|_| ())
+                    }
+                    None => Ok(()),
+                };
+                let reloaded = match prepared {
+                    Ok(()) => self.reload_songs().await.map_err(|e| e.to_string()),
+                    Err(e) => Err(format!("the songs or playlists cannot be used: {e}")),
+                };
+                reloaded.err().inspect(|e| {
                     warn!("Reloading songs after a config change failed: {}", e);
-                    e.to_string()
                 })
             }
             _ => None,
@@ -974,11 +992,12 @@ impl Player {
             if let Err(e) = player.reload_hardware().await.map_err(|e| e.to_string()) {
                 warn!("Deferred hardware reload failed: {}", e);
                 // Nothing will make it run now: it is over, failed, and the
-                // status says so.
+                // status says so. The error is written first, so a status
+                // read never finds it over with no error.
+                *player.hardware_reload_error.lock() = Some(e);
                 player
                     .hardware_reload_pending
-                    .store(false, Ordering::Relaxed);
-                *player.hardware_reload_error.lock() = Some(e);
+                    .store(false, Ordering::Release);
             }
         });
     }

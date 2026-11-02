@@ -33,6 +33,9 @@ export interface ConfigReload {
 export interface ReloadNotice {
   kind: "deferred" | "failed";
   text: string;
+  /** A song reload that failed beside a deferred hardware reload: said
+   *  with it, and kept once the hardware reload has run. */
+  songsError?: string;
 }
 
 /** The notice a save's reply calls for, or null when its change is in
@@ -41,6 +44,23 @@ export function reloadNotice(
   reply: ConfigReload | null | undefined,
 ): ReloadNotice | null {
   if (!reply || reply.applied !== false) return null;
+  const songsError = reply.songs_error
+    ? get(t)("config.songsNotReloaded", {
+        values: { reason: reply.songs_error },
+        default: `The songs could not be reloaded: ${reply.songs_error}`,
+      })
+    : undefined;
+  // Deferred, with the songs failed beside it: a deferred notice still, so
+  // its reload is followed, saying both.
+  if (reply.reload === "deferred" && songsError) {
+    return {
+      kind: "deferred",
+      text: `${get(t)("config.reloadDeferred", {
+        default: "Saved. The hardware reloads when playback stops.",
+      })} ${songsError}`,
+      songsError,
+    };
+  }
   if (reply.reload === "failed" || reply.songs_error) {
     return {
       kind: "failed",
@@ -91,6 +111,16 @@ export class DeferredReloadWatch {
     this.seenPending = false;
     return failed ? { failed: true, reason: failed } : { failed: false };
   }
+}
+
+/** What a deferred notice becomes once its reload has run: the reload's
+ *  failure, else the songs' failure it carried, else nothing. */
+export function settledNotice(
+  notice: ReloadNotice,
+  outcome: DeferredOutcome,
+): ReloadNotice | null {
+  if (outcome.failed) return deferredFailedNotice(outcome.reason);
+  return notice.songsError ? { kind: "failed", text: notice.songsError } : null;
 }
 
 /** The notice for a deferred reload that has failed. */

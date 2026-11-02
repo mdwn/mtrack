@@ -45,8 +45,8 @@
   import { playbackStore } from "../lib/ws/stores";
   import {
     DeferredReloadWatch,
-    deferredFailedNotice,
     reloadNotice,
+    settledNotice,
     type ReloadNotice,
   } from "../lib/configReload";
   import ProfileCard from "../components/config/ProfileCard.svelte";
@@ -113,13 +113,14 @@
       $playbackStore.hardware_reload_failed,
     );
     if (outcome) {
-      // Done: the notice goes. Failed: it says so, and why.
-      const after = outcome.failed
-        ? deferredFailedNotice(outcome.reason)
-        : null;
-      if (deferred(saveNotice)) saveNotice = after;
-      if (deferred(samplesNotice)) samplesNotice = after;
-      if (deferred(metronomeNotice)) metronomeNotice = after;
+      // Done: the notice goes, or keeps a songs failure it carried.
+      // Failed: it says so, and why.
+      if (saveNotice && deferred(saveNotice))
+        saveNotice = settledNotice(saveNotice, outcome);
+      if (samplesNotice && deferred(samplesNotice))
+        samplesNotice = settledNotice(samplesNotice, outcome);
+      if (metronomeNotice && deferred(metronomeNotice))
+        metronomeNotice = settledNotice(metronomeNotice, outcome);
     }
   });
   let dirty = $state(false);

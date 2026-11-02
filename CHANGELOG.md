@@ -151,10 +151,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `applied: false` with a `message` (and, from the web UI, `reload`: `applied`, `deferred` or
   `failed`), the web UI's status still 200 (201 for a new profile). The web UI's config and profile
   saves (profiles, samples, metronome, groups, Fit's added output) show "Saved. The hardware
-  reloads when playback stops." for a deferred save until the reload has run (the playback
-  updates' `hardware_reload_pending`), then the reason if it failed when it ran
-  (`hardware_reload_failed`, also kept for a round that ended with a subsystem given up), and the
-  reason for a failed hardware or song reload. A
+  reloads when playback stops." for a deferred save until the reload starts (the playback
+  updates' `hardware_reload_pending`; a device it then waits for shows on the status page), then
+  the reason if it could not run (`hardware_reload_failed`, also kept for a round that ended with
+  a subsystem given up), and the reason for a failed hardware or song reload, both when a deferred
+  reload has a song reload failed beside it. A
   reload that fails after the save is answered the same way on all three, with the new checksum
   and the reason in `message`; gRPC answered `failed_precondition` and MCP `internal_error`,
   leaving the client the old checksum of a config already saved.
@@ -167,10 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a config change to `songs:` or `playlists_dir:` no longer has the web UI and MCP reloading
   different sets: the save reloads the new set at once, making a new songs directory inside the
   project as startup does, and both read and write it from then on (the web UI used to keep the
-  startup paths until a restart). A config whose `songs:` or `playlists_dir:` cannot be used (a
-  songs directory outside the project that is not there, or one that cannot be read) is refused
-  before it is saved, with a 400 saying why, and the config, songs and song paths are left as
-  they were; only the web UI's whole-config save can change them. A song reload that fails after a
+  startup paths until a restart). A config that moves `songs:` or `playlists_dir:` somewhere that
+  cannot be used (a songs directory outside the project that is not there, or one that cannot be
+  read) is refused before it is saved, with a 400 saying why, and the config, songs and song paths
+  are left as they were; only the web UI's whole-config save can change them, and a save that
+  leaves them where they are is not checked. A move read in some other way (a hand edit) has the
+  same check, and the songs directory made inside the project, before its songs are reloaded. A song reload that fails after a
   save all the same is reported beside the hardware's outcome (`songs_error`), not in place of
   it. A song or playlist
   change whose reload fails (the songs directory unreadable, say) is now answered with an error

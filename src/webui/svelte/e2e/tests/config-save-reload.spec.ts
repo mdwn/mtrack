@@ -351,4 +351,44 @@ test.describe("Config save deferred under playback", () => {
       "songs could not be reloaded",
     );
   });
+
+  // A deferred reload with the songs failed beside it says both, and is
+  // still followed: once the reload has run, the songs failure stays.
+  test("a deferred save with a songs failure says both and is followed", async ({
+    page,
+  }) => {
+    const wsId = `deferred-${test.info().parallelIndex}-${++wsCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/config`);
+    await page.locator(".profile-row", { hasText: "test-host" }).click();
+    await page.route("**/api/config/profiles/0", async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            yaml: "profiles:\n  - hostname: new-hostname\n    audio:\n      device: default\nsamples: {}\n",
+            checksum: "updated-checksum-1",
+            applied: false,
+            reload: "deferred",
+            songs_error: "failed to rescan songs: unreadable",
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.locator("#profile-hostname").fill("new-hostname");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    const notice = page.locator(".save-msg.save-notice");
+    await expect(notice).toContainText("reloads when playback stops");
+    await expect(notice).toContainText("songs could not be reloaded");
+    await sendPlayback(page, wsId, true);
+    await page.waitForTimeout(300);
+    await sendPlayback(page, wsId, false);
+    await expect(notice).toHaveCount(0);
+    await expect(page.locator(".save-msg.save-error")).toContainText(
+      "songs could not be reloaded",
+    );
+  });
 });
