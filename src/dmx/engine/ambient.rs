@@ -1569,9 +1569,8 @@ mod tests {
         start_song(&engine, BLUE);
         let inner_held = |engine: &Engine| {
             engine.break_fades.lock()[0]
-                .inner
-                .as_ref()
-                .map(|inner| inner.held)
+                .inner()
+                .map(|inner| inner.is_held())
         };
         song_frame(&engine, 0.01);
         assert_eq!(inner_held(&engine), Some(false), "still crossing");
@@ -1641,7 +1640,7 @@ mod tests {
         assert_pan_glides(&engine, 1.5, 100.0);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
-        assert!(fades[1].held, "B's fade, over, is held");
+        assert!(fades[1].is_held(), "B's fade, over, is held");
         Ok(())
     }
 
@@ -1667,7 +1666,7 @@ mod tests {
         song_frame(&engine, 1.2);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
-        assert!(fades[1].held, "B's fade, over, is held");
+        assert!(fades[1].is_held(), "B's fade, over, is held");
         let pan = fades[1]
             .last
             .iter()
@@ -1701,7 +1700,7 @@ mod tests {
         }
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2, "the fade, and one held pass");
-        assert!(fades[1].held);
+        assert!(fades[1].is_held());
         Ok(())
     }
 
