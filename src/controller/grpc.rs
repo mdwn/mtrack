@@ -382,11 +382,10 @@ impl PlayerService for PlayerServer {
         self.player
             .switch_to_playlist(&playlist_name)
             .await
-            .map_err(|e| {
-                if e.contains("not found") {
-                    Status::not_found(e)
-                } else {
-                    Status::failed_precondition(e)
+            .map_err(|e| match e {
+                crate::player::SwitchPlaylistError::NotFound(_) => Status::not_found(e.to_string()),
+                crate::player::SwitchPlaylistError::Playing => {
+                    Status::failed_precondition(e.to_string())
                 }
             })?;
         Ok(Response::new(SwitchToPlaylistResponse {}))

@@ -24,7 +24,9 @@ use crate::{
     songs::{self, Song, Songs},
 };
 
-use super::{LoopExit, Player, PlaylistDirection, ReloadSongsError, SongSources};
+use super::{
+    LoopExit, Player, PlaylistDirection, ReloadSongsError, SongSources, SwitchPlaylistError,
+};
 
 impl Player {
     /// Plays a specific song by name, starting from the given time.
@@ -191,7 +193,7 @@ impl Player {
     /// Switches the active playlist by name. Returns an error if the name
     /// doesn't exist in the map or if the player is currently playing.
     /// Switching to "all_songs" is session-only (not persisted to config).
-    pub async fn switch_to_playlist(&self, name: &str) -> Result<(), String> {
+    pub async fn switch_to_playlist(&self, name: &str) -> Result<(), SwitchPlaylistError> {
         // Held from the check through the switch: let go between them, a
         // play could start a song from the playlist being left, which the
         // switch then took out from under it.
@@ -203,14 +205,14 @@ impl Player {
                     "Can't switch to {}, player is active.", name
                 );
             }
-            return Err("Cannot switch playlist while playing".to_string());
+            return Err(SwitchPlaylistError::Playing);
         }
 
         // Validate the name exists.
         {
             let playlists = self.playlists.read();
             if !playlists.contains_key(name) {
-                return Err(format!("Playlist '{}' not found", name));
+                return Err(SwitchPlaylistError::NotFound(name.to_string()));
             }
         }
 

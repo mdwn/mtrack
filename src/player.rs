@@ -1417,6 +1417,16 @@ impl SongSources {
     }
 }
 
+/// Why [`Player::switch_to_playlist`] did not switch. Matched by the
+/// surfaces to choose their answer, never by its message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SwitchPlaylistError {
+    #[error("Cannot switch playlist while playing")]
+    Playing,
+    #[error("Playlist '{0}' not found")]
+    NotFound(String),
+}
+
 /// Why [`Player::reload_songs`] left the songs as they were.
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadSongsError {

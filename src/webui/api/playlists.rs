@@ -341,12 +341,11 @@ pub(super) async fn activate_playlist(
         )
             .into_response(),
         Err(e) => {
-            let status = if e.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::CONFLICT
+            let status = match e {
+                crate::player::SwitchPlaylistError::NotFound(_) => StatusCode::NOT_FOUND,
+                crate::player::SwitchPlaylistError::Playing => StatusCode::CONFLICT,
             };
-            (status, Json(json!({"error": e}))).into_response()
+            (status, Json(json!({"error": e.to_string()}))).into_response()
         }
     }
 }
@@ -1004,6 +1003,27 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A switch refused because a song plays is a conflict, told apart from
+    /// a playlist not found by the error's kind, not its message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activate_playlist_while_playing_is_a_conflict() {
+        let (state, _dir) = test_state_with_audio_device("mock-device");
+        state.player.play().await.unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlists/all_songs/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        state.player.stop().await;
     }
 
     #[test]

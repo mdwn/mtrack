@@ -858,7 +858,7 @@ impl McpServer {
         self.player
             .switch_to_playlist(&args.name)
             .await
-            .map_err(|e| McpError::invalid_params(e, None))?;
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         Ok(ok_json(json!({ "active_playlist": args.name })))
     }
 
