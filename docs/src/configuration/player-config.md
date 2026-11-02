@@ -173,6 +173,16 @@ midi:
   # no beat clock. The clock runs to the end of the song, past where its click or MIDI stops,
   # and a looping song's clock loops with it (one with audio; see known limitations).
   #
+  # A song played from the top sends Start. Played from part way in (play from, a seek), the
+  # clock sends a Song Position Pointer and Continue, so gear that follows song position goes
+  # on from there. A section loop's jump, or a looping song's next pass, sends Stop, then the
+  # pointer and Continue (or Start, back at the top). The pointer counts 16th notes (six
+  # pulses), so the clock goes on from the first 16th at or after the point, and the pulses
+  # before it are not sent. If the clock falls a 16th or more behind (a start or jump noticed
+  # late), it does the same at the next 16th still to come rather than sending the missed
+  # pulses in a burst. The pointer reaches 16,383 16ths (4,096 quarter notes, about 34 minutes
+  # at 120 BPM); a position past that is clamped to it.
+  #
   # The beat clock thread runs at elevated (real-time) thread priority to minimize timing jitter.
   # On Linux, this requires CAP_SYS_NICE (granted by the systemd service unit). On macOS, no
   # special privileges are needed. If real-time scheduling cannot be obtained, the beat clock

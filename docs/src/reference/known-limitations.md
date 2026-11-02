@@ -43,7 +43,11 @@ or disabled entirely with `MTRACK_DISABLE_RT_AUDIO=1`.
 
 The beat clock follows every loop as the notes, lights and audio do: a section loop, and a
 looping song's passes, its pulses switching to the new pass where it starts (through a
-`loop_crossfade` too: the clock does not overlap). Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
+`loop_crossfade` too: the clock does not overlap). Each jump sends Stop, a Song Position Pointer
+and Continue (Start back at the top of the song); the pointer counts 16th notes, so a section
+starting off a 16th goes on from the next 16th, and its pulses before that are not sent. A section
+shorter than a pulse has no pulse to go back to: the clock pauses while it goes round. Song
+Position Pointer reaches 16,383 16ths (about 34 minutes at 120 BPM); past that it is clamped. Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
 down to whole quarter notes); any leftover before them has no pulses, in the first pass or later
 ones.
 

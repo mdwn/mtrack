@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MIDI Song Position Pointer with the beat clock**: playing from part way into a song (play
+  from, a seek), and a section loop or a looping song's pass going back, sent Continue without a
+  position, so gear that follows song position went on from wherever it last stopped. The beat
+  clock now sends a Song Position Pointer and Continue there, and Start at the top of the song;
+  at a loop's jump it sends Stop first. The pointer counts 16th notes, so the clock goes on from
+  the first 16th at or after the point, and the pulses before it are not sent. Past the
+  pointer's reach (16,383 16ths, about 34 minutes at 120 BPM) it is clamped.
+
 - **Ambient light per playlist entry** (#614): an entry's own `ambient:` sets the ambient light in
   the gap before its song, while the player waits on it -- the next song after the one before ends,
   or Next or Previous lands on it while stopped; the same song after a stop. It takes the playlist's
@@ -145,6 +153,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MIDI notes in time with the beat clock**: on a rig with audio, a song's notes took the first
+  audio buffer after the start for their zero, and then went out only as the audio clock moved,
+  so they sat up to a buffer behind the beat clock, and up to a buffer late again. They are now
+  timed as the beat clock is, on the wall clock from the start, steered onto the audio's.
+- **The beat clock keeps its count when it falls behind**: a start or a loop's jump the beat
+  clock noticed late sent the pulses it had missed in a burst. A 16th note or more behind, it now
+  puts the gear at the next 16th still to come with a Song Position Pointer and goes on from
+  there.
+- **The beat clock stays with the audio after a section shorter than a pulse**: such a section
+  has no pulse to go back to, and the clock ignored its jumps, so once it was broken the clock
+  ran ahead of the audio by the time spent going round it. The pulses after it now fall due
+  later by as much.
 - **A crossfading song's pass begun late crosses the lights over with the audio**: a start, seek
   or section break inside a looping song's `loop_crossfade` begins the next pass part way in,
   where one begun on time would be by then. The audio, notes and beat clock did; the lights
