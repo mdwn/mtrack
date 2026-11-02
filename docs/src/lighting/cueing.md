@@ -125,7 +125,9 @@ tempo {
 - `bpm`: New BPM value
 - `time_signature`: New time signature (e.g., `3/4`, `6/8`)
 - `transition`: Duration of tempo change - a bare number of beats, `Xm` for measures, or `snap`
-  for instant
+  for instant. The tempo moves linearly in time from the old BPM to the new one, and the ramp
+  spans exactly that many beats (or the beats in that many measures), as a DAW renders it: a
+  change written at the bar the ramp ends on lands on that bar.
 
 ## Inline Loops
 

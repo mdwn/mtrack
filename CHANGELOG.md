@@ -135,6 +135,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the length is cut when the next pass starts. A cue starting at or past the length is a
   parse error. The web UI's lighting editor keeps the length when it saves the file.
 
+### Changed
+
+- **A tempo ramp spans exactly its beats**: a ramp written over N beats now lasts exactly N beats,
+  as a DAW plays it. One over N measures lasts exactly the beats in those bars. It used to last as
+  long as N beats at the starting tempo, so it covered more or fewer beats than written. A ramp
+  from 120 to 180 over 8 beats covered 10. Existing songs and shows with a ramp shift their timing
+  after the ramp: the click, the beat clock, the beat grid and `@bar/beat` cues all move. Snaps
+  and steady tempos are unchanged.
+
 ### Removed
 
 - **The live MIDI to DMX pass-through** (`midi.midi_to_dmx`, with its `note_mapper` and
