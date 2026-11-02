@@ -37,7 +37,7 @@ use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
     lighting::{
         effects::{DmxCommand, EffectError},
-        engine::StopScope,
+        engine::{Prepared, StopScope},
         parser::LightShow,
         timeline::{LightingTimeline, SeekHistory, TimelineUpdate},
         EffectEngine,
@@ -194,9 +194,16 @@ pub(super) struct Overlay {
 /// What one overlay's timeline fired in a tick: a restart's state (the show
 /// starting again) and the cues now due.
 struct OverlayUpdate {
-    /// A new pass's history, and where in the show it starts.
-    restart: Option<SeekHistory>,
+    /// A new pass's start: its history and the engine to replay it in,
+    /// then, replayed with no lock held, the state it leaves.
+    restart: Option<Restart>,
     update: TimelineUpdate,
+}
+
+/// A new pass's start, before and after its history is replayed.
+enum Restart {
+    Due(SeekHistory, Box<EffectEngine>),
+    Ready(Box<Prepared>),
 }
 
 impl Overlay {
@@ -234,8 +241,12 @@ impl Overlay {
             let passes = (elapsed.as_nanos() / self.length.as_nanos()) as u32;
             self.started += self.length * passes;
             elapsed = now.saturating_duration_since(self.started);
-            // Its first cues fire before this frame renders.
-            restart = Some(self.timeline.start_at(elapsed));
+            // Its first cues fire before this frame renders. Its own show
+            // only: the MIDI DMX store is every engine's.
+            restart = Some(Restart::Due(
+                self.timeline.start_at(elapsed),
+                Box::new(self.engine.scratch(StopScope::Show)),
+            ));
         }
         let update = self.timeline.update(elapsed);
         out.push(OverlayUpdate { restart, update });
@@ -248,9 +259,12 @@ impl Overlay {
     /// the same order.
     fn apply(&mut self, updates: &mut impl Iterator<Item = OverlayUpdate>) {
         if let Some(OverlayUpdate { restart, update }) = updates.next() {
-            if let Some(restart) = restart {
-                // Its own show only: the MIDI DMX store is every engine's.
-                for e in self.engine.start_from(restart, StopScope::Show) {
+            let restart = restart.map(|restart| match restart {
+                Restart::Due(history, scratch) => scratch.prepare(history),
+                Restart::Ready(prepared) => *prepared,
+            });
+            if let Some(prepared) = restart {
+                for e in self.engine.install(prepared, StopScope::Show) {
                     error!("Failed to start ambient effect: {}", e);
                 }
             }
@@ -717,8 +731,9 @@ impl Engine {
         let mut resolved = updates
             .into_iter()
             .map(|mut u| {
-                if let Some(restart) = u.restart.as_mut() {
-                    restart.map_effects(|effect| self.resolve_effect_groups(effect));
+                if let Some(Restart::Due(mut history, scratch)) = u.restart.take() {
+                    history.map_effects(|effect| self.resolve_effect_groups(effect));
+                    u.restart = Some(Restart::Ready(Box::new(scratch.prepare(history))));
                 }
                 self.resolve_update_groups(&mut u.update);
                 u

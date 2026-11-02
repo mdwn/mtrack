@@ -262,6 +262,12 @@ pub(super) fn reload_timeline(
     // Pre-resolve group names while the engine lock is NOT held
     // to avoid deadlocking with the lighting system lock.
     history.map_effects(|e| resolve_effect_groups(lighting_system, e));
+    // And replayed, the engine's lock held only to take its rig: the
+    // effects loop renders on meanwhile.
+    let scratch = effect_engine
+        .lock()
+        .scratch(crate::lighting::engine::StopScope::Show);
+    let prepared = scratch.prepare(history);
 
     // Extract tempo map before moving new_timeline into the lock. Shows
     // without their own tempo block fall back to the song's tempo map.
@@ -288,7 +294,7 @@ pub(super) fn reload_timeline(
         engine.set_tempo_map(tempo_map);
         // The show's effects only: the MIDI DMX store goes on as MIDI set
         // it, which nothing would put back mid-song (#583).
-        for e in engine.start_from(history, crate::lighting::engine::StopScope::Show) {
+        for e in engine.install(prepared, crate::lighting::engine::StopScope::Show) {
             error!("Failed to start lighting effect: {}", e);
         }
         info!("Watcher releasing effect_engine lock.");

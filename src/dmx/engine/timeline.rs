@@ -333,11 +333,14 @@ impl Engine {
         let start = self.to_delayed_song_time(to);
         // A pass begun late starts from the state its cues before `to` leave,
         // as a seek does, rather than firing them all in its first frame.
-        // Groups are resolved here, with no lock held.
-        let history = next.as_mut().map(|timeline| {
+        // Groups are resolved and the history replayed here, with no lock
+        // held but the engine's for a moment, to take its rig and pose
+        // memory, as the fresh engine below does.
+        let prepared = next.as_mut().map(|timeline| {
             let mut history = timeline.start_at(start);
             history.map_effects(|effect| self.resolve_effect_groups(effect));
-            history
+            let scratch = self.effect_engine.lock().sibling();
+            scratch.prepare(history)
         });
         // Song time first: a frame rendered between the swap and the reset
         // would read the old pass's time as the new one's, and end the
@@ -351,8 +354,8 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
-        if let Some(history) = history {
-            for e in effect_engine.start_from(history, StopScope::Nothing) {
+        if let Some(prepared) = prepared {
+            for e in effect_engine.install(prepared, StopScope::Nothing) {
                 error!("Failed to start lighting effect: {}", e);
             }
         }
@@ -652,12 +655,15 @@ impl Engine {
         }
 
         // The previous song's effects go and the historical state comes in
-        // under the one lock, groups resolved first: a frame between the two
-        // would find the channels unwritten and send them 0 -- a black flash
-        // at every seek and section loop (#581). As the watcher's reload.
+        // under the one lock, groups resolved and the history replayed
+        // first, with the lock released: a frame between the two would find
+        // the channels unwritten and send them 0 -- a black flash at every
+        // seek and section loop (#581). As the watcher's reload.
         history.map_effects(|effect| self.resolve_effect_groups(effect));
+        let scratch = self.effect_engine.lock().scratch(StopScope::All);
+        let prepared = scratch.prepare(history);
         let mut effect_engine = self.effect_engine.lock();
-        for e in effect_engine.start_from(history, StopScope::All) {
+        for e in effect_engine.install(prepared, StopScope::All) {
             error!("Failed to start lighting effect: {}", e);
         }
         match midi {
