@@ -1072,6 +1072,164 @@ mod tests {
         Ok(())
     }
 
+    /// A show the wash plays green from the top, then red fading in over
+    /// 2 s from 4 s.
+    const GREEN_THEN_RED_FADE: &str = "show \"song\" {\n    @0.000\n    wash: static, color: \"green\", duration: 60s\n    @4.000\n    wash: static red: 100%, up_time: 2s, hold_time: 60s\n}\n";
+
+    /// Runs `hook` in the next show rebuild, between its replay and its
+    /// install.
+    fn between_replay_and_install(engine: &Engine, hook: impl FnOnce(&Engine) + Send + 'static) {
+        *engine.rebuild_hook.lock() = Some(Box::new(hook));
+    }
+
+    #[test]
+    fn a_section_restart_holds_the_frame_until_its_state_is_in() -> Result<(), Box<dyn Error>> {
+        // The song time went back before the section's state went in, and
+        // with the replay off the engine's lock the effects loop rendered
+        // the old effects at the section's start meanwhile: the red fade,
+        // cued after it, at its first frame -- a step down and back.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        for secs in [0.5, 4.0, 4.5] {
+            song_frame(&engine, secs);
+        }
+        let before = song_frame(&engine, 5.0);
+        assert!(
+            before.0 > 50.0 && before.0 < 230.0,
+            "red fading in: {before:?}"
+        );
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let frames = seen.clone();
+        between_replay_and_install(&engine, move |engine| {
+            for _ in 0..3 {
+                frames.lock().push(tick(engine));
+            }
+        });
+        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
+            engine.update_song_time(Duration::from_secs(1))
+        });
+        assert_eq!(*seen.lock(), vec![before; 3], "the frame did not hold");
+        assert!(!engine.rebuild_holding());
+        assert_eq!(song_frame(&engine, 1.0), (0.0, 255.0, 0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn a_rebuild_superseded_lets_the_frame_go() -> Result<(), Box<dyn Error>> {
+        // A rebuild that does not go in must not leave the rig held.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        between_replay_and_install(&engine, |engine| {
+            engine.retire_watcher();
+        });
+        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
+            engine.update_song_time(Duration::from_secs(1))
+        });
+        assert!(!engine.rebuild_holding(), "the rig held for a rebuild gone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_rebuild_overtaken_does_not_go_in_over_the_newer() -> Result<(), Box<dyn Error>> {
+        // Two rebuilds at once -- a reload and a section's restart on the
+        // jump follower -- each replaced the engine's state whole as it
+        // went in: the older going in last put back the state of its time
+        // under a timeline at the newer's.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        start_song(&engine, GREEN_THEN_RED_FADE);
+        song_frame(&engine, 5.0);
+        between_replay_and_install(&engine, |engine| {
+            engine.restart_section_rewinding(Duration::from_secs(6), &|| {
+                engine.update_song_time(Duration::from_secs(6))
+            });
+        });
+        engine.restart_section_rewinding(Duration::from_secs(1), &|| {
+            engine.update_song_time(Duration::from_secs(1))
+        });
+        assert!(!engine.rebuild_holding());
+        assert_eq!(
+            song_frame(&engine, 6.0),
+            (255.0, 255.0, 0.0),
+            "the newer's state"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reload_overtaken_by_the_song_going_puts_nothing_back() -> Result<(), Box<dyn Error>> {
+        // A reload past its arming when the song was let go (a song with
+        // no show starting) went in after: the last song's effects back
+        // under a song with no lights.
+        let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let generation = engine.retire_watcher();
+        between_replay_and_install(&engine, |engine| {
+            engine.release_song(super::super::playback::Release::Replaced);
+        });
+        assert!(!engine.reload_show(timeline(RED), None, generation));
+        assert_eq!(engine.effect_engine.lock().active_effects_count(), 0);
+        assert!(engine.current_song_timeline.lock().is_none());
+        assert!(!engine.rebuild_holding());
+        Ok(())
+    }
+
+    #[test]
+    fn a_song_change_lets_the_last_watcher_go_before_its_show_goes_in() -> Result<(), Box<dyn Error>>
+    {
+        // A song with lights let the last song's watcher go only after its
+        // own timeline was in: a reload from it meanwhile replaced the new
+        // song's show with the last one's.
+        let (dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let last = dir.path().join("last.light");
+        std::fs::write(&last, RED)?;
+        let next = dir.path().join("next.light");
+        std::fs::write(&next, GREEN_THEN_RED_FADE)?;
+        let old = engine.retire_watcher();
+        let reloaded = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let seen = reloaded.clone();
+        between_replay_and_install(&engine, move |engine| {
+            let done =
+                crate::dmx::watcher::reload_timeline(engine, &[last], None, old).unwrap_or(true);
+            seen.store(done, std::sync::atomic::Ordering::SeqCst);
+        });
+        let song_config = config::Song::new(
+            "Next",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![config::LightingShow::new(
+                next.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(dir.path(), &song_config)?);
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
+        let cancel = crate::playsync::CancelHandle::new();
+        cancel.cancel();
+        Engine::play(
+            engine.clone(),
+            song,
+            crate::playsync::PlaybackSync {
+                cancel_handle: cancel,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::without_jumps(),
+            },
+        )?;
+        assert!(
+            !reloaded.load(std::sync::atomic::Ordering::SeqCst),
+            "the last song's watcher reloaded into the next song's start"
+        );
+        assert_eq!(engine.get_timeline_cues().len(), 2, "the next song's show");
+        Ok(())
+    }
+
     #[test]
     fn a_song_without_lights_under_ambient_stops_the_last_songs_watcher(
     ) -> Result<(), Box<dyn Error>> {

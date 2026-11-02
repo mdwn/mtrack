@@ -100,6 +100,44 @@ impl Fired {
     }
 }
 
+/// A show rebuild's place in line (see [`Engine::rebuild_at`]): the newest
+/// goes in, and while it is on its way the main engine's frame is held.
+/// Dropped -- gone in, superseded, or unwound -- it lets the hold go, if
+/// no newer one has taken it.
+struct RebuildTicket<'a> {
+    engine: &'a Engine,
+    ticket: u64,
+}
+
+impl<'a> RebuildTicket<'a> {
+    fn take(engine: &'a Engine) -> RebuildTicket<'a> {
+        let ticket = engine.supersede_rebuilds();
+        engine
+            .rebuild_hold
+            .store(ticket, std::sync::atomic::Ordering::SeqCst);
+        RebuildTicket { engine, ticket }
+    }
+
+    /// Still the newest: nothing armed since, nor let the song go.
+    fn current(&self) -> bool {
+        self.engine
+            .rebuild_seq
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == self.ticket
+    }
+}
+
+impl Drop for RebuildTicket<'_> {
+    fn drop(&mut self) {
+        let _ = self.engine.rebuild_hold.compare_exchange(
+            self.ticket,
+            0,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+}
+
 /// What a lighting start does with the MIDI DMX playbacks, as it clears the
 /// store: put in under the engine's lock with the clear, they can neither
 /// dispatch an event ahead of it, which it would wipe, nor leave a frame
@@ -197,6 +235,8 @@ impl Engine {
         let mut effect_engine = self.effect_engine.lock();
         let fresh = Self::fresh_engine_showing(&effect_engine);
         let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+        // A rebuild still on its way in was for the engine swapped out.
+        self.supersede_rebuilds();
         if let Some(prepared) = prepared {
             for e in effect_engine.install(prepared, StopScope::Nothing) {
                 error!("Failed to start lighting effect: {}", e);
@@ -246,6 +286,8 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             let fresh = Self::fresh_engine_showing(&effect_engine);
             let outgoing_engine = std::mem::replace(&mut *effect_engine, fresh);
+            // A rebuild still on its way in was for the engine swapped out.
+            self.supersede_rebuilds();
             // The timeline goes with its engine, taken under the same lock
             // (engine, then timeline, as nothing takes them the other way).
             let timeline = self.current_song_timeline.lock().take();
@@ -426,10 +468,21 @@ impl Engine {
     /// [`Self::start_lighting_timeline_at`], starting the MIDI DMX
     /// playbacks at the same point as it clears the store (#583).
     pub(super) fn start_lighting_timeline_with(&self, start_time: Duration, midi: MidiDmxStart) {
+        self.start_song_lighting(start_time, midi, &|| {});
+    }
+
+    /// A playback's start at `start_time`: the song time goes there inside
+    /// the rebuild's hold on the frame (see [`Self::rebuild_at`]), so no
+    /// frame renders the last show at the new time.
+    pub(super) fn start_playback_lighting(&self, start_time: Duration, midi: MidiDmxStart) {
+        self.start_song_lighting(start_time, midi, &|| self.update_song_time(start_time));
+    }
+
+    fn start_song_lighting(&self, start_time: Duration, midi: MidiDmxStart, before_arm: &dyn Fn()) {
         // A crossfade in progress belongs to the playback being replaced; a
         // loop break's fade carries on over this song's start.
         self.drop_pass_crossfade();
-        self.restart_lighting_timeline(start_time, midi);
+        self.restart_lighting_timeline(start_time, midi, before_arm);
     }
 
     /// Before a section's jump with no overlap: a crossfade between passes
@@ -445,16 +498,31 @@ impl Engine {
     /// A section's jump with no overlap, back to `start_time`: the timeline
     /// restarts there as for a seek, keeping a crossfade in progress (see
     /// [`Self::keep_crossfade_on_own_time`]).
+    #[cfg(test)]
     pub(super) fn restart_section_at(&self, start_time: Duration) {
-        self.restart_lighting_timeline(start_time, MidiDmxStart::Seek);
+        self.restart_section_rewinding(start_time, &|| {});
     }
 
-    fn restart_lighting_timeline(&self, start_time: Duration, midi: MidiDmxStart) {
+    /// [`Self::restart_section_at`], `rewind` moving the song time back
+    /// inside the rebuild's hold on the frame (see [`Self::rebuild_at`]):
+    /// a frame between the two rendered the end of the section's effects
+    /// at its start's time, a move snapping to where it began.
+    pub(super) fn restart_section_rewinding(&self, start_time: Duration, rewind: &dyn Fn()) {
+        self.restart_lighting_timeline(start_time, MidiDmxStart::Seek, rewind);
+    }
+
+    fn restart_lighting_timeline(
+        &self,
+        start_time: Duration,
+        midi: MidiDmxStart,
+        before_arm: &dyn Fn(),
+    ) {
         self.rebuild_at(
             self.to_delayed_song_time(start_time),
             None,
             StopScope::All,
             midi,
+            before_arm,
         );
     }
 
@@ -482,6 +550,7 @@ impl Engine {
             Some((timeline, tempo_map, generation)),
             StopScope::Show,
             MidiDmxStart::Leave,
+            &|| {},
         )
     }
 
@@ -494,13 +563,22 @@ impl Engine {
     ///
     /// What goes and what comes in do so under the one lock, groups
     /// resolved and the history replayed first (scratch, then prepare), the
-    /// engine's lock held only to take the scratch and to install: a
-    /// frame between the two would find
-    /// the channels unwritten and send them 0 -- a black flash at every seek
-    /// and section loop (#581). The timeline fires nothing until the state
-    /// is in; then its cues -- one at the start point too -- fire over it.
-    /// A reload from a watcher since let go changes nothing, and returns
-    /// false.
+    /// engine's lock held only to take the scratch and to install: a frame
+    /// between the two would find the channels unwritten and send them 0 --
+    /// a black flash at every seek and section loop (#581). The timeline
+    /// fires nothing until the state is in; then its cues -- one at the
+    /// start point too -- fire over it.
+    ///
+    /// It takes a rebuild ticket as it arms, under the timeline's lock
+    /// (see [`Self::supersede_rebuilds`]), and its state -- tempo included
+    /// -- goes in only if that is still the newest, checked under the
+    /// engine's lock it goes in under: nothing armed since, nor let the
+    /// song go. One superseded so (a reload overtaken by a section's
+    /// restart, anything by a song change) is thrown away and returns
+    /// false: put in after the newer, it would wipe what fired since and
+    /// leave the state of an earlier time under a timeline at a later one,
+    /// or the last song's show under the next. A reload from a watcher
+    /// since let go goes no further than its arming.
     fn rebuild_at(
         &self,
         at: Duration,
@@ -511,7 +589,26 @@ impl Engine {
         )>,
         scope: StopScope,
         midi: MidiDmxStart,
+        before_arm: &dyn Fn(),
     ) -> bool {
+        // The ticket first, and with it the hold on the main engine's frame:
+        // from here until the rebuilt state is in, a frame shows what the
+        // last one did rather than the old effects at the time the rebuild
+        // goes to -- a move snapping to its start, a fade to its first
+        // frame, as the song time goes back under them. `before_arm` moves
+        // the song time (a section's jump, a song's start) inside the hold.
+        let ticket = RebuildTicket::take(self);
+        before_arm();
+        // A rebuild that does not go in still puts a song's MIDI DMX in:
+        // the one that took over moves what is there, and has none of its
+        // own to put in.
+        let superseded = |midi: MidiDmxStart| {
+            debug!("Dropping a show rebuild superseded before it went in");
+            if let MidiDmxStart::Install(playbacks) = midi {
+                *self.midi_dmx_playbacks.lock() = playbacks;
+            }
+            false
+        };
         // A reloaded timeline is armed before it goes in, with no lock held.
         let reload = reload.map(|(mut timeline, tempo_map, generation)| {
             let history = timeline.start_at(at);
@@ -519,6 +616,13 @@ impl Engine {
         });
         let (mut history, tempo_map) = {
             let mut current = self.current_song_timeline.lock();
+            // Armed only while still the newest: one armed after a newer
+            // one went in would leave the timeline at its time and the
+            // engine at the newer's.
+            if !ticket.current() {
+                drop(current);
+                return superseded(midi);
+            }
             let (history, tempo_map) = match reload {
                 Some((_, _, generation, _))
                     if generation
@@ -574,7 +678,18 @@ impl Engine {
             scratch.set_tempo_map(tempo_map.clone());
         }
         let prepared = scratch.prepare(history);
+        #[cfg(test)]
+        {
+            let hook = self.rebuild_hook.lock().take();
+            if let Some(hook) = hook {
+                hook(self);
+            }
+        }
         let mut effect_engine = self.effect_engine.lock();
+        if !ticket.current() {
+            drop(effect_engine);
+            return superseded(midi);
+        }
         if let Some(tempo_map) = tempo_map {
             effect_engine.set_tempo_map(tempo_map);
         }
@@ -582,11 +697,30 @@ impl Engine {
             error!("Failed to start lighting effect: {}", e);
         }
         self.start_midi_dmx(midi, at);
+        // The next frame renders what went in.
+        drop(ticket);
         drop(effect_engine);
         if let Some(timeline) = self.current_song_timeline.lock().as_mut() {
             timeline.hold(false);
         }
         true
+    }
+
+    /// Supersedes every show rebuild still on its way in (see
+    /// [`Self::rebuild_at`]): what lets the song or its show go -- the
+    /// watcher let go with the song, a loop's pass or break swapping the
+    /// engine -- under the engine's lock, as a rebuild goes in under it.
+    /// Returns the newest ticket.
+    pub(super) fn supersede_rebuilds(&self) -> u64 {
+        self.rebuild_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// Whether a show rebuild is on its way in, the main engine's frame
+    /// held for it.
+    pub(super) fn rebuild_holding(&self) -> bool {
+        self.rebuild_hold.load(std::sync::atomic::Ordering::SeqCst) != 0
     }
 
     /// Does what `midi` says with the MIDI DMX playbacks for a show

@@ -159,6 +159,16 @@ pub struct Engine {
     /// one is let go, so an edit it took in before it went cannot reload
     /// the last song's show into the next (see `Engine::reload_show`).
     pub(super) watcher_generation: AtomicU64,
+    /// The newest show rebuild's ticket: only it goes in (see
+    /// `Engine::rebuild_at`, `Engine::supersede_rebuilds`).
+    pub(super) rebuild_seq: AtomicU64,
+    /// The ticket of the show rebuild on its way in, the main engine's frame
+    /// held for it; 0 for none.
+    pub(super) rebuild_hold: AtomicU64,
+    /// Run once by the next show rebuild between its replay and its
+    /// install, for a test to come in between.
+    #[cfg(test)]
+    pub(super) rebuild_hook: Mutex<Option<RebuildHook>>,
     pub(super) midi_dmx_store: Arc<parking_lot::RwLock<MidiDmxStore>>,
     pub(super) midi_dmx_playbacks: Mutex<Vec<MidiDmxPlayback>>,
     pub(super) effects_loop_heartbeat: Arc<AtomicU64>,
@@ -178,6 +188,10 @@ pub struct Engine {
     /// `effect_engine`, `outgoing_pass` and `break_fades`, never before.
     ambient_overlay: Mutex<Option<ambient::Overlay>>,
 }
+
+/// What a test runs between a show rebuild's replay and its install.
+#[cfg(test)]
+pub(super) type RebuildHook = Box<dyn FnOnce(&Engine) + Send>;
 
 /// A MIDI DMX light show being played back from the effects loop.
 pub(super) struct MidiDmxPlayback {
@@ -293,6 +307,10 @@ impl Engine {
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
             watcher_generation: AtomicU64::new(0),
+            rebuild_seq: AtomicU64::new(0),
+            rebuild_hold: AtomicU64::new(0),
+            #[cfg(test)]
+            rebuild_hook: Mutex::new(None),
             midi_dmx_store,
             midi_dmx_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
@@ -570,7 +588,7 @@ impl Engine {
         let commands: std::borrow::Cow<[crate::lighting::effects::DmxCommand]> =
             match outgoing.as_mut() {
                 Some(pass) => {
-                    let incoming = effect_engine.update(dt, Some(song_time))?.to_vec();
+                    let incoming = self.main_frame(&mut effect_engine, dt, song_time)?.to_vec();
                     match pass.render(dt, song_time) {
                         Ok((t, old)) => {
                             done = t >= 1.0;
@@ -589,7 +607,7 @@ impl Engine {
                         }
                     }
                 }
-                None => std::borrow::Cow::Borrowed(effect_engine.update(dt, Some(song_time))?),
+                None => self.main_frame(&mut effect_engine, dt, song_time)?,
             };
         if done {
             if let Some(pass) = outgoing.take() {
@@ -679,6 +697,27 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    /// The main engine's own frame at `song_time` -- or, while a show
+    /// rebuild is on its way in, the last one held (see
+    /// `Engine::rebuild_at`): rendered there, the old show's effects at the
+    /// time the rebuild goes to snapped moves and fades to their start.
+    fn main_frame<'a>(
+        &self,
+        engine: &'a mut EffectEngine,
+        dt: Duration,
+        song_time: Duration,
+    ) -> Result<
+        std::borrow::Cow<'a, [crate::lighting::effects::DmxCommand]>,
+        crate::lighting::effects::EffectError,
+    > {
+        if self.rebuild_holding() {
+            return Ok(std::borrow::Cow::Borrowed(engine.last_commands()));
+        }
+        Ok(std::borrow::Cow::Borrowed(
+            engine.update(dt, Some(song_time))?,
+        ))
     }
 
     /// Starts a lighting effect
