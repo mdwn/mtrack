@@ -50,7 +50,12 @@ seam and nothing else is sent, so gear counting pulses counts on past the loop. 
 16th goes on from the next 16th, and its pulses before that are not sent, and a section with no
 16th in it runs through. A section shorter than a pulse has no pulse to go back to: the clock
 pauses while it goes round. Song Position Pointer reaches 16,383 16ths (about 34 minutes at 120
-BPM); past that it is clamped. Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
+BPM); past that it is clamped.
+
+The beat clock is timed on the computer's clock and steered gently onto the audio's, by at most
+250 ppm, so that gear following it sees a steady tempo. An audio device whose clock runs further
+off than that (one resampling, say) leaves the beat clock drifting from the audio over a song;
+the notes, which follow the audio at its own rate, do not drift. Before bar 1, a `tempo:` count-in pulses only in whole bars (rounded
 down to whole quarter notes); any leftover before them has no pulses, in the first pass or later
 ones.
 
