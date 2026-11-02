@@ -362,3 +362,30 @@ test("a long show with many tempo changes lays out quickly", () => {
   // Was ~13s; a generous bound well clear of a slow machine.
   expect(performance.now() - started).toBeLessThan(3000);
 });
+
+test("under an offset, a tempo change positioned in time moves with it", () => {
+  // The values the server gives (show_edge_cases_tests.rs,
+  // test_offset_shifts_time_positioned_tempo_changes).
+  for (const [transition, want] of [
+    [undefined, 11000],
+    ["4", 10014.201009],
+  ] as [string | undefined, number][]) {
+    const t = tempo(
+      120,
+      [4, 4],
+      [{ timestamp: absoluteTimestamp(6000), bpm: 60, transition }],
+    );
+    const cues = [cueAt(1, 1, { offset_measures: 1 }), cueAt(5, 1)];
+    const positions = computeAdjustedCuePositions(cues, t);
+    close(positions[1].adjustedMs, want, `${transition}`);
+    // Its own place in the map, for its durations, is unshifted.
+    close(positions[1].rawMs, transition ? bar(t, 5) : 10000);
+  }
+  // A change positioned by bar stays on its bar.
+  const barred = tempo(120, [4, 4], [at(4, 1, { bpm: 60 })]);
+  const positions = computeAdjustedCuePositions(
+    [cueAt(1, 1, { offset_measures: 1 }), cueAt(5, 1)],
+    barred,
+  );
+  close(positions[1].adjustedMs, 10000 + 2000);
+});

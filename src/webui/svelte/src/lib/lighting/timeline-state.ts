@@ -72,6 +72,19 @@ interface MeterSpan {
 interface TempoGrid {
   segments: TempoSegment[];
   meters: MeterSpan[];
+  /** The change that starts each segment after the first (`changes[i]`
+   *  starts `segments[i + 1]`), for walks that place them differently. */
+  changes: ResolvedChange[];
+  /** Whether any change is positioned in time rather than by bar */
+  anyTimed: boolean;
+}
+
+/** A change as the tempo walk applies it. */
+interface ResolvedChange {
+  timed: boolean;
+  bpm?: number;
+  /** A ramp's length in quarter notes, as sized; none for a snap */
+  rampBeats?: number;
 }
 
 /** Grid line for rendering on the ruler. */
@@ -340,7 +353,13 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
       signature: [initialSig[0], initialSig[1]],
     },
   ];
-  const grid = { segments, meters };
+  const changes: ResolvedChange[] = [];
+  const grid = {
+    segments,
+    meters,
+    changes,
+    anyTimed: tempo.changes.some((c) => c.timestamp.type === "absolute"),
+  };
 
   const timed = tempo.changes
     .filter((c) => c.timestamp.type === "absolute")
@@ -448,6 +467,13 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
               elapsedMs: 0,
             };
       next.bpm = change.bpm;
+      changes.push({
+        timed: change.timestamp.type === "absolute",
+        bpm: change.bpm,
+        rampBeats: length,
+      });
+    } else {
+      changes.push({ timed: change.timestamp.type === "absolute" });
     }
     segments.push(next);
   }
@@ -514,8 +540,66 @@ function durationToMs(d: { value: number; unit: string }): number {
   }
 }
 
-/** Convert a Timestamp to absolute milliseconds. */
-export function timestampToMs(ts: Timestamp, tempo?: TempoSection): number {
+/** The ms of a beat position for a cue under an offset of `offsetMs`, as
+ *  the player places it: the tempo changes positioned in time are taken
+ *  `offsetMs` later (each at the beat the unshifted map has there), those
+ *  positioned by bar stay on their bars. The player's own walk, step for
+ *  step; with no offset, or no change positioned in time, it is the
+ *  unshifted position. */
+function msAtBeatsOffset(
+  grid: TempoGrid,
+  beats: number,
+  offsetMs: number,
+): number {
+  if (offsetMs === 0 || !grid.anyTimed || beats < 0) {
+    return msAtBeats(grid, beats);
+  }
+  const first = grid.segments[0];
+  let cur: TempoSegment = { ...first, ramp: undefined };
+  for (let i = 0; i < grid.changes.length; i++) {
+    const change = grid.changes[i];
+    const seg = grid.segments[i + 1];
+    const changeBeats = change.timed
+      ? Math.max(0, beatsAtMs(grid, seg.startMs + offsetMs))
+      : seg.startBeats;
+    if (changeBeats > beats) break;
+    const dt = Math.max(0, segmentMsFor(cur, changeBeats - cur.startBeats));
+    const bpmAtChange = segmentBpmAt(cur, dt);
+    const next: TempoSegment = {
+      ...cur,
+      startMs: cur.startMs + dt,
+      startBeats: changeBeats,
+      ramp: rampAfter(cur, dt),
+    };
+    if (change.bpm !== undefined) {
+      next.bpm = change.bpm;
+      next.ramp =
+        change.rampBeats === undefined
+          ? undefined
+          : {
+              fromBpm: bpmAtChange,
+              toBpm: change.bpm,
+              totalMs: rampDurationMs(
+                bpmAtChange,
+                change.bpm,
+                change.rampBeats,
+              ),
+              elapsedMs: 0,
+            };
+    }
+    cur = next;
+  }
+  return cur.startMs + Math.max(0, segmentMsFor(cur, beats - cur.startBeats));
+}
+
+/** Convert a Timestamp to absolute milliseconds: its place in the tempo
+ *  map, or, with `offsetMs`, the score time the player gives a cue there
+ *  under that offset (before the offset itself is added). */
+export function timestampToMs(
+  ts: Timestamp,
+  tempo?: TempoSection,
+  offsetMs = 0,
+): number {
   if (ts.type === "absolute") {
     return ts.ms ?? 0;
   }
@@ -524,9 +608,10 @@ export function timestampToMs(ts: Timestamp, tempo?: TempoSection): number {
   if (!tempo) return 0;
 
   const grid = buildTempoGrid(tempo);
-  return msAtBeats(
+  return msAtBeatsOffset(
     grid,
     beatsAtMeasureBeat(grid.meters, ts.measure ?? 1, ts.beat ?? 1),
+    offsetMs,
   );
 }
 
@@ -909,7 +994,11 @@ export function computeAdjustedCuePositions(
   return cues.map((cue, index) => {
     const rawMs = timestampToMs(cue.timestamp, tempo);
     const applied = cumulativeOffsetMs;
-    const adjustedMs = rawMs + applied;
+    // Placed as the player places it: under an offset, the tempo changes
+    // positioned in time move with it.
+    const adjustedMs =
+      (applied !== 0 ? timestampToMs(cue.timestamp, tempo, applied) : rawMs) +
+      applied;
     let offsetMs = 0;
     const offsets =
       cue.offset_measures !== undefined && cue.offset_measures > 0;

@@ -172,7 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tempo where its cue sits, before any earlier offset. The timeline used the cue's shifted
   position, so an offset issued before a tempo change could take the later tempo. A
   `reset_measures` now drops the offset for the cues after it, and effect durations are timed
-  from the cue's own place in the tempo map, as the server times them.
+  from the cue's own place in the tempo map, as the server times them. Under an offset, a tempo
+  change positioned in time moves with the offset while one positioned by bar stays on its bar,
+  as the player has it, so a bar-positioned cue lands where it plays.
 
 - **A tempo change before the tempo's start is refused**: a lighting show whose `tempo` block
   had a change timed before its `start` (`start: 5s` with a change `@2.000`) crashed the parser.
