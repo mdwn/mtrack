@@ -639,8 +639,9 @@ show "BPM Interpolation Test" {
     );
 
     // During transition (midway): should be interpolated (120 + (180-120)*0.5 = 150)
-    // Transition duration: 4 beats at 120 BPM = 4 * 60/120 = 2.0s
-    let mid_time = change_time + Duration::from_secs(1); // 1 second into transition
+    // Transition duration: exactly 4 beats at an average of 150 BPM
+    // = 4 * 60/150 = 1.6s
+    let mid_time = change_time + Duration::from_millis(800); // halfway through
     let bpm_mid = tempo_map.bpm_at_time(mid_time, 0.0);
     assert!(
         (bpm_mid - 150.0).abs() < 1.0,
@@ -1209,7 +1210,8 @@ show "Measure Transition Test" {
     }
 
     // Transition starts at measure 4 (6.0s at 120 BPM)
-    // Transition duration: 2 measures at 4/4 = 8 beats at 120 BPM = 4.0s
+    // Transition duration: 2 measures at 4/4 = exactly 8 beats at an
+    // average of 150 BPM = 3.2s
     let change_time = tempo_map.changes[0].position.absolute_time().unwrap();
 
     // At start of transition: should be 120 BPM
@@ -1217,7 +1219,7 @@ show "Measure Transition Test" {
     assert!((bpm_start - 120.0).abs() < 0.1);
 
     // During transition (midway): should be interpolated
-    let mid_time = change_time + Duration::from_secs(2); // 2 seconds into 4-second transition
+    let mid_time = change_time + Duration::from_millis(1600); // halfway through
     let bpm_mid = tempo_map.bpm_at_time(mid_time, 0.0);
     assert!(
         (bpm_mid - 150.0).abs() < 1.0,
@@ -1493,6 +1495,27 @@ show "Negative Start Test" {
             "Error should indicate parsing failure"
         );
     }
+}
+
+#[test]
+fn test_end_to_end_tempo_change_before_start_rejected() {
+    // Bar 1 is at `start`: a change timed before it is refused, not a panic.
+    let content = r#"tempo {
+    start: 5s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @2.000 { bpm: 140 }
+    ]
+}
+
+show "x" {
+    @2/1
+    front_wash: static color: "blue", duration: 1s
+}"#;
+
+    let error = parse_light_shows(content).unwrap_err().to_string();
+    assert!(error.contains("before the tempo's start"), "{error}");
 }
 
 #[test]

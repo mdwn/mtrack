@@ -293,7 +293,9 @@ tempo:
 - `changes` — List of changes in ascending measure order. Each entry names a `measure`
   (1-indexed, with an optional fractional `beat`, default 1) and provides a new `bpm` and/or
   `time_signature`. An optional `transition` ramps the tempo linearly over `{ beats: N }` or
-  `{ measures: N }`; without it the change is instant.
+  `{ measures: N }`; without it the change is instant. The ramp spans exactly N beats (or the
+  beats in N measures), as a DAW renders it, so it ends on its bar and the changes after it land
+  on theirs.
 
 **Two beat units.** Inside the `tempo:` block, `bpm`, `changes[].beat` and
 `transition.beats` are all in **quarter notes**, the same unit as the lighting DSL's `tempo {}`

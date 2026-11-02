@@ -514,6 +514,12 @@ impl SectionLoop {
     }
 }
 
+/// A state-altering operation was refused because the player is locked.
+/// Every control surface (web UI, gRPC, MCP) answers with this message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("Player is locked. Unlock to make changes.")]
+pub struct LockedError;
+
 /// Bounds of an active section loop.
 ///
 /// Used together with `section_loop_break: Arc<AtomicBool>` to form a
@@ -1077,6 +1083,17 @@ impl Player {
     /// Returns true if the player is in locked mode (state-altering operations blocked).
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
+    }
+
+    /// Refuses a state-altering operation while the player is locked. Every
+    /// control surface calls this (or the web UI's lock middleware) before a
+    /// config, song, playlist or lighting write. Playback controls never do.
+    pub fn require_unlocked(&self) -> Result<(), LockedError> {
+        if self.is_locked() {
+            Err(LockedError)
+        } else {
+            Ok(())
+        }
     }
 
     /// Sets the locked state. When locked, state-altering operations are rejected

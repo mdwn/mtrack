@@ -29,7 +29,7 @@ a phone, or any device with a browser — so you never have to babysit a compute
 - **Zero-config startup** — Point mtrack at a directory of songs and it works. No config file
   required. Bulk import entire song libraries from the filesystem.
 - **Lock mode** — Safety mechanism for live shows. Lock the player to prevent accidental
-  configuration changes while keeping playback controls active.
+  configuration changes from the web UI, gRPC, or MCP while keeping playback controls active.
 - **MIDI-triggered samples** — Low-latency sample playback via MIDI or piezo audio triggers
   with velocity scaling, voice management, and release groups.
 - **Terminal UI** — Optional ratatui-based TUI with playlist, now-playing, fixture colors,

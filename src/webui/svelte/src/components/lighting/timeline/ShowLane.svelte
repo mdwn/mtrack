@@ -30,7 +30,6 @@
     getAdjustedGridLines,
     snapToNearestGrid,
     computeAdjustedCuePositions,
-    offsetMeasuresToMs,
     durationStringToMs,
     getSequenceIterationMs,
     type OffsetMarker,
@@ -108,6 +107,7 @@
             cue,
             index,
             adjustedMs: timestampToMs(cue.timestamp, tempo),
+            rawMs: timestampToMs(cue.timestamp, tempo),
             cumulativeOffsetMs: 0,
           }));
 
@@ -125,7 +125,9 @@
           if (layerFilter && (eff.effect.layer ?? "background") !== layerFilter)
             continue;
           const durStr = eff.effect.duration ?? eff.effect.extra?.hold_time;
-          const durMs = durationStringToMs(durStr, tempo, ms);
+          // Durations are timed from the cue's own place in the tempo
+          // map, before offsets, as the player times them.
+          const durMs = durationStringToMs(durStr, tempo, ap.rawMs);
           if (durMs > maxDurMs) maxDurMs = durMs;
         }
         if (maxDurMs > 0) blockEndMs = ms + maxDurMs;
@@ -151,6 +153,7 @@
           px,
           visible,
           cumulativeOffsetMs: ap.cumulativeOffsetMs,
+          scoreMs: ap.rawMs,
         };
       })
       .filter(({ cue: c }) => {
@@ -175,24 +178,8 @@
     // Walk backwards to find the last cue at or before this position
     for (let i = adjusted.length - 1; i >= 0; i--) {
       if (adjusted[i].adjustedMs <= adjustedMs) {
-        // Use the next cue's cumulativeOffsetMs if available (it includes
-        // any offset from cue[i]). Otherwise compute it manually.
-        if (i + 1 < adjusted.length) {
-          return adjusted[i + 1].cumulativeOffsetMs;
-        }
-        let total = adjusted[i].cumulativeOffsetMs;
-        if (
-          adjusted[i].cue.offset_measures &&
-          adjusted[i].cue.offset_measures! > 0 &&
-          tempo
-        ) {
-          total += offsetMeasuresToMs(
-            adjusted[i].cue.offset_measures!,
-            adjusted[i].adjustedMs,
-            tempo,
-          );
-        }
-        return total;
+        // The offset after it, its own offset (or reset) included.
+        return adjusted[i].nextOffsetMs;
       }
     }
     return 0;
@@ -206,16 +193,19 @@
     adjustedMs = Math.max(0, adjustedMs);
 
     // Subtract cumulative offset to get the raw timestamp ms
+    // The score time under the offset there, placed through the tempo map
+    // the player uses for a cue under that offset, so the new cue lands
+    // where it was clicked.
     const offsetMs = getCumulativeOffsetAtMs(adjustedMs);
     let rawMs = adjustedMs - offsetMs;
     rawMs = Math.max(0, rawMs);
 
     if (snapEnabled && tempo) {
-      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution);
+      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution, offsetMs);
     }
 
     const ts: Timestamp = tempo
-      ? msToTimestamp(rawMs, "measure_beat", tempo)
+      ? msToTimestamp(rawMs, "measure_beat", tempo, offsetMs)
       : absoluteTimestamp(rawMs);
 
     const newCue = emptyCue(ts);
@@ -247,17 +237,24 @@
 
   function handleCueMove(index: number, deltaMs: number) {
     const cue = cues[index];
-    // Move operates on raw timestamps (offset is structural, not per-cue position)
-    const currentMs = timestampToMs(cue.timestamp, tempo);
+    // Move operates on score times under the offset the cue sits under
+    // (offset is structural, not per-cue position), through the tempo map
+    // the player uses for it, so the cue moves by what was dragged.
+    const offsetMs =
+      laneType === "show"
+        ? (computeAdjustedCuePositions(cues, tempo)[index]
+            ?.cumulativeOffsetMs ?? 0)
+        : 0;
+    const currentMs = timestampToMs(cue.timestamp, tempo, offsetMs);
     let newMs = Math.max(0, currentMs + deltaMs);
 
     if (snapEnabled && tempo) {
-      newMs = snapToNearestGrid(newMs, tempo, snapResolution);
+      newMs = snapToNearestGrid(newMs, tempo, snapResolution, offsetMs);
     }
 
     const newTs: Timestamp =
       cue.timestamp.type === "measure_beat" && tempo
-        ? msToTimestamp(newMs, "measure_beat", tempo)
+        ? msToTimestamp(newMs, "measure_beat", tempo, offsetMs)
         : absoluteTimestamp(newMs);
 
     oncuechange(index, { ...cue, timestamp: newTs });
@@ -361,7 +358,7 @@
           {pixelsPerMs}
           {subLaneType}
           {tempo}
-          cueMs={cp.ms}
+          cueMs={cp.scoreMs}
           onselect={() => onselect(cp.index)}
           onmove={(deltaMs) => handleCueMove(cp.index, deltaMs)}
           ondelete={() => oncuedelete(cp.index)}
