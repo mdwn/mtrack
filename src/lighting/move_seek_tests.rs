@@ -113,8 +113,7 @@ fn seek_play(source: &str, fixtures: &[FixtureInfo], seek_ms: u64, until_ms: u64
     let mut engine = fresh(fixtures);
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     run_frames(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }
@@ -893,7 +892,7 @@ fn many_overlapping_moves(n: u64) -> String {
 
 /// Builds the timeline for `n` cues of [`many_overlapping_moves`] and seeks
 /// to near its end: how long each takes, and how many effects the seek
-/// hands the engine.
+/// leaves running.
 fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
     let s = shows(&many_overlapping_moves(n));
     let t = std::time::Instant::now();
@@ -901,18 +900,19 @@ fn build_and_seek(n: u64) -> (Duration, Duration, usize) {
     let built = t.elapsed();
     let t = std::time::Instant::now();
     let h = tl.start_at(Duration::from_millis(n * 50 - 100));
-    (built, t.elapsed(), h.effects_with_elapsed.len())
+    let mut engine = EffectEngine::reckoner();
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
+    (built, t.elapsed(), engine.get_active_effects().len())
 }
 
-/// A move that sets a head's pose outright, over another's, leaves nothing
-/// of the earlier one's pose to keep, so the replay forgets that one:
-/// building the timeline and seeking stay linear in the cues, and the seek
-/// hands the engine only what still counts, not every move since the top
-/// (#596, #599). 8000 cues took about 4 s in release while they piled up.
+/// A move that takes a head's pose over another's leaves nothing of the
+/// earlier one to keep: building the timeline and seeking stay linear in the
+/// cues, and the seek leaves only what still runs, not every move since the
+/// top (#596, #599). 8000 cues took about 4 s in release while they piled up.
 #[test]
 fn a_long_show_of_moves_builds_and_seeks_quickly() {
     let (built, sought, resumed) = build_and_seek(8000);
-    assert!(resumed <= 16, "{resumed} effects handed over");
+    assert!(resumed <= 16, "{resumed} effects still running");
     assert!(built < Duration::from_secs(5), "built in {built:?}");
     assert!(sought < Duration::from_secs(5), "sought in {sought:?}");
 }
@@ -926,5 +926,5 @@ fn time_a_long_show_of_moves() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4000);
     let (built, sought, resumed) = build_and_seek(n);
-    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects handed over");
+    eprintln!("{n} cues: new {built:?}, start_at {sought:?}, {resumed} effects still running");
 }

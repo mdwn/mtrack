@@ -355,8 +355,7 @@ fn seek3(source: &str, seek_ms: u64, until_ms: u64) -> EffectEngine {
     fixtures3(&mut engine);
     let start = Duration::from_millis(seek_ms);
     let h = tl.start_at(start);
-    engine.set_song_time(start);
-    let _ = engine.apply_timeline_update(h);
+    let _ = engine.start_from(h, crate::lighting::engine::StopScope::Nothing);
     run(&mut tl, &mut engine, seek_ms, until_ms);
     engine
 }

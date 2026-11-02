@@ -256,27 +256,16 @@ pub(super) fn reload_timeline(
     let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed))
         .saturating_sub(playback_delay);
 
-    // Calculate the timeline update before acquiring the engine lock.
-    let mut timeline_update = if song_time > Duration::ZERO {
-        // A move takes its heads from another by the fixtures they share.
-        new_timeline.start_at_resolving(song_time, &mut |effect| {
-            resolve_effect_groups(lighting_system, effect.clone()).target_fixtures
-        })
-    } else {
-        new_timeline.start();
-        crate::lighting::timeline::TimelineUpdate::default()
-    };
+    // Calculate the timeline's history before acquiring the engine lock.
+    let mut history = new_timeline.start_at(song_time);
 
     // Pre-resolve group names while the engine lock is NOT held
     // to avoid deadlocking with the lighting system lock.
-    timeline_update.map_effects(|e| resolve_effect_groups(lighting_system, e));
+    history.map_effects(|e| resolve_effect_groups(lighting_system, e));
 
     // Extract tempo map before moving new_timeline into the lock. Shows
     // without their own tempo block fall back to the song's tempo map.
-    let tempo_map = new_timeline
-        .tempo_map()
-        .cloned()
-        .or_else(|| fallback_tempo_map.cloned());
+    let tempo_map = new_timeline.tempo_map_or(fallback_tempo_map);
 
     // Swap the timeline first, so the main effects loop won't generate
     // updates from the old timeline while the engine has new state.
@@ -299,12 +288,7 @@ pub(super) fn reload_timeline(
         engine.set_tempo_map(tempo_map);
         // The show's effects only: the MIDI DMX store goes on as MIDI set
         // it, which nothing would put back mid-song (#583).
-        engine.stop_show_effects();
-        // A freeze in the history holds where the reload starts from.
-        engine.set_song_time(song_time);
-
-        // A history: its freezes hold at the reload point, set above.
-        for e in engine.apply_timeline_update(timeline_update) {
+        for e in engine.start_from(history, crate::lighting::engine::StopScope::Show) {
             error!("Failed to start lighting effect: {}", e);
         }
         info!("Watcher releasing effect_engine lock.");

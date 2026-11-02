@@ -19,8 +19,8 @@
 //! song in real time through the PA and the rig, once per check.
 //!
 //! Each requested time is evaluated independently against a fresh engine, by
-//! the same reconstruction the seek path uses: replay the cue history up to T,
-//! start each surviving effect at its elapsed offset, then render one frame.
+//! the same start the seek path uses: replay the cue history up to T through
+//! the engine, then render one frame.
 //! Nothing accumulates between samples, so evaluating `[10.0, 200.0]` costs the
 //! same as `[200.0, 10.0]` and neither perturbs the other.
 
@@ -140,23 +140,16 @@ where
                 engine.register_fixture(fixture.clone());
             }
 
-            // Replay everything before `time`, then fire the cues landing exactly
-            // on it. `start_at` stops short of `time` by design, so both halves
-            // are needed for a cue at the requested instant to count.
-            // A move takes its heads from another by the fixtures they
-            // share, so the history needs the groups resolved too.
-            let history = timeline.start_at_resolving(time, &mut |effect| {
-                resolve_groups(effect.clone()).target_fixtures
-            });
-            // A freeze in the history holds at `time`, as the live start
-            // paths have it.
-            engine.set_song_time(time);
-            apply_timeline_update(&mut engine, history, &mut resolve_groups);
+            // Start from everything before `time`, then fire the cues
+            // landing exactly on it. `start_at` stops short of `time` by
+            // design, so both halves are needed for a cue at the requested
+            // instant to count.
+            start_from(&mut engine, timeline.start_at(time), &mut resolve_groups);
             let now = timeline.update(time);
             apply_timeline_update(&mut engine, now, &mut resolve_groups);
 
             // Render a single frame at `time`. A zero delta keeps the engine's
-            // clock exactly where the elapsed offsets were computed against.
+            // clock exactly where the history left it.
             let _ = engine.update(Duration::ZERO, Some(time));
 
             let mut fixtures = crate::state::fixture_snapshots_with_cells(
@@ -438,6 +431,20 @@ pub(crate) fn apply_timeline_update<F>(
     // That is a fact about the show worth surfacing elsewhere (#340), not a
     // reason to abandon the sample.
     let _ = engine.apply_timeline_update(update);
+}
+
+/// Starts a fresh engine from a seek's history, as the live start paths do
+/// (see [`EffectEngine::start_from`]), its groups resolved first.
+pub(crate) fn start_from<F>(
+    engine: &mut EffectEngine,
+    mut history: crate::lighting::timeline::SeekHistory,
+    resolve_groups: &mut F,
+) where
+    F: FnMut(EffectInstance) -> EffectInstance,
+{
+    history.map_effects(resolve_groups);
+    // As above: an effect that will not start is no reason to abandon it.
+    let _ = engine.start_from(history, crate::lighting::engine::StopScope::Nothing);
 }
 
 #[cfg(test)]
