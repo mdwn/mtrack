@@ -1844,3 +1844,133 @@ show "Show" {{
         &[14.0, 14.25, 14.75, 15.0, 15.5, 15.75, 16.5, 17.0],
     );
 }
+
+/// The times of a show's cues with effects, in seconds, to the millisecond.
+fn effect_cue_secs(content: &str, show: &str) -> Vec<f64> {
+    let shows = parse_light_shows(content).unwrap();
+    shows[show]
+        .cues
+        .iter()
+        .filter(|c| !c.effects.is_empty())
+        .map(|c| (c.time.as_secs_f64() * 1000.0).round() / 1000.0)
+        .collect()
+}
+
+#[test]
+fn a_sequence_in_seconds_keeps_its_seconds_inside_one_in_beats() {
+    // "b" is in seconds; "a", in beats, plays it from its bar 1. Played at
+    // bar 9 (16s, where it is 60), "b"'s anchor is placed in beats with
+    // "a", and its cues keep their half seconds from it: as "b" played
+    // there directly.
+    let b = r#"
+sequence "b" {
+    @0.000
+    front_wash: static, color: "red", duration: 500ms
+    @0.500
+    front_wash: static, color: "blue", duration: 500ms
+}
+"#;
+    let alone = format!(
+        r#"{SLOWS_AT_NINE}{b}
+show "Show" {{
+    @9/1
+    sequence "b", loop: 2
+}}
+"#
+    );
+    let nested = format!(
+        r#"{SLOWS_AT_NINE}{b}
+sequence "a" {{
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "b", loop: 2
+}}
+
+show "Show" {{
+    @9/1
+    sequence "a"
+}}
+"#
+    );
+    let want = [16.0, 16.5, 17.0, 17.5];
+    close_to(&cue_secs(&alone, "Show"), &want);
+    close_to(&cue_secs(&nested, "Show"), &want);
+}
+
+#[test]
+fn an_inline_loop_in_seconds_keeps_its_seconds_inside_a_sequence_in_beats() {
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "a" {{
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    loop {{
+        @0.000
+        front_wash: static, color: "red", duration: 500ms
+        @0.500
+        front_wash: static, color: "blue", duration: 500ms
+    }}, repeats: 2
+}}
+
+show "Show" {{
+    @9/1
+    sequence "a"
+}}
+"#
+    );
+    close_to(&cue_secs(&content, "Show"), &[16.0, 16.5, 17.0, 17.5]);
+}
+
+#[test]
+fn an_offset_on_a_cue_holding_only_an_empty_loop_still_counts_in_beats() {
+    // The offset makes the body count in beats whether or not the cue that
+    // issues it leaves a cue of its own: 2s at 120 is four beats, placed
+    // at 60 from bar 9 as five beats on.
+    let body = |extra: &str| {
+        format!(
+            r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @0.000
+    back_wash: static, color: "green", duration: 100ms
+    @0.100
+    offset 1 measures
+    {extra}
+    @0.500
+    front_wash: static, color: "red", duration: 500ms
+}}
+
+show "Show" {{
+    @9/1
+    sequence "s"
+}}
+"#
+        )
+    };
+    let with_loop = effect_cue_secs(&body("loop { }, repeats: 1"), "Show");
+    let without = effect_cue_secs(&body(""), "Show");
+    close_to(&without, &[16.0, 21.0]);
+    close_to(&with_loop, &without);
+}
+
+#[test]
+fn a_cue_holding_only_an_empty_loop_still_marks_where_its_body_starts() {
+    // Its offset counts, and so does its place: the body starts at 0, so
+    // the red cue, 2.5s (five beats) in, is five beats after bar 9.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @0.000
+    offset 1 measures
+    loop {{ }}, repeats: 1
+    @0.500
+    front_wash: static, color: "red", duration: 500ms
+}}
+
+show "Show" {{
+    @9/1
+    sequence "s"
+}}
+"#
+    );
+    close_to(&effect_cue_secs(&content, "Show"), &[21.0]);
+}

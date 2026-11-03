@@ -286,16 +286,26 @@ impl SequenceLibrary {
             .clone()
             .or_else(|| self.sequence_tempo.clone());
         let length = definition.declared_length(tempo.as_ref())?;
-        let in_seconds = body_in_seconds(&definition.cues, definition.length_written(), self)?;
+        let in_seconds = body_in_seconds(
+            definition.musical,
+            &definition.cues,
+            definition.length_written(),
+            self,
+        )?;
         let mut cues = Vec::new();
+        let mut from_anchor = Vec::new();
         for cue in definition.cues {
-            cues.extend(expand_unexpanded_sequence_cue(cue, &tempo, self)?);
+            for (cue, distance) in expand_unexpanded_sequence_cue(cue, &tempo, self)? {
+                cues.push(cue);
+                from_anchor.push(distance);
+            }
         }
         Ok(Sequence {
             cues,
             tempo_map: tempo,
             length,
             in_seconds,
+            from_anchor,
         })
     }
 }

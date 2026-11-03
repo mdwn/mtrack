@@ -58,6 +58,12 @@ pub struct Sequence {
     /// whatever the tempo does. Any other body is laid out in beats,
     /// through the tempo map where it plays.
     pub in_seconds: bool,
+    /// For each cue (by index; empty for none), how far it is from the
+    /// anchor of the body purely in seconds it comes from, when it does: a
+    /// body in seconds played inside this one keeps its seconds, its
+    /// anchor placed in beats with the rest (see
+    /// [`PlacedCue`](super::show::PlacedCue)).
+    pub from_anchor: Vec<Option<Duration>>,
 }
 
 impl Sequence {
@@ -144,10 +150,9 @@ pub(crate) struct UnexpandedSequenceCue {
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>,
     pub sequence_references: Vec<SequenceCall>,
-    /// Whether the cue is timed in beats: written at a bar and beat, or
-    /// with an effect lasting beats or measures, or an inline loop that is
-    /// (see [`body_in_seconds`](super::show::body_in_seconds)).
-    pub musical: bool,
+    /// For a cue of an inline loop purely in seconds: how far it is from
+    /// the loop's anchor (see [`PlacedCue`](super::show::PlacedCue)).
+    pub from_anchor: Option<Duration>,
 }
 
 /// A `sequence "name"(…), loop: …` reference, as written in a cue.
@@ -542,6 +547,7 @@ mod tests {
             tempo_map: None,
             length: None,
             in_seconds: false,
+            from_anchor: Vec::new(),
         };
         assert_eq!(seq.duration(), Duration::ZERO);
     }
@@ -559,6 +565,7 @@ mod tests {
             tempo_map: None,
             length: None,
             in_seconds: false,
+            from_anchor: Vec::new(),
         };
         // cue_time(2) + effect_duration(3) = 5
         assert_eq!(seq.duration(), Duration::from_secs(5));
@@ -586,6 +593,7 @@ mod tests {
             tempo_map: None,
             length: None,
             in_seconds: false,
+            from_anchor: Vec::new(),
         };
         // max(0+3, 5+10) = 15
         assert_eq!(seq.duration(), Duration::from_secs(15));
@@ -607,6 +615,7 @@ mod tests {
             tempo_map: None,
             length: None,
             in_seconds: false,
+            from_anchor: Vec::new(),
         };
         assert_eq!(seq.duration(), Duration::from_secs(5));
     }

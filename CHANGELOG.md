@@ -229,7 +229,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     seconds means every cue at a time and none issuing an `offset`, no effect lasting beats or
     measures, no sequence or inline loop played from it that is not purely in seconds itself, and
     any `length:` in time. A sequence like this used to be rescaled to the tempo where it was
-    played.
+    played. Played inside a body in beats, it is placed in beats with the rest and keeps its
+    seconds from there.
   - Any other body is counted in beats and placed in beats through the tempo map where it plays,
     so a pass that reaches a tempo change or ramp follows it. A named sequence without a `tempo` block of its own is counted at the
     file's starting tempo and time signature, one with its own through that block's map, and an
