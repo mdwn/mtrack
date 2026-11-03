@@ -25,7 +25,7 @@ use pest::iterators::Pair;
 pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<dyn Error>> {
     let mut start_offset = Duration::ZERO;
     let mut bpm = crate::lighting::tempo::DEFAULT_BPM;
-    let mut time_signature = TimeSignature::new(4, 4); // Default
+    let mut time_signature = crate::lighting::tempo::DEFAULT_TIME_SIGNATURE;
     let mut changes = Vec::new();
 
     // tempo = { "tempo" ~ "{" ~ tempo_content ~ "}" }

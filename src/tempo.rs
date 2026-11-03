@@ -28,6 +28,12 @@ pub use cue::{CueClock, CuePosition, PlacedCue};
 /// Default BPM used when no tempo map is available.
 pub const DEFAULT_BPM: f64 = 120.0;
 
+/// The time signature a tempo assumes when it writes none.
+pub const DEFAULT_TIME_SIGNATURE: TimeSignature = TimeSignature {
+    numerator: 4,
+    denominator: 4,
+};
+
 /// Time signature (numerator/denominator)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {

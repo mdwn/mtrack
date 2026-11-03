@@ -244,12 +244,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A pass of a body in beats without a `length:` keeps its length in beats, as before: to the end
     of its own last effect, an effect's duration in seconds counted at the tempo the body was
     written at, so its passes stay on the beat grid (a cue with no effect, such as a `clear()`,
-    does not count, in a body with effects, as in one in seconds). A sequence in beats played
-    inside it counts on the same grid, its effects' lengths read at the tempo and signature the
-    outer body was written at, so wrapping a sequence in another does not change its timing. A
-    sequence or loop in seconds played inside it, though, counts where it actually lands in the
-    show: the pass lasts until that content ends, if later, so the next pass no longer starts over
-    it where the tempo is faster than the body was written at. A pass of a body in seconds lasts
+    does not count, in a body with effects, as in one in seconds). A sequence played
+    inside it counts as far as it ends, as it would played straight: one in beats on its own grid
+    (its effects' lengths at the tempo and signature it was written at, its `length:` in beats),
+    one in seconds where it lands (its `length:` included), so wrapping a sequence in another does
+    not change its timing; a wrapped sequence's `length:` used to be ignored, and its effects read
+    at the tempo of the sequence around it. A loop in seconds played inside it counts where it
+    actually lands in the show: the pass lasts until that content ends, if later, so the next pass
+    no longer starts over it where the tempo is faster than the body was written at. A pass of a body in seconds lasts
     until its content ends. A pass that lasts no time (all that gave it a length dropped, or
     nothing but a marker or a layer command) is the last: its passes no longer pile up at one
     instant.

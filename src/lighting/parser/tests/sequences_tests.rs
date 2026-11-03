@@ -2019,8 +2019,9 @@ show "Show" {{
 #[test]
 fn a_pass_lasts_until_its_content_ends_where_it_plays() {
     // P2: "b", in beats, plays "c", in seconds (a second a pass, three
-    // passes): played at bar 9 (60), "c"'s last cue ends at 18.2s, and so
-    // does "b"'s pass -- not where "c" ended at the 120 "b" was written at.
+    // passes): played at bar 9 (60), "c"'s last pass ends at 19s, and so
+    // does "b"'s pass -- where "c" ends where it lands (its `length:`
+    // included, as played straight), not at the 120 "b" was written at.
     let content = format!(
         r#"{SLOWS_AT_NINE}
 sequence "c", length: 1s {{
@@ -2042,7 +2043,7 @@ show "Show" {{
     );
     close_to(
         &effect_cue_secs(&content, "Show"),
-        &[16.0, 17.0, 18.0, 18.2, 19.2, 20.2],
+        &[16.0, 17.0, 18.0, 19.0, 20.0, 21.0],
     );
 }
 
@@ -2650,8 +2651,8 @@ fn a_pass_is_laid_out_where_it_plays_however_deep() {
     // 6g: "a" plays "b" (a measure), which plays "s" in seconds; from bar 3
     // the song is at 240, where a measure is a second and "s"'s cue 1.5s in
     // falls past it. Played straight or inside "x" (built at 120, where it
-    // would not), "a"'s second pass starts 0.8s on, where what plays of "s"
-    // ends.
+    // would not), "a"'s second pass starts a measure on, where "b" ends --
+    // as "b" played straight would.
     let tempo = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 240 }\n    ]\n}\n";
     let defs = "sequence \"s\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 200ms\n    @0.600\n    front_wash: static, color: \"green\", duration: 200ms\n    @1.500\n    front_wash: static, color: \"blue\", duration: 200ms\n}\nsequence \"b\", length: 1measure {\n    @1/1\n    back_wash: static, color: \"green\", duration: 1beat\n    sequence \"s\"\n}\nsequence \"a\" {\n    @1/1\n    sequence \"b\"\n}\nsequence \"x\" {\n    @1/1\n    sequence \"a\", loop: 2\n}\n";
     for show in [
@@ -2660,7 +2661,7 @@ fn a_pass_is_laid_out_where_it_plays_however_deep() {
     ] {
         let content = format!("{tempo}{defs}{show}");
         let times = cue_secs(&content, "Show");
-        close_to(&times, &[4.0, 4.6, 4.8, 5.4]);
+        close_to(&times, &[4.0, 4.6, 5.0, 5.6]);
     }
 }
 
@@ -2775,4 +2776,103 @@ fn a_sequence_without_effects_inside_one_with_some_does_not_lengthen_it() {
         .map(|c| c.time.as_secs_f64())
         .collect();
     close_to(&starts, &[0.0, 1.0]);
+}
+
+/// The times of the cues with effects of `seq` played three times from bar
+/// 2: straight, wrapped once and wrapped twice (`@1/1 sequence "…"`), with
+/// `defs` and the file's `tempo`.
+fn wrapped_three_ways(tempo: &str, defs: &str, seq: &str) -> [Vec<f64>; 3] {
+    let wraps = format!(
+        "sequence \"w1\" {{\n    @1/1\n    sequence \"{seq}\"\n}}\nsequence \"w2\" {{\n    @1/1\n    sequence \"w1\"\n}}\n"
+    );
+    ["", "w1", "w2"].map(|wrap| {
+        let call = if wrap.is_empty() { seq } else { wrap };
+        let content = format!(
+            "{tempo}{defs}{wraps}show \"Show\" {{\n    @2/1\n    sequence \"{call}\", loop: 3\n}}\n"
+        );
+        effect_cue_secs(&content, "Show")
+    })
+}
+
+fn assert_wraps_alike(tempo: &str, defs: &str, seq: &str) -> Vec<f64> {
+    let [direct, once, twice] = wrapped_three_ways(tempo, defs, seq);
+    close_to(&once, &direct);
+    close_to(&twice, &direct);
+    direct
+}
+
+const AT_120: &str = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n";
+
+#[test]
+fn a_sequence_with_its_own_tempo_keeps_its_timing_wrapped() {
+    // "i" is written at 60: its second-long effect is a beat, half a second
+    // at the song's 120.
+    let direct = assert_wraps_alike(
+        AT_120,
+        "sequence \"i\" {\n    tempo {\n        start: 0.0s\n        bpm: 60\n        time_signature: 4/4\n    }\n    @1/1\n    front_wash: static, color: \"red\", duration: 1s\n}\n",
+        "i",
+    );
+    close_to(&direct, &[2.0, 2.5, 3.0]);
+    // In 3/4, a measure long: three beats, 1.5s.
+    let direct = assert_wraps_alike(
+        AT_120,
+        "sequence \"i\" {\n    tempo {\n        start: 0.0s\n        bpm: 120\n        time_signature: 3/4\n    }\n    @1/1\n    front_wash: static, color: \"red\", duration: 1measure\n}\n",
+        "i",
+    );
+    close_to(&direct, &[2.0, 3.5, 5.0]);
+}
+
+#[test]
+fn a_sequence_with_a_length_keeps_it_wrapped() {
+    // In seconds, 2s a pass; in beats, a measure (2s at 120).
+    for length in ["2s", "1measure"] {
+        let defs = format!(
+            "sequence \"s\", length: {length} {{\n    @0.000\n    front_wash: static, color: \"red\", duration: 200ms\n}}\n"
+        );
+        let direct = assert_wraps_alike(AT_120, &defs, "s");
+        close_to(&direct, &[2.0, 4.0, 6.0]);
+    }
+}
+
+#[test]
+fn a_sequence_with_its_own_tempo_and_none_around_keeps_its_timing_wrapped() {
+    // No file tempo, the show's at 120: "i", written at 60, lasts two of its
+    // beats -- two seconds -- however it is wrapped.
+    let tempo = "";
+    let defs = "sequence \"i\" {\n    tempo {\n        start: 0.0s\n        bpm: 60\n        time_signature: 4/4\n    }\n    @1/1\n    front_wash: static, color: \"red\", duration: 2beats\n}\nsequence \"o\" {\n    @0.000\n    sequence \"i\"\n}\nsequence \"o120\" {\n    tempo {\n        start: 0.0s\n        bpm: 120\n        time_signature: 4/4\n    }\n    @1/1\n    sequence \"i\"\n}\n";
+    let show = |call: &str| {
+        format!(
+            "{tempo}{defs}show \"Show\" {{\n    tempo {{\n        start: 0.0s\n        bpm: 120\n        time_signature: 4/4\n    }}\n    @0.000\n    sequence \"{call}\", loop: 3\n}}\n"
+        )
+    };
+    let direct = effect_cue_secs(&show("i"), "Show");
+    close_to(&effect_cue_secs(&show("o"), "Show"), &direct);
+    close_to(&effect_cue_secs(&show("o120"), "Show"), &direct);
+}
+
+#[test]
+fn a_cue_that_only_plays_a_sequence_does_not_count_against_a_layouts_cap() {
+    let defs = "sequence \"i\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n}\nsequence \"w\" {\n    @1/1\n    sequence \"i\"\n}\nsequence \"o2\" {\n    @1/1\n    sequence \"i\", loop: 2000\n}\n";
+    for (call, n, truncated) in [
+        ("sequence \"w\", loop: 1500", 1500, false),
+        ("sequence \"o2\"", 2000, false),
+    ] {
+        let content = format!("{AT_120}{defs}show \"Show\" {{\n    @1/1\n    {call}\n}}\n");
+        let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+        let laid = &layout.shows[0].calls[0];
+        assert_eq!(laid.cues.len(), n, "{call}");
+        assert_eq!(laid.truncated, truncated, "{call}");
+    }
+}
+
+#[test]
+fn a_call_cut_short_ends_where_what_it_laid_out_does_with_no_effects() {
+    // "n" has no effects, inside "p", which has: cut short, the call still
+    // ends where "n"'s cues laid out do.
+    let content = format!("{AT_120}sequence \"n\" {{\n    @1/1\n    clear(layer: foreground)\n    @1/2\n    clear(layer: background)\n}}\nsequence \"p\" {{\n    @1/1\n    sequence \"n\", loop: 3000\n    @2/1\n    front_wash: static, color: \"red\", duration: 1beat\n}}\nshow \"Show\" {{\n    @2/1\n    sequence \"p\"\n}}\n");
+    let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let call = &layout.shows[0].calls[0];
+    assert!(call.truncated);
+    let last = call.cues.iter().map(|c| c.time).max().unwrap();
+    assert!(call.end >= last && call.end > call.start, "{:?}", call.end);
 }
