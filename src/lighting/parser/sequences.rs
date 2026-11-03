@@ -70,6 +70,9 @@ pub(crate) struct SequenceLibrary {
     expanding: RefCell<Vec<String>>,
     /// How many files' definitions have been added.
     files_added: usize,
+    /// The most cues one sequence (or one call of one) is built to: a
+    /// layout's cap; none when played.
+    max_cues: usize,
 }
 
 impl SequenceLibrary {
@@ -81,6 +84,7 @@ impl SequenceLibrary {
             instances: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
+            max_cues: usize::MAX,
         }
     }
 
@@ -90,6 +94,18 @@ impl SequenceLibrary {
             sequence_tempo: global_tempo.as_ref().map(TempoMap::steady),
             ..SequenceLibrary::empty()
         }
+    }
+
+    /// The library, building each sequence (and each call) only to `max`
+    /// cues: a layout's, which draws no more.
+    pub(crate) fn capped(mut self, max: usize) -> Self {
+        self.max_cues = max;
+        self
+    }
+
+    /// The most cues one sequence or call is built to.
+    pub(crate) fn max_cues(&self) -> usize {
+        self.max_cues
     }
 
     /// Adds each `sequence` definition from one file: the file being
@@ -294,8 +310,18 @@ impl SequenceLibrary {
         )?;
         let mut cues = Vec::new();
         let mut from_anchor = Vec::new();
+        let mut truncated = false;
+        let mut dropped = Vec::new();
         for cue in definition.cues {
-            for (cue, distance) in expand_unexpanded_sequence_cue(cue, &tempo, self)? {
+            let expanded = expand_unexpanded_sequence_cue(cue, &tempo, self)?;
+            truncated |= expanded.truncated;
+            dropped.extend(expanded.dropped);
+            for (cue, distance) in expanded.cues {
+                // Built up to the cap, as a call is.
+                if cues.len() >= self.max_cues {
+                    truncated = true;
+                    break;
+                }
                 cues.push(cue);
                 from_anchor.push(distance);
             }
@@ -306,6 +332,8 @@ impl SequenceLibrary {
             length,
             in_seconds,
             from_anchor,
+            truncated,
+            dropped,
         })
     }
 }

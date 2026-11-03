@@ -39,6 +39,9 @@ pub struct LightShow {
     pub name: String,
     pub cues: Vec<Cue>,
     pub tempo_map: Option<crate::lighting::tempo::TempoMap>,
+    /// The cues of sequences it plays that fall past a pass's `length:` and
+    /// do not play: for the lint to say so.
+    pub dropped: Vec<DroppedCue>,
 }
 
 /// A reusable sequence of cues that can be referenced in shows
@@ -50,7 +53,8 @@ pub struct Sequence {
     /// through it, and placed in beats where it is played.
     pub tempo_map: Option<TempoMap>,
     /// How long one pass lasts, from the first cue, when the sequence declares
-    /// a `length:`. Otherwise a pass lasts until its last effect ends.
+    /// a `length:`. Otherwise a pass lasts until its content ends where it
+    /// plays.
     pub length: Option<Duration>,
     /// Whether the body is purely in seconds
     /// ([`body_in_seconds`](super::show::body_in_seconds)): laid out in
@@ -64,53 +68,31 @@ pub struct Sequence {
     /// anchor placed in beats with the rest (see
     /// [`PlacedCue`](super::show::PlacedCue)).
     pub from_anchor: Vec<Option<Duration>>,
+    /// Whether a cap on the cues built (a layout's) cut its expansion short.
+    pub truncated: bool,
+    /// Its cues that landed past a pass's `length:` in sequences it plays,
+    /// and so do not play (see [`DroppedCue`]).
+    pub dropped: Vec<DroppedCue>,
+}
+
+/// A cue of a sequence that lands at or past the end of its pass (a
+/// `length:`), where it plays -- one in seconds where the tempo is faster
+/// than the sequence was written at -- and so does not play, as a cue
+/// written there cannot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DroppedCue {
+    /// The sequence whose pass it falls outside.
+    pub sequence: String,
+    /// Where it would have played.
+    pub time: Duration,
+    /// Where the pass it belongs to ends.
+    pub pass_end: Duration,
 }
 
 impl Sequence {
-    /// Calculate the duration of this sequence based on when all effects complete.
-    /// Returns the time from sequence start (0) to when the last effect completes.
-    pub fn duration(&self) -> Duration {
-        if self.cues.is_empty() {
-            return Duration::ZERO;
-        }
-
-        let mut max_completion_time = Duration::ZERO;
-
-        for cue in &self.cues {
-            for effect in &cue.effects {
-                let effect_duration = effect.total_duration();
-                let completion_time = cue.time + effect_duration;
-                if completion_time > max_completion_time {
-                    max_completion_time = completion_time;
-                }
-            }
-        }
-
-        max_completion_time
-    }
-
     /// When the sequence starts: its earliest cue.
     pub(crate) fn start_time(&self) -> Duration {
         self.cues.iter().map(|c| c.time).min().unwrap_or_default()
-    }
-
-    /// When one pass ends: its declared `length:` from the start; else when
-    /// its last effect ends; else, with no effect at all, when its last cue
-    /// starts.
-    pub(crate) fn pass_end(&self) -> Duration {
-        let start = self.start_time();
-        if let Some(length) = self.length {
-            return start + length;
-        }
-        if self.cues.iter().any(|c| !c.effects.is_empty()) {
-            return self.duration().max(start);
-        }
-        self.cues.iter().map(|c| c.time).max().unwrap_or(start)
-    }
-
-    /// How long one pass lasts in the sequence's own time.
-    pub(crate) fn pass_length(&self) -> Duration {
-        self.pass_end().saturating_sub(self.start_time())
     }
 
     /// The beats from the sequence's start to `time`, through its tempo map
@@ -123,9 +105,12 @@ impl Sequence {
         })
     }
 
-    /// How many beats one pass lasts.
-    pub(crate) fn pass_beats(&self) -> f64 {
-        self.beats_from_start(self.pass_end())
+    /// How many beats its declared `length:` is, from its start: what a
+    /// pass in beats lasts, when it declares one. (A pass without one lasts
+    /// until its content ends where it plays: see `expand_sequence_call`.)
+    pub(crate) fn declared_beats(&self) -> Option<f64> {
+        let length = self.length?;
+        Some(self.beats_from_start(self.start_time() + length))
     }
 }
 
@@ -536,88 +521,6 @@ mod tests {
         );
         // up(1) + hold(3) + down(1) = 5
         assert_eq!(e.total_duration(), Duration::from_secs(5));
-    }
-
-    // ── Sequence::duration ─────────────────────────────────────────
-
-    #[test]
-    fn sequence_empty() {
-        let seq = Sequence {
-            cues: vec![],
-            tempo_map: None,
-            length: None,
-            in_seconds: false,
-            from_anchor: Vec::new(),
-        };
-        assert_eq!(seq.duration(), Duration::ZERO);
-    }
-
-    #[test]
-    fn sequence_single_timed_cue() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(2),
-                effects: vec![static_effect(Duration::from_secs(3))],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            tempo_map: None,
-            length: None,
-            in_seconds: false,
-            from_anchor: Vec::new(),
-        };
-        // cue_time(2) + effect_duration(3) = 5
-        assert_eq!(seq.duration(), Duration::from_secs(5));
-    }
-
-    #[test]
-    fn sequence_max_completion_across_cues() {
-        let seq = Sequence {
-            cues: vec![
-                Cue {
-                    time: Duration::from_secs(0),
-                    effects: vec![static_effect(Duration::from_secs(3))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
-                Cue {
-                    time: Duration::from_secs(5),
-                    effects: vec![static_effect(Duration::from_secs(10))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
-            ],
-            tempo_map: None,
-            length: None,
-            in_seconds: false,
-            from_anchor: Vec::new(),
-        };
-        // max(0+3, 5+10) = 15
-        assert_eq!(seq.duration(), Duration::from_secs(15));
-    }
-
-    #[test]
-    fn sequence_mixed_short_and_long() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(1),
-                effects: vec![
-                    static_effect(Duration::from_secs(1)), // short: 1+1=2
-                    static_effect(Duration::from_secs(4)), // long: 1+4=5
-                ],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            tempo_map: None,
-            length: None,
-            in_seconds: false,
-            from_anchor: Vec::new(),
-        };
-        assert_eq!(seq.duration(), Duration::from_secs(5));
     }
 
     // ── LayerCommandType ───────────────────────────────────────────

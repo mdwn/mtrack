@@ -240,11 +240,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rather than its starting tempo.
   - A loop's effects have their durations in beats or measures, and their tempo-aware rates, read
     where each pass plays, as a sequence's are.
-  - A pass without a `length:` lasts until its content ends where it actually plays -- its last
-    effect, at the length it plays for there -- so an effect written in seconds in a body in beats
-    is no longer cut into by the next pass where the tempo is faster than the body was written at.
-    With a `length:`, a cue that lands at or past the pass's end there (one in seconds, where the
-    tempo is faster) does not play, as a cue written past it cannot.
+  - A pass of a body in beats without a `length:` keeps its length in beats, as before: to the end
+    of its own last effect, an effect's duration in seconds counted at the tempo the body was
+    written at, so its passes stay on the beat grid. A sequence or loop in seconds played inside
+    it, though, counts where it actually lands: the pass lasts until that content ends, if later,
+    so the next pass no longer starts over it where the tempo is faster than the body was written
+    at. A pass of a body in seconds lasts until its content ends.
+  - With a `length:`, a cue that lands at or past the pass's end where it plays (one in seconds,
+    where the tempo is faster) does not play, as a cue written past it cannot. This is no longer
+    silent: `lint` warns of it (`cue-past-sequence-length`), and the timeline marks the call.
 
   A sequence with no effect at all now lasts until its last cue, as an inline loop always has,
   rather than no time.
@@ -257,14 +261,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it (the lighting timeline and the song's section timeline); in a browser without WebAssembly
   those say why they cannot open, and the rest of the UI works as before. A sequence the player
   cannot play, or a cue it cannot read, is passed over and marked, with why, rather than drawn as
-  if it would play; a call that plays more cues than are drawn (`loop: loop`) is marked so.
+  if it would play; a call that plays more cues than are drawn (`loop: loop`, or a sequence that
+  plays one for good) is marked so. A file mid-edit that does not parse keeps its last layout drawn
+  and says why once, on the show, as it does when the file parses but the player would not load
+  it (a sequence nothing plays that is in error, say).
 - **A song editor's time signature at a bar** (#628): a time signature change written on a bar's
   later beat was taken to govern that bar in the song editors (bar lengths, metronome chips, the
   tempo marker dialog's accent pattern); the player applies it from the next downbeat, and so do
   they now.
 - **Light shows with numbers out of reach**: a `loop:` count past 10,000, a duration, time or
-  offset past about 11 days, or a bar past 100,000 made the parser panic (or hang); it is now an
-  error naming the value.
+  offset past about 11 days, or a bar past 100,000 made the parser panic; it is now an error
+  naming the value. So is a time a sequence's passes reach past about 11 days (a long loop of long
+  effects), which used to wrap around or stall the parser. Finding a bar thousands of bars into a
+  show no longer counts through every bar before it, which made such files slow to load.
 - **The tempo through many ramps**: reading the tempo at a time read the tempo before each ramp
   again from the top, doubling the work with every ramp before it, so an `offset` late in a show
   with a few dozen ramps could stall the parser. It is now one walk over the changes.

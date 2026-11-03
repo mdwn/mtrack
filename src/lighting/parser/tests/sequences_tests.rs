@@ -990,14 +990,18 @@ show "Test Show" {
         base_time
     );
 
-    // The cues are in beats, so they are placed at 160: the second a beat
-    // (0.375s) after the first. Their effects last 5s, in seconds, so they
-    // last 5s where they play, and a pass lasts until the last of them ends:
-    // 0.375s + 5s. (Counted in beats at the 110 the sequence was written at
-    // and placed at 160, the passes used to start 3.8s apart, 1.6s before
-    // the effects of the one before them ended.)
+    // The sequence was parsed at 110 BPM. Its internal cue relative times:
+    //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
+    //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
+    //   In beats at 110 BPM: 5.5454 * (110/60) = ~10.167 beats
+    //
+    // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
+    // Iteration spacing = 10.167 beats * 0.375s/beat = ~3.8125s
+    // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
     let beat_at_160 = 60.0 / 160.0; // 0.375s
-    let iteration_spacing = beat_at_160 + 5.0;
+    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time at 110 BPM)
+    let duration_beats = duration_internal * (110.0 / 60.0); // convert to beats
+    let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
 
     // Check iteration spacing: first cue of each iteration
     for i in 0..4 {
@@ -1993,7 +1997,9 @@ show "Show" {{
 }}
 "#
     );
-    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None)
+        .unwrap()
+        .shows;
     assert_eq!(layouts.len(), 1);
     assert_eq!(layouts[0].name, "Show");
     let calls = &layouts[0].calls;
@@ -2166,7 +2172,9 @@ show "S" {
 }
 "#;
     assert!(parse_light_shows(content).is_err());
-    let layouts = crate::lighting::parser::layout_sequence_calls(content, None).unwrap();
+    let layouts = crate::lighting::parser::layout_sequence_calls(content, None)
+        .unwrap()
+        .shows;
     let show = &layouts[0];
     let calls: Vec<(usize, Option<&str>)> = show
         .calls
@@ -2204,7 +2212,9 @@ fn a_layout_of_loop_forever_stops_at_its_cue_cap() {
     }
     let content = format!("sequence \"a\" {{\n{body}}}\nshow \"S\" {{\n{show}}}\n");
     let started = std::time::Instant::now();
-    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None)
+        .unwrap()
+        .shows;
     let calls = &layouts[0].calls;
     assert_eq!(calls.len(), 40);
     for call in calls {
@@ -2213,4 +2223,196 @@ fn a_layout_of_loop_forever_stops_at_its_cue_cap() {
         assert!(!call.cues.is_empty());
     }
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn a_pass_in_beats_without_a_length_stays_on_the_beat_grid() {
+    // R1: written at 120, its effects last 250ms -- half a beat there -- so
+    // a pass is a beat and a half wherever it plays: 1s at 90, though the
+    // effects themselves last 250ms there.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 90
+    time_signature: 4/4
+}
+
+sequence "s" {
+    tempo {
+        start: 0.0s
+        bpm: 120
+        time_signature: 4/4
+    }
+    @1/1
+    front_wash: static, color: "red", duration: 250ms
+    @1/2
+    front_wash: static, color: "blue", duration: 250ms
+}
+
+show "Show" {
+    @1/1
+    sequence "s", loop: 6
+}
+"#;
+    let times = cue_secs(content, "Show");
+    assert_eq!(times.len(), 12);
+    for pass in 0..6 {
+        close_to(
+            &times[pass * 2..pass * 2 + 2],
+            &[pass as f64, pass as f64 + 2.0 / 3.0],
+        );
+    }
+}
+
+#[test]
+fn a_layout_cuts_a_pass_partway_at_its_cue_cap() {
+    // One pass of 2,001 cues: the first 2,000 are drawn.
+    let mut body = String::new();
+    for i in 0..2001 {
+        body.push_str(&format!(
+            "    @{:.3}\n    front_wash: static, color: \"red\", duration: 100ms\n",
+            i as f64 * 0.1
+        ));
+    }
+    let content = format!(
+        "sequence \"big\" {{\n{body}}}\nshow \"S\" {{\n    @0.000\n    sequence \"big\"\n}}\n"
+    );
+    let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let call = &layout.shows[0].calls[0];
+    assert_eq!(call.cues.len(), crate::lighting::parser::MAX_LAID_OUT_CUES);
+    assert!(call.truncated);
+    // Played, all of it.
+    assert_eq!(parse_light_shows(&content).unwrap()["S"].cues.len(), 2001);
+}
+
+#[test]
+fn a_layout_caps_a_sequence_played_inside_another() {
+    // "verse" plays "pulse" for good: laid out, quickly and in part.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "pulse" {
+    @1/1
+    front_wash: static, color: "red", duration: 1beat
+    @1/2
+    front_wash: static, color: "blue", duration: 1beat
+}
+
+sequence "verse" {
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "pulse", loop: loop
+}
+
+show "S" {
+    @1/1
+    sequence "verse"
+}
+"#;
+    let started = std::time::Instant::now();
+    let layout = crate::lighting::parser::layout_sequence_calls(content, None).unwrap();
+    let call = &layout.shows[0].calls[0];
+    assert!(call.truncated);
+    assert!(!call.cues.is_empty());
+    assert!(call.cues.len() <= crate::lighting::parser::MAX_LAID_OUT_CUES);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn times_reached_past_a_show_are_errors_and_quick() {
+    let tempo = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\n";
+    for (body, what) in [
+        ("@1/1\n    front_wash: static, color: \"red\", duration: 8000measures", "measures"),
+        (
+            "@0.000\n    front_wash: static, color: \"red\", up_time: 900000s, hold_time: 900000s, down_time: 900000s",
+            "up, hold and down",
+        ),
+    ] {
+        let content = format!(
+            "{tempo}sequence \"a\" {{\n    {body}\n}}\nshow \"S\" {{\n    @1/1\n    sequence \"a\", loop: 1000\n}}\n"
+        );
+        let started = std::time::Instant::now();
+        let err = parse_light_shows(&content).err().map(|e| e.to_string());
+        assert!(err.as_deref().is_some_and(|e| e.contains("later than a show")), "{what}: {err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{what}");
+    }
+}
+
+#[test]
+fn a_cue_dropped_past_a_length_is_said_so() {
+    // R9: one pass of "b", a measure at 240 (a second); "s"'s cue 1.5s in
+    // falls past it and does not play, on the last pass as on any.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 240
+    time_signature: 4/4
+}
+
+sequence "s" {
+    @0.000
+    front_wash: static, color: "red", duration: 200ms
+    @1.500
+    front_wash: static, color: "blue", duration: 200ms
+}
+
+sequence "b", length: 1measure {
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "s"
+}
+
+show "Show" {
+    @1/1
+    sequence "b"
+}
+"#;
+    let shows = parse_light_shows(content).unwrap();
+    let show = &shows["Show"];
+    assert_eq!(show.cues.len(), 1);
+    assert_eq!(show.dropped.len(), 1);
+    assert_eq!(show.dropped[0].sequence, "b");
+    let warnings = crate::lighting::lint::lint_shows(
+        std::slice::from_ref(show),
+        &crate::lighting::lint::LintContext::default(),
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.kind == "cue-past-sequence-length"),
+        "{:?}",
+        warnings.iter().map(|w| w.kind).collect::<Vec<_>>()
+    );
+    let layout = crate::lighting::parser::layout_sequence_calls(content, None).unwrap();
+    assert_eq!(layout.shows[0].calls[0].dropped, 1);
+}
+
+#[test]
+fn a_layout_says_why_the_player_would_not_load_the_file() {
+    // A sequence nothing plays does not parse: the player rejects the file,
+    // and the layout says so, drawing the rest.
+    let content = r#"
+sequence "a" {
+    @0.000
+    front_wash: static, color: "red", duration: 1s
+}
+
+sequence "broken" {
+    @0.000
+    front_wash: static, color: "nocolor", duration: 1s
+}
+
+show "Show" {
+    @0.000
+    sequence "a"
+}
+"#;
+    assert!(parse_light_shows(content).is_err());
+    let layout = crate::lighting::parser::layout_sequence_calls(content, None).unwrap();
+    assert!(layout.problem.is_some());
+    assert_eq!(layout.shows[0].calls[0].cues.len(), 1);
 }

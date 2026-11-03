@@ -547,13 +547,15 @@ pub extern "C" fn layout_sequences(len: usize, map: u32) -> usize {
             .and_then(|i| maps.borrow().get(i).cloned().flatten())
     });
     let layout = match lighting::parser::layout_sequence_calls(&source, tm.as_ref()) {
-        Ok(shows) => Layout {
-            shows: shows.iter().map(ShowOut::from).collect(),
+        Ok(layout) => Layout {
+            shows: layout.shows.iter().map(ShowOut::from).collect(),
             error: None,
+            problem: layout.problem,
         },
         Err(e) => Layout {
             shows: Vec::new(),
             error: Some(e.to_string()),
+            problem: None,
         },
     };
     let json = serde_json::to_string(&layout).unwrap_or_else(|_| "{\"shows\":[]}".to_string());
@@ -571,6 +573,9 @@ pub struct Layout {
     /// Why nothing could be laid out (the file does not parse at all).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why the player would not load the file although it lays out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -591,6 +596,8 @@ pub struct CallOut {
     pub end: f64,
     pub pass_ends: Vec<f64>,
     pub truncated: bool,
+    /// How many of its cues land past a pass's `length:` and do not play.
+    pub dropped: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// The call's distinct effects; its cues refer to them by index.
@@ -660,6 +667,7 @@ impl From<&lighting::parser::CallLayout> for CallOut {
             end: secs(call.end),
             pass_ends: call.pass_ends.iter().copied().map(secs).collect(),
             truncated: call.truncated,
+            dropped: call.dropped,
             error: call.error.clone(),
             effects,
             cues,
