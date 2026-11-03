@@ -29,7 +29,10 @@ import {
   bpmAtMeasure,
   bpmAtTime,
   parseTimeSignature,
+  sigAtMeasure,
 } from "../../src/lib/util/tempo";
+import { parseLightFile } from "../../src/lib/lighting/parser";
+import { tempoProblemOf as configProblemOf } from "../../src/lib/tempo-wasm";
 import {
   beatsToMs,
   computeAdjustedCuePositions,
@@ -877,4 +880,30 @@ test("the tempo at a moment, mid-ramp the ramp's", () => {
   const mid = bpmAtTime(config, 3);
   expect(mid).toBeLessThan(120);
   expect(mid).toBeGreaterThan(60);
+});
+
+test("a song signature the player refuses is the map's failure, not 4/4", () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const config = {
+      bpm: 120,
+      time_signature: "4/4",
+      changes: [{ measure: 3, time_signature: "6/7" }],
+    };
+    // Shown as the default, but said: the player would not take the song.
+    expect(sigAtMeasure(config, 3)).toEqual([4, 4]);
+    expect(configProblemOf(config)).toContain("6/7");
+  } finally {
+    console.error = quiet;
+  }
+});
+
+test("a light show's signature is read as the player reads it", () => {
+  const file = (sig: string) =>
+    `tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: ${sig}\n}\nshow "S" {\n    @1/1\n}\n`;
+  expect(parseLightFile(file("4/3")).tempo?.time_signature).toEqual([4, 3]);
+  expect(parseLightFile(file("6/7")).tempo?.time_signature).toEqual([6, 7]);
+  expect(() => parseLightFile(file("0/4"))).toThrow(/time signature/);
+  expect(() => parseLightFile(file("4/0"))).toThrow(/time signature/);
 });

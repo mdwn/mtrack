@@ -12,7 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { DEFAULT_BPM, DEFAULT_TIME_SIGNATURE } from "../tempo-wasm";
+import {
+  DEFAULT_BPM,
+  DEFAULT_TIME_SIGNATURE,
+  parseTimeSignatureIn,
+} from "../tempo-wasm";
 import type {
   LightFile,
   TempoSection,
@@ -105,6 +109,15 @@ export function parseLightFile(dsl: string): LightFile {
   return result;
 }
 
+/** A light show's time signature, as the player parses it: one it does
+ *  not take is an error, as it is there. Needs the tempo map module loaded
+ *  (`loadTempoMap`). */
+function lightSignature(raw: string): [number, number] {
+  const signature = parseTimeSignatureIn(raw, "light");
+  if (!signature) throw new Error(`invalid time signature "${raw}"`);
+  return signature;
+}
+
 /**
  * Parse a tempo { ... } block starting at the line with "tempo".
  */
@@ -159,9 +172,9 @@ function parseTempoBlock(
     }
 
     // time_signature: N/N
-    const tsMatch = line.match(/^time_signature:\s*(\d+)\/(\d+)/);
+    const tsMatch = line.match(/^time_signature:\s*([^\s,}]+)/);
     if (tsMatch) {
-      tempo.time_signature = [parseInt(tsMatch[1]), parseInt(tsMatch[2])];
+      tempo.time_signature = lightSignature(tsMatch[1]);
       i++;
       continue;
     }
@@ -195,8 +208,8 @@ function parseTempoBlock(
         const params = changeMatch[2];
         const bpmM = params.match(/bpm:\s*(\d+(?:\.\d+)?)/);
         if (bpmM) change.bpm = parseFloat(bpmM[1]);
-        const tsM = params.match(/time_signature:\s*(\d+)\/(\d+)/);
-        if (tsM) change.time_signature = [parseInt(tsM[1]), parseInt(tsM[2])];
+        const tsM = params.match(/time_signature:\s*([^\s,}]+)/);
+        if (tsM) change.time_signature = lightSignature(tsM[1]);
         const trM = params.match(/transition:\s*(\S+)/);
         if (trM) change.transition = trM[1].replace(/,/g, "");
         tempo.changes.push(change);

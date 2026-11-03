@@ -36,6 +36,7 @@
     TempoSection,
   } from "../../lib/lighting/types";
   import { parseLightFile } from "../../lib/lighting/parser";
+  import { loadTempoMap } from "../../lib/tempo-wasm";
   import { serializeLightFile } from "../../lib/lighting/serializer";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
   import { configToSection } from "../../lib/tempoConvert";
@@ -219,6 +220,9 @@
   }
 
   async function loadLighting() {
+    // The light file parser reads time signatures with the player's own
+    // parser, in the tempo map module.
+    await loadTempoMap().catch(() => {});
     try {
       error = "";
       dirty = false;

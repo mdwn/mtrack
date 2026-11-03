@@ -74,7 +74,7 @@ interface TempoExports {
   text_buffer(len: number): number;
   text_output(): number;
   layout_sequences(len: number, map: number): number;
-  parse_signature(len: number): number;
+  parse_signature(len: number, light: number): number;
 }
 
 let loaded: TempoExports | undefined;
@@ -620,15 +620,19 @@ const decoder = new TextDecoder();
  *  `map` where the source has no `tempo` block. Times in seconds. A call
  *  that cannot be played, or a cue that does not parse, is passed over and
  *  says why; a source that does not parse at all lays out nothing. */
-/** A song's `time_signature:` string as the player parses it
- *  (`tempo::parse_time_signature`), or undefined when it is not one. */
-export function parseSongTimeSignature(
+/** A `time_signature:` string as the player parses it
+ *  (`tempo::parse_signature_in`), in the range a song takes or a light show
+ *  does (which takes 4/3, say), or undefined when it is not one. Needs the
+ *  module loaded (`loadTempoMap`): it throws, saying so, before. */
+export function parseTimeSignatureIn(
   raw: string,
+  range: "song" | "light",
 ): [number, number] | undefined {
   const bytes = encoder.encode(raw);
   const ptr = pointer(api().text_buffer(bytes.length));
   new Uint8Array(api().memory.buffer, ptr, bytes.length).set(bytes);
-  if (api().parse_signature(bytes.length) !== 2) return undefined;
+  const read = api().parse_signature(bytes.length, range === "light" ? 1 : 0);
+  if (read !== 2) return undefined;
   const [numerator, denominator] = output(2);
   return [numerator, denominator];
 }

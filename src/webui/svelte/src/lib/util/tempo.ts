@@ -16,7 +16,8 @@ import type { TempoChangeConfig, TempoConfig } from "../api/songs";
 import {
   DEFAULT_BPM,
   DEFAULT_TIME_SIGNATURE,
-  parseSongTimeSignature,
+  parseTimeSignatureIn,
+  TempoMapFailed,
   withTempoMap,
   type TempoMap,
 } from "../tempo-wasm";
@@ -27,13 +28,34 @@ export function changeBeat(change: TempoChangeConfig): number {
 }
 
 /** `[numerator, denominator]` of a song's `4/4`-style string, as the
- *  player parses it; the player's default when it is none or not one. */
+ *  player parses it, or undefined when it is not one the player takes. Needs
+ *  the tempo map module loaded (inside a `TempoMapGate`). */
+export function songSignature(raw: string): [number, number] | undefined {
+  return parseTimeSignatureIn(raw, "song");
+}
+
+/** A song's signature for showing: the player's default when it writes
+ *  none, or one the player does not take (which its tempo map says, as
+ *  `withConfigMap` does not build it). Needs the module loaded. */
 export function parseTimeSignature(raw: string | undefined): [number, number] {
   return (
-    (raw === undefined ? undefined : parseSongTimeSignature(raw)) ?? [
+    (raw === undefined ? undefined : songSignature(raw)) ?? [
       ...DEFAULT_TIME_SIGNATURE,
     ]
   );
+}
+
+/** A song's signature for its tempo map: one the player does not take is
+ *  the map's failure, not 4/4. */
+function mapSignature(raw: string | undefined): [number, number] {
+  if (raw === undefined) return [...DEFAULT_TIME_SIGNATURE];
+  const signature = songSignature(raw);
+  if (!signature) {
+    throw new TempoMapFailed(
+      `the time signature "${raw}" is not one the player takes`,
+    );
+  }
+  return signature;
 }
 
 /** A signature as a song writes it, e.g. "4/4". */
@@ -64,12 +86,12 @@ function withConfigMap<T>(
     () => ({
       startSecs: config.start ?? 0,
       bpm: config.bpm,
-      signature: parseTimeSignature(config.time_signature),
+      signature: mapSignature(config.time_signature),
       changes: (config.changes ?? []).map((c) => ({
         at: { measure: c.measure, beat: changeBeat(c) },
         bpm: c.bpm,
         signature: c.time_signature
-          ? parseTimeSignature(c.time_signature)
+          ? mapSignature(c.time_signature)
           : undefined,
         transition: c.transition,
       })),

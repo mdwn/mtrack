@@ -35,6 +35,7 @@
   } from "../../lib/api/songs";
   import { fetchLightingFile } from "../../lib/api/config";
   import { parseLightFile } from "../../lib/lighting/parser";
+  import { loadTempoMap } from "../../lib/tempo-wasm";
   import type { TempoSection } from "../../lib/lighting/types";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
@@ -179,6 +180,9 @@
       return;
     }
     const found: { file: string; tempo: TempoSection }[] = [];
+    // The light file parser reads time signatures with the player's own
+    // parser, in the tempo map module.
+    await loadTempoMap().catch(() => {});
     for (const file of files) {
       try {
         const parsed = parseLightFile(await fetchLightingFile(file));

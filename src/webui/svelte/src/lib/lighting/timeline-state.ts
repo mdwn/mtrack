@@ -912,14 +912,20 @@ export function showSequences(
   if (!layout) {
     layout = laidOutWithout.get(sourceKey);
     mapFailed = layout !== undefined;
-    // Its map still fails (remembered by its values, so not tried again):
-    // said for this tempo too, whichever object it is.
-    if (mapFailed) {
+    // Its map still fails (remembered by its values, so not tried again),
+    // said for this tempo too, whichever object it is; one that is made now
+    // lays it out again, through it.
+    if (
+      mapFailed &&
       withMap(
         tempo,
-        () => undefined,
-        () => undefined,
-      );
+        () => true,
+        () => false,
+      )
+    ) {
+      laidOutWithout.delete(sourceKey);
+      layout = undefined;
+      mapFailed = false;
     }
   }
   if (!layout) {
