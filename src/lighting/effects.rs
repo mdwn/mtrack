@@ -28,6 +28,8 @@ mod tests;
 // Re-export public items
 pub use color::Color;
 pub use error::EffectError;
+#[cfg(test)]
+pub(crate) use fixture::declared_dmx;
 pub use fixture::{
     multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy,
     MULTIPLIER_PREFIXES,

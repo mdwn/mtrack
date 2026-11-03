@@ -1128,7 +1128,7 @@ fn declared_steps_pick_the_first_containing_step_else_the_nearest_end() {
         step(20, 29, 2.0, 10.0),
         step(30, 30, 12.0, 12.0),
     ];
-    let dmx = |hz| crate::lighting::engine::processing::declared_dmx(&steps, hz);
+    let dmx = |hz| crate::lighting::effects::declared_dmx(&steps, hz);
     assert_eq!(dmx(5.0), 10.0);
     assert_eq!(dmx(3.0), 14.5, "first step in DMX order wins an overlap");
     assert_eq!(dmx(6.0), 20.0 + 4.0 / 8.0 * 9.0);
