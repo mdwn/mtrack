@@ -348,27 +348,15 @@ function sameKey(a: TempoMapKey, b: TempoMapKey): boolean {
  *  cheaper than resolving it again. */
 const mapCache = new WeakMap<object, { key: TempoMapKey; map: TempoMap }>();
 
-/** The map `owner` resolves to (`input`, for `key`): kept, and made again
- *  in a module started afresh before it is handed out. Throws
- *  `TempoMapFailed` when it cannot be made. */
-export function cachedTempoMap(
-  owner: object,
-  key: TempoMapKey,
-  input: () => TempoMapInput,
-): TempoMap {
-  const hit = mapCache.get(owner);
-  if (hit && sameKey(hit.key, key)) {
-    void hit.map.handle;
-    return hit.map;
-  }
-  const map = new TempoMap(input());
-  mapCache.set(owner, { key, map });
-  return map;
-}
+/** The tempo the player assumes without one, in BPM (at 4/4). */
+export const DEFAULT_BPM = 120;
 
-/** The maps that failed, by what they were resolved from, with why: each
- *  cleared when its own map next works. */
-const failing = new WeakMap<object, string>();
+/** Why a map cannot be used, by what it was resolved from, by the kind of
+ *  failure: it cannot be made (`map`), or a cue walk through it cannot
+ *  finish (`clock`). Each is cleared only when that kind stops failing: the
+ *  map made, a walk finished. */
+type Failure = "map" | "clock";
+const failing = new WeakMap<object, Partial<Record<Failure, string>>>();
 
 /** Bumped whenever a map starts or stops failing: for a view to ask again
  *  (`tempoProblemOf`) about the map it draws. */
@@ -385,36 +373,67 @@ function bump(): void {
   });
 }
 
+function setFailure(owner: object, kind: Failure, why: string | undefined) {
+  const now = failing.get(owner);
+  if (now?.[kind] === why) return;
+  if (why === undefined && !now) return;
+  failing.set(owner, { ...now, [kind]: why });
+  bump();
+}
+
 /** Why the map `owner` resolves to cannot be used (it trapped), while it
  *  cannot: what uses it is drawn as without a tempo meanwhile. */
 export function tempoProblemOf(owner: object | undefined): string | undefined {
-  return owner ? failing.get(owner) : undefined;
+  const now = owner && failing.get(owner);
+  return now ? (now.clock ?? now.map) : undefined;
+}
+
+/** The map `owner` resolves to (`input`, for `key`): kept, and made again
+ *  in a module started afresh before it is handed out. Throws
+ *  `TempoMapFailed` when it cannot be made; once it is made, a failure to
+ *  make it is over. */
+export function cachedTempoMap(
+  owner: object,
+  key: TempoMapKey,
+  input: () => TempoMapInput,
+): TempoMap {
+  const hit = mapCache.get(owner);
+  let map: TempoMap;
+  if (hit && sameKey(hit.key, key)) {
+    void hit.map.handle;
+    map = hit.map;
+  } else {
+    map = new TempoMap(input());
+    mapCache.set(owner, { key, map });
+  }
+  setFailure(owner, "map", undefined);
+  return map;
 }
 
 /** `use` with the map `owner` resolves to; `failed` when it could not be
  *  made or failed while used (a trap, again on a second try), rather than
  *  failing the caller: the failure is logged and kept (`tempoProblemOf`)
- *  until this map next works. */
+ *  until that kind of failure stops. `walk` says `use` is a cue walk:
+ *  finishing it ends a walk's failure. */
 export function withTempoMap<T>(
   owner: object,
   key: TempoMapKey,
   input: () => TempoMapInput,
   use: (map: TempoMap) => T,
   failed: () => T,
+  walk = false,
 ): T {
   try {
     const answer = use(cachedTempoMap(owner, key, input));
-    if (failing.delete(owner)) bump();
+    if (walk) setFailure(owner, "clock", undefined);
     return answer;
   } catch (e) {
     if (!(e instanceof TempoMapFailed)) throw e;
-    if (!failing.has(owner)) {
+    const kind: Failure = e instanceof CueClockRestarted ? "clock" : "map";
+    if (failing.get(owner)?.[kind] === undefined) {
       console.error("the tempo map failed; drawing without it", e);
     }
-    if (failing.get(owner) !== e.message) {
-      failing.set(owner, e.message);
-      bump();
-    }
+    setFailure(owner, kind, e.message);
     return failed();
   }
 }

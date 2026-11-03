@@ -13,7 +13,7 @@
 //
 
 import type { TempoChangeConfig, TempoConfig } from "../api/songs";
-import { withTempoMap, type TempoMap } from "../tempo-wasm";
+import { DEFAULT_BPM, withTempoMap, type TempoMap } from "../tempo-wasm";
 
 /** The beat a tempo change sits on; absent means the downbeat. */
 export function changeBeat(change: TempoChangeConfig): number {
@@ -26,7 +26,7 @@ export function parseTimeSignature(raw: string | undefined): [number, number] {
   return match ? [parseInt(match[1]), parseInt(match[2])] : [4, 4];
 }
 
-const noTempo: TempoConfig = { bpm: 120 };
+const noTempo: TempoConfig = { bpm: DEFAULT_BPM };
 
 /** `use` with the song's tempo map, as the player resolves its `tempo:`
  *  block (kept, as the lighting timeline's are); `failed` when the map

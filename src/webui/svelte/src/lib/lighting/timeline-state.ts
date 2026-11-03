@@ -33,6 +33,7 @@ import { absoluteTimestamp } from "./types";
 import {
   CueClock,
   CueClockRestarted,
+  DEFAULT_BPM,
   TempoMap,
   cachedTempoMap,
   withTempoMap,
@@ -118,6 +119,7 @@ function withMap<T>(
   use: (map: TempoMap) => T,
   without: () => T,
   failed: () => T = without,
+  walk = false,
 ): T {
   if (!tempo) return without();
   return withTempoMap(
@@ -126,11 +128,9 @@ function withMap<T>(
     () => mapInput(tempo),
     use,
     failed,
+    walk,
   );
 }
-
-/** The tempo assumed without one, as the player assumes it. */
-const DEFAULT_BPM = 120;
 
 function tempoKey(tempo: TempoSection): (number | string | undefined)[] {
   const key: (number | string | undefined)[] = [
@@ -765,6 +765,8 @@ export function computeAdjustedCuePositions(
       }
     },
     () => placeCues(cues, undefined, undefined),
+    undefined,
+    true,
   );
 }
 
@@ -899,9 +901,9 @@ export function showSequences(
     shows: [{ name: "layout", cues }],
   });
   const sourceKey = `${key}\n${source}`;
+  let mapFailed = false;
   let layout = layoutCache.get(sourceKey);
   if (!layout) {
-    let mapFailed = false;
     const laid = layoutSequences(
       source,
       withMap(
@@ -946,9 +948,11 @@ export function showSequences(
     if (good) {
       layout = { calls: good.calls, cueErrors: new Map(), error: layout.error };
     }
-  } else {
+  } else if (!mapFailed) {
     lastGood.set(laneKey, layout);
   }
+  // Laid out without the tempo (its map failed), it is not the tempo's.
+  if (mapFailed) return layout;
   Object.assign(lastLayout, {
     cues,
     sequences,

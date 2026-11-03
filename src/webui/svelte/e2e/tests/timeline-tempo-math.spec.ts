@@ -17,7 +17,13 @@
 // spans exactly N beats, linear in time.
 
 import { test, expect } from "@playwright/test";
-import { loadTempoMap } from "../../src/lib/tempo-wasm";
+import {
+  CueClock,
+  CueClockRestarted,
+  TempoMap,
+  TempoMapFailed,
+  loadTempoMap,
+} from "../../src/lib/tempo-wasm";
 import { nearestBeat, nearestBeatPosition } from "../../src/lib/util/beatGrid";
 import {
   beatsToMs,
@@ -39,6 +45,7 @@ import {
   rampDurationMs,
   snapToNearestGrid,
   timestampToMs,
+  tempoProblemOf,
 } from "../../src/lib/lighting/timeline-state";
 import type {
   Cue,
@@ -742,4 +749,72 @@ test("the nearest beat on a beat grid, as each editor snaps to it", () => {
   expect(nearestBeatPosition(bare, 0.5)).toEqual({ measure: 1 });
   expect(nearestBeat(bare, 0.5)).toBeNull();
   expect(nearestBeatPosition(null, 0.5)).toBeNull();
+});
+
+test("a failing tempo map is said until that failure stops", () => {
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const t = tempo(60, [4, 4], []);
+    const cues = [{ ...cueAt(2, 1), sequences: [{ name: "s" }] }];
+    // A cue walk that cannot finish: said, and not unsaid by another use
+    // of the same map, which works.
+    const place = CueClock.prototype.place;
+    CueClock.prototype.place = () => {
+      throw new CueClockRestarted();
+    };
+    try {
+      computeAdjustedCuePositions(cues, t);
+    } finally {
+      CueClock.prototype.place = place;
+    }
+    expect(tempoProblemOf(t)).toBeTruthy();
+    getTempoAtMs(0, t);
+    expect(tempoProblemOf(t)).toBeTruthy();
+    // A walk that finishes is.
+    computeAdjustedCuePositions(cues, t);
+    expect(tempoProblemOf(t)).toBeUndefined();
+
+    // A layout made while the map cannot be made is not the tempo's: once
+    // it can, the same cues are laid out through it.
+    const seq: Sequence = {
+      name: "s",
+      cues: [
+        {
+          ...cueAt(1, 1),
+          effects: [
+            {
+              groups: ["front_wash"],
+              effect: { type: "static", colors: ["red"], duration: "1beat" },
+            },
+          ],
+        },
+      ],
+    };
+    const t2 = tempo(60, [4, 4], []);
+    const handle = Object.getOwnPropertyDescriptor(
+      TempoMap.prototype,
+      "handle",
+    )!;
+    let fail = true;
+    Object.defineProperty(TempoMap.prototype, "handle", {
+      configurable: true,
+      get() {
+        if (fail) throw new TempoMapFailed("injected");
+        return handle.get!.call(this);
+      },
+    });
+    try {
+      showSequences(cues, [seq], t2);
+      expect(tempoProblemOf(t2)).toBe("injected");
+      fail = false;
+      const laid = showSequences(cues, [seq], t2);
+      expect(laid.calls.get(0)?.[0].cues[0].time).toBeCloseTo(4);
+      expect(tempoProblemOf(t2)).toBeUndefined();
+    } finally {
+      Object.defineProperty(TempoMap.prototype, "handle", handle);
+    }
+  } finally {
+    console.error = quiet;
+  }
 });
