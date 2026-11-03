@@ -466,11 +466,23 @@ pub fn state_maps(
     (channels_by_fixture, poses, cells)
 }
 
+/// Each strobing fixture's rate in hertz, by name: the `strobe_hz` the
+/// stage views flash at, in the live message and the preview's alike.
+pub fn strobe_rates(
+    fixtures: &[crate::state::FixtureSnapshot],
+) -> serde_json::Map<String, serde_json::Value> {
+    fixtures
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), json!(f.strobe_hz?))))
+        .collect()
+}
+
 /// Builds the `state` WebSocket message for a snapshot. Also sent to each
 /// client on connect, so one that joins while nothing is changing (an idle
 /// player) still learns the current values.
 pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
     let (fixtures, poses, cells) = state_maps(&snapshot.fixtures, &snapshot.poses);
+    let strobe_hz = strobe_rates(&snapshot.fixtures);
     json!({
         "type": "state",
         "fixtures": fixtures,
@@ -478,7 +490,7 @@ pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
         "poses": poses,
         "cells": cells,
         "under_test": snapshot.under_test,
-        "strobe_hz": snapshot.strobe_hz,
+        "strobe_hz": strobe_hz,
     })
     .to_string()
 }
@@ -1450,11 +1462,11 @@ metronome: {}
                 cells: Default::default(),
                 name: "wash1".to_string(),
                 channels: std::collections::HashMap::from([("dimmer".to_string(), 0)]),
+                strobe_hz: None,
             }],
             active_effects: Vec::new(),
             poses: Vec::new(),
             under_test: Vec::new(),
-            strobe_hz: Default::default(),
         }));
         let parsed: serde_json::Value =
             serde_json::from_str(&build_state_json(&state_rx.borrow())).unwrap();
@@ -1480,11 +1492,11 @@ metronome: {}
                     m.insert("red".to_string(), 255);
                     m
                 },
+                strobe_hz: None,
             }],
             active_effects: vec!["chase".to_string()],
             poses: Vec::new(),
             under_test: Vec::new(),
-            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 
@@ -1521,17 +1533,18 @@ metronome: {}
                     name: "bar".to_string(),
                     channels: std::collections::HashMap::new(),
                     cells,
+                    strobe_hz: None,
                 },
                 crate::state::FixtureSnapshot {
                     name: "wash1".to_string(),
                     channels: std::collections::HashMap::from([("red".to_string(), 255)]),
                     cells: Default::default(),
+                    strobe_hz: None,
                 },
             ],
             active_effects: Vec::new(),
             poses: Vec::new(),
             under_test: Vec::new(),
-            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 
@@ -1895,11 +1908,11 @@ metronome: {}
                 name: "light1".to_string(),
                 channels: std::collections::HashMap::new(),
                 cells: Default::default(),
+                strobe_hz: None,
             }],
             active_effects: vec![],
             poses: Vec::new(),
             under_test: Vec::new(),
-            strobe_hz: Default::default(),
         });
         state_tx.send(snapshot).unwrap();
 

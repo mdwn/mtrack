@@ -36,6 +36,13 @@ pub struct FixtureSnapshot {
     /// per-cell effect drives at least one cell of this fixture; empty
     /// otherwise, when every cell shows the fixture's own channels.
     pub cells: std::collections::BTreeMap<String, HashMap<String, u8>>,
+    /// The rate the fixture flashes at, in hertz, while its own strobe
+    /// channel strobes: read back from the byte through its strobe curve
+    /// ([`FixtureInfo::strobe_hz`]), so the stage views flash at it rather
+    /// than guessing from the byte.
+    ///
+    /// [`FixtureInfo::strobe_hz`]: crate::lighting::effects::FixtureInfo::strobe_hz
+    pub strobe_hz: Option<f64>,
 }
 
 /// Where a mover is pointing, for the stage plot's beam.
@@ -61,29 +68,20 @@ pub struct StateSnapshot {
     /// their channels), sorted: their `fixtures`, `cells` and `poses`
     /// show the test's bytes, which are what leaves for olad.
     pub under_test: Vec<String>,
-    /// The rate each fixture strobing on a strobe channel of its own
-    /// flashes at, in hertz, read back from its byte through its own
-    /// strobe curve ([`FixtureInfo::strobe_hz`]): the stage views flash at
-    /// it rather than guessing from the byte.
-    ///
-    /// [`FixtureInfo::strobe_hz`]: crate::lighting::effects::FixtureInfo::strobe_hz
-    pub strobe_hz: std::collections::BTreeMap<String, f64>,
 }
 
-/// The strobe rate of each fixture whose strobe channel is strobing, by
-/// name (see [`StateSnapshot::strobe_hz`]).
-pub(crate) fn strobe_rates(
-    fixtures: &[FixtureSnapshot],
+/// Each snapshot's strobe rate (see [`FixtureSnapshot::strobe_hz`]),
+/// from its strobe byte through its fixture's strobe curve.
+pub(crate) fn attach_strobe_rates(
+    snapshots: &mut [FixtureSnapshot],
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
-) -> std::collections::BTreeMap<String, f64> {
-    fixtures
-        .iter()
-        .filter_map(|f| {
-            let byte = *f.channels.get("strobe")?;
-            let hz = registry.get(&f.name)?.strobe_hz(byte)?;
-            Some((f.name.clone(), hz))
-        })
-        .collect()
+) {
+    for snapshot in snapshots {
+        snapshot.strobe_hz = snapshot
+            .channels
+            .get("strobe")
+            .and_then(|&byte| registry.get(&snapshot.name)?.strobe_hz(byte));
+    }
 }
 
 /// A fixture test's output as the stage views see it: the bytes the
@@ -164,6 +162,7 @@ pub(crate) fn apply_test_overlay(
                         name: name.clone(),
                         channels: HashMap::new(),
                         cells: Default::default(),
+                        strobe_hz: None,
                     },
                 );
                 &mut fixtures[at]
@@ -362,13 +361,13 @@ pub(crate) fn engine_snapshot(
             (compute_pose_snapshots(&poses, registry), under_test)
         }
     };
-    let strobe_hz = strobe_rates(&fixtures, registry);
+    // After the test's bytes: the rate is what leaves for olad.
+    attach_strobe_rates(&mut fixtures, registry);
     StateSnapshot {
         fixtures,
         active_effects,
         poses,
         under_test,
-        strobe_hz,
     }
 }
 
@@ -469,6 +468,7 @@ pub(crate) fn compute_fixture_snapshots(
                 name: name.clone(),
                 channels,
                 cells: Default::default(),
+                strobe_hz: None,
             }
         })
         .collect();
@@ -491,6 +491,7 @@ pub(crate) fn fixture_snapshots_with_cells(
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
     attach_mirrors(&mut fixtures, registry);
+    attach_strobe_rates(&mut fixtures, registry);
     fixtures
 }
 
@@ -629,6 +630,7 @@ pub(crate) fn attach_cell_snapshots(
                             .map(|name| (name.clone(), 0u8))
                             .collect(),
                         cells,
+                        strobe_hz: None,
                     },
                 );
             }
@@ -823,6 +825,7 @@ mod tests {
             cells: Default::default(),
             name: "test".to_string(),
             channels,
+            strobe_hz: None,
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.name, "test");
@@ -837,11 +840,11 @@ mod tests {
                 name: "f1".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),
+                strobe_hz: None,
             }],
             active_effects: vec!["effect1".to_string()],
             poses: Vec::new(),
             under_test: Vec::new(),
-            strobe_hz: Default::default(),
         };
         let cloned = snapshot.clone();
         assert_eq!(cloned.fixtures.len(), 1);
@@ -1267,11 +1270,13 @@ mod tests {
                 name: "Aaa".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),
+                strobe_hz: None,
             },
             FixtureSnapshot {
                 name: "Zzz".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),
+                strobe_hz: None,
             },
         ];
 
@@ -1507,5 +1512,52 @@ mod tests {
         }
         // Below the strobe range does not strobe.
         assert_eq!(brick(StrobeCurve::Period).strobe_hz(3), None);
+    }
+
+    #[test]
+    fn a_strobing_fixtures_snapshot_carries_its_rate() {
+        use crate::lighting::effects::{
+            EffectInstance, EffectType, FixtureInfo, TempoAwareFrequency,
+        };
+        let mut fixture = FixtureInfo::new(
+            "Brick".to_string(),
+            1,
+            1,
+            "Brick".to_string(),
+            HashMap::from([("red".to_string(), 1), ("strobe".to_string(), 2)]),
+            Some(25.0),
+        );
+        fixture.min_strobe_frequency = Some(0.4);
+        fixture.strobe_dmx_offset = Some(7);
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(fixture.clone());
+        engine
+            .start_effect(EffectInstance::new(
+                "s".to_string(),
+                EffectType::Strobe {
+                    frequency: TempoAwareFrequency::Fixed(10.0),
+                    duration: Duration::from_secs(5),
+                },
+                vec!["Brick".to_string()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        engine.update(Duration::from_millis(16), None).unwrap();
+        let snapshot = engine_snapshot(&engine, None, &HashMap::new());
+        let brick = snapshot
+            .fixtures
+            .iter()
+            .find(|f| f.name == "Brick")
+            .unwrap();
+        let byte = brick.channels["strobe"];
+        assert_eq!(brick.strobe_hz, fixture.strobe_hz(byte));
+        let hz = brick.strobe_hz.unwrap();
+        assert!((hz - 10.0).abs() < 1.5, "{hz}");
+        // The state message carries it by name.
+        let message: serde_json::Value =
+            serde_json::from_str(&crate::webui::state::build_state_json(&snapshot)).unwrap();
+        assert_eq!(message["strobe_hz"]["Brick"].as_f64(), Some(hz));
     }
 }

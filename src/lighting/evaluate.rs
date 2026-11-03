@@ -291,6 +291,7 @@ fn fill_dark_fixtures<'a>(
                 .filter(|name| !is_multiplier_channel(name))
                 .map(|name| (name.clone(), 0u8))
                 .collect(),
+            strobe_hz: None,
         });
     }
     snapshots.sort_by(|a, b| a.name.cmp(&b.name));
@@ -990,6 +991,7 @@ show "T" {
                 name: "m".to_string(),
                 channels: channels.clone(),
                 cells: Default::default(),
+                strobe_hz: None,
             }],
             active_effects: Vec::new(),
             poses: Vec::new(),
@@ -1001,6 +1003,7 @@ show "T" {
                 name: "m".to_string(),
                 channels,
                 cells: Default::default(),
+                strobe_hz: None,
             }],
             ..evaluation
         };
