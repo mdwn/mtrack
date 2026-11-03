@@ -35,13 +35,13 @@ pub const DEFAULT_TIME_SIGNATURE: TimeSignature = TimeSignature {
 };
 
 /// The time signatures a source takes: a song's `tempo:` block, or a
-/// light show's (which takes any bar of whole beats of any note, 4/3 and
-/// 6/7 included). The ranges, in one place.
+/// light show's (which takes any but 0 over any but 0, 4/3 and 6/7
+/// included, as it always has). The ranges, in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureRange {
     /// A song: a numerator up to 64, a denominator a power of two up to 32.
     Song,
-    /// A light show: a numerator and a denominator up to 1024.
+    /// A light show: any numerator and denominator but 0.
     Light,
 }
 
@@ -55,7 +55,7 @@ impl SignatureRange {
                 matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32),
                 "a power of two up to 32",
             ),
-            SignatureRange::Light => (1024, (1..=1024).contains(&denominator), "1 to 1024"),
+            SignatureRange::Light => (u32::MAX, denominator != 0, "more than 0"),
         };
         if numerator == 0 || numerator > max_numerator {
             return Err(format!("time signature numerator {numerator} out of range"));
@@ -449,6 +449,11 @@ pub struct TempoMap {
     pub initial_time_signature: TimeSignature,
     /// Sorted list of tempo changes (by time)
     pub changes: Vec<TempoChange>,
+    /// Its time signature changes as bars and beats, worked out once: every
+    /// position and length reads them.
+    signature_changes: std::sync::OnceLock<Vec<(u32, f64, TimeSignature)>>,
+    /// Each change's beat position, at its own time, worked out once.
+    change_beats: std::sync::OnceLock<Vec<Option<f64>>>,
 }
 
 impl TempoMap {
@@ -654,6 +659,8 @@ impl TempoMap {
             initial_bpm,
             initial_time_signature,
             changes: resolved_changes,
+            signature_changes: std::sync::OnceLock::new(),
+            change_beats: std::sync::OnceLock::new(),
         }
     }
 
@@ -665,6 +672,8 @@ impl TempoMap {
             initial_bpm: self.initial_bpm,
             initial_time_signature: self.initial_time_signature,
             changes: Vec::new(),
+            signature_changes: std::sync::OnceLock::new(),
+            change_beats: std::sync::OnceLock::new(),
         }
     }
 
@@ -677,6 +686,8 @@ impl TempoMap {
             initial_bpm: self.bpm_at_time(time, offset_secs),
             initial_time_signature: self.time_signature_at_time(time, offset_secs),
             changes: Vec::new(),
+            signature_changes: std::sync::OnceLock::new(),
+            change_beats: std::sync::OnceLock::new(),
         }
     }
 
@@ -702,7 +713,7 @@ impl TempoMap {
         let offset_duration = duration_from_secs(offset_secs);
 
         // Build sorted list of time signature changes in (measure, beat, TimeSignature) form
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
 
         // Apply offset to target measure (score measure -> playback measure)
         let playback_measure = measure + measure_offset;
@@ -711,13 +722,13 @@ impl TempoMap {
         // accounting for time signature changes along the way
         let target_beats = Self::compute_target_beats(
             self.initial_time_signature,
-            &ts_changes,
+            ts_changes,
             playback_measure,
             beat,
         );
 
         // Walk through tempo changes, converting each to a beat position and accumulating time
-        self.integrate_through_segments(target_beats, &ts_changes, offset_duration)
+        self.integrate_through_segments(target_beats, ts_changes, offset_duration)
     }
 
     /// Build a sorted list of time signature changes as (measure, beat, TimeSignature).
@@ -725,6 +736,13 @@ impl TempoMap {
     /// Uses `original_measure_beat` when available; otherwise places the
     /// change's beat position (through prior tempo changes and ramps) in the
     /// bars the signature changes before it make.
+    /// Its time signature changes as (bar, beat, signature), sorted: worked
+    /// out once.
+    fn signature_changes(&self) -> &[(u32, f64, TimeSignature)] {
+        self.signature_changes
+            .get_or_init(|| self.build_time_signature_changes())
+    }
+
     fn build_time_signature_changes(&self) -> Vec<(u32, f64, TimeSignature)> {
         let mut ts_changes: Vec<(u32, f64, TimeSignature)> = Vec::new();
 
@@ -760,7 +778,7 @@ impl TempoMap {
     pub(crate) fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
         Self::measure_beat_at_beats(
             self.initial_time_signature,
-            &self.build_time_signature_changes(),
+            self.signature_changes(),
             self.beats_at_time(target_time),
         )
     }
@@ -783,26 +801,37 @@ impl TempoMap {
     /// The spans of bars one time signature holds, from bar 1: each span's
     /// first bar and its quarter notes a bar, as `time_signature_at_measure`
     /// has them (a change written mid-bar governs from the next bar).
+    /// Yielded one by one, nothing built: every position reads them.
     fn meter_spans(
         initial_time_signature: TimeSignature,
         ts_changes: &[(u32, f64, TimeSignature)],
-    ) -> Vec<(u32, f64)> {
-        let mut spans = vec![(1u32, initial_time_signature.beats_per_measure())];
-        for (change_m, change_b, new_ts) in ts_changes {
-            let from = if (*change_b - 1.0).abs() < 0.001 {
+    ) -> impl Iterator<Item = (u32, f64)> + '_ {
+        let from_of = |(change_m, change_b, _): &(u32, f64, TimeSignature)| {
+            if (*change_b - 1.0).abs() < 0.001 {
                 *change_m
             } else {
                 change_m.saturating_add(1)
             }
-            .max(1);
-            let last = spans.last_mut().expect("spans start with bar 1");
-            if from <= last.0 {
-                last.1 = new_ts.beats_per_measure();
-            } else {
-                spans.push((from, new_ts.beats_per_measure()));
+            .max(1)
+        };
+        let mut changes = ts_changes.iter().peekable();
+        let mut current = Some((1u32, initial_time_signature.beats_per_measure()));
+        std::iter::from_fn(move || {
+            let mut span = current.take()?;
+            // The changes governing from this span's first bar (or before)
+            // set its signature, the last of them winning.
+            while let Some(change) = changes.peek() {
+                if from_of(change) > span.0 {
+                    break;
+                }
+                span.1 = change.2.beats_per_measure();
+                changes.next();
             }
-        }
-        spans
+            if let Some(change) = changes.next() {
+                current = Some((from_of(change), change.2.beats_per_measure()));
+            }
+            Some(span)
+        })
     }
 
     /// The bar a quarter-note beat position (0 or later, finite) falls in,
@@ -813,13 +842,13 @@ impl TempoMap {
         ts_changes: &[(u32, f64, TimeSignature)],
         beats: f64,
     ) -> (u32, f64) {
-        let spans = Self::meter_spans(initial_time_signature, ts_changes);
+        let mut spans = Self::meter_spans(initial_time_signature, ts_changes).peekable();
         let mut remaining = beats;
-        for (i, &(from, per)) in spans.iter().enumerate() {
+        while let Some((from, per)) = spans.next() {
             if per <= 0.0 {
                 return (from, remaining);
             }
-            let span_bars = spans.get(i + 1).map(|next| next.0 - from);
+            let span_bars = spans.peek().map(|next| next.0 - from);
             let span_beats = span_bars.map(|bars| f64::from(bars) * per);
             if span_beats.is_some_and(|span| remaining >= span) {
                 remaining -= span_beats.unwrap_or_default();
@@ -851,14 +880,14 @@ impl TempoMap {
         // Span by span, as `time_signature_at_measure` has each bar's
         // signature: a position thousands of bars on costs no more than one
         // in bar 1.
-        let spans = Self::meter_spans(initial_time_signature, ts_changes);
+        let mut spans = Self::meter_spans(initial_time_signature, ts_changes).peekable();
         let mut target_beats = 0.0;
-        for (i, &(from, per)) in spans.iter().enumerate() {
+        while let Some((from, per)) = spans.next() {
             if from >= target_measure {
                 break;
             }
             let until = spans
-                .get(i + 1)
+                .peek()
                 .map_or(target_measure, |next| next.0.min(target_measure));
             target_beats += f64::from(until - from) * per;
         }
@@ -889,6 +918,42 @@ impl TempoMap {
     /// Compute the beat position of a tempo change, either from its original
     /// measure/beat or by converting its absolute time through prior tempo changes.
     fn compute_change_beats(
+        &self,
+        change: &TempoChange,
+        change_time: Duration,
+        ts_changes: &[(u32, f64, TimeSignature)],
+    ) -> Option<f64> {
+        // One of this map's own changes, at its own time, through its own
+        // signatures: worked out once.
+        if std::ptr::eq(ts_changes, self.signature_changes())
+            && change.position.absolute_time() == Some(change_time)
+        {
+            let size = std::mem::size_of::<TempoChange>().max(1);
+            let index = (change as *const TempoChange as usize)
+                .wrapping_sub(self.changes.as_ptr() as usize)
+                / size;
+            if self
+                .changes
+                .get(index)
+                .is_some_and(|own| std::ptr::eq(own, change))
+            {
+                let all = self.change_beats.get_or_init(|| {
+                    self.changes
+                        .iter()
+                        .map(|c| {
+                            c.position.absolute_time().and_then(|t| {
+                                self.compute_change_beats_uncached(c, t, self.signature_changes())
+                            })
+                        })
+                        .collect()
+                });
+                return all[index];
+            }
+        }
+        self.compute_change_beats_uncached(change, change_time, ts_changes)
+    }
+
+    fn compute_change_beats_uncached(
         &self,
         change: &TempoChange,
         change_time: Duration,
@@ -1264,8 +1329,8 @@ impl TempoMap {
     /// The tempo the ramp in progress at `time` is heading for; `None`
     /// when the tempo is steady there.
     pub fn ramp_target_at(&self, time: Duration) -> Option<f64> {
-        let ts_changes = self.build_time_signature_changes();
-        let states = self.segment_states(&ts_changes)?;
+        let ts_changes = self.signature_changes();
+        let states = self.segment_states(ts_changes)?;
         let state = states.iter().rev().find(|state| state.time <= time)?;
         let ramp = state.ramp.as_ref()?;
         let left = ramp.total_secs - ramp.elapsed_secs;
@@ -1335,12 +1400,51 @@ impl TempoMap {
     /// and gradual transitions are integrated as cue positions integrate them.
     /// `offset_secs` shifts the tempo map the way it shifts cue times.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
         let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
-        let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
+        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
         let end_beats = snap_beats(start_beats + beats);
-        self.score_time_at_beats(end_beats, &ts_changes)
+        self.score_time_at_beats(end_beats, ts_changes)
             .saturating_sub(score_at)
+    }
+
+    /// How long the `beats` from the beat `at_time` falls on last, counted
+    /// between the two beat positions on the same grid: the beat at
+    /// `at_time` and that plus `beats`. Unlike [`Self::beats_to_duration`],
+    /// which counts to the later one from `at_time` itself, it does not
+    /// carry where `at_time` falls off the grid's snap into the length -- so
+    /// a cue `beats` after an exact time is exactly that far after it.
+    pub fn beats_after(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
+        if beats == 0.0 {
+            return Duration::ZERO;
+        }
+        let ts_changes = self.signature_changes();
+        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
+        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
+        let end_beats = snap_beats(start_beats + beats);
+        self.score_time_at_beats(end_beats, ts_changes)
+            .saturating_sub(self.score_time_at_beats(start_beats, ts_changes))
+    }
+
+    /// The grid beat (snapped, as positions are) a time falls on, under an
+    /// offset: where a pass starting then counts its beats from.
+    pub fn grid_beat_at(&self, time: Duration, offset_secs: f64) -> f64 {
+        let score = time.saturating_sub(duration_from_secs(offset_secs));
+        snap_beats(self.score_beats_at(score, self.signature_changes()))
+    }
+
+    /// The score time of a grid beat: differences of these are lengths on
+    /// the grid, whatever time a pass counted from them starts at.
+    pub fn grid_time(&self, beat: f64) -> Duration {
+        self.score_time_at_beats(snap_beats(beat), self.signature_changes())
+    }
+
+    /// How long `measures` measures from grid beat `from` last, on the grid.
+    pub fn grid_measures(&self, from: f64, measures: f64) -> Duration {
+        let ts_changes = self.signature_changes();
+        let end = self.measures_at_beats(snap_beats(from), ts_changes) + measures;
+        self.grid_time(self.beats_at_measures(end, ts_changes))
+            .saturating_sub(self.grid_time(from))
     }
 
     /// Convert a duration in measures to absolute Duration at a given time.
@@ -1358,32 +1462,32 @@ impl TempoMap {
         at_time: Duration,
         offset_secs: f64,
     ) -> Duration {
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
         let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
-        let start_beats = snap_beats(self.score_beats_at(score_at, &ts_changes));
-        let end_measures = self.measures_at_beats(start_beats, &ts_changes) + measures;
-        let end_beats = snap_beats(self.beats_at_measures(end_measures, &ts_changes));
-        self.score_time_at_beats(end_beats, &ts_changes)
+        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
+        let end_measures = self.measures_at_beats(start_beats, ts_changes) + measures;
+        let end_beats = snap_beats(self.beats_at_measures(end_measures, ts_changes));
+        self.score_time_at_beats(end_beats, ts_changes)
             .saturating_sub(score_at)
     }
 
     /// How long the `beats` before `end` last: the same position walk as
     /// [`Self::beats_to_duration`], run backwards from `end`.
     pub fn beats_before(&self, beats: f64, end: Duration) -> Duration {
-        let ts_changes = self.build_time_signature_changes();
-        let end_beats = snap_beats(self.score_beats_at(end, &ts_changes));
+        let ts_changes = self.signature_changes();
+        let end_beats = snap_beats(self.score_beats_at(end, ts_changes));
         let start_beats = snap_beats(end_beats - beats);
-        end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
+        end.saturating_sub(self.score_time_at_beats(start_beats, ts_changes))
     }
 
     /// How long the `measures` before `end` last: the same position walk as
     /// [`Self::measures_to_duration`], run backwards from `end`.
     pub fn measures_before(&self, measures: f64, end: Duration) -> Duration {
-        let ts_changes = self.build_time_signature_changes();
-        let end_beats = snap_beats(self.score_beats_at(end, &ts_changes));
-        let start_measures = self.measures_at_beats(end_beats, &ts_changes) - measures;
-        let start_beats = snap_beats(self.beats_at_measures(start_measures, &ts_changes));
-        end.saturating_sub(self.score_time_at_beats(start_beats, &ts_changes))
+        let ts_changes = self.signature_changes();
+        let end_beats = snap_beats(self.score_beats_at(end, ts_changes));
+        let start_measures = self.measures_at_beats(end_beats, ts_changes) - measures;
+        let start_beats = snap_beats(self.beats_at_measures(start_measures, ts_changes));
+        end.saturating_sub(self.score_time_at_beats(start_beats, ts_changes))
     }
 
     /// The quarter-note beat position (0 at bar 1 beat 1) of a time, under
@@ -1392,9 +1496,9 @@ impl TempoMap {
     /// with those positioned in time taken `offset_secs` later. Negative
     /// before bar 1, counted at the starting tempo.
     pub fn beats_at(&self, time: Duration, offset_secs: f64) -> f64 {
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
         if offset_secs <= 0.0 || time < self.start_offset {
-            return self.score_beats_at(time, &ts_changes);
+            return self.score_beats_at(time, ts_changes);
         }
         let offset = duration_from_secs(offset_secs);
         let mut current_bpm = self.initial_bpm;
@@ -1406,7 +1510,7 @@ impl TempoMap {
                 break;
             };
             let Some(change_beats) =
-                self.compute_change_beats(change, change_time.saturating_add(offset), &ts_changes)
+                self.compute_change_beats(change, change_time.saturating_add(offset), ts_changes)
             else {
                 break;
             };
@@ -1443,11 +1547,11 @@ impl TempoMap {
     /// offset of `offset_secs`, as a cue there is placed (before the offset
     /// itself is added). Before bar 1, at the starting tempo.
     pub fn time_at_beats(&self, beats: f64, offset_secs: f64) -> Duration {
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
         if beats < 0.0 || offset_secs <= 0.0 {
-            return self.score_time_at_beats(beats, &ts_changes);
+            return self.score_time_at_beats(beats, ts_changes);
         }
-        self.integrate_through_segments(beats, &ts_changes, duration_from_secs(offset_secs))
+        self.integrate_through_segments(beats, ts_changes, duration_from_secs(offset_secs))
             .unwrap_or(self.start_offset)
     }
 
@@ -1456,7 +1560,7 @@ impl TempoMap {
     pub fn beats_at_position(&self, measure: u32, beat: f64) -> f64 {
         Self::compute_target_beats(
             self.initial_time_signature,
-            &self.build_time_signature_changes(),
+            self.signature_changes(),
             measure.max(1),
             beat,
         )
@@ -1465,23 +1569,19 @@ impl TempoMap {
     /// The bar and (quarter-note) beat of a quarter-note beat position; bar
     /// 1 for one before it. The inverse of [`TempoMap::beats_at_position`].
     pub fn position_at_beats(&self, beats: f64) -> (u32, f64) {
-        Self::measure_beat_at_beats(
-            self.initial_time_signature,
-            &self.build_time_signature_changes(),
-            beats,
-        )
+        Self::measure_beat_at_beats(self.initial_time_signature, self.signature_changes(), beats)
     }
 
     /// Measures elapsed (0 at bar 1 beat 1, fractional within a bar) at a
     /// quarter-note beat position.
     pub fn measures_elapsed_at_beats(&self, beats: f64) -> f64 {
-        self.measures_at_beats(beats, &self.build_time_signature_changes())
+        self.measures_at_beats(beats, self.signature_changes())
     }
 
     /// The quarter-note beat position at a number of measures elapsed: the
     /// inverse of [`TempoMap::measures_elapsed_at_beats`].
     pub fn beats_at_measures_elapsed(&self, measures: f64) -> f64 {
-        self.beats_at_measures(measures, &self.build_time_signature_changes())
+        self.beats_at_measures(measures, self.signature_changes())
     }
 
     /// The time signature bar `measure` is in, as the beat grid has it: a
@@ -1489,7 +1589,7 @@ impl TempoMap {
     pub fn time_signature_in_measure(&self, measure: u32) -> TimeSignature {
         Self::time_signature_at_measure(
             self.initial_time_signature,
-            &self.build_time_signature_changes(),
+            self.signature_changes(),
             measure,
         )
     }
@@ -1508,9 +1608,9 @@ impl TempoMap {
     /// order: each change, the end of each ramp, and the downbeat a
     /// signature change written mid-bar governs from.
     pub fn tempo_boundaries(&self) -> Vec<Duration> {
-        let ts_changes = self.build_time_signature_changes();
+        let ts_changes = self.signature_changes();
         let mut bounds = vec![self.start_offset];
-        if let Some(states) = self.segment_states(&ts_changes) {
+        if let Some(states) = self.segment_states(ts_changes) {
             for state in &states {
                 bounds.push(state.time);
                 if let Some(ramp) = &state.ramp {
@@ -1522,15 +1622,15 @@ impl TempoMap {
                 }
             }
         }
-        for (measure, beat, _) in &ts_changes {
+        for (measure, beat, _) in ts_changes {
             let bar = if (beat - 1.0).abs() < 0.001 {
                 *measure
             } else {
                 measure + 1
             };
             let beats =
-                Self::compute_target_beats(self.initial_time_signature, &ts_changes, bar, 1.0);
-            bounds.push(self.score_time_at_beats(beats, &ts_changes));
+                Self::compute_target_beats(self.initial_time_signature, ts_changes, bar, 1.0);
+            bounds.push(self.score_time_at_beats(beats, ts_changes));
         }
         bounds.sort();
         bounds.dedup();
@@ -1553,8 +1653,8 @@ impl TempoMap {
         if !self.initial_bpm.is_finite() || self.initial_bpm <= 0.0 {
             return ticks;
         }
-        let ts_changes = self.build_time_signature_changes();
-        let Some(states) = self.segment_states(&ts_changes) else {
+        let ts_changes = self.signature_changes();
+        let Some(states) = self.segment_states(ts_changes) else {
             return ticks;
         };
 

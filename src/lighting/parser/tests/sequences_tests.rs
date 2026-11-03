@@ -3018,3 +3018,79 @@ fn a_length_in_seconds_does_not_drift() {
         }
     }
 }
+
+#[test]
+fn a_fan_out_of_sequences_that_play_nothing_costs_its_contexts_not_its_calls() {
+    // mx7 and its kin: seven levels of ten calls over a sequence that plays
+    // nothing but whose reach is not a matter of its own units -- one in
+    // seconds with a length (inside beats), one in beats with a length in
+    // seconds, one played for good -- with and without a tempo change.
+    let bodies = [
+        "sequence \"z\" {\n}\nsequence \"w0\", length: 1s {\n    @0.000\n    sequence \"z\"\n}\n",
+        "sequence \"z\" {\n}\nsequence \"w0\", length: 1s {\n    @1/1\n    sequence \"z\"\n}\n",
+        "sequence \"z\" {\n}\nsequence \"w0\" {\n    @0.000\n    sequence \"z\", loop: loop\n}\n",
+    ];
+    let tempos = [
+        AT_120.to_string(),
+        "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @2/1 { bpm: 90 }\n    ]\n}\n".to_string(),
+    ];
+    for tempo in &tempos {
+        for body in bodies {
+            let mut content = fan_out(7, body);
+            content = content.replacen(AT_120, tempo, 1);
+            let started = std::time::Instant::now();
+            let shows = parse_light_shows(&content).unwrap();
+            assert!(shows["Show"].cues.is_empty());
+            let played = started.elapsed();
+            let started = std::time::Instant::now();
+            let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+            let laid = started.elapsed();
+            assert!(layout.shows[0].calls[0].cues.is_empty());
+            assert!(
+                played < std::time::Duration::from_secs(1)
+                    && laid < std::time::Duration::from_secs(1),
+                "{body}: played {played:?}, laid out {laid:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_cue_on_the_end_of_a_pass_in_seconds_is_dropped_on_every_pass() {
+    // At 100, after the song's change from 120, a beat is 0.6s: "b"'s cue a
+    // beat in lands on the end of its 0.6s pass, on every pass -- straight
+    // or wrapped -- and does not play, however its passes are counted.
+    let defs = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 100 }\n    ]\n}\nsequence \"b\", length: 0.6s {\n    @1/1\n    front_wash: static, color: \"red\", duration: 200ms\n    @1/2\n    back_wash: static, color: \"blue\", duration: 200ms\n}\nsequence \"w\" {\n    @1/1\n    sequence \"b\"\n}\n";
+    for call in ["b", "w"] {
+        let content =
+            format!("{defs}show \"Show\" {{\n    @4/1\n    sequence \"{call}\", loop: 5\n}}\n");
+        let shows = parse_light_shows(&content).unwrap();
+        let show = &shows["Show"];
+        let backs = show
+            .cues
+            .iter()
+            .filter(|c| {
+                c.effects
+                    .iter()
+                    .any(|e| e.groups.iter().any(|g| g == "back_wash"))
+            })
+            .count();
+        assert_eq!(backs, 0, "{call}");
+        assert_eq!(show.dropped.len(), 5, "{call}");
+    }
+}
+
+#[test]
+fn a_light_show_takes_any_signature_but_nothing() {
+    for (signature, ok) in [
+        ("2000/4", true),
+        ("4/2048", true),
+        ("1025/4", true),
+        ("4/3", true),
+        ("0/4", false),
+        ("4/0", false),
+    ] {
+        let content = format!("tempo {{\n    start: 0.0s\n    bpm: 120\n    time_signature: {signature}\n}}\nshow \"Show\" {{\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n}}\n");
+        assert_eq!(parse_light_shows(&content).is_ok(), ok, "{signature}");
+    }
+}

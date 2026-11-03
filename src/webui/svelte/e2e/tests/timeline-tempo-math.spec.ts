@@ -904,6 +904,10 @@ test("a light show's signature is read as the player reads it", () => {
     `tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: ${sig}\n}\nshow "S" {\n    @1/1\n}\n`;
   expect(parseLightFile(file("4/3")).tempo?.time_signature).toEqual([4, 3]);
   expect(parseLightFile(file("6/7")).tempo?.time_signature).toEqual([6, 7]);
+  // Any but nothing, as the player has always taken them.
+  expect(parseLightFile(file("2000/4")).tempo?.time_signature).toEqual([
+    2000, 4,
+  ]);
   expect(() => parseLightFile(file("0/4"))).toThrow(/time signature/);
   expect(() => parseLightFile(file("4/0"))).toThrow(/time signature/);
 });

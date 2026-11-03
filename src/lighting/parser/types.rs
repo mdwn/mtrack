@@ -75,6 +75,12 @@ pub struct Sequence {
     /// played where the cue lands, each time the sequence is played, so
     /// every sequence is laid out where it plays.
     pub(crate) calls: Vec<Vec<SequenceCall>>,
+    /// The sequences those calls play, looked up once (by index, as
+    /// `calls`; empty for none).
+    pub(crate) callees: Vec<Vec<std::rc::Rc<Sequence>>>,
+    /// Where its cues and their content fall on its own grid, worked out
+    /// the first time it is played (see `show::expand_sequence_call`).
+    pub(crate) grid: std::cell::OnceCell<SequenceGrid>,
     /// For each cue (by index; empty for all), whether it keeps a cue of its
     /// own where it is played: not one with nothing but the sequences it
     /// plays.
@@ -89,6 +95,17 @@ pub struct Sequence {
     /// Whether any effect plays in it, its own or a sequence's it plays:
     /// without one, its cues' times are where its passes end.
     pub has_effects: bool,
+}
+
+/// Where a sequence's cues fall on its own grid, the same wherever it plays:
+/// its start, each cue's anchor beat, where each cue's own content ends (in
+/// beats), and its declared length in beats.
+#[derive(Debug, Clone)]
+pub(crate) struct SequenceGrid {
+    pub base: Duration,
+    pub anchor_beats: Vec<f64>,
+    pub grid_ends: Vec<Option<f64>>,
+    pub declared_beats: Option<f64>,
 }
 
 /// A cue of a sequence that lands at or past the end of its pass (a
@@ -306,6 +323,35 @@ impl Effect {
         offset_secs: f64,
     ) {
         let resolve = |len: MusicalLength| len.resolve(tempo_map, at_time, offset_secs);
+        if let Some(len) = self.musical.duration {
+            self.effect_type.set_duration(resolve(len));
+        }
+        if let Some(len) = self.musical.up_time {
+            self.up_time = Some(resolve(len));
+        }
+        if let Some(len) = self.musical.hold_time {
+            self.hold_time = Some(resolve(len));
+        }
+        if let Some(len) = self.musical.down_time {
+            self.down_time = Some(resolve(len));
+        }
+    }
+
+    /// Resolves the durations written in beats or measures on `tempo_map`'s
+    /// grid from grid beat `from` (where the cue sits, counted from its
+    /// pass's start): an effect lasting up to a later cue of the pass ends
+    /// exactly where that cue starts.
+    pub fn resolve_musical_durations_on_grid(
+        &mut self,
+        tempo_map: &crate::lighting::tempo::TempoMap,
+        from: f64,
+    ) {
+        let resolve = |len: MusicalLength| match len {
+            MusicalLength::Beats(beats) => tempo_map
+                .grid_time(from + beats)
+                .saturating_sub(tempo_map.grid_time(from)),
+            MusicalLength::Measures(measures) => tempo_map.grid_measures(from, measures),
+        };
         if let Some(len) = self.musical.duration {
             self.effect_type.set_duration(resolve(len));
         }

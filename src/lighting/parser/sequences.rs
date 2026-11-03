@@ -330,13 +330,16 @@ impl SequenceLibrary {
         let mut cues = Vec::new();
         let mut from_anchor = Vec::new();
         let mut calls = Vec::new();
+        let mut callees = Vec::new();
         let mut keeps = Vec::new();
         let mut endless = false;
         let mut has_effects = false;
         let mut hollow = true;
         for cue in definition.cues {
+            let mut played_here = Vec::new();
             for call in &cue.sequence_references {
                 let played = self.instance(call)?;
+                played_here.push(played.clone());
                 determine_loop_count(call.loop_param)?;
                 endless |= matches!(call.loop_param, Some(SequenceLoop::Loop)) || played.endless;
                 has_effects |= played.has_effects;
@@ -354,6 +357,7 @@ impl SequenceLibrary {
                 start_sequences: vec![],
             });
             calls.push(cue.sequence_references);
+            callees.push(played_here);
         }
         Ok(Sequence {
             cues,
@@ -363,6 +367,8 @@ impl SequenceLibrary {
             in_seconds,
             from_anchor,
             calls,
+            callees,
+            grid: std::cell::OnceCell::new(),
             keeps,
             endless,
             hollow,
