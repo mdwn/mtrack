@@ -726,9 +726,14 @@ interface SequencePass {
   /** Each cue's start, in beats from the sequence's */
   cueBeats: number[];
   passBeats: number;
-  /** The same in ms, for a show without a tempo map */
+  /** The same in ms: how a body in seconds (or a show without a tempo
+   *  map) is laid out */
   cueMs: number[];
   passMs: number;
+  /** Written wholly in seconds (every cue at a time, any `length:` in
+   *  time): laid out in seconds wherever it plays, as the player has it
+   *  (`Sequence::in_seconds`) */
+  inSeconds: boolean;
 }
 
 function sequencePass(seq: Sequence, tempo?: TempoSection): SequencePass {
@@ -771,6 +776,9 @@ function sequencePass(seq: Sequence, tempo?: TempoSection): SequencePass {
     passBeats: beatsFromStart(endMs),
     cueMs: cueAt.map((ms) => ms - startMs),
     passMs: endMs - startMs,
+    inSeconds:
+      seq.cues.every((c) => c.timestamp.type === "absolute") &&
+      !/beat|measure/.test(seq.length ?? ""),
   };
 }
 
@@ -821,7 +829,7 @@ function passCueMs(
   refMs: number,
   tempo?: TempoSection,
 ): number {
-  if (!tempo) {
+  if (!tempo || pass.inSeconds) {
     return (
       refMs + iteration * pass.passMs + (index < 0 ? 0 : pass.cueMs[index])
     );

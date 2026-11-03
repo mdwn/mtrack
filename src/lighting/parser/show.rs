@@ -265,6 +265,8 @@ pub(super) struct SequenceDefinition {
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
     pub(super) cues: Vec<UnexpandedSequenceCue>,
+    /// Whether every cue is written at a time (see [`written_in_seconds`]).
+    pub(super) in_seconds: bool,
 }
 
 impl SequenceDefinition {
@@ -311,8 +313,9 @@ pub(super) fn parse_sequence_structure(
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
     let mut tempo_map: Option<TempoMap> = None;
-    let mut length = None;
+    let mut length: Option<String> = None;
     let mut unexpanded_cues = Vec::new();
+    let mut cues_in_seconds = true;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -351,6 +354,7 @@ pub(super) fn parse_sequence_structure(
                 let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
 
                 let effective_tempo = effective_tempo.cloned();
+                cues_in_seconds = written_in_seconds(&cue_pairs);
                 let mut clock = CueClock::new();
                 for cue_pair in cue_pairs {
                     unexpanded_cues.extend(parse_cue(cue_pair, &effective_tempo, &mut clock)?);
@@ -360,11 +364,16 @@ pub(super) fn parse_sequence_structure(
         }
     }
 
+    // A declared length in beats or measures keeps the body in beats.
+    let length_in_seconds = length
+        .as_deref()
+        .is_none_or(|l| !(l.contains("beat") || l.contains("measure")));
     Ok(SequenceDefinition {
         name,
         tempo_map,
         length,
         cues: unexpanded_cues,
+        in_seconds: cues_in_seconds && length_in_seconds,
     })
 }
 
@@ -693,7 +702,9 @@ pub(super) fn expand_unexpanded_sequence_cue(
 /// the beat at `at`, so a pass that crosses a tempo change (or a ramp)
 /// follows it, as the cues around it do. Its effects' durations in beats or
 /// measures are resolved where they play (#529). Without a tempo map where it
-/// is played, it keeps the times it has.
+/// is played, or `in_seconds` (an inline loop's body written wholly in
+/// seconds), it keeps the times it has: its cues and its passes stay in
+/// seconds whatever the tempo does.
 fn expand_sequence_call(
     sequence: &Sequence,
     at: Duration,
@@ -702,6 +713,7 @@ fn expand_sequence_call(
     name: Option<&str>,
     passes: usize,
 ) -> Vec<Cue> {
+    let in_seconds = sequence.in_seconds;
     let base = sequence.start_time();
     let pass_beats = sequence.pass_beats();
     let pass_length = sequence.pass_length();
@@ -715,7 +727,7 @@ fn expand_sequence_call(
     for pass in 0..passes {
         for (index, (seq_cue, beats)) in sequence.cues.iter().zip(&cue_beats).enumerate() {
             let mut cue = seq_cue.clone();
-            cue.time = match tempo_map {
+            cue.time = match tempo_map.as_ref().filter(|_| !in_seconds) {
                 Some(tm) => {
                     // Snapped: a pass length's rounding error multiplied by
                     // the pass count crept the loop later every pass (#534).
@@ -751,6 +763,18 @@ fn expand_sequence_call(
     cues
 }
 
+/// Whether every cue of a body (a sequence's or an inline loop's) is
+/// written at a time rather than a bar and beat: such a body is laid out in
+/// seconds, its cues and passes keeping their times whatever the tempo does.
+fn written_in_seconds(cue_pairs: &[Pair<Rule>]) -> bool {
+    cue_pairs.iter().all(|pair| {
+        !pair
+            .clone()
+            .into_inner()
+            .any(|p| p.as_rule() == Rule::measure_time)
+    })
+}
+
 /// Parses an inline loop at `at` (under an offset of `offset_secs`) and plays
 /// it: its body is an unnamed sequence, `repeats` passes of it.
 fn parse_inline_loop(
@@ -777,6 +801,11 @@ fn parse_inline_loop(
             _ => {}
         }
     }
+
+    // A body written wholly in seconds is laid out in seconds: its cues
+    // and its passes keep their times whatever the tempo does while it
+    // plays. One with a cue at a bar and beat is laid out in beats.
+    let in_seconds = written_in_seconds(&loop_cue_pairs);
 
     // The body is timed from its own start, with offsets of its own, at
     // the one tempo and time signature in effect where the loop is: as a
@@ -805,6 +834,7 @@ fn parse_inline_loop(
         cues: body,
         tempo_map: body_tempo,
         length: None,
+        in_seconds,
     };
     Ok(expand_sequence_call(
         &sequence,
@@ -936,6 +966,7 @@ mod tests {
             cues,
             tempo_map: None,
             length: None,
+            in_seconds: false,
         }
     }
 

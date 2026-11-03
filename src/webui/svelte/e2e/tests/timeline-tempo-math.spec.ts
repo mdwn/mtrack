@@ -540,3 +540,28 @@ test("a sequence is laid out in beats where it plays, as the player has it", () 
   // Two passes, 18 beats: 4 at 120 and 14 at 60.
   close(getSequencePlayMs(seq, 0, t, 2), 2000 + 14000);
 });
+
+test("a sequence written in seconds keeps its seconds, as the player has it", () => {
+  // The values the server gives (sequences_tests.rs,
+  // a_sequence_in_seconds_keeps_its_seconds_across_a_tempo_change): from
+  // bar 8 (14s) through the change to 60 at bar 9, half a second a cue.
+  const t = tempo(120, [4, 4], [at(9, 1, { bpm: 60 })]);
+  const effect: CueEffect = {
+    groups: ["front_wash"],
+    effect: { type: "static", colors: ["red"], duration: "500ms" },
+  };
+  const seq: Sequence = {
+    name: "s",
+    cues: [
+      { ...emptyCue(absoluteTimestamp(0)), effects: [effect] },
+      { ...emptyCue(absoluteTimestamp(500)), effects: [effect] },
+    ],
+  };
+  const show = [{ ...cueAt(8, 1), sequences: [{ name: "s", loop: "4" }] }];
+  const times = expandSequencesIntoCues(show, [seq], t)
+    .filter((c) => c.effects.length)
+    .map((c) => timestampToMs(c.timestamp));
+  expect(times.length).toBe(8);
+  times.forEach((ms, k) => close(ms, 14000 + 500 * k, `cue ${k}`));
+  close(getSequencePlayMs(seq, 14000, t, 4), 4000);
+});

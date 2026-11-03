@@ -286,6 +286,7 @@ impl SequenceLibrary {
             .clone()
             .or_else(|| self.sequence_tempo.clone());
         let length = definition.declared_length(tempo.as_ref())?;
+        let in_seconds = definition.in_seconds;
         let mut cues = Vec::new();
         for cue in definition.cues {
             cues.extend(expand_unexpanded_sequence_cue(cue, &tempo, self)?);
@@ -294,6 +295,7 @@ impl SequenceLibrary {
             cues,
             tempo_map: tempo,
             length,
+            in_seconds,
         })
     }
 }

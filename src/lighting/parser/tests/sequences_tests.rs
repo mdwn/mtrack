@@ -1562,3 +1562,182 @@ show "Show" {
 "#;
     assert_eq!(cue_secs(content, "Show"), vec![2.0, 3.0, 4.0, 6.0]);
 }
+
+/// A song at 120 that slows to 60 at bar 9 (16s).
+const SLOWS_AT_NINE: &str = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @9/1 { bpm: 60 }
+    ]
+}
+"#;
+
+fn close_to(got: &[f64], want: &[f64]) {
+    assert_eq!(got.len(), want.len(), "{got:?} vs {want:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!((g - w).abs() < 0.002, "{got:?} vs {want:?}");
+    }
+}
+
+#[test]
+fn an_inline_loop_in_seconds_keeps_its_seconds_across_a_tempo_change() {
+    // From bar 8 (14s), half a second a cue, a second a pass, through the
+    // change at 16s: every pass keeps its second.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+show "Show" {{
+    @8/1
+    loop {{
+        @0.000
+        front_wash: static, color: "red", duration: 500ms
+        @0.500
+        front_wash: static, color: "blue", duration: 500ms
+    }}, repeats: 6
+}}
+"#
+    );
+    let want: Vec<f64> = (0..12).map(|k| 14.0 + 0.5 * k as f64).collect();
+    close_to(&cue_secs(&content, "Show"), &want);
+}
+
+#[test]
+fn an_inline_loop_in_seconds_keeps_its_seconds_through_a_ramp() {
+    // A ramp from 120 to 60 over four beats from bar 3 (4s); bar 3 beat 3
+    // is two beats into it, at 4s + 1.117s. The loop's half seconds stay
+    // half seconds while the ramp runs.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60, transition: 4 }
+    ]
+}
+
+show "Show" {
+    @3/3
+    loop {
+        @0.000
+        front_wash: static, color: "red", duration: 500ms
+        @0.500
+        front_wash: static, color: "blue", duration: 500ms
+    }, repeats: 4
+}
+"#;
+    let start = 4.0 + (2.0 - 2.5f64.sqrt()) / 0.375;
+    let want: Vec<f64> = (0..8).map(|k| start + 0.5 * k as f64).collect();
+    close_to(&cue_secs(content, "Show"), &want);
+}
+
+#[test]
+fn an_inline_loop_in_measures_counts_the_time_signature_where_it_plays() {
+    // 3/4 from bar 3 (4s): a pass of one measure is three beats, 1.5s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { time_signature: 3/4 }
+    ]
+}
+
+show "Show" {
+    @3/1
+    loop {
+        @1/1
+        front_wash: static, color: "red", duration: 1measure
+    }, repeats: 4
+}
+"#;
+    close_to(&cue_secs(content, "Show"), &[4.0, 5.5, 7.0, 8.5]);
+}
+
+#[test]
+fn an_offset_inside_an_inline_loop_is_sized_at_the_loops_tempo() {
+    // At 60 from bar 9, a loop at bar 10 (20s) whose first cue offsets
+    // the rest by a measure: four beats, 4s at the loop's tempo, so its
+    // bar-2 cue is 8 beats in and a pass (to that cue's beat) 9 beats.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+show "Show" {{
+    @10/1
+    loop {{
+        @1/1
+        front_wash: static, color: "red", duration: 1beat
+        offset 1 measures
+        @2/1
+        front_wash: static, color: "blue", duration: 1beat
+    }}, repeats: 2
+}}
+"#
+    );
+    close_to(&cue_secs(&content, "Show"), &[20.0, 28.0, 29.0, 37.0]);
+}
+
+#[test]
+fn an_inline_loop_in_seconds_after_a_start_offset_keeps_its_seconds() {
+    // Bar 1 at 2s, so bar 2 at 4s.
+    let content = r#"
+tempo {
+    start: 2s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Show" {
+    @2/1
+    loop {
+        @0.000
+        front_wash: static, color: "red", duration: 500ms
+        @0.500
+        front_wash: static, color: "blue", duration: 500ms
+    }, repeats: 2
+}
+"#;
+    close_to(&cue_secs(content, "Show"), &[4.0, 4.5, 5.0, 5.5]);
+}
+
+#[test]
+fn a_sequence_in_seconds_keeps_its_seconds_across_a_tempo_change() {
+    // As an inline loop's: a body written wholly in seconds keeps its
+    // seconds on every pass, wherever it plays.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @0.000
+    front_wash: static, color: "red", duration: 500ms
+    @0.500
+    front_wash: static, color: "blue", duration: 500ms
+}}
+
+show "Show" {{
+    @8/1
+    sequence "s", loop: 4
+}}
+"#
+    );
+    let want: Vec<f64> = (0..8).map(|k| 14.0 + 0.5 * k as f64).collect();
+    close_to(&cue_secs(&content, "Show"), &want);
+}
+
+#[test]
+fn a_sequence_in_beats_follows_the_map_across_a_tempo_change() {
+    // Two beats a pass from bar 8 (14s): 1s a pass at 120 until 16s, 2s a
+    // pass at 60 after.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @1/1
+    front_wash: static, color: "red", duration: 2beats
+}}
+
+show "Show" {{
+    @8/1
+    sequence "s", loop: 4
+}}
+"#
+    );
+    close_to(&cue_secs(&content, "Show"), &[14.0, 15.0, 16.0, 18.0]);
+}

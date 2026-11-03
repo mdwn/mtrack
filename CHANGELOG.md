@@ -212,16 +212,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the song's tempo changes as though it started at the song's bar 1, then read back at its starting
   tempo, so a cue past the song's first change landed in the wrong place wherever the sequence was
   played (a sequence's bar 3, with the song slowing to 60 at bar 2, came 12 beats in instead of 8).
-  A sequence without a `tempo` block of its own is now timed at the file's starting tempo and time
-  signature throughout, and its cues and pass length are counted in beats -- through its own tempo
-  map when it has one -- and placed in beats where it is played. A sequence played inside another
-  now follows the outer sequence's tempo map rather than its starting tempo. An inline loop's body
-  is timed at the tempo and time signature in effect where the loop starts (so a body written in
-  seconds keeps its seconds there), and its passes are counted in beats from there: a pass that
-  reaches a later tempo change or ramp follows it, where passes used to keep a fixed length in
-  seconds. A loop's effects have their durations in beats or measures, and their tempo-aware
-  rates, read where each pass plays, as a sequence's are. A sequence with no effect at all now
-  lasts until its last cue, as an inline loop always has, rather than no time.
+  Each body -- a sequence's, or an inline loop's -- now keeps the unit it is written in:
+  - A body written wholly in seconds (every cue at a time, and any `length:` in time) is laid out
+    in seconds wherever it plays: its cues and its passes keep their times whatever the tempo does,
+    across a tempo change or through a ramp. A sequence like this used to be rescaled to the tempo
+    where it was played.
+  - A body with a cue at a bar and beat (or a `length:` in beats or measures) is counted in beats
+    and placed in beats through the tempo map where it plays, so a pass that reaches a tempo change
+    or ramp follows it. A named sequence without a `tempo` block of its own is counted at the
+    file's starting tempo and time signature, one with its own through that block's map, and an
+    inline loop's at the tempo and time signature in effect where the loop starts (its `offset`s
+    sized there too); its passes used to keep a fixed length in seconds, its offsets sized at the
+    song's first tempo. A sequence played inside another follows the outer sequence's tempo map
+    rather than its starting tempo.
+  - A loop's effects have their durations in beats or measures, and their tempo-aware rates, read
+    where each pass plays, as a sequence's are.
+
+  A sequence with no effect at all now lasts until its last cue, as an inline loop always has,
+  rather than no time.
 - **The web UI's timeline is timed by the player's own tempo map**: the lighting timeline had a
   TypeScript copy of the tempo map, cue offsets and sequence expansion, and its sequences were
   laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,

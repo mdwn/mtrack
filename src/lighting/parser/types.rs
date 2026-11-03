@@ -52,6 +52,12 @@ pub struct Sequence {
     /// How long one pass lasts, from the first cue, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
+    /// Whether the body is written wholly in seconds (every cue at a time,
+    /// any `length:` in time): laid out in seconds wherever it plays, its
+    /// cues and passes keeping their times whatever the tempo does. A body
+    /// with a cue at a bar and beat (or a length in beats or measures) is
+    /// laid out in beats, through the tempo map where it plays.
+    pub in_seconds: bool,
 }
 
 impl Sequence {
@@ -531,6 +537,7 @@ mod tests {
             cues: vec![],
             tempo_map: None,
             length: None,
+            in_seconds: false,
         };
         assert_eq!(seq.duration(), Duration::ZERO);
     }
@@ -547,6 +554,7 @@ mod tests {
             }],
             tempo_map: None,
             length: None,
+            in_seconds: false,
         };
         // cue_time(2) + effect_duration(3) = 5
         assert_eq!(seq.duration(), Duration::from_secs(5));
@@ -573,6 +581,7 @@ mod tests {
             ],
             tempo_map: None,
             length: None,
+            in_seconds: false,
         };
         // max(0+3, 5+10) = 15
         assert_eq!(seq.duration(), Duration::from_secs(15));
@@ -593,6 +602,7 @@ mod tests {
             }],
             tempo_map: None,
             length: None,
+            in_seconds: false,
         };
         assert_eq!(seq.duration(), Duration::from_secs(5));
     }
