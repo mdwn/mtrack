@@ -244,10 +244,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A pass of a body in beats without a `length:` keeps its length in beats, as before: to the end
     of its own last effect, an effect's duration in seconds counted at the tempo the body was
     written at, so its passes stay on the beat grid (a cue with no effect, such as a `clear()`,
-    does not count, in a body with effects, as in one in seconds). A sequence or loop played inside
-    it, though, counts where it actually lands: the pass lasts until that content ends, if later,
-    so the next pass no longer starts over it where the tempo is faster than the body was written
-    at. A pass of a body in seconds lasts until its content ends.
+    does not count, in a body with effects, as in one in seconds). A sequence in beats played
+    inside it counts on the same grid, its effects' lengths read at the tempo and signature the
+    outer body was written at, so wrapping a sequence in another does not change its timing. A
+    sequence or loop in seconds played inside it, though, counts where it actually lands in the
+    show: the pass lasts until that content ends, if later, so the next pass no longer starts over
+    it where the tempo is faster than the body was written at. A pass of a body in seconds lasts
+    until its content ends. A pass that lasts no time (all that gave it a length dropped, or
+    nothing but a marker or a layer command) is the last: its passes no longer pile up at one
+    instant.
   - With a `length:`, a cue that lands at or past the pass's end where it plays (one in seconds,
     where the tempo is faster) does not play, as a cue written past it cannot -- decided where it
     finally plays in the show, however deep the sequence is played inside others, not at the tempo
@@ -258,7 +263,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     many and the first's show time, and the timeline marks the call.
 
   A sequence with no effect at all now lasts until its last cue, as an inline loop always has,
-  rather than no time.
+  rather than no time. A sequence no show plays is checked as written -- its cues, the sequences
+  it names, their arguments and loop modes -- but no longer laid out: an error that shows only
+  where it plays (a time past the end of a show, say) is reported when a show plays it.
 - **The web UI's timeline is timed by the player's own tempo map**: the lighting timeline had a
   TypeScript copy of the tempo map, cue offsets and sequence expansion, and its sequences were
   laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,

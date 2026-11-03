@@ -12,13 +12,14 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::super::effects::EffectLayer;
-use super::super::tempo::{snap_beats, CueClock, CuePosition, TempoMap};
+use super::super::tempo::{snap_beats, CueClock, CuePosition, TempoMap, DEFAULT_BPM};
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, describe_pest_error};
 use super::grammar::{LightingParser, Rule};
@@ -384,7 +385,7 @@ fn parse_light_show_definition(
                                         laid_out.end = played.end;
                                         laid_out.pass_ends = played.pass_ends.clone();
                                         laid_out.truncated = played.truncated;
-                                        laid_out.dropped = played.dropped.len();
+                                        laid_out.dropped = played.dropped.count;
                                     }
                                     Err(e) => laid_out.error = Some(e),
                                 }
@@ -894,8 +895,8 @@ struct LayoutCalls<'a> {
 
 /// The cues a show's cue becomes: itself, with every sequence it references
 /// played from it (a cue of a sequence's that falls on it joins it), laying
-/// out each call for `layout` when there is one. Each call builds at most
-/// the library's cue cap.
+/// out each call for `layout` when there is one. Each call places at most
+/// the library's cue cap (a layout's; none when played).
 fn expand_cue(
     unexpanded: UnexpandedSequenceCue,
     tempo_map: &Option<TempoMap>,
@@ -907,19 +908,27 @@ fn expand_cue(
     let has_base = !cues.is_empty();
     let base_anchor = unexpanded.from_anchor;
     for (index, call) in unexpanded.sequence_references.iter().enumerate() {
+        let budget = Cell::new(library.max_cues());
+        let inside = Inside {
+            library,
+            budget: &budget,
+            within: None,
+            frames: &[],
+            effects_around: false,
+            endless: false,
+            // Laid out, a cue that does not play is only counted.
+            record_drops: !library.laying_out(),
+        };
         let played = match play_call(
             call,
             unexpanded.time,
             unexpanded.offset_secs,
             tempo_map,
-            library,
-            library.max_cues(),
-            None,
-            false,
+            &inside,
         ) {
             Ok(mut played) => {
                 // Said as played from the show's cue.
-                for d in &mut played.dropped {
+                for d in &mut played.dropped.cues {
                     d.call = call.name.clone();
                     d.call_at = unexpanded.time;
                 }
@@ -936,7 +945,7 @@ fn expand_cue(
         if let Some(layout) = layout.as_mut() {
             (layout.on_call)(index, &call.name, Ok(&played));
         }
-        dropped.extend(played.dropped);
+        dropped.extend(played.dropped.cues);
         for placed in played.cues {
             if has_base && cues[0].cue.time == placed.cue.time && placed.from_anchor == base_anchor
             {
@@ -983,17 +992,142 @@ pub(super) fn keeps_its_own(unexpanded: &UnexpandedSequenceCue) -> bool {
         || unexpanded.sequence_references.is_empty()
 }
 
+/// The cues that land past a pass's `length:` and do not play: each one,
+/// played, for the lint to say where; laid out, only how many.
+#[derive(Default)]
+pub(super) struct Dropped {
+    pub(super) cues: Vec<DroppedCue>,
+    pub(super) count: usize,
+}
+
+impl Dropped {
+    fn add(&mut self, record: bool, cue: impl FnOnce() -> DroppedCue) {
+        self.count += 1;
+        if record {
+            self.cues.push(cue());
+        }
+    }
+
+    fn extend(&mut self, other: Dropped) {
+        self.count += other.count;
+        self.cues.extend(other.cues);
+    }
+}
+
+/// How far what a pass (or a whole call) plays reaches, by which the next
+/// pass of the bodies around it starts: in time, where its content ends; in
+/// seconds, where content in seconds ends; on the beat grid of the body
+/// itself, in beats from where it is played; and on the beat grid of each
+/// body in beats it is played inside ([`GridFrame`]), in beats from the
+/// start of that body's pass -- each body counting what plays inside it as
+/// it was written there, effects' lengths in seconds at its own tempo.
+#[derive(Clone, Default)]
+struct Reach {
+    real: Option<Duration>,
+    seconds: Option<Duration>,
+    beats: Option<f64>,
+    frames: Vec<Option<f64>>,
+}
+
+/// The greater of a maximum so far and another value.
+fn at_least(so_far: &mut Option<f64>, value: f64) {
+    *so_far = Some(so_far.map_or(value, |b| b.max(value)));
+}
+
+impl Reach {
+    fn reach_frame(&mut self, frame: usize, beats: f64) {
+        if self.frames.len() <= frame {
+            self.frames.resize(frame + 1, None);
+        }
+        at_least(&mut self.frames[frame], beats);
+    }
+
+    fn reach_time(&mut self, time: Duration) {
+        self.real = self.real.max(Some(time));
+    }
+
+    fn reach_seconds(&mut self, time: Duration) {
+        self.reach_time(time);
+        self.seconds = self.seconds.max(Some(time));
+    }
+
+    fn reach_beats(&mut self, beats: f64) {
+        at_least(&mut self.beats, beats);
+    }
+
+    /// What `other` reaches, too, in the same bodies' terms.
+    fn take(&mut self, other: &Reach) {
+        if let Some(real) = other.real {
+            self.reach_time(real);
+        }
+        self.seconds = self.seconds.max(other.seconds);
+        for (frame, beats) in other.frames.iter().enumerate() {
+            if let Some(beats) = beats {
+                self.reach_frame(frame, *beats);
+            }
+        }
+    }
+}
+
+/// A body in beats that what is being expanded plays inside, for the grid
+/// its passes keep: the sequence, where its beats count from, and where (in
+/// its beats, from the start of its pass) what is being expanded is played.
+#[derive(Clone, Copy)]
+struct GridFrame<'a> {
+    sequence: &'a Sequence,
+    base: Duration,
+    offset: f64,
+}
+
+/// Where a cue of a body played inside `frame`, `pos` beats into the
+/// frame's pass, ends on the frame's grid: its effects' lengths read there,
+/// at the frame's own tempo -- or, in a frame with no effect at all, the cue
+/// itself ([`content_end_of`]).
+fn grid_in(frame: &GridFrame, pos: f64, cue: &Cue) -> Option<f64> {
+    let tm = frame.sequence.tempo_map.as_ref();
+    let pos = pos.max(0.0);
+    let at = match tm {
+        Some(tm) => {
+            frame
+                .base
+                .saturating_add(tm.beats_to_duration(snap_beats(pos), frame.base, 0.0))
+        }
+        None => frame
+            .base
+            .saturating_add(Duration::from_secs_f64(pos * 60.0 / DEFAULT_BPM)),
+    };
+    if !frame.sequence.has_effects {
+        return Some(pos);
+    }
+    let end = cue
+        .effects
+        .iter()
+        .map(|effect| {
+            let length = match tm {
+                Some(tm) if !effect.musical.is_empty() => {
+                    let mut effect = effect.clone();
+                    effect.resolve_musical_durations(tm, at, 0.0);
+                    effect.total_duration()
+                }
+                _ => effect.total_duration(),
+            };
+            at.saturating_add(length)
+        })
+        .max()?;
+    Some(pos + beats_between(tm, at, end))
+}
+
 /// A sequence played from a cue: its cues, where its last pass ends,
-/// whether `max_cues` cut it short, what of it lands past a pass's
-/// `length:`, where the content it plays ends, and whether it stopped at
-/// the end of a show (played for good).
+/// whether the cap on cues cut it short, what of it lands past a pass's
+/// `length:`, how far what it plays reaches, and whether it stopped at the
+/// end of a show (played for good).
 struct PlayedCall {
     cues: Vec<PlacedCue>,
     end: Duration,
     pass_ends: Vec<Duration>,
     truncated: bool,
-    dropped: Vec<DroppedCue>,
-    content_end: Option<Duration>,
+    dropped: Dropped,
+    reach: Reach,
     cut: bool,
 }
 
@@ -1016,25 +1150,19 @@ fn earlier(a: Option<&PassEnd>, b: Option<&PassEnd>) -> Option<PassEnd> {
 }
 
 /// Plays the sequence `call` names from `at` (under an offset of
-/// `offset_secs`), where it plays, through `tempo_map`: building at most
-/// `max_cues` of its cues, inside the pass ending at `within` (when it is
-/// played inside a sequence with a `length:`), and -- `endless`, inside a
-/// sequence played for good -- stopping at the end of a show.
-#[allow(clippy::too_many_arguments)]
+/// `offset_secs`), where it plays, through `tempo_map`, `inside` what it is
+/// played inside.
 fn play_call(
     call: &SequenceCall,
     at: Duration,
     offset_secs: f64,
     tempo_map: &Option<TempoMap>,
-    library: &SequenceLibrary,
-    max_cues: usize,
-    within: Option<&PassEnd>,
-    endless: bool,
+    inside: &Inside,
 ) -> Result<PlayedCall, Box<dyn Error>> {
-    let sequence = library.instance(call)?;
+    let sequence = inside.library.instance(call)?;
     let passes = determine_loop_count(call.loop_param)?;
     let endless =
-        endless || matches!(call.loop_param, Some(SequenceLoop::Loop)) || sequence.endless;
+        inside.endless || matches!(call.loop_param, Some(SequenceLoop::Loop)) || sequence.endless;
     let expansion = expand_sequence_call(
         &sequence,
         at,
@@ -1042,12 +1170,7 @@ fn play_call(
         tempo_map,
         Some(&call.name),
         passes,
-        endless,
-        &Inside {
-            library,
-            max_cues,
-            within,
-        },
+        &Inside { endless, ..*inside },
     )?;
     Ok(PlayedCall {
         cues: expansion.cues,
@@ -1055,17 +1178,39 @@ fn play_call(
         pass_ends: expansion.pass_ends,
         truncated: expansion.truncated,
         dropped: expansion.dropped,
-        content_end: expansion.content_end,
+        reach: expansion.reach,
         cut: expansion.cut,
     })
 }
 
-/// What a body is expanded inside: the sequences it may play, the most cues
-/// it may build, and the end of the enclosing pass it must start before.
+/// What a body is expanded inside: the sequences it may play; how many more
+/// cues may be placed, dropped or passed over (shared by everything one
+/// show's call plays: a layout's cap); the end of the enclosing pass it
+/// must start before; the bodies in beats it is played inside, for their
+/// grids; whether a body around it has effects (then one
+/// without any reaches no further for it than nothing); whether it is
+/// played for good; and whether each cue that does not play is recorded.
+#[derive(Clone, Copy)]
 struct Inside<'a> {
     library: &'a SequenceLibrary,
-    max_cues: usize,
+    budget: &'a Cell<usize>,
     within: Option<&'a PassEnd>,
+    frames: &'a [GridFrame<'a>],
+    effects_around: bool,
+    endless: bool,
+    record_drops: bool,
+}
+
+impl Inside<'_> {
+    /// One more cue placed, dropped or passed over, if the cap allows it.
+    fn spend(&self) -> bool {
+        let left = self.budget.get();
+        if left == 0 {
+            return false;
+        }
+        self.budget.set(left - 1);
+        true
+    }
 }
 
 /// What [`expand_sequence_call`] plays.
@@ -1075,12 +1220,12 @@ pub(super) struct Expansion {
     end: Duration,
     /// Where each pass ends.
     pass_ends: Vec<Duration>,
-    /// Whether `max_cues` stopped it before its last cue.
+    /// Whether the cap on cues stopped it before its last cue.
     pub(super) truncated: bool,
     /// The cues that land past a pass's `length:`, and do not play.
-    dropped: Vec<DroppedCue>,
-    /// Where the content it plays ends ([`content_end_of`]), if any plays.
-    content_end: Option<Duration>,
+    dropped: Dropped,
+    /// How far what it plays reaches, for a body it is played inside.
+    reach: Reach,
     /// Whether it stopped at the end of a show (played for good).
     cut: bool,
 }
@@ -1102,8 +1247,7 @@ fn content_end_of(cue: &Cue, has_effects: bool) -> Option<Duration> {
 
 /// Plays `passes` passes of `sequence` from `at`, under an offset of
 /// `offset_secs`: a sequence referenced from a cue (`name` given, so its
-/// effects can be stopped by it) or an inline loop's body (no name). Builds
-/// at most `inside.max_cues` cues, and says so when that cut it short.
+/// effects can be stopped by it) or an inline loop's body (no name).
 ///
 /// A body purely in seconds ([`body_in_seconds`]) keeps its times: its cues
 /// and passes stay in seconds from `at`, whatever the tempo does. Any other
@@ -1119,19 +1263,19 @@ fn content_end_of(cue: &Cue, has_effects: bool) -> Option<Duration> {
 /// the body was written at, does not play, as one written there cannot, and
 /// is listed in `dropped`. Without one, a pass of a body in seconds lasts
 /// until its content ends ([`content_end_of`]); a pass of a body in beats
-/// lasts as its own content does in the body, in beats (its effects'
-/// lengths in seconds counted at the tempo it was written at, so passes stay
-/// on the beat grid), or until the content played inside it (a sequence it
-/// plays, a loop in seconds) ends where that lands, whichever is later. A
-/// cue that does not play makes no pass longer. Effects' durations in beats
-/// or measures are resolved where they play (#529). Without a tempo map
-/// where it is played, a body keeps the times it has.
+/// lasts as its content does on its beat grid -- its own and that of any
+/// sequence in beats it plays, effects' lengths in seconds counted at the
+/// tempo each was written at -- or until content in seconds played inside
+/// it ends where that lands, whichever is later ([`Reach`]). A cue that does
+/// not play makes no pass longer, and a pass that lasts no time is the last.
+/// Effects' durations in beats or measures are resolved where they play
+/// (#529). Without a tempo map where it is played, a body keeps the times
+/// it has.
 ///
 /// A cue or effect reaching past the end a show can have is an error -- but
-/// for a sequence played for good (`endless`: `loop: loop`, holding one, or
-/// inside one), which plays what falls inside it: the pass a cue falls past
-/// the end in is its last.
-#[allow(clippy::too_many_arguments)]
+/// for a sequence played for good (`loop: loop`, holding one, or inside
+/// one), which plays what falls inside it: the pass a cue falls past the end
+/// in is its last.
 fn expand_sequence_call(
     sequence: &Sequence,
     at: Duration,
@@ -1139,10 +1283,10 @@ fn expand_sequence_call(
     tempo_map: &Option<TempoMap>,
     name: Option<&str>,
     passes: usize,
-    endless: bool,
     inside: &Inside,
 ) -> Result<Expansion, Box<dyn Error>> {
     let in_seconds = sequence.in_seconds;
+    let endless = inside.endless;
     let base = sequence.start_time();
     let distance = |index: usize| sequence.from_anchor.get(index).copied().flatten();
     let calls_of = |index: usize| sequence.calls.get(index).map_or(&[][..], Vec::as_slice);
@@ -1159,7 +1303,9 @@ fn expand_sequence_call(
     };
     let past = |time: Duration| past_show(time.as_secs_f64());
     // In beats, each cue is placed by its anchor's beat (its own, for one
-    // with none), counted from the start of the body.
+    // with none), counted from the start of the body; and its content ends
+    // on the body's beat grid where its effects end at the tempo the body
+    // was written at.
     let anchor_beats: Vec<f64> = sequence
         .cues
         .iter()
@@ -1171,21 +1317,19 @@ fn expand_sequence_call(
             )
         })
         .collect();
-    let beats_tm = tempo_map.as_ref().filter(|_| !in_seconds);
-    let declared_beats = sequence.declared_beats();
-    // Without a `length:`, a pass of a body in beats lasts as its own
-    // content does in the body, in beats: its own effects' lengths (those
-    // written in seconds counted at the tempo the body was written at, so
-    // the passes stay on the beat grid), or with no effect at all its last
-    // cue. Content played inside it counts where it actually lands, below.
-    let own_beats = sequence
+    let grid_ends: Vec<Option<f64>> = sequence
         .cues
         .iter()
         .enumerate()
-        .filter(|(index, _)| distance(*index).is_none() && keeps(*index))
-        .filter_map(|(_, cue)| content_end_of(cue, has_effects))
-        .map(|end| sequence.beats_between(base, end))
-        .fold(0.0, f64::max);
+        .map(|(index, cue)| {
+            (distance(index).is_none() && keeps(index))
+                .then(|| content_end_of(cue, has_effects))
+                .flatten()
+                .map(|end| sequence.beats_between(base, end))
+        })
+        .collect();
+    let beats_tm = tempo_map.as_ref().filter(|_| !in_seconds);
+    let declared_beats = sequence.declared_beats();
     // Where `beats` beats from `at` fall.
     let at_beats = |tm: &TempoMap, beats: f64| {
         at.saturating_add(tm.beats_to_duration(snap_beats(beats), at, offset_secs))
@@ -1218,13 +1362,37 @@ fn expand_sequence_call(
         };
         (placed, anchor_of(placed, own))
     };
+    // Its effects are this sequence's, to stop with it, and read the tempo
+    // map as shifted where it plays.
+    let tag = |cue: &mut Cue| {
+        for effect in &mut cue.effects {
+            if let Some(name) = name {
+                effect.sequence_name = Some(name.to_string());
+            }
+            effect.tempo_offset_secs = offset_secs;
+        }
+    };
+    // What a sequence it plays is played inside.
+    let around = Inside {
+        effects_around: inside.effects_around || has_effects,
+        ..*inside
+    };
 
     let mut cues: Vec<PlacedCue> = Vec::new();
     let mut pass_ends = Vec::new();
-    let mut dropped = Vec::new();
+    let mut dropped = Dropped::default();
     let mut truncated = false;
     let mut cut = false;
-    let mut played_end: Option<Duration> = None;
+    let mut reach = Reach {
+        frames: vec![None; inside.frames.len()],
+        ..Reach::default()
+    };
+    // This body, for the grid of what it plays.
+    let own_frame = GridFrame {
+        sequence,
+        base,
+        offset: 0.0,
+    };
     // Where the current pass starts: in beats from `at`, or in time.
     let mut start_beats = 0.0;
     let mut start_time = at;
@@ -1259,18 +1427,22 @@ fn expand_sequence_call(
             sequence: label.to_string(),
         });
         let pass_end = earlier(own_end.as_ref(), inside.within);
+        let nested = Inside {
+            within: pass_end.as_ref(),
+            ..around
+        };
         let pass_first = cues.len();
-        let mut content_end = start_time;
-        // Where the content played inside a body in beats ends.
-        let mut nested_end = start_time;
+        let mut pass_reach = Reach {
+            frames: vec![None; inside.frames.len()],
+            ..Reach::default()
+        };
         // Whether a cue fell past the end of a show: then this pass is the
         // last.
         let mut skipped = false;
         for (index, seq_cue) in sequence.cues.iter().enumerate() {
-            if cues.len() >= inside.max_cues {
+            if !inside.spend() {
                 truncated = true;
-                pass_ends.push(content_end.max(end));
-                break 'passes;
+                break;
             }
             let (time, anchored) = place(index, start_beats, start_time);
             if past(time) {
@@ -1284,10 +1456,11 @@ fn expand_sequence_call(
                 inside.within
             };
             // The cue's own content, unless it lands past its pass's end.
+            let group = cues.len();
             let mut own = None;
             if keeps(index) {
                 match ends_by.filter(|e| past_pass_end(time, e.time)) {
-                    Some(e) => dropped.push(DroppedCue {
+                    Some(e) => dropped.add(inside.record_drops, || DroppedCue {
                         sequence: e.sequence.clone(),
                         call: String::new(),
                         call_at: Duration::ZERO,
@@ -1297,14 +1470,9 @@ fn expand_sequence_call(
                     None => {
                         let mut cue = seq_cue.clone();
                         cue.time = time;
-                        for effect in &mut cue.effects {
-                            if let Some(name) = name {
-                                effect.sequence_name = Some(name.to_string());
-                            }
-                            // Tempo-aware rates read the map as shifted where
-                            // it plays.
-                            effect.tempo_offset_secs = offset_secs;
-                            if let Some(tm) = tempo_map {
+                        tag(&mut cue);
+                        if let Some(tm) = tempo_map {
+                            for effect in &mut cue.effects {
                                 effect.resolve_musical_durations(tm, cue.time, offset_secs);
                             }
                         }
@@ -1312,11 +1480,22 @@ fn expand_sequence_call(
                             // An effect that starts inside a show plays on,
                             // past its end, in a sequence played for good.
                             within(cue_end)?;
-                            content_end = content_end.max(cue_end);
-                            if anchored.is_some() {
-                                nested_end = nested_end.max(cue_end);
+                            match (anchored, grid_ends[index]) {
+                                (None, Some(grid)) if beats_tm.is_some() => {
+                                    pass_reach.reach_time(cue_end);
+                                    pass_reach.reach_beats(start_beats + grid);
+                                    // And on the grids of the bodies it is
+                                    // played inside, as written there.
+                                    let rel = start_beats + anchor_beats[index];
+                                    for (i, frame) in inside.frames.iter().enumerate() {
+                                        if let Some(g) = grid_in(frame, frame.offset + rel, seq_cue)
+                                        {
+                                            pass_reach.reach_frame(i, g);
+                                        }
+                                    }
+                                }
+                                _ => pass_reach.reach_seconds(cue_end),
                             }
-                            played_end = played_end.max(Some(cue_end));
                         }
                         own = Some(cues.len());
                         cues.push(PlacedCue {
@@ -1328,33 +1507,46 @@ fn expand_sequence_call(
             }
             // The sequences it plays, played where it lands, inside this
             // pass.
+            // A sequence in beats it plays reaches as far as its content
+            // does on this body's grid (and on those around it), as written
+            // here; content in seconds, where it lands.
+            let frames: Vec<GridFrame> = if beats_tm.is_some() {
+                let rel = start_beats + anchor_beats[index];
+                inside
+                    .frames
+                    .iter()
+                    .map(|frame| GridFrame {
+                        offset: frame.offset + rel,
+                        ..*frame
+                    })
+                    .chain(std::iter::once(GridFrame {
+                        offset: anchor_beats[index],
+                        ..own_frame
+                    }))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let nested = Inside {
+                frames: &frames,
+                ..nested
+            };
             for call in calls_of(index) {
-                let played = play_call(
-                    call,
-                    time,
-                    offset_secs,
-                    tempo_map,
-                    inside.library,
-                    inside.max_cues.saturating_sub(cues.len()),
-                    pass_end.as_ref(),
-                    endless,
-                )?;
+                let played = play_call(call, time, offset_secs, tempo_map, &nested)?;
                 dropped.extend(played.dropped);
                 skipped |= played.cut;
-                if let Some(played_to) = played.content_end {
-                    content_end = content_end.max(played_to);
-                    nested_end = nested_end.max(played_to);
-                    played_end = played_end.max(Some(played_to));
-                }
-                for mut placed in played.cues {
-                    // Its effects are this sequence's too, to stop with it.
-                    for effect in &mut placed.cue.effects {
-                        if let Some(name) = name {
-                            effect.sequence_name = Some(name.to_string());
-                        }
-                        effect.tempo_offset_secs = offset_secs;
+                let mut reached = played.reach;
+                if beats_tm.is_some() {
+                    if let Some(Some(here)) = reached.frames.pop() {
+                        pass_reach.reach_beats(start_beats + here);
                     }
-                    match own.filter(|&i| cues[i].cue.time == placed.cue.time) {
+                }
+                pass_reach.take(&reached);
+                for mut placed in played.cues {
+                    tag(&mut placed.cue);
+                    match own.filter(|&i| {
+                        cues[i].cue.time == placed.cue.time && distance(index) == placed.from_anchor
+                    }) {
                         Some(i) => merge_into(&mut cues[i].cue, placed.cue),
                         None => {
                             let from = anchor_of(placed.cue.time, placed.from_anchor);
@@ -1367,9 +1559,14 @@ fn expand_sequence_call(
                 }
                 if played.truncated {
                     truncated = true;
-                    pass_ends.push(content_end.max(end));
-                    break 'passes;
+                    break;
                 }
+            }
+            // The cue and what it plays, in time order (in the order
+            // written, at one time).
+            cues[group..].sort_by_key(|c| c.cue.time);
+            if truncated {
+                break;
             }
         }
         // The pass's first cue starts it; each after the first stops the
@@ -1383,31 +1580,60 @@ fn expand_sequence_call(
                 first.cue.start_sequences.push(name.to_string());
             }
         }
+        // The grid this pass reaches, content in seconds counted where it
+        // lands.
+        let grid = beats_tm.map(|tm| {
+            let seconds = pass_reach.seconds.map_or(start_beats, |t| beats_to(tm, t));
+            pass_reach.beats.map_or(seconds, |b| b.max(seconds))
+        });
+        reach.take(&pass_reach);
+        if truncated {
+            // Cut short, it ends where what it played does.
+            end = pass_reach.real.unwrap_or(start_time).max(end);
+            pass_ends.push(end);
+            break 'passes;
+        }
         // The next pass starts where this one stops, or where its content
-        // ends.
-        match (beats_tm, stop) {
+        // ends; a pass that lasted no time is the last, as every one after
+        // it would be the same instant.
+        let lasted = match (beats_tm, stop) {
             (_, Some(stop)) => {
                 end = stop;
                 start_time = stop;
                 if let (Some(_), Some(beats)) = (beats_tm, declared_beats) {
                     start_beats += beats;
                 }
+                true
             }
             (Some(tm), None) => {
-                start_beats = (start_beats + own_beats).max(beats_to(tm, nested_end));
+                let next = grid.unwrap_or(start_beats);
+                let lasted = next > start_beats;
+                start_beats = start_beats.max(next);
                 end = at_beats(tm, start_beats);
                 start_time = end;
+                lasted
             }
             (None, None) => {
-                end = content_end;
-                start_time = content_end;
+                let next = pass_reach.real.unwrap_or(start_time).max(start_time);
+                let lasted = next > start_time;
+                end = next;
+                start_time = next;
+                lasted
             }
-        }
+        };
         pass_ends.push(end);
         if skipped {
             cut = true;
+        }
+        if skipped || !lasted {
             break 'passes;
         }
+    }
+    // A body with no effect, inside one with some, reaches no further for
+    // it than nothing: its cues' times count for its own passes alone.
+    if !has_effects && inside.effects_around {
+        reach.real = None;
+        reach.seconds = None;
     }
     Ok(Expansion {
         cues,
@@ -1415,7 +1641,7 @@ fn expand_sequence_call(
         pass_ends,
         truncated,
         dropped,
-        content_end: played_end,
+        reach,
         cut,
     })
 }
@@ -1528,11 +1754,14 @@ fn parse_inline_loop(
             tempo_map,
             None,
             repeats,
-            false,
             &Inside {
                 library: &SequenceLibrary::empty(),
-                max_cues: usize::MAX,
+                budget: &Cell::new(usize::MAX),
                 within: None,
+                frames: &[],
+                effects_around: false,
+                endless: false,
+                record_drops: true,
             },
         )?
         .cues,
@@ -1699,11 +1928,14 @@ mod tests {
             &None,
             None,
             2,
-            false,
             &Inside {
                 library: &SequenceLibrary::empty(),
-                max_cues: usize::MAX,
+                budget: &Cell::new(usize::MAX),
                 within: None,
+                frames: &[],
+                effects_around: false,
+                endless: false,
+                record_drops: true,
             },
         )
         .unwrap();

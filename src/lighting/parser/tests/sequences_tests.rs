@@ -2693,3 +2693,86 @@ fn a_sequence_played_for_good_ends_with_the_pass_that_reaches_a_shows_end() {
         .iter()
         .all(|c| !c.stop_sequences.contains(&"outer".to_string())));
 }
+
+#[test]
+fn a_sequence_in_beats_keeps_its_grid_played_inside_another() {
+    // v2: "i" lasts a second, written at 120: two beats a pass. Played from
+    // bar 5, after the song slows to 60, its passes are two seconds apart --
+    // straight from the show, or inside "o", whose own pass is "i"'s.
+    let defs = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 60 }\n    ]\n}\nsequence \"i\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1s\n}\nsequence \"o\" {\n    @1/1\n    sequence \"i\"\n}\n";
+    for call in ["sequence \"i\", loop: 3", "sequence \"o\", loop: 3"] {
+        let content = format!("{defs}show \"Show\" {{\n    @5/1\n    {call}\n}}\n");
+        close_to(&cue_secs(&content, "Show"), &[12.0, 14.0, 16.0]);
+    }
+}
+
+#[test]
+fn a_pass_that_lasts_no_time_is_the_last() {
+    // z1: "s"'s blue cue falls past each pass of "b", leaving only its
+    // `clear()`: a pass of no time, played once, for good or not.
+    for repeat in ["loop", "4"] {
+        let content = format!("tempo {{\n    start: 0.0s\n    bpm: 240\n    time_signature: 4/4\n}}\nsequence \"s\" {{\n    @0.000\n    clear(layer: foreground)\n    @1.500\n    front_wash: static, color: \"blue\", duration: 200ms\n}}\nsequence \"b\", length: 1measure {{\n    @1/1\n    back_wash: static, color: \"green\", duration: 1beat\n    sequence \"s\", loop: {repeat}\n}}\nshow \"Show\" {{\n    @1/1\n    sequence \"b\", loop: 4\n}}\n");
+        let shows = parse_light_shows(&content).unwrap();
+        let show = &shows["Show"];
+        close_to(&cue_secs(&content, "Show"), &[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(show.dropped.len(), 4);
+        let clears: usize = show.cues.iter().map(|c| c.layer_commands.len()).sum();
+        assert_eq!(clears, 4);
+    }
+}
+
+#[test]
+fn a_layout_counts_what_does_not_play_against_its_cap() {
+    // p2, p3: passes of "in" dropped past each measure of "out", thousands
+    // of them: laid out to the cap, and quickly.
+    let head = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\nsequence \"in\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n}\n";
+    for body in [
+        "sequence \"out\", length: 1measure {\n    @1/1\n    sequence \"in\", loop: loop\n}\nshow \"Show\" {\n    @1/1\n    sequence \"out\", loop: 200\n}\n",
+        "sequence \"out\", length: 1measure {\n    @1/1\n    sequence \"in\", loop: 1000\n}\nsequence \"out2\", length: 2measures {\n    @1/1\n    sequence \"out\", loop: 1000\n}\nshow \"Show\" {\n    @1/1\n    sequence \"out2\", loop: 10\n}\n",
+    ] {
+        let content = format!("{head}{body}");
+        let started = std::time::Instant::now();
+        let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        let call = &layout.shows[0].calls[0];
+        assert!(call.cues.len() <= crate::lighting::parser::MAX_LAID_OUT_CUES);
+    }
+}
+
+#[test]
+fn a_call_cut_short_ends_where_what_it_played_does() {
+    // p1: sequences seven deep, more cues than a layout draws: the call cut
+    // short still lasts as far as what was laid out.
+    let mut content = String::from("tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n}\nsequence \"l0\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    @1/3\n    back_wash: static, color: \"blue\", duration: 1beat\n}\n");
+    for level in 1..=6 {
+        content.push_str(&format!(
+            "sequence \"l{level}\" {{\n    @1/1\n    side_wash: static, color: \"red\", duration: 1beat\n    sequence \"l{}\", loop: 4\n}}\n",
+            level - 1
+        ));
+    }
+    content.push_str("show \"Show\" {\n    @1/1\n    sequence \"l6\"\n}\n");
+    let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let call = &layout.shows[0].calls[0];
+    assert!(call.truncated);
+    let last = call.cues.iter().map(|c| c.time).max().unwrap();
+    assert!(call.end >= last && call.end > call.start, "{:?}", call.end);
+}
+
+#[test]
+fn a_sequence_without_effects_inside_one_with_some_does_not_lengthen_it() {
+    // s2 has no effect and lasts 1.5s; "s1"'s pass is its own effect's
+    // second, as when it was laid out with what it plays.
+    let content = "sequence \"s2\", length: 1.5s {\n    @1.000\n    clear(layer: foreground)\n}\nsequence \"s1\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    sequence \"s2\"\n}\nshow \"Show\" {\n    @0.000\n    sequence \"s1\", loop: 2\n}\n";
+    let shows = parse_light_shows(content).unwrap();
+    let starts: Vec<f64> = shows["Show"]
+        .cues
+        .iter()
+        .filter(|c| !c.effects.is_empty())
+        .map(|c| c.time.as_secs_f64())
+        .collect();
+    close_to(&starts, &[0.0, 1.0]);
+}

@@ -108,6 +108,12 @@ impl SequenceLibrary {
         self.max_cues
     }
 
+    /// Whether it is a layout's (capped), which counts the cues that do not
+    /// play rather than recording each.
+    pub(crate) fn laying_out(&self) -> bool {
+        self.max_cues != usize::MAX
+    }
+
     /// Adds each `sequence` definition from one file: the file being
     /// parsed when `origin` is `None`, otherwise the included file it names.
     /// Nothing is expanded yet, so a sequence may use one defined after it.
