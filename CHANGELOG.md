@@ -242,13 +242,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     where each pass plays, as a sequence's are.
   - A pass of a body in beats without a `length:` keeps its length in beats, as before: to the end
     of its own last effect, an effect's duration in seconds counted at the tempo the body was
-    written at, so its passes stay on the beat grid. A sequence or loop in seconds played inside
+    written at, so its passes stay on the beat grid (a cue with no effect, such as a `clear()`,
+    does not count, in a body with effects, as in one in seconds). A sequence or loop in seconds played inside
     it, though, counts where it actually lands: the pass lasts until that content ends, if later,
     so the next pass no longer starts over it where the tempo is faster than the body was written
     at. A pass of a body in seconds lasts until its content ends.
   - With a `length:`, a cue that lands at or past the pass's end where it plays (one in seconds,
-    where the tempo is faster) does not play, as a cue written past it cannot. This is no longer
-    silent: `lint` warns of it (`cue-past-sequence-length`), and the timeline marks the call.
+    where the tempo is faster) does not play, as a cue written past it cannot -- decided where it
+    finally plays in the show, however deep the sequence is played inside others, not at the tempo
+    an enclosing sequence was written at. This is no longer silent: `lint` warns of it
+    (`cue-past-sequence-length`), once for each sequence a show's cue plays them from, with how
+    many and the first's show time, and the timeline marks the call.
 
   A sequence with no effect at all now lasts until its last cue, as an inline loop always has,
   rather than no time.
@@ -271,9 +275,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they now.
 - **Light shows with numbers out of reach**: a `loop:` count past 10,000, a duration, time or
   offset past about 11 days, or a bar past 100,000 made the parser panic; it is now an error
-  naming the value. So is a time a sequence's passes reach past about 11 days (a long loop of long
-  effects), which used to wrap around or stall the parser. Finding a bar thousands of bars into a
-  show no longer counts through every bar before it, which made such files slow to load.
+  naming the value. So is a time a sequence's passes reach past about 11 days when it is played a
+  number of times (a long count of long effects), which used to wrap around or stall the parser;
+  a sequence played for good (`loop: loop`) stops there instead, as it plays. Finding a bar
+  thousands of bars into a show no longer counts through every bar before it, which made such
+  files slow to load.
+- **Bars in a time signature whose beat is not a power of two (a playback change)**: counting
+  bars through a signature such as 4/3 or 6/7 added up each bar's length in turn, and drifted, so
+  far enough in a downbeat could be taken for the end of the bar before it. Bars are now counted
+  exactly (for 4/4, 6/8 and every other power-of-two signature, exactly as before), so in such a
+  signature a cue at a bar and beat, or an `offset`, can land on a different bar than it did.
 - **The tempo through many ramps**: reading the tempo at a time read the tempo before each ramp
   again from the top, doubling the work with every ramp before it, so an `offset` late in a show
   with a few dozen ramps could stall the parser. It is now one walk over the changes.

@@ -197,20 +197,47 @@ pub fn lint_shows(shows: &[LightShow], ctx: &LintContext) -> Vec<Warning> {
     warnings
 }
 
-/// A cue of a sequence that lands past the end of a pass where it plays (a
-/// `length:`), and so does not play: one in seconds, where the tempo is
-/// faster than the sequence was written at. The parser drops it, as it
-/// refuses one written there; this says where.
+/// Cues of a sequence that land past the end of a pass where they play (a
+/// `length:`), and so do not play: ones in seconds, where the tempo is
+/// faster than the sequence was written at. The parser drops them, as it
+/// refuses one written there; this says where, once for each sequence a
+/// show's cue plays them from, with how many (a `loop: loop` drops one a
+/// pass), at show times.
 fn cues_past_a_sequence_length(show: &LightShow, out: &mut Vec<Warning>) {
+    let mut groups: Vec<(&crate::lighting::parser::DroppedCue, usize)> = Vec::new();
     for dropped in &show.dropped {
+        match groups.iter_mut().find(|(first, _)| {
+            first.sequence == dropped.sequence
+                && first.call == dropped.call
+                && first.call_at == dropped.call_at
+        }) {
+            Some((_, count)) => *count += 1,
+            None => groups.push((dropped, 1)),
+        }
+    }
+    for (first, count) in groups {
+        let played = if first.call == first.sequence {
+            format!("played at {:.3}s", first.call_at.as_secs_f64())
+        } else {
+            format!(
+                "played in `{}` at {:.3}s",
+                first.call,
+                first.call_at.as_secs_f64()
+            )
+        };
+        let cues = if count == 1 {
+            "a cue".to_string()
+        } else {
+            format!("{count} cues")
+        };
         out.push(Warning::new(
             "cue-past-sequence-length",
             format!(
-                "a cue of `{}` lands at {:.3}s, at or past the end of its pass at {:.3}s \
-                 (its `length:`), and does not play",
-                dropped.sequence,
-                dropped.time.as_secs_f64(),
-                dropped.pass_end.as_secs_f64(),
+                "{cues} of `{}` ({played}) land at or past the end of a pass (its `length:`) \
+                 and do not play: the first at {:.3}s, past the pass ending at {:.3}s",
+                first.sequence,
+                first.time.as_secs_f64(),
+                first.pass_end.as_secs_f64(),
             ),
         ));
     }

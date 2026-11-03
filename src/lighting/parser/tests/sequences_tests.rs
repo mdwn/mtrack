@@ -2416,3 +2416,192 @@ show "Show" {
     assert!(layout.problem.is_some());
     assert_eq!(layout.shows[0].calls[0].cues.len(), 1);
 }
+
+/// The times of a show's cues with effects, in seconds.
+fn effect_secs(content: &str, show: &str) -> Vec<f64> {
+    parse_light_shows(content).unwrap()[show]
+        .cues
+        .iter()
+        .filter(|c| !c.effects.is_empty())
+        .map(|c| c.time.as_secs_f64())
+        .collect()
+}
+
+#[test]
+fn a_cue_without_effects_does_not_lengthen_a_pass_in_beats() {
+    // P1: a beat of red, then a `clear()` on beat 3: a pass lasts its
+    // effect, as one in seconds does.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "s" {
+    @1/1
+    front_wash: static, color: "red", duration: 1beat
+    @1/3
+    clear(layer: foreground)
+}
+
+show "Show" {
+    @1/1
+    sequence "s", loop: 3
+}
+"#;
+    close_to(&effect_secs(content, "Show"), &[0.0, 0.5, 1.0]);
+    // P1b: 250ms of red, then a `master()` on beat 2.
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "s" {
+    @1/1
+    front_wash: static, color: "red", duration: 250ms
+    @1/2
+    master(layer: midground, intensity: 0.5)
+}
+
+show "Show" {
+    @1/1
+    sequence "s", loop: 3
+}
+"#;
+    close_to(&effect_secs(content, "Show"), &[0.0, 0.25, 0.5]);
+}
+
+#[test]
+fn a_cue_past_a_length_is_dropped_where_it_plays_however_deep() {
+    // P4: at 240, a measure of "b" is a second; "s"'s cue 1.5s in falls
+    // past it, played straight from the show or inside "c" (written at
+    // 120, where it would not).
+    let content = r#"
+tempo {
+    start: 0.0s
+    bpm: 240
+    time_signature: 4/4
+}
+
+sequence "s" {
+    @0.000
+    front_wash: static, color: "red", duration: 200ms
+    @1.500
+    front_wash: static, color: "blue", duration: 200ms
+}
+
+sequence "b", length: 1measure {
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "s"
+}
+
+sequence "c" {
+    tempo {
+        start: 0.0s
+        bpm: 120
+        time_signature: 4/4
+    }
+    @1/1
+    side: static, color: "red", duration: 1beat
+    sequence "b"
+}
+
+show "Show" {
+    @1/1
+    sequence "c"
+    @3/1
+    sequence "b"
+}
+"#;
+    let shows = parse_light_shows(content).unwrap();
+    let show = &shows["Show"];
+    assert_eq!(show.dropped.len(), 2, "{:?}", show.dropped);
+    assert!(show.dropped.iter().all(|d| d.sequence == "b"));
+    let calls: Vec<&str> = show.dropped.iter().map(|d| d.call.as_str()).collect();
+    assert_eq!(calls, vec!["c", "b"]);
+}
+
+#[test]
+fn cues_dropped_past_a_length_are_linted_once_a_call_at_show_times() {
+    let sequences = r#"
+tempo {
+    start: 0.0s
+    bpm: 240
+    time_signature: 4/4
+}
+
+sequence "s" {
+    @0.000
+    front_wash: static, color: "red", duration: 200ms
+    @1.500
+    front_wash: static, color: "blue", duration: 200ms
+}
+
+sequence "b", length: 1measure {
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "s"
+}
+
+sequence "c" {
+    @1/1
+    side: static, color: "red", duration: 1beat
+    sequence "b"
+}
+"#;
+    let lint = |show: &crate::lighting::parser::LightShow| {
+        crate::lighting::lint::lint_shows(
+            std::slice::from_ref(show),
+            &crate::lighting::lint::LintContext::default(),
+        )
+        .into_iter()
+        .map(|w| format!("{w:?}"))
+        .filter(|w| w.contains("cue-past-sequence-length"))
+        .collect::<Vec<_>>()
+    };
+    // P2: one a pass for good, said once.
+    let content =
+        format!("{sequences}show \"Show\" {{\n    @1/1\n    sequence \"b\", loop: loop\n}}\n");
+    let shows = parse_light_shows(&content).unwrap();
+    let show = &shows["Show"];
+    assert!(show.dropped.len() > 1000);
+    let warnings = lint(show);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&format!("{} cues", show.dropped.len())));
+    // P3: inside "c", from bar 10 (9s), two passes: each drops its own, at
+    // the show's times.
+    let content =
+        format!("{sequences}show \"Show\" {{\n    @10/1\n    sequence \"c\", loop: 2\n}}\n");
+    let shows = parse_light_shows(&content).unwrap();
+    let show = &shows["Show"];
+    assert_eq!(show.dropped.len(), 2, "{:?}", show.dropped);
+    assert!((show.dropped[0].time.as_secs_f64() - 10.5).abs() < 0.01);
+    assert!(show.dropped[1].time > show.dropped[0].time);
+    let warnings = lint(show);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("2 cues") && warnings[0].contains("10.500"));
+}
+
+#[test]
+fn a_long_sequence_played_for_good_stops_at_the_end_of_a_show() {
+    // P5: 26 bars at 60 (104s) a pass; P6: 100.5s in seconds. Played for
+    // good, they stop where a show must end, as they play.
+    for content in [
+        "tempo {\n    start: 0.0s\n    bpm: 60\n    time_signature: 4/4\n}\nsequence \"long\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    @26/4\n    front_wash: static, color: \"blue\", duration: 1beat\n}\nshow \"Show\" {\n    @1/1\n    sequence \"long\", loop: loop\n}\n",
+        "sequence \"long\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    @99.500\n    front_wash: static, color: \"blue\", duration: 1s\n}\nshow \"Show\" {\n    @0.000\n    sequence \"long\", loop: loop\n}\n",
+    ] {
+        let shows = parse_light_shows(content).unwrap();
+        let cues = &shows["Show"].cues;
+        assert!(cues.len() > 1000, "{}", cues.len());
+        assert!(cues
+            .iter()
+            .all(|c| c.time.as_secs_f64() <= 1.0e6));
+    }
+    // A count that reaches past it is still an error.
+    let content = "sequence \"long\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    @99.500\n    front_wash: static, color: \"blue\", duration: 1s\n}\nshow \"Show\" {\n    @0.000\n    sequence \"long\", loop: 10000\n}\n";
+    assert!(parse_light_shows(content).is_err());
+}

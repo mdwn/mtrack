@@ -310,20 +310,22 @@ impl SequenceLibrary {
         )?;
         let mut cues = Vec::new();
         let mut from_anchor = Vec::new();
+        let mut limits = Vec::new();
         let mut truncated = false;
-        let mut dropped = Vec::new();
+        let mut endless = false;
         for cue in definition.cues {
             let expanded = expand_unexpanded_sequence_cue(cue, &tempo, self)?;
             truncated |= expanded.truncated;
-            dropped.extend(expanded.dropped);
-            for (cue, distance) in expanded.cues {
+            endless |= expanded.endless;
+            for placed in expanded.cues {
                 // Built up to the cap, as a call is.
                 if cues.len() >= self.max_cues {
                     truncated = true;
                     break;
                 }
-                cues.push(cue);
-                from_anchor.push(distance);
+                cues.push(placed.cue);
+                from_anchor.push(placed.from_anchor);
+                limits.push(placed.limits);
             }
         }
         Ok(Sequence {
@@ -333,7 +335,8 @@ impl SequenceLibrary {
             in_seconds,
             from_anchor,
             truncated,
-            dropped,
+            limits,
+            endless,
         })
     }
 }

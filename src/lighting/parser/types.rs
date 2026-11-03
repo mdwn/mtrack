@@ -70,9 +70,29 @@ pub struct Sequence {
     pub from_anchor: Vec<Option<Duration>>,
     /// Whether a cap on the cues built (a layout's) cut its expansion short.
     pub truncated: bool,
-    /// Its cues that landed past a pass's `length:` in sequences it plays,
-    /// and so do not play (see [`DroppedCue`]).
-    pub dropped: Vec<DroppedCue>,
+    /// For each cue (by index; empty for none), the ends of the passes of
+    /// the sequences it comes from that declare a `length:` (see
+    /// [`PassLimit`]): whether it lands past one is for where it is finally
+    /// played to say.
+    pub(crate) limits: Vec<Vec<PassLimit>>,
+    /// Whether it plays a sequence for good (`loop: loop`, here or in a
+    /// sequence it plays): played, it stops at the end any show can have.
+    pub endless: bool,
+}
+
+/// The end of a pass of a sequence with a `length:`, carried with each of
+/// its cues (bar its pass's first) as a cue is, through every sequence it is
+/// played inside: in the same body's time, with how far it is from the
+/// anchor of a body in seconds it comes from (see
+/// [`PlacedCue`](super::show::PlacedCue)). Only where a cue is finally played
+/// -- where the pass's end is too -- does it say whether the cue lands past
+/// it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PassLimit {
+    pub time: Duration,
+    pub from_anchor: Option<Duration>,
+    /// The sequence whose pass it ends.
+    pub sequence: String,
 }
 
 /// A cue of a sequence that lands at or past the end of its pass (a
@@ -83,9 +103,14 @@ pub struct Sequence {
 pub struct DroppedCue {
     /// The sequence whose pass it falls outside.
     pub sequence: String,
-    /// Where it would have played.
+    /// The sequence the show's cue plays it from (itself, or one it is
+    /// played inside).
+    pub call: String,
+    /// Where the show's cue is.
+    pub call_at: Duration,
+    /// Where it would have played, in the show.
     pub time: Duration,
-    /// Where the pass it belongs to ends.
+    /// Where the pass it belongs to ends, in the show.
     pub pass_end: Duration,
 }
 
