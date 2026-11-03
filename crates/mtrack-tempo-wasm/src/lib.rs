@@ -534,10 +534,7 @@ pub extern "C" fn text_output() -> *const u8 {
 /// Lays out the sequences the shows of the light show source in the first
 /// `len` bytes of the text buffer play ([`lighting::parser::layout_sequence_calls`]),
 /// timed through `map` (0 for none) where the source has no `tempo` block.
-/// Leaves JSON in the text output and returns its length:
-/// `{"shows": [{"name", "calls": [{"cue", "call", "name", "offset", "end",
-/// "cues": [{"time", "effects": [{"groups", "layer", "type", "secs"}]}]}]}]}`
-/// in seconds, or `{"error": "..."}` when the source does not parse.
+/// Leaves JSON ([`Layout`]) in the text output and returns its length.
 #[no_mangle]
 pub extern "C" fn layout_sequences(len: usize, map: u32) -> usize {
     let source = TEXT_INPUT.with(|input| {
@@ -549,10 +546,17 @@ pub extern "C" fn layout_sequences(len: usize, map: u32) -> usize {
             .checked_sub(1)
             .and_then(|i| maps.borrow().get(i).cloned().flatten())
     });
-    let json = match lighting::parser::layout_sequence_calls(&source, tm.as_ref()) {
-        Ok(shows) => layout_json(&shows),
-        Err(e) => format!("{{\"error\":{}}}", json_string(&e.to_string())),
+    let layout = match lighting::parser::layout_sequence_calls(&source, tm.as_ref()) {
+        Ok(shows) => Layout {
+            shows: shows.iter().map(ShowOut::from).collect(),
+            error: None,
+        },
+        Err(e) => Layout {
+            shows: Vec::new(),
+            error: Some(e.to_string()),
+        },
     };
+    let json = serde_json::to_string(&layout).unwrap_or_else(|_| "{\"shows\":[]}".to_string());
     TEXT_OUTPUT.with(|output| {
         let mut output = output.borrow_mut();
         *output = json;
@@ -560,89 +564,146 @@ pub extern "C" fn layout_sequences(len: usize, map: u32) -> usize {
     })
 }
 
-fn layout_json(shows: &[lighting::parser::ShowLayout]) -> String {
-    use std::fmt::Write;
-    let mut out = String::from("{\"shows\":[");
-    for (i, show) in shows.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{{\"name\":{},\"calls\":[", json_string(&show.name));
-        for (j, call) in show.calls.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            let _ = write!(
-                out,
-                "{{\"cue\":{},\"call\":{},\"name\":{},\"offset\":{},\"end\":{},\"cues\":[",
-                call.cue,
-                call.call,
-                json_string(&call.name),
-                json_number(call.offset_secs),
-                json_number(secs(call.end)),
-            );
-            for (k, cue) in call.cues.iter().enumerate() {
-                if k > 0 {
-                    out.push(',');
-                }
-                let _ = write!(
-                    out,
-                    "{{\"time\":{},\"effects\":[",
-                    json_number(secs(cue.time))
-                );
-                for (l, effect) in cue.effects.iter().enumerate() {
-                    if l > 0 {
-                        out.push(',');
-                    }
-                    let groups: Vec<String> =
-                        effect.groups.iter().map(|g| json_string(g)).collect();
-                    let layer = match effect.layer {
-                        Some(lighting::effects::EffectLayer::Foreground) => "foreground",
-                        Some(lighting::effects::EffectLayer::Midground) => "midground",
-                        _ => "background",
-                    };
-                    let _ = write!(
-                        out,
-                        "{{\"groups\":[{}],\"layer\":\"{layer}\",\"type\":\"{}\",\"secs\":{}}}",
-                        groups.join(","),
-                        effect.effect_type.keyword(),
-                        json_number(secs(effect.total_duration())),
-                    );
-                }
-                out.push_str("]}");
-            }
-            out.push_str("]}");
-        }
-        out.push_str("]}");
-    }
-    out.push_str("]}");
-    out
+/// The layout of a file's sequences, in seconds, as the web UI reads it.
+#[derive(serde::Serialize)]
+pub struct Layout {
+    pub shows: Vec<ShowOut>,
+    /// Why nothing could be laid out (the file does not parse at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-/// A number as JSON: finite, or 0.
-fn json_number(value: f64) -> String {
-    if value.is_finite() {
-        format!("{value}")
-    } else {
-        "0".to_string()
+#[derive(serde::Serialize)]
+pub struct ShowOut {
+    pub name: String,
+    pub calls: Vec<CallOut>,
+    /// The cues passed over, with why: `[cue, error]`.
+    pub cue_errors: Vec<(usize, String)>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CallOut {
+    pub cue: usize,
+    pub call: usize,
+    pub name: String,
+    pub offset: f64,
+    pub start: f64,
+    pub end: f64,
+    pub pass_ends: Vec<f64>,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The call's distinct effects; its cues refer to them by index.
+    pub effects: Vec<EffectOut>,
+    /// Each cue: when, and its effects as `[index, how long in seconds]`.
+    pub cues: Vec<CueOut>,
+}
+
+#[derive(serde::Serialize, PartialEq)]
+pub struct EffectOut {
+    pub groups: Vec<String>,
+    pub layer: Option<&'static str>,
+    pub blend_mode: Option<&'static str>,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    /// The colours it shows, as `#rrggbb`.
+    pub colors: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CueOut {
+    pub time: f64,
+    pub effects: Vec<(usize, f64)>,
+}
+
+impl From<&lighting::parser::ShowLayout> for ShowOut {
+    fn from(show: &lighting::parser::ShowLayout) -> Self {
+        ShowOut {
+            name: show.name.clone(),
+            calls: show.calls.iter().map(CallOut::from).collect(),
+            cue_errors: show.cue_errors.clone(),
+        }
     }
 }
 
-/// A string as JSON, quoted and escaped.
-fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+impl From<&lighting::parser::CallLayout> for CallOut {
+    fn from(call: &lighting::parser::CallLayout) -> Self {
+        let mut effects: Vec<EffectOut> = Vec::new();
+        let cues = call
+            .cues
+            .iter()
+            .map(|cue| CueOut {
+                time: secs(cue.time),
+                effects: cue
+                    .effects
+                    .iter()
+                    .map(|effect| {
+                        let out = EffectOut::from(effect);
+                        let index = match effects.iter().position(|e| *e == out) {
+                            Some(index) => index,
+                            None => {
+                                effects.push(out);
+                                effects.len() - 1
+                            }
+                        };
+                        (index, secs(effect.total_duration()))
+                    })
+                    .collect(),
+            })
+            .collect();
+        CallOut {
+            cue: call.cue,
+            call: call.call,
+            name: call.name.clone(),
+            offset: call.offset_secs,
+            start: secs(call.start),
+            end: secs(call.end),
+            pass_ends: call.pass_ends.iter().copied().map(secs).collect(),
+            truncated: call.truncated,
+            error: call.error.clone(),
+            effects,
+            cues,
         }
     }
-    out.push('"');
-    out
+}
+
+impl From<&lighting::parser::Effect> for EffectOut {
+    fn from(effect: &lighting::parser::Effect) -> Self {
+        use lighting::effects::{BlendMode, EffectLayer, EffectType};
+        let hex = |r: f64, g: f64, b: f64| {
+            let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b))
+        };
+        let colors = match &effect.effect_type {
+            EffectType::Static { parameters, .. } => {
+                let channel = |name: &str| parameters.get(name).copied();
+                match (channel("red"), channel("green"), channel("blue")) {
+                    (None, None, None) => Vec::new(),
+                    (r, g, b) => vec![hex(r.unwrap_or(0.0), g.unwrap_or(0.0), b.unwrap_or(0.0))],
+                }
+            }
+            EffectType::ColorCycle { colors, .. } => colors
+                .iter()
+                .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+                .collect(),
+            _ => Vec::new(),
+        };
+        EffectOut {
+            groups: effect.groups.clone(),
+            layer: effect.layer.map(|layer| match layer {
+                EffectLayer::Background => "background",
+                EffectLayer::Midground => "midground",
+                EffectLayer::Foreground => "foreground",
+            }),
+            blend_mode: effect.blend_mode.map(|mode| match mode {
+                BlendMode::Replace => "replace",
+                BlendMode::Multiply => "multiply",
+                BlendMode::Add => "add",
+                BlendMode::Overlay => "overlay",
+                BlendMode::Screen => "screen",
+            }),
+            kind: effect.effect_type.keyword(),
+            colors,
+        }
+    }
 }

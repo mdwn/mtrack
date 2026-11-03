@@ -31,7 +31,7 @@
     snapToNearestGrid,
     computeAdjustedCuePositions,
     durationStringToMs,
-    getSequencePlayMs,
+    sequencePlay,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock from "./CueBlock.svelte";
@@ -131,22 +131,13 @@
           if (durMs > maxDurMs) maxDurMs = durMs;
         }
         if (maxDurMs > 0) blockEndMs = ms + maxDurMs;
-        // For sequence refs, compute total expanded duration
-        if (subLaneType === "sequences") {
-          for (const ref of ap.cue.sequences) {
-            if (ref.stop) continue;
-            const def = sequenceDefs.find((s) => s.name === ref.name);
-            if (!def) continue;
-            const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-            const totalMs = getSequencePlayMs(
-              sequenceDefs,
-              def.name,
-              ms,
-              tempo,
-              loopCount,
-            );
-            if (ms + totalMs > blockEndMs) blockEndMs = ms + totalMs;
-          }
+        // For sequence refs, how the first plays, as the player lays it out
+        const seqPlay =
+          subLaneType === "sequences"
+            ? sequencePlay(cues, sequenceDefs, tempo, ap.index)
+            : undefined;
+        if (seqPlay && ms + seqPlay.totalMs > blockEndMs) {
+          blockEndMs = ms + seqPlay.totalMs;
         }
         // Visible if any part of the block overlaps the viewport
         const visible =
@@ -159,6 +150,7 @@
           visible,
           cumulativeOffsetMs: ap.cumulativeOffsetMs,
           scoreMs: ap.rawMs,
+          seqPlay,
         };
       })
       .filter(({ cue: c }) => {
@@ -373,7 +365,7 @@
           onloopchange={onloopchange
             ? (count) => onloopchange(cp.index, count)
             : undefined}
-          {sequenceDefs}
+          seqPlay={cp.seqPlay}
           {snapEnabled}
           {snapResolution}
           onedit={onsequenceedit && subLaneType === "sequences"

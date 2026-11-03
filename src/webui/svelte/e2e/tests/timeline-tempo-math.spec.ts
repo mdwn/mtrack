@@ -22,7 +22,7 @@ import {
   beatsToMs,
   computeAdjustedCuePositions,
   expandSequencesIntoCues,
-  getSequencePlayMs,
+  sequencePlay,
   getAdjustedGridLines,
   offsetMarkers,
   offsetTimeline,
@@ -538,7 +538,7 @@ test("a sequence is laid out in beats where it plays, as the player has it", () 
   close(twice[2], 7000);
   close(twice[3], 15000);
   // Two passes, 18 beats: 4 at 120 and 14 at 60.
-  close(getSequencePlayMs([seq], "s", 0, t, 2), 2000 + 14000);
+  close(sequencePlay(show("2"), [seq], t, 0)!.totalMs, 2000 + 14000);
 });
 
 test("a sequence written in seconds keeps its seconds, as the player has it", () => {
@@ -563,5 +563,43 @@ test("a sequence written in seconds keeps its seconds, as the player has it", ()
     .map((c) => timestampToMs(c.timestamp));
   expect(times.length).toBe(8);
   times.forEach((ms, k) => close(ms, 14000 + 500 * k, `cue ${k}`));
-  close(getSequencePlayMs([seq], "s", 14000, t, 4), 4000);
+  close(sequencePlay(show, [seq], t, 0)!.totalMs, 4000);
+});
+
+test("a sequence that cannot play is said so, and the rest drawn as written", () => {
+  // Mid-edit: one call names a sequence that is not there. The player's
+  // layout passes over it with why, and draws the others with their
+  // colours.
+  const t = tempo(120, [4, 4], []);
+  const seq: Sequence = {
+    name: "s",
+    cues: [
+      {
+        ...cueAt(1, 1),
+        effects: [
+          {
+            groups: ["front_wash"],
+            effect: {
+              type: "static",
+              colors: ["#ff0000"],
+              duration: "1beat",
+              extra: {},
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const show = [
+    { ...cueAt(1, 1), sequences: [{ name: "s" }] },
+    { ...cueAt(3, 1), sequences: [{ name: "not_there" }] },
+  ];
+  const drawn = expandSequencesIntoCues(show, [seq], t).filter(
+    (c) => c.effects.length,
+  );
+  expect(drawn.length).toBe(1);
+  expect(drawn[0].effects[0].effect.colors).toEqual(["#ff0000"]);
+  expect(drawn[0].effects[0].sequenceName).toBe("s");
+  expect(sequencePlay(show, [seq], t, 0)!.error).toBeUndefined();
+  expect(sequencePlay(show, [seq], t, 1)!.error).toContain("not_there");
 });

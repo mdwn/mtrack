@@ -76,6 +76,36 @@ interface TempoExports {
 
 let loaded: TempoExports | undefined;
 let loading: Promise<void> | undefined;
+let compiled: WebAssembly.Module | undefined;
+/** Which instance is live: a map or clock made in another is made again. */
+let generation = 0;
+
+/** Starts an instance of the compiled module, every export guarded: a trap
+ *  (which leaves the instance in no state to trust) is logged, answered
+ *  with NaN, and the module started afresh, so later calls still work. */
+function start(module: WebAssembly.Module): void {
+  const exports = new WebAssembly.Instance(module).exports;
+  const guarded: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(exports)) {
+    if (typeof value !== "function") {
+      guarded[name] = value;
+      continue;
+    }
+    const f = value as (...args: number[]) => number;
+    guarded[name] = (...args: number[]) => {
+      try {
+        return f(...args);
+      } catch (e) {
+        if (!(e instanceof WebAssembly.RuntimeError)) throw e;
+        console.error(`the tempo map trapped in ${name}; starting it again`, e);
+        start(module);
+        return NaN;
+      }
+    };
+  }
+  loaded = guarded as unknown as TempoExports;
+  generation++;
+}
 
 /** Loads the module, once: resolves when it is ready, rejects (and may be
  *  asked again) when it cannot be. */
@@ -87,8 +117,8 @@ export function loadTempoMap(): Promise<void> {
     // Its own chunk: the base64 module is downloaded only when needed.
     const { TEMPO_WASM } = await import("../gen/tempo-wasm");
     const bytes = Uint8Array.from(atob(TEMPO_WASM), (c) => c.charCodeAt(0));
-    const { instance } = await WebAssembly.instantiate(bytes);
-    loaded = instance.exports as unknown as TempoExports;
+    compiled = await WebAssembly.compile(bytes);
+    start(compiled);
   })().catch((e: unknown) => {
     loading = undefined;
     throw e instanceof Error ? e : new Error(String(e));
@@ -108,10 +138,19 @@ function api(): TempoExports {
   return loaded;
 }
 
+/** A pointer into the module's memory: an i32 to JS, unsigned to it. */
+function pointer(value: number): number {
+  return value >>> 0;
+}
+
 /** The first `count` numbers the last list-returning call left. */
 function output(count: number): number[] {
   return Array.from(
-    new Float64Array(api().memory.buffer, api().output_buffer(), count),
+    new Float64Array(
+      api().memory.buffer,
+      pointer(api().output_buffer()),
+      count,
+    ),
   );
 }
 
@@ -142,11 +181,17 @@ export interface TempoMapInput {
 
 const CHANGE_LEN = 8;
 
-const maps = new FinalizationRegistry<number>((map) => loaded?.tm_free(map));
+const maps = new FinalizationRegistry<{ handle: number; generation: number }>(
+  (held) => {
+    if (held.generation === generation) loaded?.tm_free(held.handle);
+  },
+);
 
 /** A tempo map, resolved as the player resolves one (`TempoMap::new`). */
 export class TempoMap {
-  readonly handle: number;
+  readonly #values: number[];
+  #handle = 0;
+  #generation = -1;
 
   constructor(input: TempoMapInput) {
     const values = [
@@ -170,10 +215,22 @@ export class TempoMap {
       );
     }
     console.assert(values.length === 5 + input.changes.length * CHANGE_LEN);
-    const ptr = api().input_buffer(values.length);
-    new Float64Array(api().memory.buffer, ptr, values.length).set(values);
-    this.handle = api().tm_new(values.length);
-    maps.register(this, this.handle);
+    this.#values = values;
+    void this.handle;
+  }
+
+  /** The map in the module; made again in a module started afresh. */
+  get handle(): number {
+    if (this.#generation !== generation) {
+      const ptr = pointer(api().input_buffer(this.#values.length));
+      new Float64Array(api().memory.buffer, ptr, this.#values.length).set(
+        this.#values,
+      );
+      this.#handle = api().tm_new(this.#values.length) || 0;
+      this.#generation = generation;
+      maps.register(this, { handle: this.#handle, generation });
+    }
+    return this.#handle;
   }
 
   /** When bar 1 starts. */
@@ -284,17 +341,31 @@ export interface PlacedCue {
   after: number;
 }
 
-const clocks = new FinalizationRegistry<number>((clock) =>
-  loaded?.clock_free(clock),
-);
+const clocks = new FinalizationRegistry<{
+  handle: number;
+  generation: number;
+}>((held) => {
+  if (held.generation === generation) loaded?.clock_free(held.handle);
+});
 
 /** The running offset of a list of cues, placing each in turn, as the
  *  player places a show's cues (`CueClock`). */
 export class CueClock {
-  readonly handle = api().clock_new();
+  #handle = 0;
+  #generation = -1;
 
   constructor() {
-    clocks.register(this, this.handle);
+    void this.handle;
+  }
+
+  /** The clock in the module; a fresh one in a module started afresh. */
+  get handle(): number {
+    if (this.#generation !== generation) {
+      this.#handle = api().clock_new() || 0;
+      this.#generation = generation;
+      clocks.register(this, { handle: this.#handle, generation });
+    }
+    return this.#handle;
   }
 
   /** Places the next cue, which issues `offsetMeasures` measures of
@@ -307,8 +378,9 @@ export class CueClock {
     offsets: boolean,
     reset: boolean,
   ): PlacedCue | undefined {
+    const clock = this.handle;
     const placed = api().clock_place(
-      this.handle,
+      clock,
       map?.handle ?? 0,
       "secs" in at ? 0 : 1,
       "secs" in at ? at.secs : at.measure,
@@ -334,15 +406,15 @@ export class CueClock {
   }
 }
 
-/** One effect of a cue a sequence expands to, as the player has it. */
+/** One of the effects a laid-out call's cues play, as the player has it. */
 export interface LaidOutEffect {
   groups: string[];
-  layer: "background" | "midground" | "foreground";
+  layer: "background" | "midground" | "foreground" | null;
+  blend_mode: string | null;
   /** The DSL keyword: `static`, `cycle`, ... */
   type: string;
-  /** How long it lasts (up, hold or duration, down), resolved where it
-   *  plays */
-  secs: number;
+  /** The colours it shows, `#rrggbb` */
+  colors: string[];
 }
 
 /** One sequence played from a cue: the cues it expands to, every pass. */
@@ -354,14 +426,30 @@ export interface LaidOutCall {
   name: string;
   /** The offset in force at the cue */
   offset: number;
-  /** Where its last pass ends */
+  /** Where it is played from */
+  start: number;
+  /** Where its last pass laid out ends */
   end: number;
-  cues: { time: number; effects: LaidOutEffect[] }[];
+  /** Where each pass laid out ends */
+  pass_ends: number[];
+  /** Whether the cap on cues laid out stopped it before its last pass */
+  truncated: boolean;
+  /** Why it cannot be played, when it cannot (it then has no cues) */
+  error?: string;
+  /** Its distinct effects, which its cues name by index */
+  effects: LaidOutEffect[];
+  /** Each cue: when, and its effects as `[index, seconds it lasts]` */
+  cues: { time: number; effects: [number, number][] }[];
 }
 
 /** The sequences each show of a file plays, or why the file did not parse. */
 export interface SequenceLayout {
-  shows: { name: string; calls: LaidOutCall[] }[];
+  shows: {
+    name: string;
+    calls: LaidOutCall[];
+    /** The cues passed over, with why: `[cue, error]` */
+    cue_errors: [number, string][];
+  }[];
   error?: string;
 }
 
@@ -370,19 +458,28 @@ const decoder = new TextDecoder();
 
 /** Lays out the sequences the shows of a light show `source` play, as the
  *  player parses and expands them (`layout_sequence_calls`), timed through
- *  `map` where the source has no `tempo` block. Times in seconds. A source
- *  that does not parse lays out nothing and says why. */
+ *  `map` where the source has no `tempo` block. Times in seconds. A call
+ *  that cannot be played, or a cue that does not parse, is passed over and
+ *  says why; a source that does not parse at all lays out nothing. */
 export function layoutSequences(
   source: string,
   map?: TempoMap,
 ): SequenceLayout {
-  const bytes = encoder.encode(source);
-  const ptr = api().text_buffer(bytes.length);
-  new Uint8Array(api().memory.buffer, ptr, bytes.length).set(bytes);
-  const len = api().layout_sequences(bytes.length, map?.handle ?? 0);
-  const json = decoder.decode(
-    new Uint8Array(api().memory.buffer, api().text_output(), len),
-  );
-  const parsed = JSON.parse(json) as Partial<SequenceLayout>;
-  return { shows: parsed.shows ?? [], error: parsed.error };
+  try {
+    const bytes = encoder.encode(source);
+    const handle = map?.handle ?? 0;
+    const ptr = pointer(api().text_buffer(bytes.length));
+    new Uint8Array(api().memory.buffer, ptr, bytes.length).set(bytes);
+    const len = api().layout_sequences(bytes.length, handle);
+    if (!Number.isFinite(len)) {
+      return { shows: [], error: "the tempo map trapped laying this out" };
+    }
+    const json = decoder.decode(
+      new Uint8Array(api().memory.buffer, pointer(api().text_output()), len),
+    );
+    const parsed = JSON.parse(json) as Partial<SequenceLayout>;
+    return { shows: parsed.shows ?? [], error: parsed.error };
+  } catch (e) {
+    return { shows: [], error: e instanceof Error ? e.message : String(e) };
+  }
 }

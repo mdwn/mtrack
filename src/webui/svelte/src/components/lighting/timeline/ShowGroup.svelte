@@ -22,7 +22,10 @@
   } from "../../../lib/lighting/types";
   import { LAYERS } from "../../../lib/lighting/types";
   import type { OffsetMarker } from "../../../lib/lighting/timeline-state";
-  import { expandSequencesIntoCues } from "../../../lib/lighting/timeline-state";
+  import {
+    expandSequencesIntoCues,
+    showSequences,
+  } from "../../../lib/lighting/timeline-state";
   import ShowLane from "./ShowLane.svelte";
 
   interface Props {
@@ -82,6 +85,20 @@
       : cues,
   );
 
+  // What the player cannot lay out, said rather than silently left off.
+  let layoutProblem = $derived.by(() => {
+    if (sequences.length === 0) return "";
+    const layout = showSequences(cues, sequences, tempo);
+    if (layout.error)
+      return $t("timeline.layoutError", { values: { error: layout.error } });
+    const errors = [...layout.cueErrors.values()];
+    return errors.length
+      ? $t("timeline.cueErrors", {
+          values: { count: errors.length, error: errors[0] },
+        })
+      : "";
+  });
+
   const LAYER_LABELS: Record<string, string> = {
     foreground: "FG",
     midground: "MG",
@@ -112,6 +129,15 @@
   <div class="group-label">
     <div class="group-header">
       <span class="group-name" title={name}>{name}</span>
+      {#if layoutProblem}
+        <span
+          class="layout-problem"
+          data-testid="sequence-layout-problem"
+          role="img"
+          aria-label={layoutProblem}
+          title={layoutProblem}>⚠</span
+        >
+      {/if}
       <button
         class="btn-icon group-delete"
         title={$t("timeline.showGroup.deleteShow")}
@@ -164,6 +190,10 @@
 </div>
 
 <style>
+  .layout-problem {
+    color: var(--red);
+    cursor: help;
+  }
   .show-group {
     display: flex;
     border-bottom: 1px solid var(--card-border);

@@ -155,18 +155,35 @@ show "Show" {
     sequence "s", loop: 2
 }
 "#;
-    let json = layout(source, 0);
+    let json: serde_json::Value = serde_json::from_str(&layout(source, 0)).unwrap();
+    let call = &json["shows"][0]["calls"][0];
+    assert_eq!(json["shows"][0]["name"], "Show");
+    assert_eq!(call["name"], "s");
+    assert_eq!(call["end"], 1.0);
+    assert_eq!(call["pass_ends"], serde_json::json!([0.5, 1.0]));
+    assert_eq!(call["truncated"], false);
+    // One effect, shared by both passes' cues, red as written.
     assert_eq!(
-        json,
-        "{\"shows\":[{\"name\":\"Show\",\"calls\":[{\"cue\":0,\"call\":0,\"name\":\"s\",\
-         \"offset\":0,\"end\":1,\"cues\":[{\"time\":0,\"effects\":[{\"groups\":[\"front_wash\"],\
-         \"layer\":\"background\",\"type\":\"static\",\"secs\":0.5}]},{\"time\":0.5,\"effects\":\
-         [{\"groups\":[\"front_wash\"],\"layer\":\"background\",\"type\":\"static\",\"secs\":0.5}]}]}]}]}"
+        call["effects"],
+        serde_json::json!([{
+            "groups": ["front_wash"],
+            "layer": null,
+            "blend_mode": null,
+            "type": "static",
+            "colors": ["#ff0000"],
+        }])
+    );
+    assert_eq!(
+        call["cues"],
+        serde_json::json!([
+            {"time": 0.0, "effects": [[0, 0.5]]},
+            {"time": 0.5, "effects": [[0, 0.5]]},
+        ])
     );
 }
 
 #[test]
 fn a_source_that_does_not_parse_is_an_error_and_leaves_the_module_working() {
-    assert!(layout("show {", 0).starts_with("{\"error\":"));
+    assert!(layout("show {", 0).contains("\"error\":"));
     assert!(layout("show \"S\" { @0.000 }", 0).starts_with("{\"shows\":"));
 }

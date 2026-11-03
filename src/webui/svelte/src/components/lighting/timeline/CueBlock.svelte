@@ -3,7 +3,6 @@
   import { get } from "svelte/store";
   import type {
     Cue,
-    Sequence,
     SubLaneType,
     TempoSection,
   } from "../../../lib/lighting/types";
@@ -11,7 +10,7 @@
     effectTypeColor,
     durationStringToMs,
     msToDurationString,
-    getSequencePlayMs,
+    type SequencePlay,
     snapDurationToGrid,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
@@ -30,7 +29,8 @@
     subLaneType?: SubLaneType;
     tempo?: TempoSection;
     cueMs?: number;
-    sequenceDefs?: Sequence[];
+    /** How the cue's sequence plays, on a sequence lane */
+    seqPlay?: SequencePlay;
     snapEnabled?: boolean;
     snapResolution?: SnapResolution;
   }
@@ -49,7 +49,7 @@
     subLaneType,
     tempo,
     cueMs = 0,
-    sequenceDefs = [],
+    seqPlay,
     snapEnabled = false,
     snapResolution = "beat",
   }: Props = $props();
@@ -128,30 +128,14 @@
     return parts.join(" | ");
   });
 
-  // For sequence lanes: find the first non-stop sequence ref and compute its total duration
-  let seqTotalMs = $derived.by(() => {
-    if (subLaneType !== "sequences") return 0;
-    for (const ref of cue.sequences) {
-      if (ref.stop) continue;
-      const def = sequenceDefs.find((s) => s.name === ref.name);
-      if (!def) continue;
-      const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-      return getSequencePlayMs(sequenceDefs, def.name, cueMs, tempo, loopCount);
-    }
-    return 0;
-  });
-
-  // For sequence lanes: the iteration duration (for snapping resize to whole iterations)
-  let seqIterMs = $derived.by(() => {
-    if (subLaneType !== "sequences") return 0;
-    for (const ref of cue.sequences) {
-      if (ref.stop) continue;
-      const def = sequenceDefs.find((s) => s.name === ref.name);
-      if (!def) continue;
-      return getSequencePlayMs(sequenceDefs, def.name, cueMs, tempo);
-    }
-    return 0;
-  });
+  // For sequence lanes: how the cue's sequence plays, as the player lays
+  // it out (its first pass, for snapping a resize to whole passes).
+  let seqTotalMs = $derived(
+    subLaneType === "sequences" ? (seqPlay?.totalMs ?? 0) : 0,
+  );
+  let seqIterMs = $derived(
+    subLaneType === "sequences" ? (seqPlay?.passMs ?? 0) : 0,
+  );
 
   // For sequence lanes: the current loop count
   let seqLoopCount = $derived.by(() => {
@@ -341,6 +325,21 @@
       <span class="cue-label cmd-label">{label}</span>
     {:else if subLaneType === "sequences"}
       <span class="cue-label seq-label">{label}</span>
+      {#if seqPlay?.error}
+        <span
+          class="badge seq-problem"
+          data-testid="seq-error"
+          title={$t("timeline.cueBlock.seqError", {
+            values: { error: seqPlay.error },
+          })}>!</span
+        >
+      {:else if seqPlay?.truncated}
+        <span
+          class="badge seq-problem"
+          data-testid="seq-truncated"
+          title={$t("timeline.cueBlock.seqTruncated")}>…</span
+        >
+      {/if}
     {/if}
   </div>
   {#if subLaneType === "sequences" && seqLoopCount > 1}
@@ -430,6 +429,10 @@
     display: flex;
     gap: 2px;
     align-items: center;
+  }
+  .seq-problem {
+    background: var(--red);
+    color: white;
   }
   .effect-dot {
     width: 6px;

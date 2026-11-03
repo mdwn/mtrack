@@ -25,6 +25,8 @@ import type {
   TempoSection,
   Cue,
   Sequence,
+  BlendMode,
+  CueEffect,
   EffectType,
 } from "./types";
 import { absoluteTimestamp } from "./types";
@@ -33,7 +35,7 @@ import {
   TempoMap,
   layoutSequences,
   rampDuration,
-  type SequenceLayout,
+  type LaidOutCall,
   type TempoMapInput,
   type TempoMapPosition,
 } from "../tempo-wasm";
@@ -718,28 +720,93 @@ export function computeAdjustedCuePositions(
   });
 }
 
-/** The sequences a list of cues plays, laid out by the player's own parser
- *  and sequence expansion (`layout_sequence_calls`, through WebAssembly):
- *  the cues and the sequences they reference, written out as a show and
- *  parsed, timed through `tempo`. Kept by source, as a parse is not free. */
-const layoutCache = new Map<string, SequenceLayout>();
+/** The sequences a list of cues plays, as the player's own parser and
+ *  sequence expansion lay them out (`layout_sequence_calls`, through
+ *  WebAssembly): the cues and the sequences they reference, written out as
+ *  a show and parsed, timed through `tempo`. */
+export interface ShowSequences {
+  /** Each cue's calls, by the cue's index */
+  calls: Map<number, LaidOutCall[]>;
+  /** The cues the player could not parse, with why, by index */
+  cueErrors: Map<number, string>;
+  /** Why nothing could be laid out at all */
+  error?: string;
+}
 
-function layoutOf(
+/** Layouts by source text, as a parse is not free. */
+const layoutCache = new Map<string, ShowSequences>();
+/** And by the very cues, sequences and tempo asked about, as writing the
+ *  source out is not free either: every cue of a lane asks in one render. */
+const lastLayout: {
+  cues?: Cue[];
+  sequences?: Sequence[];
+  tempo?: TempoSection;
+  tempoKey?: string;
+  layout?: ShowSequences;
+} = {};
+
+/** The layout of the sequences `cues` play: one parse per distinct source
+ *  and tempo, however many ask. */
+export function showSequences(
   cues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
-): SequenceLayout {
+): ShowSequences {
+  const key = tempo ? JSON.stringify(tempoKey(tempo)) : "-";
+  if (
+    lastLayout.layout &&
+    lastLayout.cues === cues &&
+    lastLayout.sequences === sequences &&
+    lastLayout.tempo === tempo &&
+    lastLayout.tempoKey === key
+  ) {
+    return lastLayout.layout;
+  }
   const source = serializeLightFile({
     sequences,
     shows: [{ name: "layout", cues }],
   });
-  const key = `${tempo ? JSON.stringify(tempoKey(tempo)) : "-"}\n${source}`;
-  const hit = layoutCache.get(key);
-  if (hit) return hit;
-  const layout = layoutSequences(source, tempo && tempoMapOf(tempo));
-  if (layoutCache.size > 256) layoutCache.clear();
-  layoutCache.set(key, layout);
+  const sourceKey = `${key}\n${source}`;
+  let layout = layoutCache.get(sourceKey);
+  if (!layout) {
+    const laid = layoutSequences(source, tempo && tempoMapOf(tempo));
+    const show = laid.shows[0];
+    layout = {
+      calls: new Map(),
+      cueErrors: new Map(show?.cue_errors ?? []),
+      error: laid.error,
+    };
+    for (const call of show?.calls ?? []) {
+      const list = layout.calls.get(call.cue) ?? [];
+      list.push(call);
+      layout.calls.set(call.cue, list);
+    }
+    if (layoutCache.size > 64) layoutCache.clear();
+    layoutCache.set(sourceKey, layout);
+  }
+  Object.assign(lastLayout, { cues, sequences, tempo, tempoKey: key, layout });
   return layout;
+}
+
+/** A laid-out effect as the timeline draws it: its parameters as the player
+ *  has them, its length as it plays there. */
+function drawnEffect(
+  call: LaidOutCall,
+  [index, secs]: [number, number],
+): CueEffect {
+  const e = call.effects[index];
+  return {
+    groups: e.groups,
+    effect: {
+      type: e.type as EffectType,
+      colors: e.colors,
+      layer: e.layer ?? undefined,
+      blend_mode: (e.blend_mode ?? undefined) as BlendMode | undefined,
+      duration: `${Math.round(secs * 1000)}ms`,
+      extra: {},
+    },
+    sequenceName: call.name,
+  };
 }
 
 /**
@@ -748,7 +815,8 @@ function layoutOf(
  * inserted at the correct timestamps, each marked with `sequenceName`. The
  * original cues are preserved unchanged; expanded cues are added alongside
  * them, at their places in the tempo map before any offset (the offsets are
- * the adjusted positions' to add).
+ * the adjusted positions' to add). A call the player cannot play adds
+ * nothing (see `showSequences` for why).
  */
 export function expandSequencesIntoCues(
   showCues: Cue[],
@@ -756,26 +824,21 @@ export function expandSequencesIntoCues(
   tempo?: TempoSection,
 ): Cue[] {
   const expanded: Cue[] = [...showCues];
-  const layout = layoutOf(showCues, sequences, tempo);
-  for (const call of layout.shows[0]?.calls ?? []) {
-    for (const cue of call.cues) {
-      if (cue.effects.length === 0) continue;
-      expanded.push({
-        timestamp: absoluteTimestamp((cue.time - call.offset) * 1000),
-        effects: cue.effects.map((e) => ({
-          groups: e.groups,
-          effect: {
-            type: e.type as EffectType,
-            colors: [],
-            layer: e.layer,
-            duration: `${Math.round(e.secs * 1000)}ms`,
-            extra: {},
-          },
-          sequenceName: call.name,
-        })),
-        commands: [],
-        sequences: [],
-      });
+  for (const calls of showSequences(
+    showCues,
+    sequences,
+    tempo,
+  ).calls.values()) {
+    for (const call of calls) {
+      for (const cue of call.cues) {
+        if (cue.effects.length === 0) continue;
+        expanded.push({
+          timestamp: absoluteTimestamp((cue.time - call.offset) * 1000),
+          effects: cue.effects.map((e) => drawnEffect(call, e)),
+          commands: [],
+          sequences: [],
+        });
+      }
     }
   }
 
@@ -788,25 +851,50 @@ export function expandSequencesIntoCues(
   return expanded;
 }
 
-/**
- * How long `passes` passes of the sequence `name` played from `refMs` last,
- * as the player plays them, through the show's tempo map from there.
- */
-export function getSequencePlayMs(
+/** How a cue's first sequence plays, as the player plays it. */
+export interface SequencePlay {
+  name: string;
+  /** Its first pass */
+  passMs: number;
+  /** All its passes (as many as were laid out) */
+  totalMs: number;
+  /** The passes laid out, when the cap on cues stopped short of them all */
+  truncated: boolean;
+  /** Why it cannot be played, when it cannot */
+  error?: string;
+}
+
+/** How the first sequence cue `index` of `cues` plays: from the layout of
+ *  them all (one parse for every cue that asks). */
+export function sequencePlay(
+  cues: Cue[],
   sequences: Sequence[],
-  name: string,
-  refMs: number,
-  tempo?: TempoSection,
-  passes = 1,
-): number {
-  const cue: Cue = {
-    timestamp: absoluteTimestamp(refMs),
-    effects: [],
-    commands: [],
-    sequences: [{ name, loop: String(Math.max(1, Math.round(passes))) }],
+  tempo: TempoSection | undefined,
+  index: number,
+): SequencePlay | undefined {
+  const layout = showSequences(cues, sequences, tempo);
+  const call = layout.calls.get(index)?.[0];
+  const cueError = layout.cueErrors.get(index) ?? layout.error;
+  if (!call) {
+    const ref = cues[index]?.sequences.find((s) => !s.stop);
+    return ref && cueError
+      ? {
+          name: ref.name,
+          passMs: 0,
+          totalMs: 0,
+          truncated: false,
+          error: cueError,
+        }
+      : undefined;
+  }
+  const ms = (secs: number) => Math.max(0, (secs - call.start) * 1000);
+  return {
+    name: call.name,
+    passMs: ms(call.pass_ends[0] ?? call.start),
+    totalMs: ms(call.end),
+    truncated: call.truncated,
+    error: call.error,
   };
-  const call = layoutOf([cue], sequences, tempo).shows[0]?.calls[0];
-  return call ? Math.max(0, call.end * 1000 - refMs) : 0;
 }
 
 /** Get the BPM at a given ms position (mid-ramp, the ramp's tempo there). */

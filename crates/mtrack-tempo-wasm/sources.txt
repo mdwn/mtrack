@@ -1,0 +1,9 @@
+src/tempo.rs
+src/tempo
+src/lighting/parser.rs
+src/lighting/parser
+src/lighting/grammar.pest
+src/lighting/effects.rs
+src/lighting/effects
+src/lighting/types.rs
+crates/mtrack-tempo-wasm

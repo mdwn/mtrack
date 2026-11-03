@@ -107,13 +107,14 @@ cd "$PROJECT_ROOT" || { echo "Cannot enter $PROJECT_ROOT" >&2; exit 1; }
 SVELTE_DIR="$PROJECT_ROOT/src/webui/svelte"
 # The same hash as the Makefile's FRONTEND_HASH, so its stamp compares:
 # generated src/gen left out, as it is there, and the Rust the UI runs as
-# WebAssembly (the Makefile's WASM_SOURCES) in.
+# WebAssembly (crates/mtrack-tempo-wasm/sources.txt, the Makefile's WASM_SOURCES) in.
 ui_hash() {
-    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" "$PROJECT_ROOT/src/tempo.rs" \
-        "$PROJECT_ROOT/src/tempo" "$PROJECT_ROOT/crates/mtrack-tempo-wasm" \
-        "$PROJECT_ROOT/src/lighting/parser.rs" "$PROJECT_ROOT/src/lighting/parser" \
-        "$PROJECT_ROOT/src/lighting/grammar.pest" "$PROJECT_ROOT/src/lighting/effects.rs" \
-        "$PROJECT_ROOT/src/lighting/effects" "$PROJECT_ROOT/src/lighting/types.rs" \
+    local wasm_sources=()
+    local source
+    while IFS= read -r source; do
+        [[ -n "$source" ]] && wasm_sources+=("$PROJECT_ROOT/$source")
+    done < "$PROJECT_ROOT/crates/mtrack-tempo-wasm/sources.txt"
+    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" "${wasm_sources[@]}" \
         -type f -not -path "$SVELTE_DIR/src/gen/*" \
         2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin
 }
