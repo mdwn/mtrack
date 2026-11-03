@@ -701,18 +701,72 @@ impl TempoMap {
         ts_changes: &[(u32, f64, TimeSignature)],
         beats: f64,
     ) -> (u32, f64) {
-        let mut remaining = snap_beats(beats.max(0.0));
-        let mut measure: u32 = 1;
-        loop {
-            let per_measure =
-                Self::time_signature_at_measure(initial_time_signature, ts_changes, measure)
-                    .beats_per_measure();
-            if per_measure <= 0.0 || remaining < per_measure || !remaining.is_finite() {
-                return (measure, 1.0 + remaining);
-            }
-            remaining -= per_measure;
-            measure += 1;
+        let remaining = snap_beats(beats.max(0.0));
+        if !remaining.is_finite() {
+            return (1, 1.0 + remaining);
         }
+        let (measure, into) = Self::bar_at_beats(initial_time_signature, ts_changes, remaining);
+        (measure, 1.0 + into)
+    }
+
+    /// The spans of bars one time signature holds, from bar 1: each span's
+    /// first bar and its quarter notes a bar, as `time_signature_at_measure`
+    /// has them (a change written mid-bar governs from the next bar).
+    fn meter_spans(
+        initial_time_signature: TimeSignature,
+        ts_changes: &[(u32, f64, TimeSignature)],
+    ) -> Vec<(u32, f64)> {
+        let mut spans = vec![(1u32, initial_time_signature.beats_per_measure())];
+        for (change_m, change_b, new_ts) in ts_changes {
+            let from = if (*change_b - 1.0).abs() < 0.001 {
+                *change_m
+            } else {
+                change_m.saturating_add(1)
+            }
+            .max(1);
+            let last = spans.last_mut().expect("spans start with bar 1");
+            if from <= last.0 {
+                last.1 = new_ts.beats_per_measure();
+            } else {
+                spans.push((from, new_ts.beats_per_measure()));
+            }
+        }
+        spans
+    }
+
+    /// The bar a quarter-note beat position (0 or later, finite) falls in,
+    /// and how far into it: span by span, not bar by bar, so a position
+    /// thousands of bars on is found as quickly as one in bar 1.
+    fn bar_at_beats(
+        initial_time_signature: TimeSignature,
+        ts_changes: &[(u32, f64, TimeSignature)],
+        beats: f64,
+    ) -> (u32, f64) {
+        let spans = Self::meter_spans(initial_time_signature, ts_changes);
+        let mut remaining = beats;
+        for (i, &(from, per)) in spans.iter().enumerate() {
+            if per <= 0.0 {
+                return (from, remaining);
+            }
+            let span_bars = spans.get(i + 1).map(|next| next.0 - from);
+            let span_beats = span_bars.map(|bars| f64::from(bars) * per);
+            if span_beats.is_some_and(|span| remaining >= span) {
+                remaining -= span_beats.unwrap_or_default();
+                continue;
+            }
+            // Within this span: whole bars, then what is left of one.
+            let mut bars = (remaining / per).floor();
+            if remaining - bars * per < 0.0 {
+                bars -= 1.0;
+            }
+            if remaining - bars * per >= per {
+                bars += 1.0;
+            }
+            let into = (remaining - bars * per).max(0.0);
+            let measure = (f64::from(from) + bars).min(f64::from(u32::MAX)) as u32;
+            return (measure, into);
+        }
+        (1, remaining)
     }
 
     /// Compute total quarter-note beats from measure 1, beat 1 to the given
@@ -723,23 +777,19 @@ impl TempoMap {
         target_measure: u32,
         target_beat: f64,
     ) -> f64 {
-        // Bar by bar, as `time_signature_at_measure` has each bar's
-        // signature: the changes that apply to a bar are a prefix of the
-        // sorted list, growing bar by bar, so one pass over it serves.
+        // Span by span, as `time_signature_at_measure` has each bar's
+        // signature: a position thousands of bars on costs no more than one
+        // in bar 1.
+        let spans = Self::meter_spans(initial_time_signature, ts_changes);
         let mut target_beats = 0.0;
-        let mut ts = initial_time_signature;
-        let mut next = 0;
-        for measure in 1..target_measure {
-            while let Some((change_m, change_b, new_ts)) = ts_changes.get(next) {
-                if *change_m < measure || (*change_m == measure && (*change_b - 1.0).abs() < 0.001)
-                {
-                    ts = *new_ts;
-                    next += 1;
-                } else {
-                    break;
-                }
+        for (i, &(from, per)) in spans.iter().enumerate() {
+            if from >= target_measure {
+                break;
             }
-            target_beats += ts.beats_per_measure();
+            let until = spans
+                .get(i + 1)
+                .map_or(target_measure, |next| next.0.min(target_measure));
+            target_beats += f64::from(until - from) * per;
         }
         if target_beat > 1.0 {
             target_beats += target_beat - 1.0;
@@ -1023,21 +1073,16 @@ impl TempoMap {
         if beats < 0.0 {
             return beats / self.initial_time_signature.beats_per_measure();
         }
-        let mut remaining = beats;
-        let mut measure: u32 = 1;
-        loop {
-            let per_measure =
-                Self::time_signature_at_measure(self.initial_time_signature, ts_changes, measure)
-                    .beats_per_measure();
-            if per_measure <= 0.0 {
-                return (measure - 1) as f64;
-            }
-            if remaining < per_measure {
-                return (measure - 1) as f64 + remaining / per_measure;
-            }
-            remaining -= per_measure;
-            measure += 1;
+        if !beats.is_finite() {
+            return beats;
         }
+        let (measure, into) = Self::bar_at_beats(self.initial_time_signature, ts_changes, beats);
+        let per = Self::time_signature_at_measure(self.initial_time_signature, ts_changes, measure)
+            .beats_per_measure();
+        if per <= 0.0 {
+            return f64::from(measure - 1);
+        }
+        f64::from(measure - 1) + into / per
     }
 
     /// The quarter-note beat position at a measure position (the inverse of
