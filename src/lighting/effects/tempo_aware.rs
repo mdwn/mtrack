@@ -151,7 +151,7 @@ pub type TempoAwareSpeed = TempoAwareValue;
 /// Type alias for tempo-aware frequency parameters (Hz).
 pub type TempoAwareFrequency = TempoAwareValue;
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

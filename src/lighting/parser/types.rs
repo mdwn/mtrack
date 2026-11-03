@@ -349,7 +349,7 @@ pub struct LayerCommand {
     pub speed: Option<f64>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use std::collections::HashMap;
 

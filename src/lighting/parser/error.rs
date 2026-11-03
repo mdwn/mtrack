@@ -106,7 +106,7 @@ pub(crate) fn analyze_parsing_failure(content: &str) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

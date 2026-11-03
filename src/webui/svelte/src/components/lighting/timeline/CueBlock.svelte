@@ -136,7 +136,7 @@
       const def = sequenceDefs.find((s) => s.name === ref.name);
       if (!def) continue;
       const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-      return getSequencePlayMs(def, cueMs, tempo, loopCount);
+      return getSequencePlayMs(sequenceDefs, def.name, cueMs, tempo, loopCount);
     }
     return 0;
   });
@@ -148,7 +148,7 @@
       if (ref.stop) continue;
       const def = sequenceDefs.find((s) => s.name === ref.name);
       if (!def) continue;
-      return getSequencePlayMs(def, cueMs, tempo);
+      return getSequencePlayMs(sequenceDefs, def.name, cueMs, tempo);
     }
     return 0;
   });

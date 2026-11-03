@@ -369,7 +369,7 @@ impl FixtureState {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::super::physical::{Intent, PhysicalParameter};
     use super::*;

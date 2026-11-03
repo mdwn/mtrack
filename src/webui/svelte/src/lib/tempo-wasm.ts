@@ -12,7 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The player's tempo map and cue clock (src/tempo.rs), compiled to
+// The player's tempo map and cue clock (src/tempo.rs), and its light show
+// parser for laying out the sequences a show plays, compiled to
 // WebAssembly (crates/mtrack-tempo-wasm): where bars, beats, tempo changes,
 // ramps and offsets fall, computed by the very code the player runs. Times
 // here are in seconds, as the player has them.
@@ -68,6 +69,9 @@ interface TempoExports {
     reset: number,
   ): number;
   clock_reached(clock: number, at: number): void;
+  text_buffer(len: number): number;
+  text_output(): number;
+  layout_sequences(len: number, map: number): number;
 }
 
 let loaded: TempoExports | undefined;
@@ -328,4 +332,57 @@ export class CueClock {
   reached(secs: number): void {
     api().clock_reached(this.handle, secs);
   }
+}
+
+/** One effect of a cue a sequence expands to, as the player has it. */
+export interface LaidOutEffect {
+  groups: string[];
+  layer: "background" | "midground" | "foreground";
+  /** The DSL keyword: `static`, `cycle`, ... */
+  type: string;
+  /** How long it lasts (up, hold or duration, down), resolved where it
+   *  plays */
+  secs: number;
+}
+
+/** One sequence played from a cue: the cues it expands to, every pass. */
+export interface LaidOutCall {
+  /** The cue it is played from, by its place among the show's cues */
+  cue: number;
+  /** Its place among that cue's sequence references */
+  call: number;
+  name: string;
+  /** The offset in force at the cue */
+  offset: number;
+  /** Where its last pass ends */
+  end: number;
+  cues: { time: number; effects: LaidOutEffect[] }[];
+}
+
+/** The sequences each show of a file plays, or why the file did not parse. */
+export interface SequenceLayout {
+  shows: { name: string; calls: LaidOutCall[] }[];
+  error?: string;
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/** Lays out the sequences the shows of a light show `source` play, as the
+ *  player parses and expands them (`layout_sequence_calls`), timed through
+ *  `map` where the source has no `tempo` block. Times in seconds. A source
+ *  that does not parse lays out nothing and says why. */
+export function layoutSequences(
+  source: string,
+  map?: TempoMap,
+): SequenceLayout {
+  const bytes = encoder.encode(source);
+  const ptr = api().text_buffer(bytes.length);
+  new Uint8Array(api().memory.buffer, ptr, bytes.length).set(bytes);
+  const len = api().layout_sequences(bytes.length, map?.handle ?? 0);
+  const json = decoder.decode(
+    new Uint8Array(api().memory.buffer, api().text_output(), len),
+  );
+  const parsed = JSON.parse(json) as Partial<SequenceLayout>;
+  return { shows: parsed.shows ?? [], error: parsed.error };
 }

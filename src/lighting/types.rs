@@ -1082,7 +1082,7 @@ impl fmt::Display for Venue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

@@ -138,7 +138,13 @@
             const def = sequenceDefs.find((s) => s.name === ref.name);
             if (!def) continue;
             const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-            const totalMs = getSequencePlayMs(def, ms, tempo, loopCount);
+            const totalMs = getSequencePlayMs(
+              sequenceDefs,
+              def.name,
+              ms,
+              tempo,
+              loopCount,
+            );
             if (ms + totalMs > blockEndMs) blockEndMs = ms + totalMs;
           }
         }

@@ -153,6 +153,10 @@ jiff = "0.2"
 tonic-build = "0.14"
 tonic-prost-build = "0.14"
 
+[lints.rust]
+# Set by crates/mtrack-tempo-wasm, which compiles some of these sources.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mtrack_wasm)"] }
+
 [lib]
 name = "mtrack"
 path = "src/lib.rs"

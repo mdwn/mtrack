@@ -22,7 +22,7 @@ mod state;
 mod tempo_aware;
 mod types;
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests;
 
 // Re-export public items

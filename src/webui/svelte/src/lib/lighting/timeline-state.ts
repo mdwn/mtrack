@@ -15,28 +15,29 @@
 // The lighting timeline's layout. Every position in it -- bars and beats
 // through tempo changes and ramps, offsets, sequences played from a cue -- is
 // computed by the player's own tempo map and cue clock, compiled to
-// WebAssembly (`../tempo-wasm`). What is here is the timeline's: its ms, its
-// grid lines and labels, snapping, and the offset markers it draws.
+// WebAssembly (`../tempo-wasm`), and the sequences a show plays are laid out
+// by the player's own light show parser there. What is here is the
+// timeline's: its ms, its grid lines and labels, snapping, and the offset
+// markers it draws.
 
 import type {
   Timestamp,
   TempoSection,
   Cue,
   Sequence,
-  CueEffect,
+  EffectType,
 } from "./types";
 import { absoluteTimestamp } from "./types";
 import {
   CueClock,
   TempoMap,
+  layoutSequences,
   rampDuration,
+  type SequenceLayout,
   type TempoMapInput,
   type TempoMapPosition,
 } from "../tempo-wasm";
-
-const MS_PER_MINUTE = 60000;
-/** The tempo the player times a sequence at without any tempo map. */
-const DEFAULT_BPM = 120;
+import { serializeLightFile } from "./serializer";
 
 /** Grid line for rendering on the ruler. */
 export interface GridLine {
@@ -717,178 +718,64 @@ export function computeAdjustedCuePositions(
   });
 }
 
-/** A sequence's cues and pass, in beats from its start, as the player
- *  counts them (`Sequence::beats_from_start`, `Sequence::pass_beats`):
- *  through the map it is timed in inside itself, which is the show's at its
- *  starting tempo and time signature. A pass lasts its declared `length:`,
- *  else until its last effect ends, else until its last cue starts. */
-interface SequencePass {
-  /** Each cue's start, in beats from the sequence's */
-  cueBeats: number[];
-  passBeats: number;
-  /** The same in ms: how a body in seconds (or a show without a tempo
-   *  map) is laid out */
-  cueMs: number[];
-  passMs: number;
-  /** Written wholly in seconds (every cue at a time, any `length:` in
-   *  time): laid out in seconds wherever it plays, as the player has it
-   *  (`Sequence::in_seconds`) */
-  inSeconds: boolean;
-}
+/** The sequences a list of cues plays, laid out by the player's own parser
+ *  and sequence expansion (`layout_sequence_calls`, through WebAssembly):
+ *  the cues and the sequences they reference, written out as a show and
+ *  parsed, timed through `tempo`. Kept by source, as a parse is not free. */
+const layoutCache = new Map<string, SequenceLayout>();
 
-function sequencePass(seq: Sequence, tempo?: TempoSection): SequencePass {
-  const steady = tempo && steadyTempo(tempo);
-  const map = steady && tempoMapOf(steady);
-  const cueAt = seq.cues.map((c) =>
-    map
-      ? msAtBeats(map, beatsAtTimestamp(map, c.timestamp))
-      : (c.timestamp.ms ?? 0),
-  );
-  const startMs = cueAt.length ? Math.min(...cueAt) : 0;
-  const beatsFromStart = (ms: number) =>
-    snapBeats(
-      map
-        ? beatsAtMs(map, ms) - beatsAtMs(map, startMs)
-        : ((ms - startMs) / MS_PER_MINUTE) * DEFAULT_BPM,
-    );
-
-  let endMs: number;
-  const length = seq.length
-    ? durationStringToMs(seq.length, steady, startMs)
-    : 0;
-  if (length > 0) {
-    endMs = startMs + length;
-  } else if (seq.cues.some((c) => c.effects.length > 0)) {
-    endMs = startMs;
-    seq.cues.forEach((c, i) => {
-      for (const e of c.effects) {
-        endMs = Math.max(
-          endMs,
-          cueAt[i] + effectDurationMs(e, steady, cueAt[i]),
-        );
-      }
-    });
-  } else {
-    endMs = Math.max(startMs, ...cueAt);
-  }
-  return {
-    cueBeats: cueAt.map(beatsFromStart),
-    passBeats: beatsFromStart(endMs),
-    cueMs: cueAt.map((ms) => ms - startMs),
-    passMs: endMs - startMs,
-    inSeconds:
-      seq.cues.every((c) => c.timestamp.type === "absolute") &&
-      !/beat|measure/.test(seq.length ?? ""),
-  };
-}
-
-/** The beat position of a timestamp in `map`. */
-function beatsAtTimestamp(map: TempoMap, ts: Timestamp): number {
-  return ts.type === "absolute"
-    ? beatsAtMs(map, ts.ms ?? 0)
-    : map.beatsAtPosition(ts.measure ?? 1, ts.beat ?? 1);
-}
-
-/** A tempo section at its starting tempo and time signature, none of its
- *  changes: the timing inside a sequence. */
-const steadyTempos = new WeakMap<TempoSection, TempoSection>();
-function steadyTempo(tempo: TempoSection): TempoSection {
-  let steady = steadyTempos.get(tempo);
-  if (
-    !steady ||
-    steady.bpm !== tempo.bpm ||
-    steady.start !== tempo.start ||
-    steady.time_signature !== tempo.time_signature
-  ) {
-    steady = { ...tempo, changes: [] };
-    steadyTempos.set(tempo, steady);
-  }
-  return steady;
-}
-
-/** How long an effect lasts, as the player has it (`Effect::total_duration`):
- *  up, then its hold (or its own duration), then down. */
-function effectDurationMs(
-  e: CueEffect,
-  tempo: TempoSection | undefined,
-  atMs: number,
-): number {
-  const p = e.effect;
-  const ms = (d: string | undefined) => durationStringToMs(d, tempo, atMs);
-  if (p.type === "dimmer") return ms(p.duration);
-  return ms(p.up_time) + ms(p.hold_time ?? p.duration) + ms(p.down_time);
-}
-
-/** Where the cue at `cueBeats` in pass `pass` of a sequence played from
- *  `refMs` lands: placed in beats through the show's tempo map from there,
- *  as the player places it (`expand_sequence_call`). */
-function passCueMs(
-  pass: SequencePass,
-  index: number,
-  iteration: number,
-  refMs: number,
+function layoutOf(
+  cues: Cue[],
+  sequences: Sequence[],
   tempo?: TempoSection,
-): number {
-  if (!tempo || pass.inSeconds) {
-    return (
-      refMs + iteration * pass.passMs + (index < 0 ? 0 : pass.cueMs[index])
-    );
-  }
-  const beats =
-    index < 0
-      ? iteration * pass.passBeats
-      : iteration * pass.passBeats + pass.cueBeats[index];
-  return refMs + beatsToMs(snapBeats(beats), refMs, tempo);
+): SequenceLayout {
+  const source = serializeLightFile({
+    sequences,
+    shows: [{ name: "layout", cues }],
+  });
+  const key = `${tempo ? JSON.stringify(tempoKey(tempo)) : "-"}\n${source}`;
+  const hit = layoutCache.get(key);
+  if (hit) return hit;
+  const layout = layoutSequences(source, tempo && tempoMapOf(tempo));
+  if (layoutCache.size > 256) layoutCache.clear();
+  layoutCache.set(key, layout);
+  return layout;
 }
 
 /**
- * Expand sequence references in a show's cues into concrete effect cues.
- * Returns a new cue array with sequence effects inserted at the correct
- * timestamps, each marked with `sequenceName`. The original cues are
- * preserved unchanged; expanded cues are added alongside them.
+ * Expand sequence references in a show's cues into concrete effect cues, as
+ * the player expands them. Returns a new cue array with sequence effects
+ * inserted at the correct timestamps, each marked with `sequenceName`. The
+ * original cues are preserved unchanged; expanded cues are added alongside
+ * them, at their places in the tempo map before any offset (the offsets are
+ * the adjusted positions' to add).
  */
 export function expandSequencesIntoCues(
   showCues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
 ): Cue[] {
-  const seqMap = new Map<string, Sequence>();
-  for (const s of sequences) seqMap.set(s.name, s);
-
-  const expanded: Cue[] = [];
-
-  for (const cue of showCues) {
-    // Always include the original cue
-    expanded.push(cue);
-
-    // Expand sequence references into additional cues
-    for (const ref of cue.sequences) {
-      if (ref.stop) continue; // stop commands don't produce effects
-      const seq = seqMap.get(ref.name);
-      if (!seq || seq.cues.length === 0) continue;
-
-      const refMs = timestampToMs(cue.timestamp, tempo);
-      const pass = sequencePass(seq, tempo);
-      // Passes of no length all start together: one is all there is to see.
-      const passes = pass.passBeats > 0 ? parseLoopCount(ref.loop) : 1;
-
-      for (let iter = 0; iter < passes; iter++) {
-        seq.cues.forEach((seqCue, i) => {
-          if (seqCue.effects.length === 0) return;
-          const taggedEffects: CueEffect[] = seqCue.effects.map((e) => ({
-            ...e,
-            sequenceName: ref.name,
-          }));
-          expanded.push({
-            timestamp: absoluteTimestamp(
-              passCueMs(pass, i, iter, refMs, tempo),
-            ),
-            effects: taggedEffects,
-            commands: [],
-            sequences: [],
-          });
-        });
-      }
+  const expanded: Cue[] = [...showCues];
+  const layout = layoutOf(showCues, sequences, tempo);
+  for (const call of layout.shows[0]?.calls ?? []) {
+    for (const cue of call.cues) {
+      if (cue.effects.length === 0) continue;
+      expanded.push({
+        timestamp: absoluteTimestamp((cue.time - call.offset) * 1000),
+        effects: cue.effects.map((e) => ({
+          groups: e.groups,
+          effect: {
+            type: e.type as EffectType,
+            colors: [],
+            layer: e.layer,
+            duration: `${Math.round(e.secs * 1000)}ms`,
+            extra: {},
+          },
+          sequenceName: call.name,
+        })),
+        commands: [],
+        sequences: [],
+      });
     }
   }
 
@@ -902,33 +789,30 @@ export function expandSequencesIntoCues(
 }
 
 /**
- * How long `passes` passes of a sequence played from `refMs` last, through
- * the show's tempo map from there.
+ * How long `passes` passes of the sequence `name` played from `refMs` last,
+ * as the player plays them, through the show's tempo map from there.
  */
 export function getSequencePlayMs(
-  seq: Sequence,
+  sequences: Sequence[],
+  name: string,
   refMs: number,
   tempo?: TempoSection,
   passes = 1,
 ): number {
-  if (seq.cues.length === 0) return 0;
-  return passCueMs(sequencePass(seq, tempo), -1, passes, refMs, tempo) - refMs;
+  const cue: Cue = {
+    timestamp: absoluteTimestamp(refMs),
+    effects: [],
+    commands: [],
+    sequences: [{ name, loop: String(Math.max(1, Math.round(passes))) }],
+  };
+  const call = layoutOf([cue], sequences, tempo).shows[0]?.calls[0];
+  return call ? Math.max(0, call.end * 1000 - refMs) : 0;
 }
 
 /** Get the BPM at a given ms position (mid-ramp, the ramp's tempo there). */
 export function getTempoAtMs(ms: number, tempo?: TempoSection): number {
   if (!tempo) return 120; // default
   return tempoMapOf(tempo).bpmAt(ms / 1000);
-}
-
-/** The passes a sequence reference plays: `loop: N`, or a practical limit
- *  for display for `loop: loop`. */
-export function parseLoopCount(loop?: string): number {
-  if (!loop) return 1;
-  const n = parseInt(loop, 10);
-  if (!isNaN(n) && n > 0) return n;
-  if (loop === "loop") return 100; // practical limit for display
-  return 1;
 }
 
 /** Effect type color coding */

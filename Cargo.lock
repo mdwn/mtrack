@@ -2358,6 +2358,12 @@ dependencies = [
 [[package]]
 name = "mtrack-tempo-wasm"
 version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "pest",
+ "pest_derive",
+ "serde",
+]
 
 [[package]]
 name = "multer"

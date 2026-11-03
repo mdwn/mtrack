@@ -305,16 +305,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
     if !matches!(&final_effect_type, EffectType::Dimmer { .. }) {
         let effect_duration = final_effect_type.duration();
         if effect_duration.is_zero() && hold_time.is_none() {
-            let effect_name = match &final_effect_type {
-                EffectType::Static { .. } => "static",
-                EffectType::ColorCycle { .. } => "cycle",
-                EffectType::Strobe { .. } => "strobe",
-                EffectType::Pulse { .. } => "pulse",
-                EffectType::Chase { .. } => "chase",
-                EffectType::Rainbow { .. } => "rainbow",
-                EffectType::Move { .. } => "move",
-                EffectType::Dimmer { .. } => unreachable!(),
-            };
+            let effect_name = final_effect_type.keyword();
             return Err(format!(
                 "Effect '{}' requires a 'duration' or 'hold_time' parameter. \
                  All effects must have an explicit, finite duration.",
@@ -726,7 +717,7 @@ pub(crate) fn apply_parameters_to_effect_type(
     Ok((effect_type, ignored))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

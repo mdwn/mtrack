@@ -247,7 +247,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TypeScript copy of the tempo map, cue offsets and sequence expansion, and its sequences were
   laid out at the tempo at 0, a fixed length a pass. It now runs the player's `src/tempo.rs`,
   compiled to WebAssembly, so its bars, ramps, offsets and sequences are where the player puts
-  them, sequences through a tempo change included. The module loads only with the views that need
+  them, sequences through a tempo change included: the sequences a show plays are laid out by the
+  player's own light show parser and sequence expansion, compiled in with it. The module loads only with the views that need
   it (the lighting timeline and the song's section timeline); in a browser without WebAssembly
   those say why they cannot open, and the rest of the UI works as before.
 - **A song editor's time signature at a bar** (#628): a time signature change written on a bar's

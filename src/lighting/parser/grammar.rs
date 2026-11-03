@@ -15,5 +15,8 @@
 use pest_derive::Parser;
 
 #[derive(Parser)]
-#[grammar = "src/lighting/grammar.pest"]
+// The web UI's WebAssembly module (crates/mtrack-tempo-wasm) compiles this
+// file too, from a crate two folders down.
+#[cfg_attr(not(mtrack_wasm), grammar = "src/lighting/grammar.pest")]
+#[cfg_attr(mtrack_wasm, grammar = "../../src/lighting/grammar.pest")]
 pub struct LightingParser;

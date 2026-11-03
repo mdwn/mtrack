@@ -978,7 +978,7 @@ fn parse_tags(pair: Pair<Rule>) -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

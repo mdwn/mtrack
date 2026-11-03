@@ -231,7 +231,7 @@ function serializeEffect(cueEffect: CueEffect): string {
   if (effect.easing !== undefined) parts.push(`easing: ${effect.easing}`);
 
   // Extra params
-  for (const [k, v] of Object.entries(effect.extra)) {
+  for (const [k, v] of Object.entries(effect.extra ?? {})) {
     parts.push(`${k}: ${v}`);
   }
 

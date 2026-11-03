@@ -372,7 +372,7 @@ pub fn lerp(from: Pose, to: Pose, t: f64) -> Pose {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

@@ -253,7 +253,7 @@ pub fn resolve_physical(
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
     use crate::lighting::types::{ChannelFunction, PhysicalRange};

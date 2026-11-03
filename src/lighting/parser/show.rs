@@ -72,6 +72,59 @@ pub fn parse_light_file_within(
     root: Option<&Path>,
     external: Option<&TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
+    parse_file(content, path, root, external, None)
+}
+
+/// The sequences a file's shows play, as the player plays them, for drawing:
+/// for each show, each sequence played from each of its cues, with the cues
+/// it expands to and where its last pass ends. The same parse and expansion
+/// the player's shows come from; `external` as [`parse_light_shows_with_tempo`]
+/// takes it. A file with an `include` cannot be laid out (there is no path to
+/// read it from).
+pub fn layout_sequence_calls(
+    content: &str,
+    external: Option<&TempoMap>,
+) -> Result<Vec<ShowLayout>, Box<dyn Error>> {
+    let mut layouts = Vec::new();
+    parse_file(content, None, None, external, Some(&mut layouts))?;
+    Ok(layouts)
+}
+
+/// A show's sequences, as [`layout_sequence_calls`] lays them out.
+#[derive(Debug, Clone)]
+pub struct ShowLayout {
+    pub name: String,
+    pub calls: Vec<CallLayout>,
+}
+
+/// One sequence played from a show's cue.
+#[derive(Debug, Clone)]
+pub struct CallLayout {
+    /// The cue it is played from: its place among the show's cues as written.
+    pub cue: usize,
+    /// Its place among that cue's sequence references.
+    pub call: usize,
+    pub name: String,
+    /// The offset in force at the cue, in seconds.
+    pub offset_secs: f64,
+    /// The cues it expands to, in time order: every pass, up to
+    /// [`MAX_LAID_OUT_CUES`].
+    pub cues: Vec<Cue>,
+    /// Where its last pass ends.
+    pub end: Duration,
+}
+
+/// The most cues a laid-out call carries: a `loop: loop` runs for ten
+/// thousand passes, which nothing draws.
+pub const MAX_LAID_OUT_CUES: usize = 5000;
+
+fn parse_file(
+    content: &str,
+    path: Option<&Path>,
+    root: Option<&Path>,
+    external: Option<&TempoMap>,
+    mut layouts: Option<&mut Vec<ShowLayout>>,
+) -> Result<LightShows, Box<dyn Error>> {
     let root = match root {
         Some(root) => Some(
             root.canonicalize()
@@ -153,7 +206,19 @@ pub fn parse_light_file_within(
             )
             .into());
         }
-        let mut show = parse_light_show_definition(pair, &global_tempo, &library)?;
+        let mut calls = Vec::new();
+        let mut show = parse_light_show_definition(
+            pair,
+            &global_tempo,
+            &library,
+            layouts.is_some().then_some(&mut calls),
+        )?;
+        if let Some(layouts) = layouts.as_deref_mut() {
+            layouts.push(ShowLayout {
+                name: show.name.clone(),
+                calls,
+            });
+        }
         // If show doesn't have its own tempo, use global tempo
         if show.tempo_map.is_none() {
             show.tempo_map = global_tempo.clone();
@@ -195,6 +260,7 @@ fn parse_light_show_definition(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
     library: &SequenceLibrary,
+    mut layout: Option<&mut Vec<CallLayout>>,
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
@@ -234,10 +300,28 @@ fn parse_light_show_definition(
                 // Each cue is placed under the offsets of the cues before it.
                 let effective_tempo = effective_tempo.cloned();
                 let mut clock = CueClock::new();
-                for cue_pair in cue_pairs {
+                for (cue_index, cue_pair) in cue_pairs.into_iter().enumerate() {
                     for unexpanded in parse_cue(cue_pair, &effective_tempo, &mut clock)?.0 {
+                        let offset_secs = unexpanded.offset_secs;
+                        let mut on_call = |call: usize, name: &str, played: &PlayedCall| {
+                            if let Some(layout) = layout.as_deref_mut() {
+                                layout.push(CallLayout {
+                                    cue: cue_index,
+                                    call,
+                                    name: name.to_string(),
+                                    offset_secs,
+                                    cues: played
+                                        .cues
+                                        .iter()
+                                        .take(MAX_LAID_OUT_CUES)
+                                        .map(|(cue, _)| cue.clone())
+                                        .collect(),
+                                    end: played.end,
+                                });
+                            }
+                        };
                         let expanded =
-                            expand_unexpanded_sequence_cue(unexpanded, &effective_tempo, library)?;
+                            expand_cue(unexpanded, &effective_tempo, library, &mut on_call)?;
                         // A sequence played from the cue reaches as far as it
                         // goes, for the next cue's offset anchor.
                         if let Some(last) = expanded.iter().map(|c| c.0.time).max() {
@@ -686,11 +770,24 @@ pub(super) fn expand_unexpanded_sequence_cue(
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
 ) -> Result<Vec<PlacedCue>, Box<dyn Error>> {
+    expand_cue(unexpanded, tempo_map, library, &mut |_, _, _| {})
+}
+
+/// [`expand_unexpanded_sequence_cue`], telling `on_call` of each sequence it
+/// plays (its place among the cue's references, its name, and how it plays).
+fn expand_cue(
+    unexpanded: UnexpandedSequenceCue,
+    tempo_map: &Option<TempoMap>,
+    library: &SequenceLibrary,
+    on_call: &mut dyn FnMut(usize, &str, &PlayedCall),
+) -> Result<Vec<PlacedCue>, Box<dyn Error>> {
     let mut cues: Vec<PlacedCue> = expand_cue_base(&unexpanded).into_iter().collect();
     let has_base = !cues.is_empty();
     let base_anchor = unexpanded.from_anchor;
-    for call in &unexpanded.sequence_references {
-        for placed in play_call(call, &unexpanded, tempo_map, library, usize::MAX)?.cues {
+    for (index, call) in unexpanded.sequence_references.iter().enumerate() {
+        let played = play_call(call, &unexpanded, tempo_map, library)?;
+        on_call(index, &call.name, &played);
+        for placed in played.cues {
             if has_base && cues[0].0.time == placed.0.time && placed.1 == base_anchor {
                 let base = &mut cues[0].0;
                 let cue = placed.0;
@@ -728,22 +825,20 @@ fn expand_cue_base(unexpanded: &UnexpandedSequenceCue) -> Option<PlacedCue> {
 }
 
 /// A sequence played from a cue: its cues, and where its last pass ends.
-pub(super) struct PlayedCall {
-    pub cues: Vec<PlacedCue>,
-    pub end: Duration,
+struct PlayedCall {
+    cues: Vec<PlacedCue>,
+    end: Duration,
 }
 
-/// Plays the sequence `call` names from `unexpanded`, at most `max_passes`
-/// passes of it.
+/// Plays the sequence `call` names from `unexpanded`.
 fn play_call(
     call: &SequenceCall,
     unexpanded: &UnexpandedSequenceCue,
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
-    max_passes: usize,
 ) -> Result<PlayedCall, Box<dyn Error>> {
     let sequence = library.instance(call)?;
-    let passes = determine_loop_count(call.loop_param)?.min(max_passes);
+    let passes = determine_loop_count(call.loop_param)?;
     let cues = expand_sequence_call(
         &sequence,
         unexpanded.time,
@@ -1057,7 +1152,7 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

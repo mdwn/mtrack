@@ -202,7 +202,7 @@ impl Color {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

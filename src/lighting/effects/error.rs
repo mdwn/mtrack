@@ -32,7 +32,7 @@ impl std::fmt::Display for EffectError {
 
 impl std::error::Error for EffectError {}
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

@@ -1974,3 +1974,42 @@ show "Show" {{
     );
     close_to(&effect_cue_secs(&content, "Show"), &[21.0]);
 }
+
+#[test]
+fn a_shows_sequences_are_laid_out_as_they_play() {
+    // The layout the web UI draws is the parse the player plays: the same
+    // cues, by the cue and reference they are played from, and where the
+    // last pass ends (two beats a pass from bar 8: 14, 15, then 16, 18, to
+    // 20).
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @1/1
+    front_wash: static, color: "red", duration: 2beats
+}}
+
+show "Show" {{
+    @1/1
+    back_wash: static, color: "blue", duration: 1s
+
+    @8/1
+    sequence "s", loop: 4
+}}
+"#
+    );
+    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    assert_eq!(layouts.len(), 1);
+    assert_eq!(layouts[0].name, "Show");
+    let calls = &layouts[0].calls;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        (calls[0].cue, calls[0].call, calls[0].name.as_str()),
+        (1, 0, "s")
+    );
+    let times: Vec<f64> = calls[0].cues.iter().map(|c| c.time.as_secs_f64()).collect();
+    close_to(&times, &[14.0, 15.0, 16.0, 18.0]);
+    assert!((calls[0].end.as_secs_f64() - 20.0).abs() < 0.002);
+    // As the show plays them.
+    let played: Vec<f64> = cue_secs(&content, "Show")[1..].to_vec();
+    close_to(&played, &times);
+}

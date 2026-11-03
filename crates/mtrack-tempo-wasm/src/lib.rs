@@ -11,12 +11,15 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! mtrack's tempo map and cue clock for the web UI, as a WebAssembly module.
+//! mtrack's tempo map, cue clock and light show parser for the web UI, as a
+//! WebAssembly module.
 //!
-//! The module is the player's own `src/tempo.rs` (and `src/tempo/`), compiled
-//! as it is, so the lighting timeline puts bars, beats, tempo changes, ramps
-//! and offsets exactly where the player does. Nothing here does any tempo
-//! arithmetic of its own; it only carries numbers across the boundary.
+//! The module is the player's own `src/tempo.rs` (and `src/tempo/`) and its
+//! light show parser (`src/lighting/parser`, with the effect and fixture
+//! types it builds), compiled as they are, so the lighting timeline puts
+//! bars, beats, tempo changes, ramps, offsets and the sequences a show plays
+//! exactly where the player does. Nothing here does any tempo arithmetic or
+//! parsing of its own; it only carries values across the boundary.
 //!
 //! The interface is plain C functions of numbers, so the module needs no
 //! bindings generator and imports nothing. Times are in seconds. Lists go in
@@ -27,6 +30,25 @@
 #[path = "../../../src/tempo.rs"]
 #[allow(dead_code)]
 pub mod tempo;
+
+/// The player's light show parser and the types it builds, from
+/// `src/lighting`: the modules it needs and nothing else.
+#[path = "../../../src/lighting"]
+#[allow(dead_code, unused_imports, clippy::all)]
+pub mod lighting {
+    pub use crate::tempo;
+    pub mod effects;
+    pub mod parser;
+    pub mod types;
+}
+
+/// The one helper of the player's the parser uses: reading an included file.
+/// A page has no files, so a file with an `include` cannot be laid out.
+mod util {
+    pub(crate) fn read_to_string(path: &std::path::Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+}
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -39,6 +61,8 @@ use tempo::{
 thread_local! {
     static INPUT: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
     static OUTPUT: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+    static TEXT_INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static TEXT_OUTPUT: RefCell<String> = const { RefCell::new(String::new()) };
     static MAPS: RefCell<Vec<Option<TempoMap>>> = const { RefCell::new(Vec::new()) };
     static CLOCKS: RefCell<Vec<Option<CueClock>>> = const { RefCell::new(Vec::new()) };
 }
@@ -489,117 +513,136 @@ pub extern "C" fn clock_reached(clock: u32, at: f64) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A buffer of `len` bytes for the caller to fill with UTF-8 text before a
+/// call that reads text from it.
+#[no_mangle]
+pub extern "C" fn text_buffer(len: usize) -> *mut u8 {
+    TEXT_INPUT.with(|input| {
+        let mut input = input.borrow_mut();
+        input.clear();
+        input.resize(len, 0);
+        input.as_mut_ptr()
+    })
+}
 
-    fn steady(bpm: f64) -> u32 {
-        let input = [0.0, bpm, 4.0, 4.0, 0.0];
-        let ptr = input_buffer(input.len());
-        // SAFETY: the buffer holds `input.len()` numbers.
-        unsafe { std::ptr::copy_nonoverlapping(input.as_ptr(), ptr, input.len()) };
-        tm_new(input.len())
-    }
+/// Where the last call that answers text left it (UTF-8).
+#[no_mangle]
+pub extern "C" fn text_output() -> *const u8 {
+    TEXT_OUTPUT.with(|output| output.borrow().as_ptr())
+}
 
-    #[test]
-    fn a_map_round_trips_beats_and_times() {
-        let map = steady(120.0);
-        assert!((tm_time_at_beats(map, 8.0, 0.0) - 4.0).abs() < 1e-9);
-        assert!((tm_beats_at(map, 4.0, 0.0) - 8.0).abs() < 1e-9);
-        assert!((tm_time_at_beats(map, -2.0, 0.0) + 1.0).abs() < 1e-9);
-        tm_free(map);
-        assert!(tm_start(map).is_nan());
-    }
+/// Lays out the sequences the shows of the light show source in the first
+/// `len` bytes of the text buffer play ([`lighting::parser::layout_sequence_calls`]),
+/// timed through `map` (0 for none) where the source has no `tempo` block.
+/// Leaves JSON in the text output and returns its length:
+/// `{"shows": [{"name", "calls": [{"cue", "call", "name", "offset", "end",
+/// "cues": [{"time", "effects": [{"groups", "layer", "type", "secs"}]}]}]}]}`
+/// in seconds, or `{"error": "..."}` when the source does not parse.
+#[no_mangle]
+pub extern "C" fn layout_sequences(len: usize, map: u32) -> usize {
+    let source = TEXT_INPUT.with(|input| {
+        let input = input.borrow();
+        String::from_utf8_lossy(input.get(..len).unwrap_or(&[])).into_owned()
+    });
+    let tm = MAPS.with(|maps| {
+        (map as usize)
+            .checked_sub(1)
+            .and_then(|i| maps.borrow().get(i).cloned().flatten())
+    });
+    let json = match lighting::parser::layout_sequence_calls(&source, tm.as_ref()) {
+        Ok(shows) => layout_json(&shows),
+        Err(e) => format!("{{\"error\":{}}}", json_string(&e.to_string())),
+    };
+    TEXT_OUTPUT.with(|output| {
+        let mut output = output.borrow_mut();
+        *output = json;
+        output.len()
+    })
+}
 
-    #[test]
-    fn a_clock_places_through_a_map() {
-        let map = steady(120.0);
-        let clock = clock_new();
-        assert_eq!(clock_place(clock, map, 1, 2.0, 1.0, 1, 1, 0), 1);
-        assert_eq!(clock_place(clock, map, 1, 3.0, 1.0, 0, 0, 0), 1);
-        let out = OUTPUT.with(|o| o.borrow().clone());
-        assert!((out[0] - 6.0).abs() < 1e-9);
-        assert!((out[2] - 2.0).abs() < 1e-9);
-        assert_eq!(clock_place(clock, 0, 1, 3.0, 1.0, 0, 0, 0), 0);
-        clock_free(clock);
-        tm_free(map);
-    }
-
-    #[test]
-    fn a_bad_map_is_none() {
-        input_buffer(3);
-        assert_eq!(tm_new(3), 0);
-    }
-
-    #[test]
-    fn bad_numbers_are_refused_and_leave_the_module_working() {
-        let map = steady(120.0);
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300] {
-            assert!(tm_time_at_beats(map, bad, 0.0).is_nan());
-            assert!(tm_time_at_beats(map, 4.0, bad).is_nan());
-            assert!(tm_beats_at(map, bad, 0.0).is_nan());
-            assert!(tm_beats_at_position(map, bad, 1.0).is_nan());
-            assert!(tm_beats_at_position(map, 2.0, bad).is_nan());
-            assert!(tm_position_at_beats(map, bad).is_nan());
-            assert!(tm_measures_at_beats(map, bad).is_nan());
-            assert!(tm_beats_at_measures(map, bad).is_nan());
-            assert!(tm_signature(map, bad).is_nan());
-            assert!(tm_bpm_at(map, bad, 0.0).is_nan());
-            assert!(tm_bpm_at(map, 1.0, bad).is_nan());
-            assert!(tm_ramp_target(map, bad).is_nan());
-            assert!(ramp_duration(bad, 120.0, 4.0).is_nan());
-            assert!(tm_beats_to_duration(map, 4.0, 0.0, bad).is_nan());
-            assert!(tm_measures_to_duration(map, bad, 0.0, 0.0).is_nan());
-            assert!(tm_offset_duration(map, bad, 0.0).is_nan());
+fn layout_json(shows: &[lighting::parser::ShowLayout]) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("{\"shows\":[");
+    for (i, show) in shows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
         }
-        // A negative offset, a bar 0 and a beat before 1 are not positions.
-        assert!(tm_time_at_beats(map, 4.0, -1.0).is_nan());
-        assert!(tm_beats_at_position(map, 0.0, 1.0).is_nan());
-        assert!(tm_beats_at_position(map, 2.0, 0.5).is_nan());
-        assert!(ramp_duration(0.0, 120.0, 4.0).is_nan());
-        let clock = clock_new();
-        assert_eq!(clock_place(clock, map, 0, f64::NAN, 1.0, 0, 0, 0), 0);
-        assert_eq!(clock_place(clock, map, 1, 2.0, f64::INFINITY, 0, 0, 0), 0);
-        clock_reached(clock, f64::NAN);
-        // Nothing was left borrowed: every call still answers.
-        assert!((tm_time_at_beats(map, 8.0, 0.0) - 4.0).abs() < 1e-9);
-        assert_eq!(clock_place(clock, map, 1, 2.0, 1.0, 0, 0, 0), 1);
-        clock_free(clock);
-        tm_free(map);
+        let _ = write!(out, "{{\"name\":{},\"calls\":[", json_string(&show.name));
+        for (j, call) in show.calls.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            let _ = write!(
+                out,
+                "{{\"cue\":{},\"call\":{},\"name\":{},\"offset\":{},\"end\":{},\"cues\":[",
+                call.cue,
+                call.call,
+                json_string(&call.name),
+                json_number(call.offset_secs),
+                json_number(secs(call.end)),
+            );
+            for (k, cue) in call.cues.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                let _ = write!(
+                    out,
+                    "{{\"time\":{},\"effects\":[",
+                    json_number(secs(cue.time))
+                );
+                for (l, effect) in cue.effects.iter().enumerate() {
+                    if l > 0 {
+                        out.push(',');
+                    }
+                    let groups: Vec<String> =
+                        effect.groups.iter().map(|g| json_string(g)).collect();
+                    let layer = match effect.layer {
+                        Some(lighting::effects::EffectLayer::Foreground) => "foreground",
+                        Some(lighting::effects::EffectLayer::Midground) => "midground",
+                        _ => "background",
+                    };
+                    let _ = write!(
+                        out,
+                        "{{\"groups\":[{}],\"layer\":\"{layer}\",\"type\":\"{}\",\"secs\":{}}}",
+                        groups.join(","),
+                        effect.effect_type.keyword(),
+                        json_number(secs(effect.total_duration())),
+                    );
+                }
+                out.push_str("]}");
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
     }
+    out.push_str("]}");
+    out
+}
 
-    #[test]
-    fn a_map_with_numbers_out_of_reach_is_none() {
-        let bad_maps: [&[f64]; 5] = [
-            &[f64::NAN, 120.0, 4.0, 4.0, 0.0],
-            &[0.0, 120.0, 4.0, 4.0, f64::INFINITY],
-            &[0.0, 120.0, 4.0, 4.0, 1e300],
-            // A change at bar four billion.
-            &[
-                0.0, 120.0, 4.0, 4.0, 1.0, 1.0, 4e9, 1.0, 60.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            // A change at a time that is not one.
-            &[
-                0.0,
-                120.0,
-                4.0,
-                4.0,
-                1.0,
-                0.0,
-                f64::NAN,
-                1.0,
-                60.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-        ];
-        for input in bad_maps {
-            let ptr = input_buffer(input.len());
-            // SAFETY: the buffer holds `input.len()` numbers.
-            unsafe { std::ptr::copy_nonoverlapping(input.as_ptr(), ptr, input.len()) };
-            assert_eq!(tm_new(input.len()), 0, "{input:?}");
+/// A number as JSON: finite, or 0.
+fn json_number(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value}")
+    } else {
+        "0".to_string()
+    }
+}
+
+/// A string as JSON, quoted and escaped.
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
     }
+    out.push('"');
+    out
 }

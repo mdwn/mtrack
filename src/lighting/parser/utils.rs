@@ -318,7 +318,7 @@ pub(crate) fn parse_generic_parameter(pair: Pair<Rule>) -> Result<String, Box<dy
     Ok(pair.as_str().trim().to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

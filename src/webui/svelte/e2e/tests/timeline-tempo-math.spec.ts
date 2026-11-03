@@ -538,7 +538,7 @@ test("a sequence is laid out in beats where it plays, as the player has it", () 
   close(twice[2], 7000);
   close(twice[3], 15000);
   // Two passes, 18 beats: 4 at 120 and 14 at 60.
-  close(getSequencePlayMs(seq, 0, t, 2), 2000 + 14000);
+  close(getSequencePlayMs([seq], "s", 0, t, 2), 2000 + 14000);
 });
 
 test("a sequence written in seconds keeps its seconds, as the player has it", () => {
@@ -563,5 +563,5 @@ test("a sequence written in seconds keeps its seconds, as the player has it", ()
     .map((c) => timestampToMs(c.timestamp));
   expect(times.length).toBe(8);
   times.forEach((ms, k) => close(ms, 14000 + 500 * k, `cue ${k}`));
-  close(getSequencePlayMs(seq, 14000, t, 4), 4000);
+  close(getSequencePlayMs([seq], "s", 14000, t, 4), 4000);
 });

@@ -1,6 +1,6 @@
 [package]
 name = "mtrack-tempo-wasm"
-description = "mtrack's tempo map and cue clock, compiled to WebAssembly for the web UI."
+description = "mtrack's tempo map, cue clock and light show parser, compiled to WebAssembly for the web UI."
 license = "GPL-3.0"
 version = "0.1.0"
 edition = "2021"
@@ -10,3 +10,14 @@ publish = false
 # rlib lets the host build, test and lint it with the rest of the workspace.
 [lib]
 crate-type = ["cdylib", "rlib"]
+# The player's modules compiled here carry unit tests that need the rest of
+# the player; this crate's own tests are in tests/.
+test = false
+doctest = false
+
+# The light show parser's, as the player has them.
+[dependencies]
+indexmap = "2"
+pest = "2.8"
+pest_derive = "2.8"
+serde = { version = "1.0", features = ["derive"] }

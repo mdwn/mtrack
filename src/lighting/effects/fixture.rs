@@ -842,7 +842,7 @@ pub(crate) fn declared_dmx(steps: &[FunctionStep], hz: f64) -> f64 {
     best.map_or(0.0, |(_, dmx)| dmx)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

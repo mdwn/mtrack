@@ -23,13 +23,14 @@ mod tempo_parse;
 mod types;
 pub(crate) mod utils; // Make utils accessible for tests
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests;
 
 // Re-export public items
 pub use fixture_venue::{parse_fixture_types, parse_venues};
 pub use include::included_files;
 pub use show::{
-    parse_light_file, parse_light_file_within, parse_light_shows, parse_light_shows_with_tempo,
+    layout_sequence_calls, parse_light_file, parse_light_file_within, parse_light_shows,
+    parse_light_shows_with_tempo, CallLayout, ShowLayout, MAX_LAID_OUT_CUES,
 };
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};

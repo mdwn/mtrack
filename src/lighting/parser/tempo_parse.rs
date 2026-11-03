@@ -293,7 +293,7 @@ fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
     use crate::lighting::parser::grammar::{LightingParser, Rule};

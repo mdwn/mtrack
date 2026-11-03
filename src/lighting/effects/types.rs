@@ -257,6 +257,20 @@ impl EffectType {
         out
     }
 
+    /// The effect's keyword in the light show DSL (`static`, `cycle`, ...).
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            EffectType::Static { .. } => "static",
+            EffectType::ColorCycle { .. } => "cycle",
+            EffectType::Strobe { .. } => "strobe",
+            EffectType::Dimmer { .. } => "dimmer",
+            EffectType::Chase { .. } => "chase",
+            EffectType::Rainbow { .. } => "rainbow",
+            EffectType::Pulse { .. } => "pulse",
+            EffectType::Move { .. } => "move",
+        }
+    }
+
     /// The effect's name as reported to users — status output, MCP responses,
     /// and offline evaluation all use this spelling.
     pub fn name(&self) -> &'static str {
@@ -346,7 +360,7 @@ pub enum BlendMode {
     Screen,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(mtrack_wasm)))]
 mod tests {
     use super::*;
 

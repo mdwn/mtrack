@@ -31,10 +31,14 @@ setup-dev:
 build: build-ui build-rust
 
 ## Compute a hash of all frontend inputs (source, proto, the tempo map, lockfile).
-# src/gen is generated from src/proto and the tempo map's Rust (both hashed here already) and
+# src/gen is generated from src/proto and the Rust in WASM_SOURCES (both hashed here already) and
 # gitignored, so it is left out: a checkout that has never generated it would otherwise never
 # match a stamp built elsewhere.
-WASM_SOURCES := $(ROOT_DIR)/src/tempo.rs $(ROOT_DIR)/src/tempo $(ROOT_DIR)/crates/mtrack-tempo-wasm
+# The Rust the UI's WebAssembly module compiles: the tempo map, and the light
+# show parser with the types it builds.
+WASM_SOURCES := $(ROOT_DIR)/src/tempo.rs $(ROOT_DIR)/src/tempo $(ROOT_DIR)/crates/mtrack-tempo-wasm \
+	$(ROOT_DIR)/src/lighting/parser.rs $(ROOT_DIR)/src/lighting/parser $(ROOT_DIR)/src/lighting/grammar.pest \
+	$(ROOT_DIR)/src/lighting/effects.rs $(ROOT_DIR)/src/lighting/effects $(ROOT_DIR)/src/lighting/types.rs
 FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto $(WASM_SOURCES) -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
 FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
 
