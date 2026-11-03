@@ -31,8 +31,8 @@ use pest::Parser;
 use super::super::tempo::TempoMap;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
-use super::show::{body_in_seconds, expand_unexpanded_sequence_cue, parse_sequence_structure};
-use super::types::{Sequence, SequenceCall};
+use super::show::{body_in_seconds, determine_loop_count, keeps_its_own, parse_sequence_structure};
+use super::types::{Cue, Sequence, SequenceCall, SequenceLoop};
 
 /// A sequence as written: its parameters and its source.
 struct SequenceTemplate {
@@ -308,25 +308,34 @@ impl SequenceLibrary {
             definition.length_written(),
             self,
         )?;
+        // Its cues as written, each with the sequences it plays: those are
+        // played where the cue lands, each time this one is played. Each is
+        // looked up now, so an unknown sequence, a bad argument or a cycle
+        // is this one's error.
         let mut cues = Vec::new();
         let mut from_anchor = Vec::new();
-        let mut limits = Vec::new();
-        let mut truncated = false;
+        let mut calls = Vec::new();
+        let mut keeps = Vec::new();
         let mut endless = false;
+        let mut has_effects = false;
         for cue in definition.cues {
-            let expanded = expand_unexpanded_sequence_cue(cue, &tempo, self)?;
-            truncated |= expanded.truncated;
-            endless |= expanded.endless;
-            for placed in expanded.cues {
-                // Built up to the cap, as a call is.
-                if cues.len() >= self.max_cues {
-                    truncated = true;
-                    break;
-                }
-                cues.push(placed.cue);
-                from_anchor.push(placed.from_anchor);
-                limits.push(placed.limits);
+            for call in &cue.sequence_references {
+                let played = self.instance(call)?;
+                determine_loop_count(call.loop_param)?;
+                endless |= matches!(call.loop_param, Some(SequenceLoop::Loop)) || played.endless;
+                has_effects |= played.has_effects;
             }
+            has_effects |= !cue.effects.is_empty();
+            keeps.push(keeps_its_own(&cue));
+            from_anchor.push(cue.from_anchor);
+            cues.push(Cue {
+                time: cue.time,
+                effects: cue.effects,
+                layer_commands: cue.layer_commands,
+                stop_sequences: cue.stop_sequences,
+                start_sequences: vec![],
+            });
+            calls.push(cue.sequence_references);
         }
         Ok(Sequence {
             cues,
@@ -334,9 +343,10 @@ impl SequenceLibrary {
             length,
             in_seconds,
             from_anchor,
-            truncated,
-            limits,
+            calls,
+            keeps,
             endless,
+            has_effects,
         })
     }
 }

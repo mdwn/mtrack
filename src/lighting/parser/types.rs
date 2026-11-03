@@ -63,36 +63,24 @@ pub struct Sequence {
     /// through the tempo map where it plays.
     pub in_seconds: bool,
     /// For each cue (by index; empty for none), how far it is from the
-    /// anchor of the body purely in seconds it comes from, when it does: a
-    /// body in seconds played inside this one keeps its seconds, its
-    /// anchor placed in beats with the rest (see
-    /// [`PlacedCue`](super::show::PlacedCue)).
+    /// anchor of the inline loop purely in seconds it comes from, when it
+    /// does: the loop keeps its seconds, its anchor placed in beats with the
+    /// rest (see [`PlacedCue`](super::show::PlacedCue)).
     pub from_anchor: Vec<Option<Duration>>,
-    /// Whether a cap on the cues built (a layout's) cut its expansion short.
-    pub truncated: bool,
-    /// For each cue (by index; empty for none), the ends of the passes of
-    /// the sequences it comes from that declare a `length:` (see
-    /// [`PassLimit`]): whether it lands past one is for where it is finally
-    /// played to say.
-    pub(crate) limits: Vec<Vec<PassLimit>>,
+    /// For each cue (by index; empty for none), the sequences it plays:
+    /// played where the cue lands, each time the sequence is played, so
+    /// every sequence is laid out where it plays.
+    pub(crate) calls: Vec<Vec<SequenceCall>>,
+    /// For each cue (by index; empty for all), whether it keeps a cue of its
+    /// own where it is played: not one with nothing but the sequences it
+    /// plays.
+    pub(crate) keeps: Vec<bool>,
     /// Whether it plays a sequence for good (`loop: loop`, here or in a
     /// sequence it plays): played, it stops at the end any show can have.
     pub endless: bool,
-}
-
-/// The end of a pass of a sequence with a `length:`, carried with each of
-/// its cues (bar its pass's first) as a cue is, through every sequence it is
-/// played inside: in the same body's time, with how far it is from the
-/// anchor of a body in seconds it comes from (see
-/// [`PlacedCue`](super::show::PlacedCue)). Only where a cue is finally played
-/// -- where the pass's end is too -- does it say whether the cue lands past
-/// it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PassLimit {
-    pub time: Duration,
-    pub from_anchor: Option<Duration>,
-    /// The sequence whose pass it ends.
-    pub sequence: String,
+    /// Whether any effect plays in it, its own or a sequence's it plays:
+    /// without one, its cues' times are where its passes end.
+    pub has_effects: bool,
 }
 
 /// A cue of a sequence that lands at or past the end of its pass (a
@@ -114,25 +102,25 @@ pub struct DroppedCue {
     pub pass_end: Duration,
 }
 
+/// The quarter-note beats from `from` to `to` through `tempo_map` (at the
+/// default tempo without one), as the player snaps them.
+pub(crate) fn beats_between(tempo_map: Option<&TempoMap>, from: Duration, to: Duration) -> f64 {
+    let at = |t: Duration| match tempo_map {
+        Some(tm) => tm.beats_at(t, 0.0),
+        None => t.as_secs_f64() * DEFAULT_BPM / 60.0,
+    };
+    snap_beats(at(to) - at(from))
+}
+
 impl Sequence {
     /// When the sequence starts: its earliest cue.
     pub(crate) fn start_time(&self) -> Duration {
         self.cues.iter().map(|c| c.time).min().unwrap_or_default()
     }
 
-    /// The quarter-note beat position of `time`, through its tempo map (at
-    /// the default tempo without one): counted from its start
-    /// ([`start_time`](Self::start_time)), less that of the start.
-    pub(crate) fn beats_at(&self, time: Duration) -> f64 {
-        match &self.tempo_map {
-            Some(tm) => tm.beats_at(time, 0.0),
-            None => time.as_secs_f64() * DEFAULT_BPM / 60.0,
-        }
-    }
-
-    /// The beats from `start` (its start) to `time`.
+    /// The beats from `start` (its start) to `time`, through its tempo map.
     pub(crate) fn beats_between(&self, start: Duration, time: Duration) -> f64 {
-        snap_beats(self.beats_at(time) - self.beats_at(start))
+        beats_between(self.tempo_map.as_ref(), start, time)
     }
 
     /// How many beats its declared `length:` is, from its start: what a

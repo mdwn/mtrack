@@ -2644,3 +2644,52 @@ fn a_sequence_played_for_good_inside_another_parses_quickly() {
         started.elapsed()
     );
 }
+
+#[test]
+fn a_pass_is_laid_out_where_it_plays_however_deep() {
+    // 6g: "a" plays "b" (a measure), which plays "s" in seconds; from bar 3
+    // the song is at 240, where a measure is a second and "s"'s cue 1.5s in
+    // falls past it. Played straight or inside "x" (built at 120, where it
+    // would not), "a"'s second pass starts 0.8s on, where what plays of "s"
+    // ends.
+    let tempo = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 240 }\n    ]\n}\n";
+    let defs = "sequence \"s\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 200ms\n    @0.600\n    front_wash: static, color: \"green\", duration: 200ms\n    @1.500\n    front_wash: static, color: \"blue\", duration: 200ms\n}\nsequence \"b\", length: 1measure {\n    @1/1\n    back_wash: static, color: \"green\", duration: 1beat\n    sequence \"s\"\n}\nsequence \"a\" {\n    @1/1\n    sequence \"b\"\n}\nsequence \"x\" {\n    @1/1\n    sequence \"a\", loop: 2\n}\n";
+    for show in [
+        "show \"Show\" {\n    @3/1\n    sequence \"a\", loop: 2\n}\n",
+        "show \"Show\" {\n    @3/1\n    sequence \"x\"\n}\n",
+    ] {
+        let content = format!("{tempo}{defs}{show}");
+        let times = cue_secs(&content, "Show");
+        close_to(&times, &[4.0, 4.6, 4.8, 5.4]);
+    }
+}
+
+#[test]
+fn a_sequence_played_for_good_ends_with_the_pass_that_reaches_a_shows_end() {
+    let inner = "sequence \"inner\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    @199.000\n    front_wash: static, color: \"blue\", duration: 1s\n}\n";
+    // Z1: its second cue falls past the end: one cue, no more passes.
+    let content = format!(
+        "{inner}show \"Show\" {{\n    @999900.000\n    sequence \"inner\", loop: loop\n}}\n"
+    );
+    close_to(&cue_secs(&content, "Show"), &[999_900.0]);
+    // Z2: so with no effects.
+    let content = "sequence \"inner\" {\n    @0.000\n    clear(layer: foreground)\n    @199.000\n    clear(layer: background)\n}\nshow \"Show\" {\n    @999900.000\n    sequence \"inner\", loop: loop\n}\n";
+    close_to(&cue_secs(content, "Show"), &[999_900.0]);
+    // E2: two cues a pass, 200s apart, from 10s: the last pass the one whose
+    // second cue falls past it, and no pass after.
+    let content =
+        format!("{inner}show \"Show\" {{\n    @10.000\n    sequence \"inner\", loop: loop\n}}\n");
+    let times = cue_secs(&content, "Show");
+    assert_eq!(times.len(), 9999);
+    close_to(
+        &times[times.len() - 3..],
+        &[999_610.0, 999_809.0, 999_810.0],
+    );
+    // E4: "outer" holds "inner" for good; three passes of it are one.
+    let content = format!("{inner}sequence \"outer\" {{\n    @0.000\n    sequence \"inner\", loop: loop\n}}\nshow \"Show\" {{\n    @10.000\n    sequence \"outer\", loop: 3\n}}\n");
+    let shows = parse_light_shows(&content).unwrap();
+    let cues = &shows["Show"].cues;
+    assert!(cues
+        .iter()
+        .all(|c| !c.stop_sequences.contains(&"outer".to_string())));
+}

@@ -384,7 +384,7 @@ show "Test" {
 }
 
 // ===================================================================
-// 7. expand_unexpanded_sequence_cue(): Edge cases - stop_sequences
+// 7. expand_cue(): Edge cases - stop_sequences
 //    in loops, empty expanded_cues with effects
 // ===================================================================
 

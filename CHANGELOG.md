@@ -236,21 +236,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     file's starting tempo and time signature, one with its own through that block's map, and an
     inline loop's at the tempo and time signature in effect where the loop starts (its `offset`s
     sized there too); its passes used to keep a fixed length in seconds, its offsets sized at the
-    song's first tempo. A sequence played inside another follows the outer sequence's tempo map
-    rather than its starting tempo.
+    song's first tempo. A sequence played inside another is laid out where it plays, through the
+    song's tempo map there, each time the outer one is played -- not once, at the tempo the outer
+    sequence was written at.
   - A loop's effects have their durations in beats or measures, and their tempo-aware rates, read
     where each pass plays, as a sequence's are.
   - A pass of a body in beats without a `length:` keeps its length in beats, as before: to the end
     of its own last effect, an effect's duration in seconds counted at the tempo the body was
     written at, so its passes stay on the beat grid (a cue with no effect, such as a `clear()`,
-    does not count, in a body with effects, as in one in seconds). A sequence or loop in seconds played inside
+    does not count, in a body with effects, as in one in seconds). A sequence or loop played inside
     it, though, counts where it actually lands: the pass lasts until that content ends, if later,
     so the next pass no longer starts over it where the tempo is faster than the body was written
     at. A pass of a body in seconds lasts until its content ends.
   - With a `length:`, a cue that lands at or past the pass's end where it plays (one in seconds,
     where the tempo is faster) does not play, as a cue written past it cannot -- decided where it
     finally plays in the show, however deep the sequence is played inside others, not at the tempo
-    an enclosing sequence was written at. This is no longer silent: `lint` warns of it
+    an enclosing sequence was written at -- and makes no pass longer, at any depth: a sequence in
+    seconds played inside one with a `length:` repeats as soon as what of it plays ends. This is
+    no longer silent: `lint` warns of it
     (`cue-past-sequence-length`), once for each sequence a show's cue plays them from, with how
     many and the first's show time, and the timeline marks the call.
 
@@ -277,7 +280,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offset past about 11 days, or a bar past 100,000 made the parser panic; it is now an error
   naming the value. So is a time a sequence's passes reach past about 11 days when it is played a
   number of times (a long count of long effects), which used to wrap around or stall the parser;
-  a sequence played for good (`loop: loop`) stops there instead, as it plays. Finding a bar
+  a sequence played for good (`loop: loop`) stops there instead, as it plays: the pass that
+  reaches it is its last. Finding a bar
   thousands of bars into a show no longer counts through every bar before it, which made such
   files slow to load.
 - **Bars in a time signature whose beat is not a power of two (a playback change)**: counting
