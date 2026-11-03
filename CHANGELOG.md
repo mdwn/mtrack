@@ -224,13 +224,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tempo, so a cue past the song's first change landed in the wrong place wherever the sequence was
   played (a sequence's bar 3, with the song slowing to 60 at bar 2, came 12 beats in instead of 8).
   Each body -- a sequence's, or an inline loop's -- now keeps the unit it is written in:
-  - A body written wholly in seconds (every cue at a time, and any `length:` in time) is laid out
-    in seconds wherever it plays: its cues and its passes keep their times whatever the tempo does,
-    across a tempo change or through a ramp. A sequence like this used to be rescaled to the tempo
-    where it was played.
-  - A body with a cue at a bar and beat (or a `length:` in beats or measures) is counted in beats
-    and placed in beats through the tempo map where it plays, so a pass that reaches a tempo change
-    or ramp follows it. A named sequence without a `tempo` block of its own is counted at the
+  - A body purely in seconds is laid out in seconds wherever it plays: its cues and its passes
+    keep their times whatever the tempo does, across a tempo change or through a ramp. Purely in
+    seconds means every cue at a time and none issuing an `offset`, no effect lasting beats or
+    measures, no sequence or inline loop played from it that is not purely in seconds itself, and
+    any `length:` in time. A sequence like this used to be rescaled to the tempo where it was
+    played.
+  - Any other body is counted in beats and placed in beats through the tempo map where it plays,
+    so a pass that reaches a tempo change or ramp follows it. A named sequence without a `tempo` block of its own is counted at the
     file's starting tempo and time signature, one with its own through that block's map, and an
     inline loop's at the tempo and time signature in effect where the loop starts (its `offset`s
     sized there too); its passes used to keep a fixed length in seconds, its offsets sized at the

@@ -1741,3 +1741,106 @@ show "Show" {{
     );
     close_to(&cue_secs(&content, "Show"), &[14.0, 15.0, 16.0, 18.0]);
 }
+
+#[test]
+fn a_loop_at_times_with_effects_in_beats_counts_in_beats() {
+    // P1: the cue is at a time, but its effect lasts a beat, so the body is
+    // in beats: a pass a beat, half a second until the change at 16s, a
+    // second after.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+show "Show" {{
+    @8/1
+    loop {{
+        @0.000
+        front_wash: static, color: "red", duration: 1beat
+    }}, repeats: 8
+}}
+"#
+    );
+    close_to(
+        &cue_secs(&content, "Show"),
+        &[14.0, 14.5, 15.0, 15.5, 16.0, 17.0, 18.0, 19.0],
+    );
+}
+
+#[test]
+fn a_sequence_at_times_playing_one_in_beats_counts_in_beats() {
+    // P2: "outer"'s one cue is at a time, but it plays "inner", which is in
+    // beats: "outer" lays out as "inner" would played directly.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "inner" {{
+    @1/1
+    front_wash: static, color: "red", duration: 1beat
+    @1/2
+    front_wash: static, color: "blue", duration: 1beat
+}}
+
+sequence "outer" {{
+    @0.000
+    sequence "inner"
+}}
+
+show "Show" {{
+    @8/1
+    sequence "outer", loop: 4
+}}
+"#
+    );
+    close_to(
+        &cue_secs(&content, "Show"),
+        &[14.0, 14.5, 15.0, 15.5, 16.0, 17.0, 18.0, 19.0],
+    );
+}
+
+#[test]
+fn a_sequence_at_times_with_a_loop_in_beats_counts_in_beats() {
+    // P3: an inline loop of beat cues inside a sequence whose cue is at a
+    // time: the sequence is in beats.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @0.000
+    loop {{
+        @1/1
+        front_wash: static, color: "red", duration: 1beat
+    }}, repeats: 2
+}}
+
+show "Show" {{
+    @8/1
+    sequence "s", loop: 4
+}}
+"#
+    );
+    close_to(
+        &cue_secs(&content, "Show"),
+        &[14.0, 14.5, 15.0, 15.5, 16.0, 17.0, 18.0, 19.0],
+    );
+}
+
+#[test]
+fn a_sequence_at_times_with_effects_in_beats_counts_in_beats() {
+    // P4: cues at 0 and 0.25s (half a beat at 120), each lasting a beat: a
+    // pass of a beat and a half, following the change at 16s.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "s" {{
+    @0.000
+    front_wash: static, color: "red", duration: 1beat
+    @0.250
+    front_wash: static, color: "blue", duration: 1beat
+}}
+
+show "Show" {{
+    @8/1
+    sequence "s", loop: 4
+}}
+"#
+    );
+    close_to(
+        &cue_secs(&content, "Show"),
+        &[14.0, 14.25, 14.75, 15.0, 15.5, 15.75, 16.5, 17.0],
+    );
+}

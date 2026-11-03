@@ -28,7 +28,7 @@ use super::tempo_parse::parse_tempo_definition;
 use super::types::{
     Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
 };
-use super::types::{SequenceCall, SequenceLoop, UnexpandedSequenceCue};
+use super::types::{MusicalLength, SequenceCall, SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
 use pest::iterators::Pair;
 use pest::Parser;
@@ -265,11 +265,14 @@ pub(super) struct SequenceDefinition {
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
     pub(super) cues: Vec<UnexpandedSequenceCue>,
-    /// Whether every cue is written at a time (see [`written_in_seconds`]).
-    pub(super) in_seconds: bool,
 }
 
 impl SequenceDefinition {
+    /// The `length:` as written, if it declares one.
+    pub(super) fn length_written(&self) -> Option<&str> {
+        self.length.as_deref()
+    }
+
     /// The declared `length:` in time from the first cue, or `None` when the
     /// sequence declares none. Every cue must start inside it: one starting
     /// at or past the end would land on the next pass's first cue.
@@ -313,9 +316,8 @@ pub(super) fn parse_sequence_structure(
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
     let mut tempo_map: Option<TempoMap> = None;
-    let mut length: Option<String> = None;
+    let mut length = None;
     let mut unexpanded_cues = Vec::new();
-    let mut cues_in_seconds = true;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -354,7 +356,6 @@ pub(super) fn parse_sequence_structure(
                 let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
 
                 let effective_tempo = effective_tempo.cloned();
-                cues_in_seconds = written_in_seconds(&cue_pairs);
                 let mut clock = CueClock::new();
                 for cue_pair in cue_pairs {
                     unexpanded_cues.extend(parse_cue(cue_pair, &effective_tempo, &mut clock)?);
@@ -364,16 +365,11 @@ pub(super) fn parse_sequence_structure(
         }
     }
 
-    // A declared length in beats or measures keeps the body in beats.
-    let length_in_seconds = length
-        .as_deref()
-        .is_none_or(|l| !(l.contains("beat") || l.contains("measure")));
     Ok(SequenceDefinition {
         name,
         tempo_map,
         length,
         cues: unexpanded_cues,
-        in_seconds: cues_in_seconds && length_in_seconds,
     })
 }
 
@@ -597,6 +593,20 @@ fn parse_cue(
         .map(parse_sequence_reference_pair)
         .collect::<Result<Vec<_>, _>>()?;
 
+    let mut loops = Vec::new();
+    for inline_loop_pair in inline_loop_pairs.iter().cloned() {
+        loops.push(parse_inline_loop(
+            inline_loop_pair,
+            tempo_map,
+            time,
+            placed.offset_secs,
+        )?);
+    }
+    let musical = matches!(position, CuePosition::MeasureBeat(..))
+        || !offset_commands.is_empty()
+        || effects.iter().any(|e| !e.musical.is_empty())
+        || loops.iter().any(|(_, musical)| *musical);
+
     let has_base_content = !effects.is_empty()
         || !layer_commands.is_empty()
         || !stop_sequences.is_empty()
@@ -610,12 +620,13 @@ fn parse_cue(
             layer_commands,
             stop_sequences,
             sequence_references,
+            musical,
         });
     }
     let has_base = !cues.is_empty();
 
-    for inline_loop_pair in inline_loop_pairs {
-        for loop_cue in parse_inline_loop(inline_loop_pair, tempo_map, time, placed.offset_secs)? {
+    for (loop_cues, _) in loops {
+        for loop_cue in loop_cues {
             // A loop cue on the cue itself joins it.
             if has_base && cues[0].time == loop_cue.time {
                 cues[0].effects.extend(loop_cue.effects);
@@ -630,6 +641,7 @@ fn parse_cue(
                 layer_commands: loop_cue.layer_commands,
                 stop_sequences: loop_cue.stop_sequences,
                 sequence_references: Vec::new(),
+                musical,
             });
         }
     }
@@ -763,16 +775,26 @@ fn expand_sequence_call(
     cues
 }
 
-/// Whether every cue of a body (a sequence's or an inline loop's) is
-/// written at a time rather than a bar and beat: such a body is laid out in
-/// seconds, its cues and passes keeping their times whatever the tempo does.
-fn written_in_seconds(cue_pairs: &[Pair<Rule>]) -> bool {
-    cue_pairs.iter().all(|pair| {
-        !pair
-            .clone()
-            .into_inner()
-            .any(|p| p.as_rule() == Rule::measure_time)
-    })
+/// Whether a body -- a sequence's, or an inline loop's -- is purely in
+/// seconds: no cue at a bar and beat or issuing an `offset` (in measures),
+/// no effect lasting beats or measures,
+/// no inline loop or sequence played from it that is not purely in seconds
+/// itself, and no `length:` in beats or measures. Such a body is laid out
+/// in seconds wherever it plays; any other in beats.
+pub(super) fn body_in_seconds(
+    cues: &[UnexpandedSequenceCue],
+    length: Option<&str>,
+    library: &SequenceLibrary,
+) -> Result<bool, Box<dyn Error>> {
+    if length.and_then(MusicalLength::parse).is_some() || cues.iter().any(|c| c.musical) {
+        return Ok(false);
+    }
+    for call in cues.iter().flat_map(|c| &c.sequence_references) {
+        if !library.instance(call)?.in_seconds {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Parses an inline loop at `at` (under an offset of `offset_secs`) and plays
@@ -782,7 +804,7 @@ fn parse_inline_loop(
     tempo_map: &Option<TempoMap>,
     at: Duration,
     offset_secs: f64,
-) -> Result<Vec<Cue>, Box<dyn Error>> {
+) -> Result<(Vec<Cue>, bool), Box<dyn Error>> {
     let mut loop_cue_pairs = Vec::new();
     let mut repeats = 1;
     for inner_pair in pair.into_inner() {
@@ -802,32 +824,32 @@ fn parse_inline_loop(
         }
     }
 
-    // A body written wholly in seconds is laid out in seconds: its cues
-    // and its passes keep their times whatever the tempo does while it
-    // plays. One with a cue at a bar and beat is laid out in beats.
-    let in_seconds = written_in_seconds(&loop_cue_pairs);
-
     // The body is timed from its own start, with offsets of its own, at
     // the one tempo and time signature in effect where the loop is: as a
     // named sequence is timed at one tempo, so a body in seconds keeps its
-    // seconds there. Its passes are then laid out in beats from the loop,
-    // following any tempo change they reach.
+    // seconds there. A body purely in seconds keeps them on every pass;
+    // any other is laid out in beats from the loop, following any tempo
+    // change its passes reach.
     let body_tempo = tempo_map.as_ref().map(|tm| tm.steady_at(at, offset_secs));
     let mut clock = CueClock::new();
-    let mut body = Vec::new();
+    let mut parsed = Vec::new();
     for loop_cue_pair in loop_cue_pairs {
-        for cue in parse_cue(loop_cue_pair, &body_tempo, &mut clock)? {
-            body.push(Cue {
-                time: cue.time,
-                effects: cue.effects,
-                layer_commands: cue.layer_commands,
-                stop_sequences: cue.stop_sequences,
-                start_sequences: vec![],
-            });
-        }
+        parsed.extend(parse_cue(loop_cue_pair, &body_tempo, &mut clock)?);
     }
+    // A loop's body references no sequence, so no library is needed.
+    let in_seconds = body_in_seconds(&parsed, None, &SequenceLibrary::empty())?;
+    let mut body: Vec<Cue> = parsed
+        .into_iter()
+        .map(|cue| Cue {
+            time: cue.time,
+            effects: cue.effects,
+            layer_commands: cue.layer_commands,
+            stop_sequences: cue.stop_sequences,
+            start_sequences: vec![],
+        })
+        .collect();
     if body.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), !in_seconds));
     }
     body.sort_by_key(|c| c.time);
     let sequence = Sequence {
@@ -836,13 +858,9 @@ fn parse_inline_loop(
         length: None,
         in_seconds,
     };
-    Ok(expand_sequence_call(
-        &sequence,
-        at,
-        offset_secs,
-        tempo_map,
-        None,
-        repeats,
+    Ok((
+        expand_sequence_call(&sequence, at, offset_secs, tempo_map, None, repeats),
+        !in_seconds,
     ))
 }
 

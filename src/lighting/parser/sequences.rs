@@ -31,7 +31,7 @@ use pest::Parser;
 use super::super::tempo::TempoMap;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
-use super::show::{expand_unexpanded_sequence_cue, parse_sequence_structure};
+use super::show::{body_in_seconds, expand_unexpanded_sequence_cue, parse_sequence_structure};
 use super::types::{Sequence, SequenceCall};
 
 /// A sequence as written: its parameters and its source.
@@ -286,7 +286,7 @@ impl SequenceLibrary {
             .clone()
             .or_else(|| self.sequence_tempo.clone());
         let length = definition.declared_length(tempo.as_ref())?;
-        let in_seconds = definition.in_seconds;
+        let in_seconds = body_in_seconds(&definition.cues, definition.length_written(), self)?;
         let mut cues = Vec::new();
         for cue in definition.cues {
             cues.extend(expand_unexpanded_sequence_cue(cue, &tempo, self)?);

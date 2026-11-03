@@ -52,11 +52,11 @@ pub struct Sequence {
     /// How long one pass lasts, from the first cue, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
-    /// Whether the body is written wholly in seconds (every cue at a time,
-    /// any `length:` in time): laid out in seconds wherever it plays, its
-    /// cues and passes keeping their times whatever the tempo does. A body
-    /// with a cue at a bar and beat (or a length in beats or measures) is
-    /// laid out in beats, through the tempo map where it plays.
+    /// Whether the body is purely in seconds
+    /// ([`body_in_seconds`](super::show::body_in_seconds)): laid out in
+    /// seconds wherever it plays, its cues and passes keeping their times
+    /// whatever the tempo does. Any other body is laid out in beats,
+    /// through the tempo map where it plays.
     pub in_seconds: bool,
 }
 
@@ -144,6 +144,10 @@ pub(crate) struct UnexpandedSequenceCue {
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>,
     pub sequence_references: Vec<SequenceCall>,
+    /// Whether the cue is timed in beats: written at a bar and beat, or
+    /// with an effect lasting beats or measures, or an inline loop that is
+    /// (see [`body_in_seconds`](super::show::body_in_seconds)).
+    pub musical: bool,
 }
 
 /// A `sequence "name"(…), loop: …` reference, as written in a cue.
