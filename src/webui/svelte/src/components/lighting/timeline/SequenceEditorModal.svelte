@@ -34,6 +34,8 @@
     sequenceNames: string[];
     /** The file's sequences, for the ones this one plays */
     sequences: Sequence[];
+    /** The file it is in (the song's) */
+    file?: string;
     tempo?: TempoSection;
     onchange: (sequence: Sequence) => void;
     ondelete: () => void;
@@ -45,6 +47,7 @@
     groups,
     sequenceNames,
     sequences,
+    file = "",
     tempo,
     onchange,
     ondelete,
@@ -223,6 +226,7 @@
             cues={sequence.cues}
             laneType="sequence"
             {sequences}
+            {file}
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}

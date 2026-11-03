@@ -25,11 +25,14 @@
   import {
     expandSequencesIntoCues,
     showSequences,
+    type LayoutLane,
   } from "../../../lib/lighting/timeline-state";
   import ShowLane from "./ShowLane.svelte";
 
   interface Props {
     name: string;
+    /** The file it is in (the song's), for its layout to be its own */
+    file?: string;
     cues: Cue[];
     sequences?: Sequence[];
     pixelsPerMs: number;
@@ -55,6 +58,7 @@
 
   let {
     name,
+    file = "",
     cues,
     sequences = [],
     pixelsPerMs,
@@ -79,9 +83,11 @@
   }: Props = $props();
 
   // Expand sequence references into concrete cues for layer lane display
+  let lane: LayoutLane = $derived({ file, kind: laneType, name });
+
   let expandedCues = $derived(
     sequences.length > 0
-      ? expandSequencesIntoCues(cues, sequences, tempo, name)
+      ? expandSequencesIntoCues(cues, sequences, tempo, lane)
       : cues,
   );
 
@@ -90,7 +96,7 @@
   // is drawn meanwhile), one the player would not load, cues it cannot read.
   let layoutProblem = $derived.by(() => {
     if (sequences.length === 0) return "";
-    const layout = showSequences(cues, sequences, tempo, name);
+    const layout = showSequences(cues, sequences, tempo, lane);
     const said: string[] = [];
     if (layout.error) {
       said.push(
@@ -198,6 +204,7 @@
         onloopchange={sl.type === "sequences" ? onloopchange : undefined}
         onsequenceedit={sl.type === "sequences" ? onsequenceedit : undefined}
         sequenceDefs={sl.type === "sequences" ? sequences : []}
+        layoutLane={lane}
       />
     {/each}
   </div>

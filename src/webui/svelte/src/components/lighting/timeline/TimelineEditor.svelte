@@ -26,6 +26,7 @@
     msToPixel,
     computeAdjustedCuePositions,
     offsetMarkers,
+    tempoProblem,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import TimelineToolbar from "./TimelineToolbar.svelte";
@@ -623,6 +624,12 @@
     </div>
   {/if}
 
+  {#if $tempoProblem}
+    <div class="tempo-problem" role="alert" data-testid="tempo-problem">
+      {$t("timeline.tempoProblem", { values: { error: $tempoProblem } })}
+    </div>
+  {/if}
+
   <div class="timeline-body">
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -700,6 +707,7 @@
         <div class="sticky-row">
           <ShowGroup
             name={show.name}
+            file={songName ?? ""}
             cues={show.cues}
             sequences={lightFile.sequences}
             {pixelsPerMs}
@@ -883,6 +891,7 @@
     {groups}
     {sequenceNames}
     sequences={lightFile.sequences}
+    file={songName ?? ""}
     tempo={lightFile.tempo}
     onchange={handleSequenceChange}
     ondelete={() => deleteSequence(editingSequenceIndex!)}
@@ -891,6 +900,11 @@
 {/if}
 
 <style>
+  .tempo-problem {
+    padding: 4px 8px;
+    color: var(--red);
+    font-size: 12px;
+  }
   .timeline-editor {
     display: flex;
     flex-direction: column;

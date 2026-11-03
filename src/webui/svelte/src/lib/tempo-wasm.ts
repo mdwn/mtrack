@@ -187,6 +187,10 @@ const maps = new FinalizationRegistry<{ handle: number; generation: number }>(
   },
 );
 
+/** The tempo map could not be built, or could not carry on, in the module
+ *  (it trapped): what uses it draws without it, and says so. */
+export class TempoMapFailed extends Error {}
+
 /** A tempo map, resolved as the player resolves one (`TempoMap::new`). */
 export class TempoMap {
   readonly #values: number[];
@@ -230,7 +234,9 @@ export class TempoMap {
       // A trap answers NaN: a map that silently had no tempo would draw
       // every bar wrong, so it is a failure, not a map.
       if (Number.isNaN(handle)) {
-        throw new Error("the tempo map could not be built (it trapped)");
+        throw new TempoMapFailed(
+          "the tempo map could not be built (it trapped)",
+        );
       }
       this.#handle = handle;
       this.#generation = generation;
@@ -355,7 +361,7 @@ const clocks = new FinalizationRegistry<{
 });
 
 /** A cue clock's module was started afresh part way through its cues. */
-export class CueClockRestarted extends Error {
+export class CueClockRestarted extends TempoMapFailed {
   constructor() {
     super("the tempo map was started again part way through placing cues");
   }

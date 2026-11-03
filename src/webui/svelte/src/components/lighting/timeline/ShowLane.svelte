@@ -61,6 +61,8 @@
     offsets?: OffsetMarker[];
     playheadMs?: number | null;
     sequenceDefs?: import("../../../lib/lighting/types").Sequence[];
+    /** The lane its sequences are laid out for */
+    layoutLane?: import("../../../lib/lighting/timeline-state").LayoutLane;
   }
 
   let {
@@ -88,6 +90,7 @@
     onloopchange,
     onsequenceedit,
     sequenceDefs = [],
+    layoutLane,
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -134,7 +137,7 @@
         // For sequence refs, how the first plays, as the player lays it out
         const seqPlay =
           subLaneType === "sequences"
-            ? sequencePlay(cues, sequenceDefs, tempo, ap.index, name)
+            ? sequencePlay(cues, sequenceDefs, tempo, ap.index, layoutLane)
             : undefined;
         if (seqPlay && ms + seqPlay.totalMs > blockEndMs) {
           blockEndMs = ms + seqPlay.totalMs;

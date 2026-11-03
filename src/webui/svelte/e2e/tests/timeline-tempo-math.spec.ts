@@ -619,7 +619,7 @@ test("while the file does not parse, the last layout that did is drawn", () => {
     { ...cueAt(1, 1), sequences: [{ name: "s" }] },
     { ...cueAt(3, 1), effects: [effect(type)] },
   ];
-  const lane = "parse-lane";
+  const lane = { file: "a", kind: "show" as const, name: "parse-lane" };
   const good = showSequences(show("static"), [seq], t, lane);
   expect(good.error).toBeUndefined();
   expect(good.calls.get(0)?.length).toBe(1);
@@ -680,7 +680,52 @@ test("a file the player would not load says why, and still lays out", () => {
   const show = [
     { ...emptyCue(absoluteTimestamp(0)), sequences: [{ name: "a" }] },
   ];
-  const layout = showSequences(show, [a, broken], t, "problem-lane");
+  const layout = showSequences(show, [a, broken], t, {
+    file: "a",
+    kind: "show",
+    name: "problem-lane",
+  });
   expect(layout.problem).toBeTruthy();
   expect(layout.calls.get(0)?.[0].cues.length).toBe(1);
+});
+
+test("another file's last good layout is not drawn for this one", () => {
+  const t = tempo(120, [4, 4], []);
+  const effect = (type: string): CueEffect => ({
+    groups: ["front_wash"],
+    effect: { type, colors: ["red"], duration: "1beat" },
+  });
+  const seq: Sequence = {
+    name: "s",
+    cues: [{ ...cueAt(1, 1), effects: [effect("static")] }],
+  };
+  const show = (type: string) => [
+    { ...cueAt(1, 1), sequences: [{ name: "s" }] },
+    { ...cueAt(3, 1), effects: [effect(type)] },
+  ];
+  const lane = (file: string, kind: "show" | "sequence" = "show") => ({
+    file,
+    kind,
+    name: "main",
+  });
+  const good = showSequences(show("static"), [seq], t, lane("A"));
+  expect(good.calls.get(0)?.length).toBe(1);
+  // File B, a show of the same name, mid-edit: nothing of A's is drawn.
+  const b = showSequences(show("no such }"), [seq], t, lane("B"));
+  expect(b.error).toBeTruthy();
+  expect(b.calls.size).toBe(0);
+  // Nor is a show's for a sequence of the same name.
+  showSequences(show("static"), [seq], t, lane("C"));
+  const asSequence = showSequences(
+    show("no such }"),
+    [seq],
+    t,
+    lane("C", "sequence"),
+  );
+  expect(asSequence.calls.size).toBe(0);
+  // And what is kept is only the calls: the problems are this file's.
+  const kept = showSequences(show("no such }"), [seq], t, lane("C"));
+  expect(kept.calls.get(0)?.length).toBe(1);
+  expect(kept.problem).toBeUndefined();
+  expect(kept.cueErrors.size).toBe(0);
 });

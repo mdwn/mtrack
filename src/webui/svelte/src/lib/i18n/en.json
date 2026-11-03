@@ -1055,6 +1055,7 @@
   "tempoMap.retry": "Try again",
   "timeline.cueBlock.seqError": "This call does not play: {error}",
   "timeline.cueBlock.seqDropped": "{count, plural, one {A cue lands} other {# cues land}} past the end of a pass (its length) where it plays, and does not play.",
+  "timeline.tempoProblem": "The tempo map failed, so the timeline is drawn without its tempo: {error}",
   "timeline.fileProblem": "The player will not load this file as it is: {error}",
   "timeline.cueBlock.seqTruncated": "Only the first passes are drawn: it plays too many cues to draw them all.",
   "timeline.layoutError": "The file does not parse, so the sequences drawn are the last that did: {error}",

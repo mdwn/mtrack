@@ -30,9 +30,11 @@ import type {
   EffectType,
 } from "./types";
 import { absoluteTimestamp } from "./types";
+import { writable } from "svelte/store";
 import {
   CueClock,
   CueClockRestarted,
+  TempoMapFailed,
   TempoMap,
   layoutSequences,
   rampDuration,
@@ -113,9 +115,14 @@ const mapCache = new WeakMap<
 function cached(tempo: TempoSection) {
   const key = tempoKey(tempo);
   const hit = mapCache.get(tempo);
-  if (hit && sameKey(hit.key, key)) return hit;
+  if (hit && sameKey(hit.key, key)) {
+    // Made again, in a module started afresh, before it is handed out.
+    void hit.map.handle;
+    return hit;
+  }
   const entry = { key, map: new TempoMap(mapInput(tempo)) };
   mapCache.set(tempo, entry);
+  sayTempoProblem(undefined);
   return entry;
 }
 
@@ -123,6 +130,43 @@ function cached(tempo: TempoSection) {
 export function tempoMapOf(tempo: TempoSection): TempoMap {
   return cached(tempo).map;
 }
+
+/** Why the tempo map could not be used, when it last could not (it
+ *  trapped): the timeline is drawn without it meanwhile, and says so. */
+export const tempoProblem = writable<string | undefined>(undefined);
+let saidProblem: string | undefined;
+
+/** Says (or clears) the tempo map's problem: after the render that found
+ *  it, as it is found while drawing. */
+function sayTempoProblem(problem: string | undefined): void {
+  if (problem === saidProblem) return;
+  saidProblem = problem;
+  queueMicrotask(() => tempoProblem.set(problem));
+}
+
+/** `use` with the tempo map of `tempo`; `without` when there is none, or
+ *  when its map could not be built or failed while used (a trap, again on
+ *  a second try): what is drawn is then drawn as if without a tempo, and
+ *  {@link tempoProblem} says why, rather than the timeline failing. */
+function withMap<T>(
+  tempo: TempoSection | undefined,
+  use: (map: TempoMap) => T,
+  without: () => T,
+): T {
+  if (!tempo) return without();
+  try {
+    return use(cached(tempo).map);
+  } catch (e) {
+    if (!(e instanceof TempoMapFailed)) throw e;
+    console.error("the tempo map failed; drawing without it", e);
+    sayTempoProblem(e.message);
+    return without();
+  }
+}
+
+/** The default tempo the player assumes without one: 120 BPM, 4/4. */
+const DEFAULT_BEAT_MS = 500;
+const DEFAULT_BAR_MS = 4 * DEFAULT_BEAT_MS;
 
 function tempoKey(tempo: TempoSection): (number | string | undefined)[] {
   const key: (number | string | undefined)[] = [
@@ -187,7 +231,14 @@ export interface TempoLaneSpan {
  *  at the barline a mid-bar signature change governs from. Mid-ramp, a
  *  stretch shows the tempo where it starts and where the ramp goes. */
 export function tempoLaneSpans(tempo: TempoSection): TempoLaneSpan[] {
-  const map = tempoMapOf(tempo);
+  return withMap(
+    tempo,
+    (map) => spansOf(map),
+    () => [],
+  );
+}
+
+function spansOf(map: TempoMap): TempoLaneSpan[] {
   const round = (bpm: number) => Math.round(bpm * 100) / 100;
   const spans: TempoLaneSpan[] = [];
   for (const secs of map.boundaries()) {
@@ -232,13 +283,15 @@ export function timestampToMs(
   }
 
   // measure_beat type
-  if (!tempo) return 0;
-
-  const map = tempoMapOf(tempo);
-  return msAtBeats(
-    map,
-    map.beatsAtPosition(ts.measure ?? 1, ts.beat ?? 1),
-    offsetMs,
+  return withMap(
+    tempo,
+    (map) =>
+      msAtBeats(
+        map,
+        map.beatsAtPosition(ts.measure ?? 1, ts.beat ?? 1),
+        offsetMs,
+      ),
+    () => 0,
   );
 }
 
@@ -258,16 +311,20 @@ export function msToTimestamp(
 
   // With `offsetMs`, `ms` is a score time under that offset, as
   // `timestampToMs(ts, tempo, offsetMs)` gives it.
-  const map = tempoMapOf(tempo);
-  const at = map.positionAtBeats(beatsAtMs(map, ms, offsetMs));
-  let measure = at.measure;
-  let beat = Math.round(at.beat);
-  if (beat - 1 >= quartersIn(map, measure)) {
-    measure += 1;
-    beat = 1;
-  }
-
-  return { type: "measure_beat", measure, beat };
+  return withMap<Timestamp>(
+    tempo,
+    (map) => {
+      const at = map.positionAtBeats(beatsAtMs(map, ms, offsetMs));
+      let measure = at.measure;
+      let beat = Math.round(at.beat);
+      if (beat - 1 >= quartersIn(map, measure)) {
+        measure += 1;
+        beat = 1;
+      }
+      return { type: "measure_beat", measure, beat };
+    },
+    () => ({ type: "absolute", ms }),
+  );
 }
 
 /** Generate grid lines (measures and beats) for a visible time range. */
@@ -277,8 +334,20 @@ export function getGridLines(
   viewEndMs: number,
   pixelsPerMs?: number,
 ): GridLine[] {
+  return withMap(
+    tempo,
+    (map) => gridLinesOf(map, viewStartMs, viewEndMs, pixelsPerMs),
+    () => [],
+  );
+}
+
+function gridLinesOf(
+  map: TempoMap,
+  viewStartMs: number,
+  viewEndMs: number,
+  pixelsPerMs?: number,
+): GridLine[] {
   const lines: GridLine[] = [];
-  const map = tempoMapOf(tempo);
   const MAX_LINES = 100000;
 
   let measure = map.positionAtBeats(beatsAtMs(map, viewStartMs)).measure;
@@ -370,34 +439,47 @@ export function msToDurationString(
   tempo?: TempoSection,
   atMs: number = 0,
 ): string {
-  if (tempo) {
-    const map = tempoMapOf(tempo);
-    // Rounded to a millionth of a beat, as the server's snap_beats does:
-    // two positions read back from times carry float noise, and a span of
-    // one beat must not come out 0.9999999999.
-    const startBeats = snapBeats(beatsAtMs(map, atMs));
-    const endBeats = snapBeats(beatsAtMs(map, atMs + ms));
-
-    // Prefer whole measures
-    const measures = snapBeats(
-      map.measuresAtBeats(endBeats) - map.measuresAtBeats(startBeats),
-    );
-    if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
-      const rounded = Math.round(measures);
-      return rounded === 1 ? "1measure" : `${rounded}measures`;
-    }
-    // Then whole beats
-    const beats = snapBeats(endBeats - startBeats);
-    if (beats >= 1 && Math.abs(beats - Math.round(beats)) < 0.001) {
-      const rounded = Math.round(beats);
-      return rounded === 1 ? "1beat" : `${rounded}beats`;
-    }
-  }
+  const musical = withMap(
+    tempo,
+    (map) => musicalDurationString(map, ms, atMs),
+    () => undefined,
+  );
+  if (musical) return musical;
   // Fall back to time-based
   if (ms < 1000 || ms % 1000 !== 0) {
     return `${Math.round(ms)}ms`;
   }
   return `${ms / 1000}s`;
+}
+
+/** A span as whole measures or beats where it starts, if it is one. */
+function musicalDurationString(
+  map: TempoMap,
+  ms: number,
+  atMs: number,
+): string | undefined {
+  // Rounded to a millionth of a beat, as the server's snap_beats does:
+  // two positions read back from times carry float noise, and a span of
+  // one beat must not come out 0.9999999999.
+  const startBeats = snapBeats(beatsAtMs(map, atMs));
+  const endBeats = snapBeats(beatsAtMs(map, atMs + ms));
+
+  // Prefer whole measures
+  const measures = snapBeats(
+    map.measuresAtBeats(endBeats) - map.measuresAtBeats(startBeats),
+  );
+  if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
+    const rounded = Math.round(measures);
+    return rounded === 1 ? "1measure" : `${rounded}measures`;
+  }
+  // Then whole beats
+  const beats = snapBeats(endBeats - startBeats);
+  if (beats >= 1 && Math.abs(beats - Math.round(beats)) < 0.001) {
+    const rounded = Math.round(beats);
+    return rounded === 1 ? "1beat" : `${rounded}beats`;
+  }
+
+  return undefined;
 }
 
 /** Pixel <-> time conversion helpers */
@@ -434,7 +516,19 @@ export function snapToNearestGrid(
 ): number {
   // With `offsetMs`, `ms` is a score time under that offset, and so is
   // the grid it snaps to.
-  const map = tempoMapOf(tempo);
+  return withMap(
+    tempo,
+    (map) => snapOnMap(map, ms, resolution, offsetMs),
+    () => ms,
+  );
+}
+
+function snapOnMap(
+  map: TempoMap,
+  ms: number,
+  resolution: SnapResolution,
+  offsetMs: number,
+): number {
   const beats = beatsAtMs(map, ms, offsetMs);
   if (resolution === "measure") {
     const measures = Math.round(map.measuresAtBeats(beats));
@@ -459,7 +553,19 @@ export function snapDurationToGrid(
   tempo: TempoSection,
   resolution: SnapResolution,
 ): number {
-  const map = tempoMapOf(tempo);
+  return withMap(
+    tempo,
+    (map) => snapDurationOnMap(map, durationMs, atMs, resolution),
+    () => durationMs,
+  );
+}
+
+function snapDurationOnMap(
+  map: TempoMap,
+  durationMs: number,
+  atMs: number,
+  resolution: SnapResolution,
+): number {
   const startBeats = beatsAtMs(map, atMs);
   const endBeats = beatsAtMs(map, atMs + durationMs);
   if (resolution === "measure") {
@@ -636,7 +742,11 @@ export function offsetToMs(
   anchorMs: number,
   tempo: TempoSection,
 ): number {
-  return tempoMapOf(tempo).offsetDuration(measures, anchorMs / 1000) * 1000;
+  return withMap(
+    tempo,
+    (map) => map.offsetDuration(measures, anchorMs / 1000) * 1000,
+    () => measures * DEFAULT_BAR_MS,
+  );
 }
 
 /** How long the N measures from a given ms position last, through any
@@ -646,7 +756,11 @@ export function measuresToMs(
   atMs: number,
   tempo: TempoSection,
 ): number {
-  return tempoMapOf(tempo).measuresToDuration(measures, atMs / 1000) * 1000;
+  return withMap(
+    tempo,
+    (map) => map.measuresToDuration(measures, atMs / 1000) * 1000,
+    () => measures * DEFAULT_BAR_MS,
+  );
 }
 
 /** How long the N beats from a given ms position last, through any tempo
@@ -656,7 +770,11 @@ export function beatsToMs(
   atMs: number,
   tempo: TempoSection,
 ): number {
-  return tempoMapOf(tempo).beatsToDuration(beats, atMs / 1000) * 1000;
+  return withMap(
+    tempo,
+    (map) => map.beatsToDuration(beats, atMs / 1000) * 1000,
+    () => beats * DEFAULT_BEAT_MS,
+  );
 }
 
 /** Where a cue is written, as the cue clock takes it. */
@@ -678,18 +796,28 @@ export function computeAdjustedCuePositions(
   cues: Cue[],
   tempo?: TempoSection,
 ): AdjustedCuePosition[] {
-  try {
-    return placeCues(cues, tempo);
-  } catch (e) {
-    // The module was started afresh part way through: the offsets so far
-    // are gone, so the walk starts over in the new one.
-    if (!(e instanceof CueClockRestarted)) throw e;
-    return placeCues(cues, tempo);
-  }
+  return withMap(
+    tempo,
+    (map) => {
+      try {
+        return placeCues(cues, tempo, map);
+      } catch (e) {
+        // The module was started afresh part way through: the offsets so
+        // far are gone, so the walk starts over in the new one -- once:
+        // failing again, the cues are drawn without the tempo.
+        if (!(e instanceof CueClockRestarted)) throw e;
+        return placeCues(cues, tempo, tempoMapOf(tempo!));
+      }
+    },
+    () => placeCues(cues, undefined, undefined),
+  );
 }
 
-function placeCues(cues: Cue[], tempo?: TempoSection): AdjustedCuePosition[] {
-  const map = tempo ? tempoMapOf(tempo) : undefined;
+function placeCues(
+  cues: Cue[],
+  tempo: TempoSection | undefined,
+  map: TempoMap | undefined,
+): AdjustedCuePosition[] {
   const clock = new CueClock();
   return cues.map((cue, index) => {
     const offsets =
@@ -768,12 +896,28 @@ const lastLayout: {
   sequences?: Sequence[];
   tempo?: TempoSection;
   tempoKey?: string;
-  lane?: string;
+  lane?: LayoutLane;
   layout?: ShowSequences;
 } = {};
-/** The last layout of each lane that parsed: drawn while the file does not
- *  (mid-edit). */
+
+/** The lane asking for a layout: the file it is in (the song's, say), and
+ *  the show or sequence it draws. */
+export interface LayoutLane {
+  file: string;
+  kind: "show" | "sequence";
+  name: string;
+}
+
+const NO_LANE: LayoutLane = { file: "", kind: "show", name: "" };
+
+function sameLane(a: LayoutLane | undefined, b: LayoutLane): boolean {
+  return !!a && a.file === b.file && a.kind === b.kind && a.name === b.name;
+}
+
+/** The last layout that parsed of each lane of one file (`lastGoodFile`):
+ *  drawn while the file does not (mid-edit). Another file starts afresh. */
 const lastGood = new Map<string, ShowSequences>();
+let lastGoodFile: string | undefined;
 
 /** The layout of the sequences `cues` play: one parse per distinct source
  *  and tempo, however many ask. `lane` names the lane asking, so that while
@@ -782,7 +926,7 @@ export function showSequences(
   cues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
-  lane = "",
+  lane: LayoutLane = NO_LANE,
 ): ShowSequences {
   const key = tempo ? JSON.stringify(tempoKey(tempo)) : "-";
   if (
@@ -791,7 +935,7 @@ export function showSequences(
     lastLayout.sequences === sequences &&
     lastLayout.tempo === tempo &&
     lastLayout.tempoKey === key &&
-    lastLayout.lane === lane
+    sameLane(lastLayout.lane, lane)
   ) {
     return lastLayout.layout;
   }
@@ -802,7 +946,14 @@ export function showSequences(
   const sourceKey = `${key}\n${source}`;
   let layout = layoutCache.get(sourceKey);
   if (!layout) {
-    const laid = layoutSequences(source, tempo && tempoMapOf(tempo));
+    const laid = layoutSequences(
+      source,
+      withMap(
+        tempo,
+        (map) => map,
+        () => undefined,
+      ),
+    );
     const show = laid.shows[0];
     layout = {
       calls: new Map(),
@@ -820,11 +971,20 @@ export function showSequences(
     if (layoutCache.size > 64) layoutCache.clear();
     layoutCache.set(sourceKey, layout);
   }
+  if (lane.file !== lastGoodFile) {
+    lastGood.clear();
+    lastGoodFile = lane.file;
+  }
+  const laneKey = `${lane.kind}\u0000${lane.name}`;
   if (layout.error) {
-    const good = lastGood.get(lane);
-    if (good) layout = { ...good, error: layout.error };
+    // The calls drawn are the last that parsed; what is wrong is this
+    // file's, not that one's.
+    const good = lastGood.get(laneKey);
+    if (good) {
+      layout = { calls: good.calls, cueErrors: new Map(), error: layout.error };
+    }
   } else {
-    lastGood.set(lane, layout);
+    lastGood.set(laneKey, layout);
   }
   Object.assign(lastLayout, {
     cues,
@@ -871,7 +1031,7 @@ export function expandSequencesIntoCues(
   showCues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
-  lane = "",
+  lane: LayoutLane = NO_LANE,
 ): Cue[] {
   const expanded: Cue[] = [...showCues];
   for (const calls of showSequences(
@@ -926,7 +1086,7 @@ export function sequencePlay(
   sequences: Sequence[],
   tempo: TempoSection | undefined,
   index: number,
-  lane = "",
+  lane: LayoutLane = NO_LANE,
 ): SequencePlay | undefined {
   const layout = showSequences(cues, sequences, tempo, lane);
   const call = layout.calls.get(index)?.[0];
@@ -957,8 +1117,11 @@ export function sequencePlay(
 
 /** Get the BPM at a given ms position (mid-ramp, the ramp's tempo there). */
 export function getTempoAtMs(ms: number, tempo?: TempoSection): number {
-  if (!tempo) return 120; // default
-  return tempoMapOf(tempo).bpmAt(ms / 1000);
+  return withMap(
+    tempo,
+    (map) => map.bpmAt(ms / 1000),
+    () => 60000 / DEFAULT_BEAT_MS,
+  );
 }
 
 /** Effect type color coding */
