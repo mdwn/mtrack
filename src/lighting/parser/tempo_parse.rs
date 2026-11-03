@@ -277,19 +277,19 @@ fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
         let num = num_str
             .parse::<u64>()
             .map_err(|e| format!("Failed to parse '{}' as u64: {}", num_str, e))?;
-        Ok(Duration::from_millis(num))
+        super::utils::seconds(num as f64 / 1000.0, trimmed)
     } else if trimmed.ends_with('s') {
         let num_str = trimmed.trim_end_matches('s').trim();
         let num = num_str
             .parse::<f64>()
             .map_err(|e| format!("Failed to parse '{}' as f64: {}", num_str, e))?;
-        Ok(Duration::from_secs_f64(num))
+        super::utils::seconds(num, trimmed)
     } else {
         // Assume seconds if no unit
         let num = trimmed
             .parse::<f64>()
             .map_err(|e| format!("Failed to parse '{}' as f64: {}", trimmed, e))?;
-        Ok(Duration::from_secs_f64(num))
+        super::utils::seconds(num, trimmed)
     }
 }
 

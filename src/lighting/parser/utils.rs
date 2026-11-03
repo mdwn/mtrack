@@ -101,6 +101,34 @@ pub(crate) fn parse_speed_string(
     parse_tempo_aware_string(value, tempo_map, "speed")
 }
 
+/// The longest time a show reaches, in seconds: past any song (about 11
+/// days), and short of anything that would overflow when added to a cue's
+/// time. A time, duration or position beyond it is an error, not a panic.
+pub(crate) const MAX_SHOW_SECS: f64 = 1.0e6;
+
+/// The most bars a position may be written at.
+pub(crate) const MAX_MEASURE: u32 = 100_000;
+
+/// A length in seconds as a `Duration`: an error for one that is negative,
+/// not a number, or longer than [`MAX_SHOW_SECS`].
+pub(crate) fn seconds(secs: f64, what: &str) -> Result<Duration, Box<dyn Error>> {
+    if !secs.is_finite() || secs < 0.0 {
+        return Err(format!("{what} must be a length of time, not {secs}").into());
+    }
+    if secs > MAX_SHOW_SECS {
+        return Err(format!("{what} of {secs}s is longer than a show can be").into());
+    }
+    Ok(Duration::from_secs_f64(secs))
+}
+
+/// `duration`, or an error when it is longer than [`MAX_SHOW_SECS`].
+fn within_show(duration: Duration, value: &str) -> Result<Duration, Box<dyn Error>> {
+    if duration.as_secs_f64() > MAX_SHOW_SECS {
+        return Err(format!("'{value}' is longer than a show can be").into());
+    }
+    Ok(duration)
+}
+
 /// Parses a duration string (e.g., "2s", "500ms", "4beats", "2measures") to Duration
 /// For beats/measures, uses tempo_map if available. If not available, returns an error.
 /// offset_secs is used to adjust tempo change lookups when calculating measure/beat durations.
@@ -114,7 +142,7 @@ pub(crate) fn parse_duration_string(
     if value.ends_with("ms") {
         let num_str = value.trim_end_matches("ms");
         let num = num_str.parse::<u64>()?;
-        Ok(Duration::from_millis(num))
+        within_show(Duration::from_millis(num), value)
     } else if value.ends_with("measures") || value.ends_with("measure") {
         let num_str = value
             .trim_end_matches("measures")
@@ -122,7 +150,10 @@ pub(crate) fn parse_duration_string(
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.measures_to_duration(num, time, offset_secs))
+            if !num.is_finite() || num < 0.0 {
+                return Err(format!("'{value}' is not a length").into());
+            }
+            within_show(tm.measures_to_duration(num, time, offset_secs), value)
         } else {
             Err("Measure-based durations require a tempo section".into())
         }
@@ -131,18 +162,21 @@ pub(crate) fn parse_duration_string(
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.beats_to_duration(num, time, offset_secs))
+            if !num.is_finite() || num < 0.0 {
+                return Err(format!("'{value}' is not a length").into());
+            }
+            within_show(tm.beats_to_duration(num, time, offset_secs), value)
         } else {
             Err("Beat-based durations require a tempo section".into())
         }
     } else if value.ends_with('s') {
         let num_str = value.trim_end_matches('s');
         let num = num_str.parse::<f64>()?;
-        Ok(Duration::from_secs_f64(num))
+        seconds(num, value)
     } else {
         // Assume seconds if no unit
         let num = value.parse::<f64>()?;
-        Ok(Duration::from_secs_f64(num))
+        seconds(num, value)
     }
 }
 
@@ -192,6 +226,11 @@ pub(crate) fn parse_measure_time(time_str: &str) -> Result<(u32, f64), Box<dyn E
     let measure: u32 = measure_str
         .parse()
         .map_err(|e| format!("Failed to parse measure '{}': {}", measure_str, e))?;
+    if measure > MAX_MEASURE {
+        return Err(
+            format!("Bar {measure} is past the last a show can have ({MAX_MEASURE})").into(),
+        );
+    }
     let beat: f64 = beat_str
         .parse()
         .map_err(|e| format!("Failed to parse beat '{}': {}", beat_str, e))?;
@@ -222,9 +261,12 @@ pub(crate) fn parse_time_string(time_str: &str) -> Result<Duration, Box<dyn Erro
             0
         };
 
-        Ok(Duration::from_millis(
-            minutes * 60 * 1000 + seconds * 1000 + milliseconds,
-        ))
+        let total = minutes
+            .checked_mul(60_000)
+            .and_then(|m| seconds.checked_mul(1000)?.checked_add(m))
+            .and_then(|ms| ms.checked_add(milliseconds))
+            .ok_or_else(|| format!("@{time_str} is later than a show can be"))?;
+        within_show(Duration::from_millis(total), time_str)
     } else {
         // SS.mmm format
         let seconds_parts: Vec<&str> = time_str.split('.').collect();
@@ -241,7 +283,11 @@ pub(crate) fn parse_time_string(time_str: &str) -> Result<Duration, Box<dyn Erro
             0
         };
 
-        Ok(Duration::from_millis(seconds * 1000 + milliseconds))
+        let total = seconds
+            .checked_mul(1000)
+            .and_then(|ms| ms.checked_add(milliseconds))
+            .ok_or_else(|| format!("@{time_str} is later than a show can be"))?;
+        within_show(Duration::from_millis(total), time_str)
     }
 }
 

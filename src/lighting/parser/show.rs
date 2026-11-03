@@ -91,10 +91,13 @@ pub fn layout_sequence_calls(
 }
 
 /// A show's sequences, as [`layout_sequence_calls`] lays them out.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ShowLayout {
     pub name: String,
     pub calls: Vec<CallLayout>,
+    /// The cues that did not parse, by their place among the show's cues,
+    /// with why: they are passed over.
+    pub cue_errors: Vec<(usize, String)>,
 }
 
 /// One sequence played from a show's cue.
@@ -107,16 +110,25 @@ pub struct CallLayout {
     pub name: String,
     /// The offset in force at the cue, in seconds.
     pub offset_secs: f64,
+    /// Where it is played from.
+    pub start: Duration,
     /// The cues it expands to, in time order: every pass, up to
     /// [`MAX_LAID_OUT_CUES`].
     pub cues: Vec<Cue>,
-    /// Where its last pass ends.
+    /// Where its last pass laid out ends.
     pub end: Duration,
+    /// Where each pass laid out ends.
+    pub pass_ends: Vec<Duration>,
+    /// Whether [`MAX_LAID_OUT_CUES`] stopped it before its last pass.
+    pub truncated: bool,
+    /// Why it cannot be played (an unknown sequence, one that does not
+    /// parse, an argument it does not take), when it cannot: it has no cues.
+    pub error: Option<String>,
 }
 
-/// The most cues a laid-out call carries: a `loop: loop` runs for ten
-/// thousand passes, which nothing draws.
-pub const MAX_LAID_OUT_CUES: usize = 5000;
+/// The most cues a laid-out call carries (the passes that fit): a `loop:
+/// loop` runs for ten thousand passes, which nothing draws.
+pub const MAX_LAID_OUT_CUES: usize = 2000;
 
 fn parse_file(
     content: &str,
@@ -193,12 +205,19 @@ fn parse_file(
         &mut seen,
     )?;
     library.add(sequence_pairs, None)?;
-    library.check_all()?;
+    // A sequence nothing plays is checked when the file is played; laid
+    // out, one that does not parse only fails the calls that play it.
+    if layouts.is_none() {
+        library.check_all()?;
+    }
 
     // Second pass: parse shows with tempo and sequences available
     let mut parsed_shows = Vec::new();
     for pair in show_pairs {
-        if let Some((offset, name)) = param_refs(pair.as_str()).first() {
+        if let Some((offset, name)) = param_refs(pair.as_str())
+            .first()
+            .filter(|_| layouts.is_none())
+        {
             return Err(format!(
                 "line {}: ${name} is a sequence parameter, but this is a show, not a sequence \
                  that declares it",
@@ -206,18 +225,16 @@ fn parse_file(
             )
             .into());
         }
-        let mut calls = Vec::new();
+        let mut laid_out = ShowLayout::default();
         let mut show = parse_light_show_definition(
             pair,
             &global_tempo,
             &library,
-            layouts.is_some().then_some(&mut calls),
+            layouts.is_some().then_some(&mut laid_out),
         )?;
         if let Some(layouts) = layouts.as_deref_mut() {
-            layouts.push(ShowLayout {
-                name: show.name.clone(),
-                calls,
-            });
+            laid_out.name = show.name.clone();
+            layouts.push(laid_out);
         }
         // If show doesn't have its own tempo, use global tempo
         if show.tempo_map.is_none() {
@@ -260,7 +277,7 @@ fn parse_light_show_definition(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
     library: &SequenceLibrary,
-    mut layout: Option<&mut Vec<CallLayout>>,
+    mut layout: Option<&mut ShowLayout>,
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
@@ -301,27 +318,65 @@ fn parse_light_show_definition(
                 let effective_tempo = effective_tempo.cloned();
                 let mut clock = CueClock::new();
                 for (cue_index, cue_pair) in cue_pairs.into_iter().enumerate() {
-                    for unexpanded in parse_cue(cue_pair, &effective_tempo, &mut clock)?.0 {
+                    // Laid out, a cue that does not parse (mid-edit, say)
+                    // is said so and passed over; played, it fails the show.
+                    let parsed = match (
+                        parse_cue(cue_pair, &effective_tempo, &mut clock),
+                        layout.as_deref_mut(),
+                    ) {
+                        (Ok((parsed, _)), _) => parsed,
+                        (Err(e), Some(layout)) => {
+                            layout.cue_errors.push((cue_index, e.to_string()));
+                            continue;
+                        }
+                        (Err(e), None) => return Err(e),
+                    };
+                    for unexpanded in parsed {
                         let offset_secs = unexpanded.offset_secs;
-                        let mut on_call = |call: usize, name: &str, played: &PlayedCall| {
-                            if let Some(layout) = layout.as_deref_mut() {
-                                layout.push(CallLayout {
+                        let start = unexpanded.time;
+                        let laying_out = layout.is_some();
+                        let mut calls = layout.as_deref_mut().map(|layout| &mut layout.calls);
+                        let mut on_call =
+                            |call: usize, name: &str, played: Result<&PlayedCall, String>| {
+                                let Some(calls) = calls.as_deref_mut() else {
+                                    return;
+                                };
+                                let mut laid_out = CallLayout {
                                     cue: cue_index,
                                     call,
                                     name: name.to_string(),
                                     offset_secs,
-                                    cues: played
-                                        .cues
-                                        .iter()
-                                        .take(MAX_LAID_OUT_CUES)
-                                        .map(|(cue, _)| cue.clone())
-                                        .collect(),
-                                    end: played.end,
-                                });
-                            }
-                        };
-                        let expanded =
-                            expand_cue(unexpanded, &effective_tempo, library, &mut on_call)?;
+                                    start,
+                                    cues: Vec::new(),
+                                    end: start,
+                                    pass_ends: Vec::new(),
+                                    truncated: false,
+                                    error: None,
+                                };
+                                match played {
+                                    Ok(played) => {
+                                        laid_out.cues = played
+                                            .cues
+                                            .iter()
+                                            .map(|(cue, _)| cue.clone())
+                                            .collect();
+                                        laid_out.end = played.end;
+                                        laid_out.pass_ends = played.pass_ends.clone();
+                                        laid_out.truncated = played.truncated;
+                                    }
+                                    Err(e) => laid_out.error = Some(e),
+                                }
+                                calls.push(laid_out);
+                            };
+                        let expanded = expand_cue(
+                            unexpanded,
+                            &effective_tempo,
+                            library,
+                            laying_out.then_some(LayoutCalls {
+                                on_call: &mut on_call,
+                                max_cues: MAX_LAID_OUT_CUES,
+                            }),
+                        )?;
                         // A sequence played from the cue reaches as far as it
                         // goes, for the next cue's offset anchor.
                         if let Some(last) = expanded.iter().map(|c| c.0.time).max() {
@@ -464,11 +519,15 @@ pub(super) fn parse_sequence_structure(
     })
 }
 
+/// The passes `loop: loop` plays: for good, in practice. A count may not be
+/// more.
+const LOOP_FOREVER: usize = 10_000;
+
 /// Determine loop count from a SequenceLoop parameter
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
         Some(SequenceLoop::Once) => Ok(1),
-        Some(SequenceLoop::Loop) => Ok(10000), // Practical infinity
+        Some(SequenceLoop::Loop) => Ok(LOOP_FOREVER),
         Some(SequenceLoop::PingPong) => {
             Err("PingPong loop mode not yet implemented for sequences".into())
         }
@@ -568,6 +627,12 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
             if count == 0 {
                 return Err("Loop count must be at least 1".into());
             }
+            if count > LOOP_FOREVER {
+                return Err(format!(
+                    "Loop count {count} is more than {LOOP_FOREVER} (use 'loop' to loop for good)"
+                )
+                .into());
+            }
             Ok(SequenceLoop::Count(count))
         }
         _ => Err(
@@ -666,6 +731,13 @@ fn parse_cue(
         reset,
     )?;
     let time = placed.time;
+    if time.as_secs_f64() > super::utils::MAX_SHOW_SECS {
+        return Err(format!(
+            "A cue at {:.0}s is later than a show can be",
+            time.as_secs_f64()
+        )
+        .into());
+    }
 
     let effect_ctx = ParseContext {
         tempo_map: tempo_map.clone(),
@@ -770,23 +842,48 @@ pub(super) fn expand_unexpanded_sequence_cue(
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
 ) -> Result<Vec<PlacedCue>, Box<dyn Error>> {
-    expand_cue(unexpanded, tempo_map, library, &mut |_, _, _| {})
+    expand_cue(unexpanded, tempo_map, library, None)
 }
 
-/// [`expand_unexpanded_sequence_cue`], telling `on_call` of each sequence it
-/// plays (its place among the cue's references, its name, and how it plays).
+/// Told of each sequence a laid-out cue plays: its place among the cue's
+/// references, its name, and how it plays or why it cannot.
+type OnCall<'a> = dyn FnMut(usize, &str, Result<&PlayedCall, String>) + 'a;
+
+/// What a layout wants of [`expand_cue`]: each sequence played, told to
+/// `on_call` (its place among the cue's references, its name, and how it
+/// plays or why it cannot), a call that cannot play skipped rather than
+/// failing the cue, and at most `max_cues` built of each.
+struct LayoutCalls<'a> {
+    on_call: &'a mut OnCall<'a>,
+    max_cues: usize,
+}
+
+/// [`expand_unexpanded_sequence_cue`], laying out each call for `layout`
+/// when there is one.
 fn expand_cue(
     unexpanded: UnexpandedSequenceCue,
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
-    on_call: &mut dyn FnMut(usize, &str, &PlayedCall),
+    mut layout: Option<LayoutCalls>,
 ) -> Result<Vec<PlacedCue>, Box<dyn Error>> {
     let mut cues: Vec<PlacedCue> = expand_cue_base(&unexpanded).into_iter().collect();
     let has_base = !cues.is_empty();
     let base_anchor = unexpanded.from_anchor;
     for (index, call) in unexpanded.sequence_references.iter().enumerate() {
-        let played = play_call(call, &unexpanded, tempo_map, library)?;
-        on_call(index, &call.name, &played);
+        let max_cues = layout.as_ref().map_or(usize::MAX, |l| l.max_cues);
+        let played = match play_call(call, &unexpanded, tempo_map, library, max_cues) {
+            Ok(played) => played,
+            Err(e) => match layout.as_mut() {
+                Some(layout) => {
+                    (layout.on_call)(index, &call.name, Err(e.to_string()));
+                    continue;
+                }
+                None => return Err(e),
+            },
+        };
+        if let Some(layout) = layout.as_mut() {
+            (layout.on_call)(index, &call.name, Ok(&played));
+        }
         for placed in played.cues {
             if has_base && cues[0].0.time == placed.0.time && placed.1 == base_anchor {
                 let base = &mut cues[0].0;
@@ -824,69 +921,74 @@ fn expand_cue_base(unexpanded: &UnexpandedSequenceCue) -> Option<PlacedCue> {
     })
 }
 
-/// A sequence played from a cue: its cues, and where its last pass ends.
+/// A sequence played from a cue: its cues, where its last pass ends, and
+/// whether `max_cues` cut it short.
 struct PlayedCall {
     cues: Vec<PlacedCue>,
     end: Duration,
+    pass_ends: Vec<Duration>,
+    truncated: bool,
 }
 
-/// Plays the sequence `call` names from `unexpanded`.
+/// Plays the sequence `call` names from `unexpanded`, building at most
+/// `max_cues` of its cues.
 fn play_call(
     call: &SequenceCall,
     unexpanded: &UnexpandedSequenceCue,
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
+    max_cues: usize,
 ) -> Result<PlayedCall, Box<dyn Error>> {
     let sequence = library.instance(call)?;
     let passes = determine_loop_count(call.loop_param)?;
-    let cues = expand_sequence_call(
+    let expansion = expand_sequence_call(
         &sequence,
         unexpanded.time,
         unexpanded.offset_secs,
         tempo_map,
         Some(&call.name),
         passes,
+        max_cues,
     );
-    let end = sequence_end(
-        &sequence,
-        unexpanded.time,
-        unexpanded.offset_secs,
-        tempo_map,
-        passes,
-    );
-    Ok(PlayedCall { cues, end })
+    Ok(PlayedCall {
+        cues: expansion.cues,
+        end: expansion.end,
+        pass_ends: expansion.pass_ends,
+        truncated: expansion.truncated,
+    })
 }
 
-/// Where `passes` passes of `sequence` played from `at` end.
-fn sequence_end(
-    sequence: &Sequence,
-    at: Duration,
-    offset_secs: f64,
-    tempo_map: &Option<TempoMap>,
-    passes: usize,
-) -> Duration {
-    match tempo_map.as_ref().filter(|_| !sequence.in_seconds) {
-        Some(tm) => {
-            let beats = snap_beats(sequence.pass_beats() * passes as f64);
-            at + tm.beats_to_duration(beats, at, offset_secs)
-        }
-        None => at + sequence.pass_length() * passes as u32,
-    }
+/// What [`expand_sequence_call`] plays.
+struct Expansion {
+    cues: Vec<PlacedCue>,
+    /// Where the last pass ends.
+    end: Duration,
+    /// Where each pass ends.
+    pass_ends: Vec<Duration>,
+    /// Whether `max_cues` stopped it before its last pass.
+    truncated: bool,
 }
 
 /// Plays `passes` passes of `sequence` from `at`, under an offset of
 /// `offset_secs`: a sequence referenced from a cue (`name` given, so its
-/// effects can be stopped by it) or an inline loop's body (no name).
+/// effects can be stopped by it) or an inline loop's body (no name). Builds
+/// at most `max_cues` cues, stopping at the end of a pass.
 ///
 /// A body purely in seconds ([`body_in_seconds`]) keeps its times: its cues
 /// and passes stay in seconds from `at`, whatever the tempo does. Any other
-/// body has its cues and pass length counted in beats, through its own tempo
-/// map, and placed through the tempo map where it is played: from the beat
-/// at `at`, so a pass that crosses a tempo change (or a ramp) follows it. A
-/// cue of a body in seconds played inside it keeps its distance from that
-/// body's anchor, the anchor placed in beats. Effects' durations in beats or
-/// measures are resolved where they play (#529). Without a tempo map where
-/// it is played, it keeps the times it has.
+/// body has its cues counted in beats, through its own tempo map, and placed
+/// through the tempo map where it is played: from the beat a pass starts on,
+/// so a pass that crosses a tempo change (or a ramp) follows it. A cue of a
+/// body in seconds played inside it keeps its distance from that body's
+/// anchor, the anchor placed in beats.
+///
+/// A pass lasts its declared `length:` -- a cue that lands at or past it, as
+/// one in seconds can where the tempo is faster than the body was written
+/// at, does not play, as one written there cannot -- or, without one, until
+/// its content ends where it actually plays: its last effect (or, with none,
+/// its last cue). Effects' durations in beats or measures are resolved where
+/// they play (#529). Without a tempo map where it is played, a body keeps
+/// the times it has.
 fn expand_sequence_call(
     sequence: &Sequence,
     at: Duration,
@@ -894,14 +996,14 @@ fn expand_sequence_call(
     tempo_map: &Option<TempoMap>,
     name: Option<&str>,
     passes: usize,
-) -> Vec<PlacedCue> {
+    max_cues: usize,
+) -> Expansion {
     let in_seconds = sequence.in_seconds;
     let base = sequence.start_time();
-    let pass_beats = sequence.pass_beats();
-    let pass_length = sequence.pass_length();
     let distance = |index: usize| sequence.from_anchor.get(index).copied().flatten();
+    let has_effects = sequence.cues.iter().any(|c| !c.effects.is_empty());
     // In beats, each cue is placed by its anchor's beat (its own, for a cue
-    // with none).
+    // with none), counted from the start of the body.
     let anchor_beats: Vec<f64> = sequence
         .cues
         .iter()
@@ -910,26 +1012,64 @@ fn expand_sequence_call(
             sequence.beats_from_start(cue.time.saturating_sub(distance(index).unwrap_or_default()))
         })
         .collect();
+    let beats_tm = tempo_map.as_ref().filter(|_| !in_seconds);
+    let declared_beats = sequence.length.map(|_| sequence.pass_beats());
+    let pass_length = sequence.pass_length();
+    // Where `beats` beats from `at` fall.
+    let at_beats = |tm: &TempoMap, beats: f64| {
+        at.saturating_add(tm.beats_to_duration(snap_beats(beats), at, offset_secs))
+    };
+    // The beats from `at` to `time`, on the same footing.
+    let beats_to = |tm: &TempoMap, time: Duration| {
+        let score = |t: Duration| t.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
+        snap_beats(tm.beats_at(score(time), 0.0) - tm.beats_at(score(at), 0.0))
+    };
 
-    let mut cues = Vec::with_capacity(sequence.cues.len() * passes);
+    let mut cues = Vec::new();
+    let mut pass_ends = Vec::new();
+    let mut truncated = false;
+    // Where the current pass starts: in beats from `at`, or in time.
+    let mut start_beats = 0.0;
+    let mut start_time = at;
+    let mut end = at;
     for pass in 0..passes {
+        if cues.len() + sequence.cues.len() > max_cues {
+            truncated = true;
+            break;
+        }
+        // Where the pass is stopped by the next, when its length is
+        // declared; and where its content ends, for the next when not.
+        let stop = match beats_tm {
+            Some(tm) => declared_beats.map(|beats| at_beats(tm, start_beats + beats)),
+            None => sequence
+                .length
+                .map(|_| start_time.saturating_add(pass_length)),
+        };
+        let mut content_end = start_time;
         for (index, seq_cue) in sequence.cues.iter().enumerate() {
             let mut cue = seq_cue.clone();
-            let placed_from_anchor = match tempo_map.as_ref().filter(|_| !in_seconds) {
+            let placed_from_anchor = match beats_tm {
                 Some(tm) => {
-                    // Snapped: a pass length's rounding error multiplied by
-                    // the pass count crept the loop later every pass (#534).
-                    let beats = snap_beats(pass_beats * pass as f64 + anchor_beats[index]);
                     let own = distance(index);
-                    cue.time =
-                        at + tm.beats_to_duration(beats, at, offset_secs) + own.unwrap_or_default();
+                    cue.time = at_beats(tm, start_beats + anchor_beats[index])
+                        .saturating_add(own.unwrap_or_default());
                     own
                 }
                 None => {
-                    cue.time = at + pass_length * pass as u32 + seq_cue.time.saturating_sub(base);
-                    from_anchor(cue.time - at)
+                    cue.time = start_time.saturating_add(seq_cue.time.saturating_sub(base));
+                    // Only a body in seconds is anchored where it is played;
+                    // a body in beats laid out here for want of a tempo map
+                    // keeps its own cues' anchors.
+                    if in_seconds {
+                        from_anchor(cue.time.saturating_sub(at))
+                    } else {
+                        distance(index)
+                    }
                 }
             };
+            if stop.is_some_and(|stop| cue.time >= stop && index > 0) {
+                continue;
+            }
             if let Some(name) = name {
                 // Each pass after the first stops the one before, so its
                 // effects (a multiply chase, say) do not pile up; the first
@@ -950,11 +1090,41 @@ fn expand_sequence_call(
                 if let Some(tm) = tempo_map {
                     effect.resolve_musical_durations(tm, cue.time, offset_secs);
                 }
+                content_end = content_end.max(cue.time.saturating_add(effect.total_duration()));
+            }
+            if !has_effects {
+                content_end = content_end.max(cue.time);
             }
             cues.push((cue, placed_from_anchor));
         }
+        // The next pass starts where this one stops, or where its content
+        // ends.
+        match (beats_tm, stop) {
+            (_, Some(stop)) => {
+                end = stop;
+                start_time = stop;
+                if let (Some(_), Some(beats)) = (beats_tm, declared_beats) {
+                    start_beats += beats;
+                }
+            }
+            (Some(tm), None) => {
+                end = content_end;
+                start_beats = start_beats.max(beats_to(tm, content_end));
+                start_time = content_end;
+            }
+            (None, None) => {
+                end = content_end;
+                start_time = content_end;
+            }
+        }
+        pass_ends.push(end);
     }
-    cues
+    Expansion {
+        cues,
+        end,
+        pass_ends,
+        truncated,
+    }
 }
 
 /// Whether a body -- a sequence's, or an inline loop's -- is purely in
@@ -1004,6 +1174,11 @@ fn parse_inline_loop(
                 if repeats == 0 {
                     return Err("Loop repeats must be at least 1".into());
                 }
+                if repeats > LOOP_FOREVER {
+                    return Err(
+                        format!("Loop repeats {repeats} is more than {LOOP_FOREVER}").into(),
+                    );
+                }
             }
             _ => {}
         }
@@ -1048,7 +1223,16 @@ fn parse_inline_loop(
         from_anchor: Vec::new(),
     };
     Ok((
-        expand_sequence_call(&sequence, at, offset_secs, tempo_map, None, repeats),
+        expand_sequence_call(
+            &sequence,
+            at,
+            offset_secs,
+            tempo_map,
+            None,
+            repeats,
+            usize::MAX,
+        )
+        .cues,
         !in_seconds,
     ))
 }

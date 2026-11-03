@@ -990,18 +990,14 @@ show "Test Show" {
         base_time
     );
 
-    // The sequence was parsed at 110 BPM. Its internal cue relative times:
-    //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
-    //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
-    //   In beats at 110 BPM: 5.5454 * (110/60) = ~10.167 beats
-    //
-    // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
-    // Iteration spacing = 10.167 beats * 0.375s/beat = ~3.8125s
-    // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
+    // The cues are in beats, so they are placed at 160: the second a beat
+    // (0.375s) after the first. Their effects last 5s, in seconds, so they
+    // last 5s where they play, and a pass lasts until the last of them ends:
+    // 0.375s + 5s. (Counted in beats at the 110 the sequence was written at
+    // and placed at 160, the passes used to start 3.8s apart, 1.6s before
+    // the effects of the one before them ended.)
     let beat_at_160 = 60.0 / 160.0; // 0.375s
-    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time at 110 BPM)
-    let duration_beats = duration_internal * (110.0 / 60.0); // convert to beats
-    let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
+    let iteration_spacing = beat_at_160 + 5.0;
 
     // Check iteration spacing: first cue of each iteration
     for i in 0..4 {
@@ -2012,4 +2008,209 @@ show "Show" {{
     // As the show plays them.
     let played: Vec<f64> = cue_secs(&content, "Show")[1..].to_vec();
     close_to(&played, &times);
+}
+
+#[test]
+fn a_pass_lasts_until_its_content_ends_where_it_plays() {
+    // P2: "b", in beats, plays "c", in seconds (a second a pass, three
+    // passes): played at bar 9 (60), "c"'s last cue ends at 18.2s, and so
+    // does "b"'s pass -- not where "c" ended at the 120 "b" was written at.
+    let content = format!(
+        r#"{SLOWS_AT_NINE}
+sequence "c", length: 1s {{
+    @0.000
+    front_wash: static, color: "red", duration: 200ms
+}}
+
+sequence "b" {{
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "c", loop: 3
+}}
+
+show "Show" {{
+    @9/1
+    sequence "b", loop: 2
+}}
+"#
+    );
+    close_to(
+        &effect_cue_secs(&content, "Show"),
+        &[16.0, 17.0, 18.0, 18.2, 19.2, 20.2],
+    );
+}
+
+#[test]
+fn a_cue_landing_past_its_passs_length_does_not_play() {
+    // P3: "b" is a measure a pass, played at 240: a second. "s", in
+    // seconds, has a cue 1.5s in, which lands after the next pass has
+    // stopped this one: it does not play, as a cue written past a length
+    // cannot.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @9/1 { bpm: 240 }
+    ]
+}
+
+sequence "s" {
+    @0.000
+    front_wash: static, color: "red", duration: 200ms
+    @1.500
+    front_wash: static, color: "blue", duration: 200ms
+}
+
+sequence "b", length: 1measure {
+    @1/1
+    back_wash: static, color: "green", duration: 1beat
+    sequence "s"
+}
+
+show "Show" {
+    @9/1
+    sequence "b", loop: 2
+}
+"#;
+    close_to(&effect_cue_secs(content, "Show"), &[16.0, 17.0]);
+}
+
+#[test]
+fn a_body_in_beats_without_a_tempo_map_keeps_its_cues_anchors() {
+    // P4: "p" has no tempo map, so "b" (120, its own) is laid out in it in
+    // seconds -- @2/1 two seconds in -- but "p" is in beats: played at 60,
+    // that cue is four beats on, 4s.
+    let content = r#"
+sequence "b" {
+    tempo {
+        bpm: 120
+        time_signature: 4/4
+    }
+    @1/1
+    front_wash: static, color: "red", duration: 200ms
+    @2/1
+    front_wash: static, color: "blue", duration: 200ms
+}
+
+sequence "p" {
+    @0.000
+    back_wash: static, color: "green", duration: 200ms
+    sequence "b"
+}
+
+show "Show" {
+    tempo {
+        bpm: 60
+        time_signature: 4/4
+    }
+    @1/1
+    sequence "p"
+}
+"#;
+    close_to(&effect_cue_secs(content, "Show"), &[0.0, 4.0]);
+}
+
+#[test]
+fn numbers_out_of_reach_are_errors_not_panics() {
+    let sequence = r#"
+sequence "a" {
+    @0.000
+    front_wash: static, color: "red", duration: 100ms
+}
+"#;
+    for (show, what) in [
+        ("@0.000\n    sequence \"a\", loop: 4000000000", "loop count"),
+        ("@99999999999.000\n    sequence \"a\"", "time"),
+        ("@4294967295/1\n    sequence \"a\"", "bar"),
+    ] {
+        let content = format!(
+            "tempo {{\n    bpm: 120\n    time_signature: 4/4\n}}\n{sequence}\nshow \"S\" {{\n    {show}\n}}\n"
+        );
+        assert!(parse_light_shows(&content).is_err(), "{what}");
+    }
+    let long = r#"
+show "S" {
+    @0.000
+    front_wash: static, color: "red", duration: 99999999999999999999s
+}
+"#;
+    assert!(parse_light_shows(long).is_err());
+}
+
+#[test]
+fn a_layout_passes_over_what_does_not_play() {
+    // Mid-edit: a call to a sequence that is not there, a cue whose effect
+    // has no duration yet, a sequence that does not parse and nothing
+    // plays. The rest is laid out; what fails says why.
+    let content = r#"
+sequence "a" {
+    @0.000
+    front_wash: static, color: "red", duration: 500ms
+}
+
+sequence "broken" {
+    @0.000
+    front_wash: static, color: "red"
+}
+
+show "S" {
+    @0.000
+    sequence "a"
+    @4.000
+    sequence "not_there"
+    @8.000
+    back_wash: static, color: "red"
+    @12.000
+    sequence "a", loop: 2
+}
+"#;
+    assert!(parse_light_shows(content).is_err());
+    let layouts = crate::lighting::parser::layout_sequence_calls(content, None).unwrap();
+    let show = &layouts[0];
+    let calls: Vec<(usize, Option<&str>)> = show
+        .calls
+        .iter()
+        .map(|c| (c.cue, c.error.as_deref()))
+        .collect();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert_eq!(calls[0], (0, None));
+    assert_eq!(calls[1].0, 1);
+    assert!(
+        calls[1].1.is_some_and(|e| e.contains("not_there")),
+        "{calls:?}"
+    );
+    assert_eq!(calls[2], (3, None));
+    assert_eq!(show.calls[2].cues.len(), 2);
+    assert_eq!(show.cue_errors.len(), 1);
+    assert_eq!(show.cue_errors[0].0, 2);
+}
+
+#[test]
+fn a_layout_of_loop_forever_stops_at_its_cue_cap() {
+    let mut body = String::new();
+    for i in 0..32 {
+        body.push_str(&format!(
+            "    @{:.3}\n    front_wash: static, color: \"red\", duration: 100ms\n",
+            i as f64 * 0.125
+        ));
+    }
+    let mut show = String::new();
+    for i in 0..40 {
+        show.push_str(&format!(
+            "    @{}.000\n    sequence \"a\", loop: loop\n",
+            i * 10
+        ));
+    }
+    let content = format!("sequence \"a\" {{\n{body}}}\nshow \"S\" {{\n{show}}}\n");
+    let started = std::time::Instant::now();
+    let layouts = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let calls = &layouts[0].calls;
+    assert_eq!(calls.len(), 40);
+    for call in calls {
+        assert!(call.truncated);
+        assert!(call.cues.len() <= crate::lighting::parser::MAX_LAID_OUT_CUES);
+        assert!(!call.cues.is_empty());
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
