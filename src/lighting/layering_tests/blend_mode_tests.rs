@@ -254,8 +254,11 @@ fn test_timeline_blend_mode_loss() {
 
     // Update timeline to get effects at different times
     let result_at_0s = timeline.update(Duration::from_secs(0));
-    println!("✅ Timeline at 0s: {} effects", result_at_0s.effects.len());
-    for effect in &result_at_0s.effects {
+    println!(
+        "✅ Timeline at 0s: {} effects",
+        result_at_0s.effects().count()
+    );
+    for effect in result_at_0s.effects() {
         println!(
             "  Effect: {} blend_mode = {:?}",
             effect.id, effect.blend_mode
@@ -263,8 +266,11 @@ fn test_timeline_blend_mode_loss() {
     }
 
     let result_at_2s = timeline.update(Duration::from_secs(2));
-    println!("✅ Timeline at 2s: {} effects", result_at_2s.effects.len());
-    for effect in &result_at_2s.effects {
+    println!(
+        "✅ Timeline at 2s: {} effects",
+        result_at_2s.effects().count()
+    );
+    for effect in result_at_2s.effects() {
         println!(
             "  Effect: {} blend_mode = {:?}",
             effect.id, effect.blend_mode
@@ -272,7 +278,7 @@ fn test_timeline_blend_mode_loss() {
     }
 
     // Start the effects from timeline
-    for effect in result_at_0s.effects {
+    for effect in result_at_0s.effects().cloned() {
         engine.start_effect(effect).unwrap();
     }
 
@@ -281,7 +287,7 @@ fn test_timeline_blend_mode_loss() {
     println!("✅ Applied static effect from timeline");
 
     // Start the dimmer effect from timeline
-    for effect in result_at_2s.effects {
+    for effect in result_at_2s.effects().cloned() {
         engine.start_effect(effect).unwrap();
     }
 

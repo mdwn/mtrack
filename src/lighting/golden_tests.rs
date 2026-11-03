@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use crate::config::lighting::{Directories, GroupConstraint, Lighting, LogicalGroup};
 use crate::lighting::effects::DmxCommand;
-use crate::lighting::evaluate::{apply_timeline_update, evaluate_show, Evaluation};
+use crate::lighting::evaluate::{apply_timeline_update, evaluate_show, start_from, Evaluation};
 use crate::lighting::gdtf::{build_zip, SYNTHETIC_DESCRIPTION};
 use crate::lighting::parser::parse_light_shows;
 use crate::lighting::system::LightingSystem;
@@ -335,7 +335,7 @@ fn live_frames(project: &mut Project) -> Vec<[u8; 513]> {
             .collect();
         effect
     };
-    apply_timeline_update(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
+    start_from(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
 
     let step = Duration::from_millis(10);
     let mut universe = [0u8; 513];
@@ -616,7 +616,7 @@ fn frames_for(fixture_type: &str, show: &str, at: &[Duration]) -> Vec<[u8; 513]>
             .collect();
         effect
     };
-    apply_timeline_update(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
+    start_from(&mut engine, timeline.start_at(Duration::ZERO), &mut resolve);
     let step = Duration::from_millis(10);
     let mut universe = [0u8; 513];
     let mut frames = Vec::new();

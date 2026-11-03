@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[test]
-fn test_start_effect_with_elapsed_static_effect() {
+fn test_start_effect_part_way_static_effect() {
     // Test starting a static effect with pre-calculated elapsed time
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -41,7 +41,7 @@ fn test_start_effect_with_elapsed_static_effect() {
 
     // Start with 500ms elapsed - effect should appear as if it's been running for 500ms
     engine
-        .start_effect_with_elapsed(effect, Duration::from_millis(500))
+        .start_effect_part_way(effect, Duration::from_millis(500))
         .unwrap();
 
     // Update immediately - should get full value (static effects don't change over time)
@@ -51,7 +51,7 @@ fn test_start_effect_with_elapsed_static_effect() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_dimmer_midpoint() {
+fn test_start_effect_part_way_dimmer_midpoint() {
     // Test starting a dimmer effect at its midpoint
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -73,7 +73,7 @@ fn test_start_effect_with_elapsed_dimmer_midpoint() {
 
     // Start with 1 second elapsed (halfway through 2 second fade)
     engine
-        .start_effect_with_elapsed(effect, Duration::from_secs(1))
+        .start_effect_part_way(effect, Duration::from_secs(1))
         .unwrap();
 
     // Update immediately - should be at ~50%
@@ -88,7 +88,7 @@ fn test_start_effect_with_elapsed_dimmer_midpoint() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_dimmer_complete() {
+fn test_start_effect_part_way_dimmer_complete() {
     // Test starting a dimmer effect that has already completed
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -110,7 +110,7 @@ fn test_start_effect_with_elapsed_dimmer_complete() {
 
     // Start with 2 seconds elapsed (beyond the 1 second duration)
     engine
-        .start_effect_with_elapsed(effect, Duration::from_secs(2))
+        .start_effect_part_way(effect, Duration::from_secs(2))
         .unwrap();
 
     // Dimmer has already completed (2s elapsed > 1s duration), so it's
@@ -120,7 +120,7 @@ fn test_start_effect_with_elapsed_dimmer_complete() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_color_cycle() {
+fn test_start_effect_part_way_color_cycle() {
     // Test starting a color cycle effect partway through
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -151,7 +151,7 @@ fn test_start_effect_with_elapsed_color_cycle() {
     // At 1 cycle/sec with 3 colors, each color gets 1/3 of the cycle
     // At 0.5s progress, we're at color index 1 (green) with Snap transition
     engine
-        .start_effect_with_elapsed(effect, Duration::from_millis(500))
+        .start_effect_part_way(effect, Duration::from_millis(500))
         .unwrap();
 
     // Update immediately - with Snap, should be pure green (no transition)
@@ -179,7 +179,7 @@ fn test_start_effect_with_elapsed_color_cycle() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_pulse() {
+fn test_start_effect_part_way_pulse() {
     // Test starting a pulse effect partway through its cycle
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -202,7 +202,7 @@ fn test_start_effect_with_elapsed_pulse() {
     // Start with 0.25 seconds elapsed (quarter cycle at 1Hz = 90 degrees)
     // At 90 degrees, sin = 1.0, so pulse should be at max (base + amplitude = 1.0)
     engine
-        .start_effect_with_elapsed(effect, Duration::from_millis(250))
+        .start_effect_part_way(effect, Duration::from_millis(250))
         .unwrap();
 
     // Update immediately - should be near maximum
@@ -217,7 +217,7 @@ fn test_start_effect_with_elapsed_pulse() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_rainbow() {
+fn test_start_effect_part_way_rainbow() {
     // Test starting a rainbow effect partway through
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -240,7 +240,7 @@ fn test_start_effect_with_elapsed_rainbow() {
     // Start with 0.33 seconds elapsed (1/3 through cycle = 120 degrees hue)
     // At 120 degrees, we should see green-cyan transition
     engine
-        .start_effect_with_elapsed(effect, Duration::from_millis(333))
+        .start_effect_part_way(effect, Duration::from_millis(333))
         .unwrap();
 
     // Update immediately - should show appropriate color for that hue
@@ -267,7 +267,7 @@ fn test_start_effect_with_elapsed_rainbow() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_timed_effect_completion() {
+fn test_start_effect_part_way_timed_effect_completion() {
     // Test that timed effects complete correctly when started with elapsed time
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -290,7 +290,7 @@ fn test_start_effect_with_elapsed_timed_effect_completion() {
 
     // Start with 1.5 seconds elapsed (beyond the 1 second duration)
     engine
-        .start_effect_with_elapsed(effect, Duration::from_millis(1500))
+        .start_effect_part_way(effect, Duration::from_millis(1500))
         .unwrap();
 
     // Update immediately - effect should already be expired
@@ -300,7 +300,7 @@ fn test_start_effect_with_elapsed_timed_effect_completion() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_zero_elapsed() {
+fn test_start_effect_part_way_zero_elapsed() {
     // Test that zero elapsed time works the same as start_effect
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -343,7 +343,7 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
     );
 
     engine
-        .start_effect_with_elapsed(effect2, Duration::ZERO)
+        .start_effect_part_way(effect2, Duration::ZERO)
         .unwrap();
     let commands2 = engine.update(Duration::from_millis(16), None).unwrap();
 
@@ -355,7 +355,7 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
 }
 
 #[test]
-fn test_start_effect_with_elapsed_conflict_resolution() {
+fn test_start_effect_part_way_conflict_resolution() {
     // Test that conflict resolution works correctly with elapsed time
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
@@ -398,7 +398,7 @@ fn test_start_effect_with_elapsed_conflict_resolution() {
     fg_effect.priority = 10;
 
     engine
-        .start_effect_with_elapsed(fg_effect, Duration::from_millis(500))
+        .start_effect_part_way(fg_effect, Duration::from_millis(500))
         .unwrap();
 
     // Update - should see foreground effect
