@@ -34,6 +34,36 @@ pub const DEFAULT_TIME_SIGNATURE: TimeSignature = TimeSignature {
     denominator: 4,
 };
 
+/// Parses a song's "numerator/denominator" time signature string (a `tempo:`
+/// block's): the one parser of it, for the web UI too.
+pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
+    let mut parts = raw.split('/');
+    let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(n), Some(d), None) => (
+            n.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid time signature numerator in {raw:?}"))?,
+            d.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
+        ),
+        _ => {
+            return Err(format!(
+                "time signature {raw:?} must be numerator/denominator"
+            ))
+        }
+    };
+    if numerator == 0 || numerator > 64 {
+        return Err(format!("time signature numerator {numerator} out of range"));
+    }
+    if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
+        return Err(format!(
+            "time signature denominator {denominator} must be a power of two up to 32"
+        ));
+    }
+    Ok(TimeSignature::new(numerator, denominator))
+}
+
 /// Time signature (numerator/denominator)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {

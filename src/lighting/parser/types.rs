@@ -56,6 +56,10 @@ pub struct Sequence {
     /// a `length:`. Otherwise a pass lasts until its content ends where it
     /// plays.
     pub length: Option<Duration>,
+    /// Whether the `length:` is written in beats or measures (then a pass
+    /// of a body in beats lasts it on its grid); one in seconds lasts its
+    /// seconds wherever it plays.
+    pub(crate) length_in_beats: bool,
     /// Whether the body is purely in seconds
     /// ([`body_in_seconds`](super::show::body_in_seconds)): laid out in
     /// seconds wherever it plays, its cues and passes keeping their times
@@ -127,7 +131,7 @@ impl Sequence {
     /// pass in beats lasts, when it declares one. (A pass without one lasts
     /// until its content ends where it plays: see `expand_sequence_call`.)
     pub(crate) fn declared_beats(&self) -> Option<f64> {
-        let length = self.length?;
+        let length = self.length.filter(|_| self.length_in_beats)?;
         let start = self.start_time();
         Some(self.beats_between(start, start + length))
     }

@@ -255,6 +255,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     until its content ends. A pass that lasts no time (all that gave it a length dropped, or
     nothing but a marker or a layer command) is the last: its passes no longer pile up at one
     instant.
+  - A `length:` in seconds lasts its seconds where the pass plays, on a sequence in beats too: it
+    used to be turned into beats at the tempo the sequence was written at, so a pass played after
+    a tempo change lasted longer or shorter than written.
   - With a `length:`, a cue that lands at or past the pass's end where it plays (one in seconds,
     where the tempo is faster) does not play, as a cue written past it cannot -- decided where it
     finally plays in the show, however deep the sequence is played inside others, not at the tempo

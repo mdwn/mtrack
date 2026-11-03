@@ -550,6 +550,28 @@ pub extern "C" fn text_output() -> *const u8 {
     TEXT_OUTPUT.with(|output| output.borrow().as_ptr())
 }
 
+/// The song time signature string in the first `len` bytes of the text
+/// buffer, parsed as the player parses it ([`tempo::parse_time_signature`]):
+/// its numerator and denominator in the output buffer, answering 2, or 0
+/// when it is not one.
+#[no_mangle]
+pub extern "C" fn parse_signature(len: usize) -> usize {
+    let raw = TEXT_INPUT.with(|input| {
+        let input = input.borrow();
+        String::from_utf8_lossy(input.get(..len).unwrap_or(&[])).into_owned()
+    });
+    match tempo::parse_time_signature(&raw) {
+        Ok(signature) => {
+            set_output(&[
+                f64::from(signature.numerator),
+                f64::from(signature.denominator),
+            ]);
+            2
+        }
+        Err(_) => 0,
+    }
+}
+
 /// Lays out the sequences the shows of the light show source in the first
 /// `len` bytes of the text buffer play ([`lighting::parser::layout_sequence_calls`]),
 /// timed through `map` (0 for none) where the source has no `tempo` block.

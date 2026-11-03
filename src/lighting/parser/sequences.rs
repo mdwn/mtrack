@@ -308,6 +308,10 @@ impl SequenceLibrary {
             .clone()
             .or_else(|| self.sequence_tempo.clone());
         let length = definition.declared_length(tempo.as_ref())?;
+        let length_in_beats = definition
+            .length_written()
+            .and_then(super::types::MusicalLength::parse)
+            .is_some();
         let in_seconds = body_in_seconds(
             definition.musical,
             &definition.cues,
@@ -347,6 +351,7 @@ impl SequenceLibrary {
             cues,
             tempo_map: tempo,
             length,
+            length_in_beats,
             in_seconds,
             from_anchor,
             calls,

@@ -1325,9 +1325,13 @@ fn expand_sequence_call(
         }
         // Where the pass is stopped by the next, when its length is
         // declared; and where its content ends, for the next when not.
-        let stop = match beats_tm {
-            Some(tm) => declared_beats.map(|beats| at_beats(tm, start_beats + beats)),
-            None => sequence
+        let stop = match (beats_tm, declared_beats) {
+            (Some(tm), Some(beats)) => Some(at_beats(tm, start_beats + beats)),
+            // A length in seconds lasts its seconds where it plays.
+            (Some(tm), None) => sequence
+                .length
+                .map(|length| at_beats(tm, start_beats).saturating_add(length)),
+            (None, _) => sequence
                 .length
                 .map(|length| start_time.saturating_add(length)),
         };
@@ -1414,7 +1418,18 @@ fn expand_sequence_call(
             // grid, from the beat it is played on; one in seconds where it
             // lands.
             for call in calls_of(index) {
+                // A call that lays out nothing is charged too, so a fan-out
+                // of empty sequences is bounded by the cap as cues are.
+                if inside.budget.get() == 0 {
+                    truncated = true;
+                    break;
+                }
                 let played = play_call(call, time, offset_secs, tempo_map, &nested)?;
+                let laid_nothing =
+                    played.cues.is_empty() && played.dropped.count == 0 && !played.truncated;
+                if laid_nothing && !inside.spend() {
+                    truncated = true;
+                }
                 dropped.extend(played.dropped);
                 skipped |= played.cut;
                 match (beats_tm, played.reach.beats) {
@@ -1445,7 +1460,7 @@ fn expand_sequence_call(
                         }
                     }
                 }
-                if played.truncated {
+                if played.truncated || truncated {
                     truncated = true;
                     break;
                 }
@@ -1493,8 +1508,10 @@ fn expand_sequence_call(
             (_, Some(stop)) => {
                 end = stop;
                 start_time = stop;
-                if let (Some(_), Some(beats)) = (beats_tm, declared_beats) {
-                    start_beats += beats;
+                match (beats_tm, declared_beats) {
+                    (Some(_), Some(beats)) => start_beats += beats,
+                    (Some(tm), None) => start_beats = beats_to(tm, stop),
+                    _ => {}
                 }
                 true
             }
@@ -1645,6 +1662,7 @@ fn parse_inline_loop(
         cues: body,
         tempo_map: body_tempo,
         length: None,
+        length_in_beats: false,
         in_seconds,
         from_anchor: Vec::new(),
         calls: Vec::new(),
@@ -1794,6 +1812,7 @@ mod tests {
             cues,
             tempo_map: None,
             length: None,
+            length_in_beats: false,
             in_seconds: false,
             from_anchor: Vec::new(),
             calls: Vec::new(),

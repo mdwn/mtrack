@@ -2876,3 +2876,40 @@ fn a_call_cut_short_ends_where_what_it_laid_out_does_with_no_effects() {
     let last = call.cues.iter().map(|c| c.time).max().unwrap();
     assert!(call.end >= last && call.end > call.start, "{:?}", call.end);
 }
+
+#[test]
+fn a_length_in_seconds_lasts_its_seconds_where_it_plays() {
+    // F2: "s" is in beats, its `length:` in seconds: played from bar 4,
+    // after the song speeds to 240, its passes are 0.7s apart -- straight
+    // or wrapped -- not 0.7s at the 120 it was written at.
+    let defs = "tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @3/1 { bpm: 240 }\n    ]\n}\nsequence \"s\", length: 0.7s {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n}\nsequence \"w1\" {\n    @1/1\n    sequence \"s\"\n}\nsequence \"w2\" {\n    @1/1\n    sequence \"w1\"\n}\n";
+    for call in ["s", "w1", "w2"] {
+        let content =
+            format!("{defs}show \"Show\" {{\n    @4/1\n    sequence \"{call}\", loop: 3\n}}\n");
+        close_to(&effect_cue_secs(&content, "Show"), &[5.0, 5.7, 6.4]);
+    }
+}
+
+#[test]
+fn a_fan_out_of_empty_sequences_is_bounded_by_a_layouts_cap() {
+    // F1: six levels of ten calls each, to an empty sequence: a million
+    // calls that lay out nothing, bounded by the cap as cues are.
+    let mut content = String::from(AT_120);
+    content.push_str("sequence \"w0\" {\n}\n");
+    for level in 1..=6 {
+        content.push_str(&format!("sequence \"w{level}\" {{\n"));
+        for beat in 1..=10 {
+            content.push_str(&format!("    @1/{beat}\n    sequence \"w{}\"\n", level - 1));
+        }
+        content.push_str("}\n");
+    }
+    content.push_str("show \"Show\" {\n    @1/1\n    sequence \"w6\"\n}\n");
+    let started = std::time::Instant::now();
+    let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(layout.shows[0].calls[0].truncated);
+}
