@@ -1400,12 +1400,9 @@ impl TempoMap {
     /// and gradual transitions are integrated as cue positions integrate them.
     /// `offset_secs` shifts the tempo map the way it shifts cue times.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
-        let ts_changes = self.signature_changes();
-        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
-        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
-        let end_beats = snap_beats(start_beats + beats);
-        self.score_time_at_beats(end_beats, ts_changes)
-            .saturating_sub(score_at)
+        let from = self.grid_beat_at(at_time, offset_secs);
+        self.grid_time(self.beats_on(from, beats))
+            .saturating_sub(self.score_time(at_time, offset_secs))
     }
 
     /// How long the `beats` from the beat `at_time` falls on last, counted
@@ -1418,19 +1415,20 @@ impl TempoMap {
         if beats == 0.0 {
             return Duration::ZERO;
         }
-        let ts_changes = self.signature_changes();
-        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
-        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
-        let end_beats = snap_beats(start_beats + beats);
-        self.score_time_at_beats(end_beats, ts_changes)
-            .saturating_sub(self.score_time_at_beats(start_beats, ts_changes))
+        self.grid_beats(self.grid_beat_at(at_time, offset_secs), beats)
     }
 
     /// The grid beat (snapped, as positions are) a time falls on, under an
     /// offset: where a pass starting then counts its beats from.
     pub fn grid_beat_at(&self, time: Duration, offset_secs: f64) -> f64 {
-        let score = time.saturating_sub(duration_from_secs(offset_secs));
-        snap_beats(self.score_beats_at(score, self.signature_changes()))
+        snap_beats(
+            self.score_beats_at(self.score_time(time, offset_secs), self.signature_changes()),
+        )
+    }
+
+    /// A time under an offset as the score has it.
+    fn score_time(&self, time: Duration, offset_secs: f64) -> Duration {
+        time.saturating_sub(duration_from_secs(offset_secs))
     }
 
     /// The score time of a grid beat: differences of these are lengths on
@@ -1439,11 +1437,28 @@ impl TempoMap {
         self.score_time_at_beats(snap_beats(beat), self.signature_changes())
     }
 
-    /// How long `measures` measures from grid beat `from` last, on the grid.
-    pub fn grid_measures(&self, from: f64, measures: f64) -> Duration {
+    /// The grid beat `beats` beats on from grid beat `from`.
+    fn beats_on(&self, from: f64, beats: f64) -> f64 {
+        snap_beats(from + beats)
+    }
+
+    /// The grid beat `measures` measures on from grid beat `from`, through
+    /// the signatures between.
+    fn measures_on(&self, from: f64, measures: f64) -> f64 {
         let ts_changes = self.signature_changes();
         let end = self.measures_at_beats(snap_beats(from), ts_changes) + measures;
-        self.grid_time(self.beats_at_measures(end, ts_changes))
+        snap_beats(self.beats_at_measures(end, ts_changes))
+    }
+
+    /// How long `beats` beats from grid beat `from` last, on the grid.
+    pub fn grid_beats(&self, from: f64, beats: f64) -> Duration {
+        self.grid_time(self.beats_on(from, beats))
+            .saturating_sub(self.grid_time(from))
+    }
+
+    /// How long `measures` measures from grid beat `from` last, on the grid.
+    pub fn grid_measures(&self, from: f64, measures: f64) -> Duration {
+        self.grid_time(self.measures_on(from, measures))
             .saturating_sub(self.grid_time(from))
     }
 
@@ -1462,13 +1477,9 @@ impl TempoMap {
         at_time: Duration,
         offset_secs: f64,
     ) -> Duration {
-        let ts_changes = self.signature_changes();
-        let score_at = at_time.saturating_sub(duration_from_secs(offset_secs));
-        let start_beats = snap_beats(self.score_beats_at(score_at, ts_changes));
-        let end_measures = self.measures_at_beats(start_beats, ts_changes) + measures;
-        let end_beats = snap_beats(self.beats_at_measures(end_measures, ts_changes));
-        self.score_time_at_beats(end_beats, ts_changes)
-            .saturating_sub(score_at)
+        let from = self.grid_beat_at(at_time, offset_secs);
+        self.grid_time(self.measures_on(from, measures))
+            .saturating_sub(self.score_time(at_time, offset_secs))
     }
 
     /// How long the `beats` before `end` last: the same position walk as

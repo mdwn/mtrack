@@ -282,6 +282,18 @@ impl MusicalLength {
             }
         }
     }
+
+    /// Its length on `tempo_map`'s grid from grid beat `from`.
+    pub fn resolve_on_grid(
+        self,
+        tempo_map: &crate::lighting::tempo::TempoMap,
+        from: f64,
+    ) -> Duration {
+        match self {
+            MusicalLength::Beats(beats) => tempo_map.grid_beats(from, beats),
+            MusicalLength::Measures(measures) => tempo_map.grid_measures(from, measures),
+        }
+    }
 }
 
 /// An effect's duration parameters that were written in beats or measures.
@@ -322,19 +334,7 @@ impl Effect {
         at_time: Duration,
         offset_secs: f64,
     ) {
-        let resolve = |len: MusicalLength| len.resolve(tempo_map, at_time, offset_secs);
-        if let Some(len) = self.musical.duration {
-            self.effect_type.set_duration(resolve(len));
-        }
-        if let Some(len) = self.musical.up_time {
-            self.up_time = Some(resolve(len));
-        }
-        if let Some(len) = self.musical.hold_time {
-            self.hold_time = Some(resolve(len));
-        }
-        if let Some(len) = self.musical.down_time {
-            self.down_time = Some(resolve(len));
-        }
+        self.resolve_lengths(|len| len.resolve(tempo_map, at_time, offset_secs));
     }
 
     /// Resolves the durations written in beats or measures on `tempo_map`'s
@@ -346,12 +346,11 @@ impl Effect {
         tempo_map: &crate::lighting::tempo::TempoMap,
         from: f64,
     ) {
-        let resolve = |len: MusicalLength| match len {
-            MusicalLength::Beats(beats) => tempo_map
-                .grid_time(from + beats)
-                .saturating_sub(tempo_map.grid_time(from)),
-            MusicalLength::Measures(measures) => tempo_map.grid_measures(from, measures),
-        };
+        self.resolve_lengths(|len| len.resolve_on_grid(tempo_map, from));
+    }
+
+    /// Each duration written in beats or measures, resolved by `resolve`.
+    fn resolve_lengths(&mut self, resolve: impl Fn(MusicalLength) -> Duration) {
         if let Some(len) = self.musical.duration {
             self.effect_type.set_duration(resolve(len));
         }

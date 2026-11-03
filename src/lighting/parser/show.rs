@@ -134,7 +134,9 @@ pub struct CallLayout {
     pub end: Duration,
     /// Where each pass laid out ends.
     pub pass_ends: Vec<Duration>,
-    /// Whether [`MAX_LAID_OUT_CUES`] stopped it before its last pass.
+    /// Whether a layout's bounds stopped it before its last pass: the cues it
+    /// draws ([`MAX_LAID_OUT_CUES`]), or the calls it expands, those that
+    /// play nothing included ([`MAX_LAID_OUT_CALLS`], [`MAX_HOLLOW_CALLS`]).
     pub truncated: bool,
     /// How many of its cues land past a pass's `length:` where it plays,
     /// and so do not play.
@@ -916,11 +918,13 @@ fn expand_cue(
         } else {
             usize::MAX
         });
+        let hollow_work = Cell::new(MAX_HOLLOW_CALLS);
         let inside = Inside {
             library,
             budget: &budget,
             reaches: &reaches,
             work: &work,
+            hollow_work: &hollow_work,
             within: None,
             tags: true,
             effects_around: false,
@@ -1258,6 +1262,8 @@ struct Inside<'a> {
     /// How many more calls may be expanded, a layout's (generous) bound on
     /// the work that plays no cue; none when played.
     work: &'a Cell<usize>,
+    /// How many more hollow calls may be played (see [`MAX_HOLLOW_CALLS`]).
+    hollow_work: &'a Cell<usize>,
     within: Option<&'a PassEnd<'a>>,
     /// Whether its cues' effects are tagged here, as the outermost
     /// sequence's: tagged once, where they are finally played, rather than
@@ -1293,6 +1299,91 @@ struct ReachOnly {
 /// The most calls a layout expands for one show cue: far beyond any real
 /// show, short of hanging the page.
 const MAX_LAID_OUT_CALLS: usize = 200_000;
+
+/// The most hollow calls played for one show cue: far beyond any real show
+/// (the latest of each kind in a pass is all that is played); past it,
+/// played, the show is refused, naming the call, and laid out, cut short.
+const MAX_HOLLOW_CALLS: usize = 1_000_000;
+
+/// The most calls that played no cue remembered for one show cue.
+const MAX_REMEMBERED_REACHES: usize = 100_000;
+
+#[cfg(all(test, not(mtrack_wasm)))]
+thread_local! {
+    /// Set by tests to expand every call in full, for comparison.
+    pub(super) static IN_FULL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the shortcuts for calls that play nothing are taken (always,
+/// but in tests comparing them with full expansion).
+fn shortcuts() -> bool {
+    #[cfg(all(test, not(mtrack_wasm)))]
+    {
+        !IN_FULL.with(Cell::get)
+    }
+    #[cfg(not(all(test, not(mtrack_wasm))))]
+    {
+        true
+    }
+}
+
+/// The latest-starting hollow call of a kind (sequence, passes, for good)
+/// in a pass, where it starts and on which beat of the pass.
+struct LatestHollow<'s> {
+    kind: (usize, usize, bool),
+    time: Duration,
+    beat: f64,
+    call: &'s SequenceCall,
+    callee: std::rc::Rc<Sequence>,
+}
+
+/// What the hollow sequence `callee`, played by `call` from `time`,
+/// reaches: remembered where it was played before, and bounded per show
+/// cue (`None`, laid out, when that bound is spent).
+fn reach_only(
+    call: &SequenceCall,
+    callee: &std::rc::Rc<Sequence>,
+    time: Duration,
+    offset_secs: f64,
+    tempo_map: &Option<TempoMap>,
+    inside: &Inside,
+) -> Result<Option<ReachOnly>, Box<dyn Error>> {
+    let key = ReachKey {
+        sequence: std::rc::Rc::as_ptr(callee) as usize,
+        passes: determine_loop_count(call.loop_param)?,
+        endless: inside.endless || matches!(call.loop_param, Some(SequenceLoop::Loop)),
+        at: time,
+        offset_bits: offset_secs.to_bits(),
+        within: inside.within.map(|e| e.time),
+        effects_around: inside.effects_around,
+    };
+    let known = inside.reaches.borrow().get(&key).copied();
+    if known.is_some() {
+        return Ok(known);
+    }
+    let left = inside.hollow_work.get();
+    if left == 0 {
+        if inside.library.laying_out() {
+            return Ok(None);
+        }
+        return Err(format!(
+            "line {}: sequence \"{}\" is played more than {MAX_HOLLOW_CALLS} times by one cue, \
+             playing nothing",
+            call.line, call.name
+        )
+        .into());
+    }
+    inside.hollow_work.set(left - 1);
+    let played = play_call(call, callee, time, offset_secs, tempo_map, inside)?;
+    let reached = ReachOnly {
+        reach: played.reach,
+        cut: played.cut,
+    };
+    if inside.reaches.borrow().len() < MAX_REMEMBERED_REACHES {
+        inside.reaches.borrow_mut().insert(key, reached);
+    }
+    Ok(Some(reached))
+}
 
 impl Inside<'_> {
     /// One more cue placed, dropped or passed over, if the cap allows it.
@@ -1574,6 +1665,9 @@ fn expand_sequence_call(
         };
         let pass_first = cues.len();
         let mut pass_reach = Reach::default();
+        // The latest-starting hollow call of each kind, played after the
+        // pass's cues.
+        let mut latest: Vec<LatestHollow> = Vec::new();
         // Whether a cue fell past the end of a show: then this pass is the
         // last.
         let mut skipped = false;
@@ -1667,7 +1761,7 @@ fn expand_sequence_call(
                     Some(callee) => callee.clone(),
                     None => inside.library.instance(call)?,
                 };
-                if callee.hollow {
+                if callee.hollow && shortcuts() {
                     if nested.effects_around {
                         // It reaches no further than nothing, here.
                         continue;
@@ -1712,6 +1806,35 @@ fn expand_sequence_call(
                         continue;
                     }
                 }
+                // A hollow call reaches, cuts and errs no less the later it
+                // starts (time only grows with beats): of a pass's hollow
+                // calls to one sequence, played alike, only the latest can
+                // set how far the pass reaches. It alone is played, after
+                // the pass's cues.
+                if callee.hollow && shortcuts() {
+                    let kind = (
+                        std::rc::Rc::as_ptr(&callee) as usize,
+                        determine_loop_count(call.loop_param)?,
+                        matches!(call.loop_param, Some(SequenceLoop::Loop)),
+                    );
+                    let beat = start_beats + anchor_beats[index];
+                    match latest.iter_mut().find(|l| l.kind == kind) {
+                        Some(l) if l.time >= time => {}
+                        Some(l) => {
+                            l.time = time;
+                            l.beat = beat;
+                            l.call = call;
+                        }
+                        None => latest.push(LatestHollow {
+                            kind,
+                            time,
+                            beat,
+                            call,
+                            callee: callee.clone(),
+                        }),
+                    }
+                    continue;
+                }
                 // A call that played no cue here before reaches as far again.
                 let key = ReachKey {
                     sequence: std::rc::Rc::as_ptr(&callee) as usize,
@@ -1722,7 +1845,12 @@ fn expand_sequence_call(
                     within: nested.within.map(|e| e.time),
                     effects_around: nested.effects_around,
                 };
-                let known = inside.reaches.borrow().get(&key).copied();
+                let known = inside
+                    .reaches
+                    .borrow()
+                    .get(&key)
+                    .copied()
+                    .filter(|_| shortcuts());
                 if let Some(known) = known {
                     skipped |= known.cut;
                     take_reach(
@@ -1741,7 +1869,11 @@ fn expand_sequence_call(
                 }
                 inside.work.set(left - 1);
                 let played = play_call(call, &callee, time, offset_secs, tempo_map, &nested)?;
-                if played.cues.is_empty() && played.dropped.count == 0 && !played.truncated {
+                if played.cues.is_empty()
+                    && played.dropped.count == 0
+                    && !played.truncated
+                    && inside.reaches.borrow().len() < MAX_REMEMBERED_REACHES
+                {
                     inside.reaches.borrow_mut().insert(
                         key,
                         ReachOnly {
@@ -1785,6 +1917,22 @@ fn expand_sequence_call(
             cues[group..].sort_by_key(|c| c.cue.time);
             if truncated {
                 break;
+            }
+        }
+        for hollow in latest.drain(..) {
+            match reach_only(
+                hollow.call,
+                &hollow.callee,
+                hollow.time,
+                offset_secs,
+                tempo_map,
+                &nested,
+            )? {
+                Some(reached) => {
+                    skipped |= reached.cut;
+                    take_reach(&mut pass_reach, reached.reach, hollow.beat, hollow.time);
+                }
+                None => truncated = true,
             }
         }
         // The pass's first cue starts it; each after the first stops the
@@ -2024,6 +2172,7 @@ fn parse_inline_loop(
                 budget: &Cell::new(usize::MAX),
                 reaches: &std::cell::RefCell::new(std::collections::HashMap::new()),
                 work: &Cell::new(usize::MAX),
+                hollow_work: &Cell::new(usize::MAX),
                 within: None,
                 tags: true,
                 effects_around: false,
@@ -2204,6 +2353,7 @@ mod tests {
                 budget: &Cell::new(usize::MAX),
                 reaches: &std::cell::RefCell::new(std::collections::HashMap::new()),
                 work: &Cell::new(usize::MAX),
+                hollow_work: &Cell::new(usize::MAX),
                 within: None,
                 tags: true,
                 effects_around: false,

@@ -3094,3 +3094,88 @@ fn a_light_show_takes_any_signature_but_nothing() {
         assert_eq!(parse_light_shows(&content).is_ok(), ok, "{signature}");
     }
 }
+
+/// zz13's fan-outs: `levels` levels of ten calls to the level below, at
+/// beats `i * 10^(k-1) / 64` (`fine`) or at `i * 10^(k-1)` ms (seconds),
+/// over a leaf that plays nothing: in beats with a length in seconds
+/// (`len`), or played for good (`lp`); with a tempo change at bar 2.
+fn spread_fan(levels: u32, leaf: &str, fine: bool) -> String {
+    let mut content = String::from("tempo {\n    start: 0.0s\n    bpm: 120\n    time_signature: 4/4\n    changes: [\n        @2/1 { bpm: 90 }\n    ]\n}\nsequence \"z\" {\n}\n");
+    content.push_str(match leaf {
+        "len" => "sequence \"w0\", length: 1s {\n    @1/1\n    sequence \"z\"\n}\n",
+        _ => "sequence \"w0\" {\n    @1/1\n    sequence \"z\", loop: loop\n}\n",
+    });
+    for k in 1..=levels {
+        content.push_str(&format!("sequence \"w{k}\" {{\n"));
+        for i in 0..10u32 {
+            let position = if fine {
+                let beats = f64::from(i) * 10f64.powi(k as i32 - 1) / 64.0;
+                let bar = (beats / 4.0).floor() as u32 + 1;
+                format!("@{bar}/{}", beats - f64::from(bar - 1) * 4.0 + 1.0)
+            } else {
+                format!("@{:.3}", f64::from(i) * 10f64.powi(k as i32 - 1) / 1000.0)
+            };
+            content.push_str(&format!("    {position}\n    sequence \"w{}\"\n", k - 1));
+        }
+        content.push_str("}\n");
+    }
+    content.push_str(&format!(
+        "show \"Show\" {{\n    @1/1\n    sequence \"w{levels}\", loop: 2\n}}\n"
+    ));
+    content
+}
+
+/// The layout and the show of `content`, with the shortcuts for calls that
+/// play nothing taken or not.
+fn laid_out(content: &str, in_full: bool) -> (Vec<Duration>, Duration, usize) {
+    super::super::show::IN_FULL.with(|f| f.set(in_full));
+    let layout = crate::lighting::parser::layout_sequence_calls(content, None);
+    let shows = parse_light_shows(content);
+    super::super::show::IN_FULL.with(|f| f.set(false));
+    let call = &layout.unwrap().shows[0].calls[0];
+    (
+        call.pass_ends.clone(),
+        call.end,
+        shows.unwrap()["Show"].cues.len(),
+    )
+}
+
+#[test]
+fn fan_outs_of_calls_that_play_nothing_cost_their_depth() {
+    // e7f_len, e7s_len, e6f_lp, e6f_len: every call at its own time, so no
+    // two are played alike; only the latest of a pass's is played.
+    for (levels, leaf, fine) in [
+        (7, "len", true),
+        (7, "len", false),
+        (6, "lp", true),
+        (6, "len", true),
+    ] {
+        let content = spread_fan(levels, leaf, fine);
+        let started = std::time::Instant::now();
+        assert!(parse_light_shows(&content).unwrap()["Show"].cues.is_empty());
+        let played = started.elapsed();
+        let started = std::time::Instant::now();
+        crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+        let laid = started.elapsed();
+        assert!(
+            played < Duration::from_secs(1) && laid < Duration::from_secs(1),
+            "e{levels} {leaf} fine={fine}: played {played:?}, laid out {laid:?}"
+        );
+    }
+}
+
+#[test]
+fn calls_that_play_nothing_reach_as_far_as_played_in_full() {
+    for leaf in ["len", "lp"] {
+        for fine in [true, false] {
+            for levels in 1..=3 {
+                let content = spread_fan(levels, leaf, fine);
+                assert_eq!(
+                    laid_out(&content, false),
+                    laid_out(&content, true),
+                    "e{levels} {leaf} fine={fine}"
+                );
+            }
+        }
+    }
+}
