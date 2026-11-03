@@ -30,8 +30,8 @@ setup-dev:
 ## Build everything
 build: build-ui build-rust
 
-## Compute a hash of all frontend inputs (source, the scripts that generate src/gen, proto, the
-## tempo map, lockfile).
+## Compute a hash of the frontend's inputs (source, the scripts that generate src/gen, proto,
+## the Rust of the tempo map).
 # src/gen is generated from src/proto and the Rust in WASM_SOURCES (both hashed here already) and
 # gitignored, so it is left out: a checkout that has never generated it would otherwise never
 # match a stamp built elsewhere.

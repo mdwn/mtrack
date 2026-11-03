@@ -912,6 +912,15 @@ export function showSequences(
   if (!layout) {
     layout = laidOutWithout.get(sourceKey);
     mapFailed = layout !== undefined;
+    // Its map still fails (remembered by its values, so not tried again):
+    // said for this tempo too, whichever object it is.
+    if (mapFailed) {
+      withMap(
+        tempo,
+        () => undefined,
+        () => undefined,
+      );
+    }
   }
   if (!layout) {
     const laid = layoutSequences(

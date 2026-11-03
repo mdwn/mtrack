@@ -25,7 +25,11 @@ import {
   loadTempoMap,
 } from "../../src/lib/tempo-wasm";
 import { nearestBeat, nearestBeatPosition } from "../../src/lib/util/beatGrid";
-import { bpmAtMeasure } from "../../src/lib/util/tempo";
+import {
+  bpmAtMeasure,
+  bpmAtTime,
+  parseTimeSignature,
+} from "../../src/lib/util/tempo";
 import {
   beatsToMs,
   computeAdjustedCuePositions,
@@ -851,4 +855,26 @@ test("the tempo where a measure starts, from the player's map", () => {
   expect(bpmAtMeasure(config, 2)).toBeCloseTo(120);
   expect(bpmAtMeasure(config, 3)).toBeCloseTo(90);
   expect(bpmAtMeasure(null, 5)).toBeCloseTo(120);
+});
+
+test("a song's signature string is read as the player reads it", () => {
+  expect(parseTimeSignature("7/8")).toEqual([7, 8]);
+  expect(parseTimeSignature(" 6 / 8 ")).toEqual([6, 8]);
+  // Not a signature the player takes: its default.
+  expect(parseTimeSignature("5/3")).toEqual([4, 4]);
+  expect(parseTimeSignature("44")).toEqual([4, 4]);
+  expect(parseTimeSignature(undefined)).toEqual([4, 4]);
+});
+
+test("the tempo at a moment, mid-ramp the ramp's", () => {
+  const config = {
+    bpm: 120,
+    time_signature: "4/4",
+    changes: [{ measure: 2, bpm: 60, transition: { beats: 4 } }],
+  };
+  expect(bpmAtTime(config, 0.5)).toBeCloseTo(120);
+  // Bar 2 starts at 2s; a ramp of four beats from 120 to 60.
+  const mid = bpmAtTime(config, 3);
+  expect(mid).toBeLessThan(120);
+  expect(mid).toBeGreaterThan(60);
 });

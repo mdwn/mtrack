@@ -28,8 +28,11 @@
   } from "../../lib/api/songs";
   import {
     bpmAtMeasure,
+    bpmAtTime,
+    DEFAULT_SIGNATURE_TEXT,
     parseTimeSignature,
     sigAtMeasure,
+    signatureText,
     sortTempoChanges,
   } from "../../lib/util/tempo";
   import type { TempoSection } from "../../lib/lighting/types";
@@ -298,24 +301,13 @@
     }
     const beat = beatIdx - grid.measure_starts[measure] + 1;
 
-    // Tempo/meter in effect at this measure/beat, from the config (snap
-    // semantics — gradual transitions show their target once passed).
+    // Tempo/meter in effect here, from the player's tempo map: the tempo
+    // at this moment (mid-ramp, the ramp's), the signature of this bar.
     let bpm: number | null = null;
     let sig: string | null = null;
     if (tempo) {
-      bpm = tempo.bpm;
-      sig = tempo.time_signature ?? "4/4";
-      const sorted = [...(tempo.changes ?? [])].sort(
-        (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
-      );
-      for (const c of sorted) {
-        const atOrBefore =
-          c.measure < measure + 1 ||
-          (c.measure === measure + 1 && (c.beat ?? 1) <= beat);
-        if (!atOrBefore) break;
-        if (c.bpm !== undefined) bpm = c.bpm;
-        if (c.time_signature) sig = c.time_signature;
-      }
+      bpm = Math.round(bpmAtTime(tempo, secs) * 10) / 10;
+      sig = signatureText(sigAtMeasure(tempo, measure + 1));
     } else if (beatIdx + 1 < grid.beats.length) {
       // No tempo map: estimate from the local beat spacing.
       const interval = grid.beats[beatIdx + 1] - grid.beats[beatIdx];
@@ -509,7 +501,10 @@
    * changes at the same measure. */
   let tempoMarkers = $derived.by(() => {
     if (!tempo) return [];
-    const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
+    const baseParts = [
+      `${tempo.bpm}`,
+      tempo.time_signature ?? DEFAULT_SIGNATURE_TEXT,
+    ];
     if (metronome?.accents?.length) {
       baseParts.push(
         accentsGlyph(
@@ -629,7 +624,10 @@
   function handleTempoEmptyClick(ms: number) {
     if (!tempo) {
       // No tempo map yet — create one and open its editor right away.
-      ontempochange?.({ bpm: DEFAULT_BPM, time_signature: "4/4" });
+      ontempochange?.({
+        bpm: DEFAULT_BPM,
+        time_signature: DEFAULT_SIGNATURE_TEXT,
+      });
       tempoDialogTarget = "start";
       return;
     }

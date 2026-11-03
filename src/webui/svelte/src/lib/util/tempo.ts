@@ -13,18 +13,39 @@
 //
 
 import type { TempoChangeConfig, TempoConfig } from "../api/songs";
-import { DEFAULT_BPM, withTempoMap, type TempoMap } from "../tempo-wasm";
+import {
+  DEFAULT_BPM,
+  DEFAULT_TIME_SIGNATURE,
+  parseSongTimeSignature,
+  withTempoMap,
+  type TempoMap,
+} from "../tempo-wasm";
 
 /** The beat a tempo change sits on; absent means the downbeat. */
 export function changeBeat(change: TempoChangeConfig): number {
   return change.beat ?? 1;
 }
 
-/** `[numerator, denominator]` of a `4/4`-style string, 4/4 when unparsable. */
+/** `[numerator, denominator]` of a song's `4/4`-style string, as the
+ *  player parses it; the player's default when it is none or not one. */
 export function parseTimeSignature(raw: string | undefined): [number, number] {
-  const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-  return match ? [parseInt(match[1]), parseInt(match[2])] : [4, 4];
+  return (
+    (raw === undefined ? undefined : parseSongTimeSignature(raw)) ?? [
+      ...DEFAULT_TIME_SIGNATURE,
+    ]
+  );
 }
+
+/** A signature as a song writes it, e.g. "4/4". */
+export function signatureText([numerator, denominator]: [
+  number,
+  number,
+]): string {
+  return `${numerator}/${denominator}`;
+}
+
+/** The song's default time signature as it writes it. */
+export const DEFAULT_SIGNATURE_TEXT = signatureText(DEFAULT_TIME_SIGNATURE);
 
 const noTempo: TempoConfig = { bpm: DEFAULT_BPM };
 
@@ -67,6 +88,19 @@ export function bpmAtMeasure(
   return withConfigMap(
     tempo,
     (map) => map.bpmAt(map.timeAtBeats(map.beatsAtPosition(measure, 1))),
+    () => tempo?.bpm ?? DEFAULT_BPM,
+  );
+}
+
+/** The tempo at `secs` into the song, as the player has it (mid-ramp, the
+ *  ramp's); without a usable map, the tempo written first. */
+export function bpmAtTime(
+  tempo: TempoConfig | null | undefined,
+  secs: number,
+): number {
+  return withConfigMap(
+    tempo,
+    (map) => map.bpmAt(secs),
     () => tempo?.bpm ?? DEFAULT_BPM,
   );
 }
