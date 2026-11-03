@@ -115,6 +115,24 @@ export function timeAtPosition(
   return t1 === undefined ? null : t0 + (t1 - t0) * frac;
 }
 
+/** The measure (1-based) and beat (1-based) of the grid's beat `index`. */
+function beatPosition(
+  grid: BeatGrid,
+  index: number,
+): { measure: number; beat: number } {
+  let measure = 0;
+  while (
+    measure + 1 < grid.measure_starts.length &&
+    grid.measure_starts[measure + 1] <= index
+  ) {
+    measure++;
+  }
+  return {
+    measure: measure + 1,
+    beat: index - (grid.measure_starts[measure] ?? 0) + 1,
+  };
+}
+
 /**
  * The measure and (fractional) beat at a time in seconds. Times before the
  * grid clamp to its first beat, times past it to the last measure.
@@ -129,22 +147,49 @@ export function positionAtTime(
   while (index + 1 < grid.beats.length && grid.beats[index + 1] <= seconds) {
     index++;
   }
-  let measure = 0;
-  while (
-    measure + 1 < grid.measure_starts.length &&
-    grid.measure_starts[measure + 1] <= index
-  ) {
-    measure++;
-  }
   const start = grid.beats[index];
   const next = grid.beats[index + 1];
   const span = next === undefined ? 0 : next - start;
   const frac =
     span > 0 ? Math.max(0, Math.min(1, (seconds - start) / span)) : 0;
-  return {
-    measure: measure + 1,
-    beat: index - grid.measure_starts[measure] + 1 + frac,
-  };
+  const at = beatPosition(grid, index);
+  return { measure: at.measure, beat: at.beat + frac };
+}
+
+/**
+ * The measure and whole beat of the beat nearest a time in seconds (the
+ * earlier of two as near), or null without a grid: where a click or an
+ * imported time snaps to. (Unlike {@link positionAtTime}, which answers the
+ * beat at or before a time and how far into it.)
+ */
+export function nearestBeat(
+  grid: BeatGrid | null | undefined,
+  seconds: number,
+): { measure: number; beat: number } | null {
+  if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
+    return null;
+  }
+  let nearest = 0;
+  for (let i = 1; i < grid.beats.length; i++) {
+    if (
+      Math.abs(grid.beats[i] - seconds) <
+      Math.abs(grid.beats[nearest] - seconds)
+    ) {
+      nearest = i;
+    }
+  }
+  return beatPosition(grid, nearest);
+}
+
+/** {@link nearestBeat} as a hint's position: a downbeat names only its
+ *  measure. */
+export function nearestBeatPosition(
+  grid: BeatGrid | null | undefined,
+  seconds: number,
+): { measure: number; beat?: number } | null {
+  const at = nearestBeat(grid, seconds);
+  if (!at) return null;
+  return at.beat > 1 ? at : { measure: at.measure };
 }
 
 /** The song time of a measure's downbeat, or null when it is off the grid. */

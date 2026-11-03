@@ -18,6 +18,7 @@
 import type { TempoConfig, TempoChangeConfig } from "./api/songs";
 import type { TempoSection, TempoChange } from "./lighting/types";
 import { orderTempoChanges, parseTimeSignature } from "./util/tempo";
+import { nearestBeat, type BeatGrid } from "./util/beatGrid";
 
 /** song.yaml tempo config -> the lighting TempoEditor's data model. */
 export function configToSection(config: TempoConfig): TempoSection {
@@ -59,38 +60,6 @@ export function parseTransition(
   const beats = /^(\d+(?:\.\d+)?)$/.exec(trimmed);
   if (beats) return { beats: parseFloat(beats[1]) };
   return undefined;
-}
-
-interface BeatGrid {
-  beats: number[];
-  measure_starts: number[];
-}
-
-/** Nearest measure/beat for a time in seconds, or null without a grid. */
-function timeToMeasureBeat(
-  grid: BeatGrid | null | undefined,
-  secs: number,
-): { measure: number; beat: number } | null {
-  if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
-    return null;
-  }
-  let nearest = 0;
-  for (let i = 1; i < grid.beats.length; i++) {
-    if (Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)) {
-      nearest = i;
-    }
-  }
-  let measure = 0;
-  while (
-    measure + 1 < grid.measure_starts.length &&
-    grid.measure_starts[measure + 1] <= nearest
-  ) {
-    measure++;
-  }
-  return {
-    measure: measure + 1,
-    beat: nearest - grid.measure_starts[measure] + 1,
-  };
 }
 
 export interface SnappedImport {
@@ -138,7 +107,7 @@ export function sectionToConfigSnapped(
       measure = c.timestamp.measure ?? 1;
       beat = c.timestamp.beat ?? 1;
     } else {
-      const at = timeToMeasureBeat(beatGrid, (c.timestamp.ms ?? 0) / 1000);
+      const at = nearestBeat(beatGrid, (c.timestamp.ms ?? 0) / 1000);
       if (!at) {
         dropped++;
         continue;

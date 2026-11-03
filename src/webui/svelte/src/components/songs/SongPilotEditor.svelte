@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { nearestBeatPosition } from "../../lib/util/beatGrid";
   import type { PilotConfig, PilotHintConfig } from "../../lib/api/songs";
 
   interface Props {
@@ -98,33 +99,6 @@
     return time === undefined ? null : time;
   }
 
-  /** Nearest measure/beat for a time (seconds), or null without a grid. */
-  function timeToMeasureBeat(
-    time: number,
-  ): { measure: number; beat?: number } | null {
-    if (!beatGrid || beatGrid.beats.length === 0) return null;
-    let nearest = 0;
-    for (let i = 1; i < beatGrid.beats.length; i++) {
-      if (
-        Math.abs(beatGrid.beats[i] - time) <
-        Math.abs(beatGrid.beats[nearest] - time)
-      ) {
-        nearest = i;
-      }
-    }
-    let measure = 0;
-    while (
-      measure + 1 < beatGrid.measure_starts.length &&
-      beatGrid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - beatGrid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
-  }
-
   function switchPosition(index: number, kind: "measure" | "time") {
     const hint = (pilot?.hints ?? [])[index];
     if (!hint || positionKind(hint) === kind) return;
@@ -139,7 +113,7 @@
     } else {
       const at = hint.at as { time: number };
       updateHint(index, {
-        at: timeToMeasureBeat(at.time) ?? { measure: 1 },
+        at: nearestBeatPosition(beatGrid, at.time) ?? { measure: 1 },
       });
     }
   }

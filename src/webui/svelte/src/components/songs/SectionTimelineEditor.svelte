@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { formatClock } from "../../lib/util/format";
+  import { nearestBeatPosition } from "../../lib/util/beatGrid";
   import { t } from "svelte-i18n";
   import type {
     SongSummary,
@@ -667,40 +668,14 @@
     tempoDialogTarget = { measure, beat: 1 };
   }
 
-  /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
-  function nearestBeatAt(
-    ms: number,
-  ): { measure: number; beat?: number } | null {
-    const grid = song.beat_grid;
-    if (!grid || grid.beats.length === 0) return null;
-    const secs = ms / 1000;
-    let nearest = 0;
-    for (let i = 1; i < grid.beats.length; i++) {
-      if (
-        Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)
-      ) {
-        nearest = i;
-      }
-    }
-    let measure = 0;
-    while (
-      measure + 1 < grid.measure_starts.length &&
-      grid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - grid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
-  }
-
   function handlePilotMarkerClick(id: string) {
     pilotDialogIndex = parseInt(id.slice(1));
   }
 
   function handlePilotEmptyClick(ms: number) {
-    const at = nearestBeatAt(ms) ?? { time: Math.round(ms / 100) / 10 };
+    const at = nearestBeatPosition(song.beat_grid, ms / 1000) ?? {
+      time: Math.round(ms / 100) / 10,
+    };
     const hints = [...(pilot?.hints ?? []), { at, label: "" }];
     onpilotchange?.({ ...(pilot ?? {}), hints });
     pilotDialogIndex = hints.length - 1;
