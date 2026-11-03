@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { DEFAULT_BPM } from "../tempo-wasm";
+import { DEFAULT_BPM, DEFAULT_TIME_SIGNATURE } from "../tempo-wasm";
 import type {
   LightFile,
   TempoSection,
@@ -115,7 +115,7 @@ function parseTempoBlock(
   const tempo: TempoSection = {
     start: { value: 0, unit: "s" },
     bpm: DEFAULT_BPM,
-    time_signature: [4, 4],
+    time_signature: [...DEFAULT_TIME_SIGNATURE],
     changes: [],
   };
 

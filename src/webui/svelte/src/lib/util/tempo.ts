@@ -58,6 +58,19 @@ function withConfigMap<T>(
   );
 }
 
+/** The tempo where measure `measure` starts, as the player has it (a ramp's
+ *  tempo there, mid-ramp); without a usable map, the tempo written first. */
+export function bpmAtMeasure(
+  tempo: TempoConfig | null | undefined,
+  measure: number,
+): number {
+  return withConfigMap(
+    tempo,
+    (map) => map.bpmAt(map.timeAtBeats(map.beatsAtPosition(measure, 1))),
+    () => tempo?.bpm ?? DEFAULT_BPM,
+  );
+}
+
 /** The time signature measure `measure` is in, as the player has it: a
  *  change written on a bar's downbeat governs from that bar, one written
  *  mid-bar from the next (#628). */

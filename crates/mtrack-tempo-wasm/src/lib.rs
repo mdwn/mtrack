@@ -74,6 +74,18 @@ pub extern "C" fn default_bpm() -> f64 {
     tempo::DEFAULT_BPM
 }
 
+/// The time signature the player assumes without one: its numerator (0) or
+/// denominator (1), read into the web UI's `DEFAULT_TIME_SIGNATURE`.
+#[no_mangle]
+pub extern "C" fn default_signature(part: u32) -> u32 {
+    let signature = tempo::DEFAULT_TIME_SIGNATURE;
+    if part == 0 {
+        signature.numerator
+    } else {
+        signature.denominator
+    }
+}
+
 /// A buffer of `len` numbers for the caller to fill before a call that
 /// reads its input from it.
 #[no_mangle]
@@ -245,7 +257,7 @@ pub fn read_map(input: &[f64]) -> Option<TempoMap> {
     Some(TempoMap::new(
         time(header[0]),
         positive(header[1]).unwrap_or(tempo::DEFAULT_BPM),
-        signature(header[2], header[3]).unwrap_or(TimeSignature::new(4, 4)),
+        signature(header[2], header[3]).unwrap_or(tempo::DEFAULT_TIME_SIGNATURE),
         changes,
     ))
 }

@@ -36,7 +36,6 @@ import {
   DEFAULT_BPM,
   TempoMap,
   cachedTempoMap,
-  tempoModuleGeneration,
   withTempoMap,
   layoutSequences,
   rampDuration,
@@ -872,13 +871,9 @@ function sameLane(a: LayoutLane | undefined, b: LayoutLane): boolean {
   return !!a && a.file === b.file && a.kind === b.kind && a.name === b.name;
 }
 
-/** The last layout made without its tempo, its map failing: with the
- *  source and the module it was made for. */
-const lastFailed: {
-  sourceKey?: string;
-  generation?: number;
-  layout?: ShowSequences;
-} = {};
+/** The layouts made without their tempo, its map failing, by source and
+ *  tempo: one a lane. */
+const laidOutWithout = new Map<string, ShowSequences>();
 
 /** The last layout that parsed of each lane of one file (`lastGoodFile`):
  *  drawn while the file does not (mid-edit). Another file starts afresh. */
@@ -912,15 +907,11 @@ export function showSequences(
   const sourceKey = `${key}\n${source}`;
   let mapFailed = false;
   let layout = layoutCache.get(sourceKey);
-  // Laid out without its tempo (its map failed) a moment ago: not tried
-  // again until the source, the tempo or the module changes.
-  if (
-    !layout &&
-    lastFailed.sourceKey === sourceKey &&
-    lastFailed.generation === tempoModuleGeneration()
-  ) {
-    layout = lastFailed.layout;
-    mapFailed = true;
+  // Laid out without its tempo (its map failed): not tried again until the
+  // source or the tempo changes.
+  if (!layout) {
+    layout = laidOutWithout.get(sourceKey);
+    mapFailed = layout !== undefined;
   }
   if (!layout) {
     const laid = layoutSequences(
@@ -954,11 +945,8 @@ export function showSequences(
       if (layoutCache.size > 64) layoutCache.clear();
       layoutCache.set(sourceKey, layout);
     } else {
-      Object.assign(lastFailed, {
-        sourceKey,
-        generation: tempoModuleGeneration(),
-        layout,
-      });
+      if (laidOutWithout.size >= 16) laidOutWithout.clear();
+      laidOutWithout.set(sourceKey, layout);
     }
   }
   if (lane.file !== lastGoodFile) {

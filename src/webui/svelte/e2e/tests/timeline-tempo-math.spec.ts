@@ -25,6 +25,7 @@ import {
   loadTempoMap,
 } from "../../src/lib/tempo-wasm";
 import { nearestBeat, nearestBeatPosition } from "../../src/lib/util/beatGrid";
+import { bpmAtMeasure } from "../../src/lib/util/tempo";
 import {
   beatsToMs,
   computeAdjustedCuePositions,
@@ -814,7 +815,14 @@ test("a failing tempo map is said until that failure stops", () => {
       // Asked again, as every render asks, it is not made again (each try
       // of a map that traps starts the module again): until the tempo, the
       // source or the module changes.
+      // Nor does another failing map make it be tried again.
+      const t3 = tempo(70, [4, 4], []);
+      showSequences(cues, [seq], t3);
       const made = tries;
+      showSequences([...cues], [seq], t2);
+      showSequences([...cues], [seq], t3);
+      getTempoAtMs(0, t3);
+      expect(tries).toBe(made);
       fail = false;
       showSequences([...cues], [seq], t2);
       getTempoAtMs(0, t2);
@@ -831,4 +839,16 @@ test("a failing tempo map is said until that failure stops", () => {
   } finally {
     console.error = quiet;
   }
+});
+
+test("the tempo where a measure starts, from the player's map", () => {
+  const config = {
+    bpm: 120,
+    time_signature: "4/4",
+    changes: [{ measure: 3, bpm: 90 }],
+  };
+  expect(bpmAtMeasure(config, 1)).toBeCloseTo(120);
+  expect(bpmAtMeasure(config, 2)).toBeCloseTo(120);
+  expect(bpmAtMeasure(config, 3)).toBeCloseTo(90);
+  expect(bpmAtMeasure(null, 5)).toBeCloseTo(120);
 });

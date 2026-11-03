@@ -348,7 +348,7 @@ function sameKey(a: TempoMapKey, b: TempoMapKey): boolean {
  *  cheaper than resolving it again. */
 const mapCache = new WeakMap<object, { key: TempoMapKey; map: TempoMap }>();
 
-export { DEFAULT_BPM } from "../gen/tempo-defaults";
+export { DEFAULT_BPM, DEFAULT_TIME_SIGNATURE } from "../gen/tempo-defaults";
 
 /** Why a map cannot be used, by what it was resolved from, by the kind of
  *  failure: it cannot be made (`map`), or a cue walk through it cannot
@@ -397,12 +397,12 @@ export function cachedTempoMap(
   input: () => TempoMapInput,
 ): TempoMap {
   // One that could not be made is not tried again (each try traps, and
-  // starts the module again) until what it is made from, or the module,
-  // changes.
-  const failed = buildFailures.get(owner);
-  if (failed && failed.generation === generation && sameKey(failed.key, key)) {
-    throw new TempoMapFailed(failed.message);
-  }
+  // starts the module again, remaking every other map) until what it is
+  // made from changes: the same values in the same module fail the same way,
+  // whichever owner asks and however often another traps.
+  const content = JSON.stringify(key);
+  const failed = buildFailures.get(content);
+  if (failed !== undefined) throw new TempoMapFailed(failed);
   const hit = mapCache.get(owner);
   let map: TempoMap;
   try {
@@ -414,29 +414,19 @@ export function cachedTempoMap(
       mapCache.set(owner, { key, map });
     }
   } catch (e) {
-    if (e instanceof TempoMapFailed) {
-      buildFailures.set(owner, { key, generation, message: e.message });
+    if (e instanceof TempoMapFailed && !(e instanceof CueClockRestarted)) {
+      if (buildFailures.size >= 64) buildFailures.clear();
+      buildFailures.set(content, e.message);
     }
     throw e;
   }
-  buildFailures.delete(owner);
   setFailure(owner, "map", undefined);
   return map;
 }
 
-/** The maps that could not be made, by what they are made from: with what
- *  they were made from and the module they were tried in (as it was left
- *  after the try). */
-const buildFailures = new WeakMap<
-  object,
-  { key: TempoMapKey; generation: number; message: string }
->();
-
-/** Which start of the module is live: it changes whenever a trap starts it
- *  again. */
-export function tempoModuleGeneration(): number {
-  return generation;
-}
+/** Why the maps that could not be made could not, by the values they are
+ *  made from (this module's build is the same for the page's life). */
+const buildFailures = new Map<string, string>();
 
 /** `use` with the map `owner` resolves to; `failed` when it could not be
  *  made or failed while used (a trap, again on a second try), rather than

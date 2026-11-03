@@ -27,6 +27,7 @@
     SongFile,
   } from "../../lib/api/songs";
   import {
+    bpmAtMeasure,
     parseTimeSignature,
     sigAtMeasure,
     sortTempoChanges,
@@ -611,16 +612,6 @@
     return best;
   }
 
-  /** The BPM in effect at a measure (base tempo + preceding changes). */
-  function effectiveBpmAt(measure: number): number {
-    if (!tempo) return 120;
-    let bpm = tempo.bpm;
-    for (const c of sortTempoChanges(tempo.changes ?? [])) {
-      if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
-    }
-    return bpm;
-  }
-
   function handleTempoMarkerClick(id: string) {
     if (id === "start") {
       tempoDialogTarget = "start";
@@ -663,7 +654,7 @@
     }
     // Tapping a spot before an existing change must not append out of order —
     // the backend rejects a non-ascending map.
-    const entry = { measure, bpm: effectiveBpmAt(measure) };
+    const entry = { measure, bpm: bpmAtMeasure(tempo, measure) };
     const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
     ontempochange?.({ ...tempo, changes });
     tempoDialogTarget = { measure, beat: 1 };

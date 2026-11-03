@@ -114,7 +114,7 @@ ui_hash() {
     while IFS= read -r source; do
         [[ -n "$source" ]] && wasm_sources+=("$PROJECT_ROOT/$source")
     done < "$PROJECT_ROOT/crates/mtrack-tempo-wasm/sources.txt"
-    find "$SVELTE_DIR/src" "$PROJECT_ROOT/src/proto" "${wasm_sources[@]}" \
+    find "$SVELTE_DIR/src" "$SVELTE_DIR/scripts" "$PROJECT_ROOT/src/proto" "${wasm_sources[@]}" \
         -type f -not -path "$SVELTE_DIR/src/gen/*" \
         2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin
 }
