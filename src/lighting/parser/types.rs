@@ -82,6 +82,10 @@ pub struct Sequence {
     /// Whether it plays a sequence for good (`loop: loop`, here or in a
     /// sequence it plays): played, it stops at the end any show can have.
     pub endless: bool,
+    /// Whether nothing in it, however deep, keeps a cue of its own (a
+    /// sequence of nothing but calls to such sequences, or of nothing): it
+    /// plays nothing, and only how far it reaches counts.
+    pub(crate) hollow: bool,
     /// Whether any effect plays in it, its own or a sequence's it plays:
     /// without one, its cues' times are where its passes end.
     pub has_effects: bool,

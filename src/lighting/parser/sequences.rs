@@ -66,6 +66,10 @@ pub(crate) struct SequenceLibrary {
     /// of the song, do not happen inside it.
     sequence_tempo: Option<TempoMap>,
     instances: RefCell<HashMap<(String, Bindings), Rc<Sequence>>>,
+    /// How far each hollow sequence reaches, by sequence, count of passes
+    /// and whether it is counted in beats (see `show::hollow_reach`).
+    pub(crate) hollow_reaches:
+        RefCell<HashMap<(usize, usize, bool), Option<super::show::HollowReach>>>,
     /// The sequences being expanded, outermost first, to catch cycles.
     expanding: RefCell<Vec<String>>,
     /// How many files' definitions have been added.
@@ -82,6 +86,7 @@ impl SequenceLibrary {
             templates: HashMap::new(),
             sequence_tempo: None,
             instances: RefCell::new(HashMap::new()),
+            hollow_reaches: RefCell::new(HashMap::new()),
             expanding: RefCell::new(Vec::new()),
             files_added: 0,
             max_cues: usize::MAX,
@@ -328,14 +333,17 @@ impl SequenceLibrary {
         let mut keeps = Vec::new();
         let mut endless = false;
         let mut has_effects = false;
+        let mut hollow = true;
         for cue in definition.cues {
             for call in &cue.sequence_references {
                 let played = self.instance(call)?;
                 determine_loop_count(call.loop_param)?;
                 endless |= matches!(call.loop_param, Some(SequenceLoop::Loop)) || played.endless;
                 has_effects |= played.has_effects;
+                hollow &= played.hollow;
             }
             has_effects |= !cue.effects.is_empty();
+            hollow &= !keeps_its_own(&cue);
             keeps.push(keeps_its_own(&cue));
             from_anchor.push(cue.from_anchor);
             cues.push(Cue {
@@ -357,6 +365,7 @@ impl SequenceLibrary {
             calls,
             keeps,
             endless,
+            hollow,
             has_effects,
         })
     }

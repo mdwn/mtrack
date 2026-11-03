@@ -34,9 +34,45 @@ pub const DEFAULT_TIME_SIGNATURE: TimeSignature = TimeSignature {
     denominator: 4,
 };
 
-/// Parses a song's "numerator/denominator" time signature string (a `tempo:`
-/// block's): the one parser of it, for the web UI too.
-pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
+/// The time signatures a source takes: a song's `tempo:` block, or a
+/// light show's (which takes any bar of whole beats of any note, 4/3 and
+/// 6/7 included). The ranges, in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureRange {
+    /// A song: a numerator up to 64, a denominator a power of two up to 32.
+    Song,
+    /// A light show: a numerator and a denominator up to 1024.
+    Light,
+}
+
+impl SignatureRange {
+    /// Whether `numerator`/`denominator` is one this source takes, and why
+    /// not when it is not.
+    pub fn admits(self, numerator: u32, denominator: u32) -> Result<(), String> {
+        let (max_numerator, denominator_ok, denominators) = match self {
+            SignatureRange::Song => (
+                64,
+                matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32),
+                "a power of two up to 32",
+            ),
+            SignatureRange::Light => (1024, (1..=1024).contains(&denominator), "1 to 1024"),
+        };
+        if numerator == 0 || numerator > max_numerator {
+            return Err(format!("time signature numerator {numerator} out of range"));
+        }
+        if !denominator_ok {
+            return Err(format!(
+                "time signature denominator {denominator} must be {denominators}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Parses a "numerator/denominator" time signature string, one `range`
+/// takes: the one parser of it, for song configs, light shows and the web
+/// UI alike.
+pub fn parse_signature_in(raw: &str, range: SignatureRange) -> Result<TimeSignature, String> {
     let mut parts = raw.split('/');
     let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
         (Some(n), Some(d), None) => (
@@ -53,15 +89,14 @@ pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
             ))
         }
     };
-    if numerator == 0 || numerator > 64 {
-        return Err(format!("time signature numerator {numerator} out of range"));
-    }
-    if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
-        return Err(format!(
-            "time signature denominator {denominator} must be a power of two up to 32"
-        ));
-    }
+    range.admits(numerator, denominator)?;
     Ok(TimeSignature::new(numerator, denominator))
+}
+
+/// Parses a song's "numerator/denominator" time signature string (a `tempo:`
+/// block's).
+pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
+    parse_signature_in(raw, SignatureRange::Song)
 }
 
 /// Time signature (numerator/denominator)

@@ -1108,6 +1108,126 @@ fn play_call(
     })
 }
 
+/// How far a hollow sequence ([`Sequence::hollow`]) played from a call
+/// reaches, in its own units: in beats on its grid from where it is played,
+/// or in time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HollowReach {
+    Beats(f64),
+    Seconds(Duration),
+}
+
+/// How far the hollow sequence `callee`, played by `call` (where there is a
+/// tempo map, `with_map`), reaches -- worked out once per sequence and
+/// count of passes, with the very arithmetic [`expand_sequence_call`] does,
+/// so placing it costs nothing however deep its calls fan out. `None` where
+/// that is not a matter of its own units: played for good, a `length:` in
+/// seconds on a body in beats, or a sequence in seconds inside one in beats.
+fn hollow_reach(
+    library: &SequenceLibrary,
+    callee: &std::rc::Rc<Sequence>,
+    call: &SequenceCall,
+    with_map: bool,
+    endless: bool,
+) -> Option<HollowReach> {
+    if endless || matches!(call.loop_param, Some(SequenceLoop::Loop)) || callee.endless {
+        return None;
+    }
+    let passes = determine_loop_count(call.loop_param).ok()?;
+    let in_beats = with_map && !callee.in_seconds;
+    let key = (std::rc::Rc::as_ptr(callee) as usize, passes, in_beats);
+    if let Some(known) = library.hollow_reaches.borrow().get(&key) {
+        return *known;
+    }
+    let reached = hollow_reach_of(library, callee, passes, with_map, in_beats);
+    library.hollow_reaches.borrow_mut().insert(key, reached);
+    reached
+}
+
+fn hollow_reach_of(
+    library: &SequenceLibrary,
+    sequence: &Sequence,
+    passes: usize,
+    with_map: bool,
+    in_beats: bool,
+) -> Option<HollowReach> {
+    let base = sequence.start_time();
+    // Each cue's calls, and how far each reaches.
+    let mut cues = Vec::with_capacity(sequence.cues.len());
+    for (index, cue) in sequence.cues.iter().enumerate() {
+        let mut reaches = Vec::new();
+        for call in sequence.calls.get(index).map_or(&[][..], Vec::as_slice) {
+            let callee = library.instance(call).ok()?;
+            reaches.push(hollow_reach(library, &callee, call, with_map, false)?);
+        }
+        cues.push((cue.time, reaches));
+    }
+    if in_beats {
+        if sequence.length.is_some() && !sequence.length_in_beats {
+            return None;
+        }
+        let declared = sequence.declared_beats();
+        let anchors: Vec<f64> = cues
+            .iter()
+            .map(|(time, _)| sequence.beats_between(base, *time))
+            .collect();
+        let mut start = 0.0;
+        for _ in 0..passes {
+            if let Some(beats) = declared {
+                start += beats;
+                continue;
+            }
+            let mut grid: Option<f64> = None;
+            for ((_, reaches), anchor) in cues.iter().zip(&anchors) {
+                for reach in reaches {
+                    match reach {
+                        HollowReach::Beats(g) => {
+                            let to = start + anchor + g;
+                            grid = Some(grid.map_or(to, |b: f64| b.max(to)));
+                        }
+                        HollowReach::Seconds(Duration::ZERO) => {
+                            let to = start + anchor;
+                            grid = Some(grid.map_or(to, |b: f64| b.max(to)));
+                        }
+                        HollowReach::Seconds(_) => return None,
+                    }
+                }
+            }
+            let next = grid.unwrap_or(start);
+            if next <= start {
+                break;
+            }
+            start = next;
+        }
+        Some(HollowReach::Beats(start))
+    } else {
+        let mut start = Duration::ZERO;
+        for _ in 0..passes {
+            if let Some(length) = sequence.length {
+                start = start.saturating_add(length);
+                continue;
+            }
+            let mut next = start;
+            for (time, reaches) in &cues {
+                let placed = start.saturating_add(time.saturating_sub(base));
+                for reach in reaches {
+                    match reach {
+                        HollowReach::Seconds(length) => {
+                            next = next.max(placed.saturating_add(*length));
+                        }
+                        HollowReach::Beats(_) => return None,
+                    }
+                }
+            }
+            if next <= start {
+                break;
+            }
+            start = next;
+        }
+        Some(HollowReach::Seconds(start))
+    }
+}
+
 /// What a body is expanded inside: the sequences it may play; how many more
 /// cues may be placed, dropped or passed over (shared by everything one
 /// show's call plays: a layout's cap); the end of the enclosing pass it
@@ -1256,7 +1376,12 @@ fn expand_sequence_call(
     let declared_beats = sequence.declared_beats();
     // Where `beats` beats from `at` fall.
     let at_beats = |tm: &TempoMap, beats: f64| {
-        at.saturating_add(tm.beats_to_duration(snap_beats(beats), at, offset_secs))
+        let beats = snap_beats(beats);
+        // No beats on is `at` itself, not its time read back.
+        if beats == 0.0 {
+            return at;
+        }
+        at.saturating_add(tm.beats_to_duration(beats, at, offset_secs))
     };
     // The beats from `at` to `time`, on the same footing.
     let beats_to = |tm: &TempoMap, time: Duration| {
@@ -1277,12 +1402,26 @@ fn expand_sequence_call(
     // Where a cue of the body (`index`) falls in a pass starting
     // `start_beats` from `at` (in beats) or at `start_time`, and how far
     // that is from its anchor.
-    let place = |index: usize, start_beats: f64, start_time: Duration| {
+    let place = |index: usize, start_beats: f64, start_time: Duration, origin: Option<Duration>| {
         let own = distance(index);
-        let placed = match beats_tm {
-            Some(tm) => at_beats(tm, start_beats + anchor_beats[index])
+        let placed = match (beats_tm, origin) {
+            // A pass that starts at a time (where content in seconds, or a
+            // length in seconds, ended) counts its beats from there.
+            (Some(tm), Some(origin)) => {
+                let beats = snap_beats(anchor_beats[index]);
+                // On the pass's start, exactly there.
+                let into = if beats == 0.0 {
+                    Duration::ZERO
+                } else {
+                    tm.beats_to_duration(beats, origin, offset_secs)
+                };
+                origin
+                    .saturating_add(into)
+                    .saturating_add(own.unwrap_or_default())
+            }
+            (Some(tm), None) => at_beats(tm, start_beats + anchor_beats[index])
                 .saturating_add(own.unwrap_or_default()),
-            None => start_time.saturating_add(sequence.cues[index].time.saturating_sub(base)),
+            (None, _) => start_time.saturating_add(sequence.cues[index].time.saturating_sub(base)),
         };
         (placed, anchor_of(placed, own))
     };
@@ -1311,12 +1450,15 @@ fn expand_sequence_call(
     let mut start_beats = 0.0;
     let mut start_time = at;
     let mut end = at;
+    // Where the pass starts, when that is a time: the exact end of content
+    // in seconds, or of a length in seconds, before it.
+    let mut origin: Option<Duration> = None;
     'passes: for pass in 0..passes {
         // A pass that starts past the end of a show (of a sequence played
         // for good) is not played, nor any after it.
-        let pass_start = match beats_tm {
-            Some(tm) => at_beats(tm, start_beats),
-            None => start_time,
+        let pass_start = match (beats_tm, origin) {
+            (Some(tm), None) => at_beats(tm, start_beats),
+            _ => start_time,
         };
         if past(pass_start) {
             within(pass_start)?;
@@ -1327,10 +1469,11 @@ fn expand_sequence_call(
         // declared; and where its content ends, for the next when not.
         let stop = match (beats_tm, declared_beats) {
             (Some(tm), Some(beats)) => Some(at_beats(tm, start_beats + beats)),
-            // A length in seconds lasts its seconds where it plays.
-            (Some(tm), None) => sequence
+            // A length in seconds lasts its seconds where it plays, from
+            // the exact start of the pass.
+            (Some(_), None) => sequence
                 .length
-                .map(|length| at_beats(tm, start_beats).saturating_add(length)),
+                .map(|length| start_time.saturating_add(length)),
             (None, _) => sequence
                 .length
                 .map(|length| start_time.saturating_add(length)),
@@ -1355,7 +1498,7 @@ fn expand_sequence_call(
         // last.
         let mut skipped = false;
         for (index, seq_cue) in sequence.cues.iter().enumerate() {
-            let (time, anchored) = place(index, start_beats, start_time);
+            let (time, anchored) = place(index, start_beats, start_time, origin);
             // Each cue placed, dropped or passed over counts against the
             // cap; one that only plays sequences does not (theirs do).
             if (keeps(index) || past(time)) && !inside.spend() {
@@ -1418,18 +1561,51 @@ fn expand_sequence_call(
             // grid, from the beat it is played on; one in seconds where it
             // lands.
             for call in calls_of(index) {
-                // A call that lays out nothing is charged too, so a fan-out
-                // of empty sequences is bounded by the cap as cues are.
-                if inside.budget.get() == 0 {
-                    truncated = true;
-                    break;
+                // A hollow sequence (nothing in it, however deep, keeps a
+                // cue of its own) plays nothing: only how far it reaches
+                // counts, and that is worked out once, in its own units.
+                let callee = inside.library.instance(call)?;
+                if callee.hollow {
+                    if nested.effects_around {
+                        // It reaches no further than nothing, here.
+                        continue;
+                    }
+                    let reached = hollow_reach(
+                        inside.library,
+                        &callee,
+                        call,
+                        tempo_map.is_some(),
+                        nested.endless,
+                    );
+                    if let Some(reached) = reached {
+                        match (beats_tm, reached) {
+                            (Some(tm), HollowReach::Beats(grid)) => {
+                                let ends = time.saturating_add(tm.beats_to_duration(
+                                    snap_beats(grid),
+                                    time,
+                                    offset_secs,
+                                ));
+                                within(ends)?;
+                                pass_reach.reach_beats(start_beats + anchor_beats[index] + grid);
+                                pass_reach.reach_time(ends);
+                            }
+                            // One that reaches no further than where it is
+                            // played reaches its beat, in beats.
+                            (Some(_), HollowReach::Seconds(Duration::ZERO)) => {
+                                pass_reach.reach_beats(start_beats + anchor_beats[index]);
+                                pass_reach.reach_time(time);
+                            }
+                            (_, HollowReach::Seconds(length)) => {
+                                let ends = time.saturating_add(length);
+                                within(ends)?;
+                                pass_reach.reach_seconds(ends);
+                            }
+                            (None, HollowReach::Beats(_)) => {}
+                        }
+                        continue;
+                    }
                 }
                 let played = play_call(call, time, offset_secs, tempo_map, &nested)?;
-                let laid_nothing =
-                    played.cues.is_empty() && played.dropped.count == 0 && !played.truncated;
-                if laid_nothing && !inside.spend() {
-                    truncated = true;
-                }
                 dropped.extend(played.dropped);
                 skipped |= played.cut;
                 match (beats_tm, played.reach.beats) {
@@ -1438,6 +1614,12 @@ fn expand_sequence_call(
                         if let Some(real) = played.reach.real {
                             pass_reach.reach_time(real);
                         }
+                    }
+                    // One in seconds that reaches no further than where it is
+                    // played reaches its beat, in beats: no time read back.
+                    (Some(_), None) if played.reach.real == Some(time) => {
+                        pass_reach.reach_beats(start_beats + anchor_beats[index]);
+                        pass_reach.reach_time(time);
                     }
                     _ => {
                         if let Some(real) = played.reach.real {
@@ -1460,7 +1642,7 @@ fn expand_sequence_call(
                         }
                     }
                 }
-                if played.truncated || truncated {
+                if played.truncated {
                     truncated = true;
                     break;
                 }
@@ -1483,12 +1665,6 @@ fn expand_sequence_call(
                 first.cue.start_sequences.push(name.to_string());
             }
         }
-        // The grid this pass reaches, content in seconds counted where it
-        // lands.
-        let grid = beats_tm.map(|tm| {
-            let seconds = pass_reach.seconds.map_or(start_beats, |t| beats_to(tm, t));
-            pass_reach.beats.map_or(seconds, |b| b.max(seconds))
-        });
         if truncated {
             // Cut short, it ends where what it laid out does (content that
             // reaches no further for it included): not where what was
@@ -1510,18 +1686,43 @@ fn expand_sequence_call(
                 start_time = stop;
                 match (beats_tm, declared_beats) {
                     (Some(_), Some(beats)) => start_beats += beats,
-                    (Some(tm), None) => start_beats = beats_to(tm, stop),
+                    (Some(tm), None) => {
+                        start_beats = beats_to(tm, stop);
+                        origin = Some(stop);
+                    }
                     _ => {}
                 }
                 true
             }
             (Some(tm), None) => {
-                let next = grid.unwrap_or(start_beats);
-                let lasted = next > start_beats;
-                start_beats = start_beats.max(next);
-                end = at_beats(tm, start_beats);
-                start_time = end;
-                lasted
+                let grid_beats = pass_reach.beats.unwrap_or(start_beats);
+                match pass_reach
+                    .seconds
+                    .filter(|t| beats_to(tm, *t) >= grid_beats)
+                {
+                    // Content in seconds ends it: the next pass starts
+                    // there, exactly.
+                    Some(t) => {
+                        let lasted = t > start_time;
+                        if lasted {
+                            start_time = t;
+                            start_beats = beats_to(tm, t);
+                            origin = Some(t);
+                        }
+                        end = start_time;
+                        lasted
+                    }
+                    None => {
+                        let lasted = grid_beats > start_beats;
+                        if lasted {
+                            start_beats = grid_beats;
+                            origin = None;
+                            start_time = at_beats(tm, start_beats);
+                        }
+                        end = start_time;
+                        lasted
+                    }
+                }
             }
             (None, None) => {
                 let next = pass_reach.real.unwrap_or(start_time).max(start_time);
@@ -1546,10 +1747,14 @@ fn expand_sequence_call(
     let reach = if !has_effects && inside.effects_around {
         Reach::default()
     } else {
+        // One that ended where content in seconds (or a length in seconds)
+        // did reaches there, in seconds: what plays it starts after it at
+        // that very time, as after it played straight.
+        let in_time = beats_tm.is_none() || (origin.is_some() && !truncated);
         Reach {
             real: Some(end),
-            seconds: beats_tm.is_none().then_some(end),
-            beats: beats_tm.map(|tm| {
+            seconds: in_time.then_some(end),
+            beats: beats_tm.filter(|_| !in_time).map(|tm| {
                 if truncated {
                     beats_to(tm, end)
                 } else {
@@ -1668,6 +1873,7 @@ fn parse_inline_loop(
         calls: Vec::new(),
         keeps: Vec::new(),
         endless: false,
+        hollow: false,
         has_effects,
     };
     Ok((
@@ -1818,6 +2024,7 @@ mod tests {
             calls: Vec::new(),
             keeps: Vec::new(),
             endless: false,
+            hollow: false,
             has_effects: false,
         }
     }

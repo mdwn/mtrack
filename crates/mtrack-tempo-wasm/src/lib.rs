@@ -215,8 +215,11 @@ pub fn read_map(input: &[f64]) -> Option<TempoMap> {
     }
     let positive = |bpm: f64| ok_bpm(bpm).then_some(bpm);
     let signature = |num: f64, den: f64| {
-        (num >= 1.0 && den >= 1.0 && num <= 1024.0 && den <= 1024.0)
-            .then(|| TimeSignature::new(num as u32, den as u32))
+        let whole = |v: f64| v.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&v);
+        (whole(num) && whole(den))
+            .then_some((num as u32, den as u32))
+            .filter(|(n, d)| tempo::SignatureRange::Light.admits(*n, *d).is_ok())
+            .map(|(n, d)| TimeSignature::new(n, d))
     };
     let count = header[4] as usize;
     let end = count.checked_mul(CHANGE_LEN)?.checked_add(5)?;
@@ -550,17 +553,22 @@ pub extern "C" fn text_output() -> *const u8 {
     TEXT_OUTPUT.with(|output| output.borrow().as_ptr())
 }
 
-/// The song time signature string in the first `len` bytes of the text
-/// buffer, parsed as the player parses it ([`tempo::parse_time_signature`]):
-/// its numerator and denominator in the output buffer, answering 2, or 0
-/// when it is not one.
+/// The time signature string in the first `len` bytes of the text buffer,
+/// parsed as the player parses it ([`tempo::parse_signature_in`]) in a
+/// song's range (`light` 0) or a light show's (1): its numerator and
+/// denominator in the output buffer, answering 2, or 0 when it is not one.
 #[no_mangle]
-pub extern "C" fn parse_signature(len: usize) -> usize {
+pub extern "C" fn parse_signature(len: usize, light: u32) -> usize {
     let raw = TEXT_INPUT.with(|input| {
         let input = input.borrow();
         String::from_utf8_lossy(input.get(..len).unwrap_or(&[])).into_owned()
     });
-    match tempo::parse_time_signature(&raw) {
+    let range = if light == 0 {
+        tempo::SignatureRange::Song
+    } else {
+        tempo::SignatureRange::Light
+    };
+    match tempo::parse_signature_in(&raw, range) {
         Ok(signature) => {
             set_output(&[
                 f64::from(signature.numerator),

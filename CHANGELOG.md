@@ -288,6 +288,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later beat was taken to govern that bar in the song editors (bar lengths, metronome chips, the
   tempo marker dialog's accent pattern); the player applies it from the next downbeat, and so do
   they now.
+- **A time signature of nothing**: a light show's `time_signature: 0/4` or `4/0` was taken, and
+  failed later with an unrelated error (an effect without a duration, a cue later than any
+  show); it is now an error naming it. A light show's signatures and a song's are read by one
+  parser, each with its own range (a light show takes 4/3 or 6/7, up to 1024; a song a
+  numerator up to 64 over a power of two up to 32), and the web UI reads them with it: a song
+  signature the player refuses is said, rather than drawn as 4/4.
 - **Light shows with numbers out of reach**: a `loop:` count past 10,000, a duration, time or
   offset past about 11 days, or a bar past 100,000 made the parser panic; it is now an error
   naming the value. So is a time a sequence's passes reach past about 11 days when it is played a

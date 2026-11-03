@@ -2891,7 +2891,7 @@ fn a_length_in_seconds_lasts_its_seconds_where_it_plays() {
 }
 
 #[test]
-fn a_fan_out_of_empty_sequences_is_bounded_by_a_layouts_cap() {
+fn a_fan_out_of_empty_sequences_lays_out_quickly() {
     // F1: six levels of ten calls each, to an empty sequence: a million
     // calls that lay out nothing, bounded by the cap as cues are.
     let mut content = String::from(AT_120);
@@ -2911,5 +2911,110 @@ fn a_fan_out_of_empty_sequences_is_bounded_by_a_layouts_cap() {
         "{:?}",
         started.elapsed()
     );
-    assert!(layout.shows[0].calls[0].truncated);
+    let call = &layout.shows[0].calls[0];
+    assert!(call.cues.is_empty() && !call.truncated);
+}
+
+/// Sequences "w1" to "w{depth}", each ten calls (on beats 1 to 10 of bar 1)
+/// to the one below; "w0" is `w0`.
+fn fan_out(depth: usize, w0: &str) -> String {
+    let mut content = String::from(AT_120);
+    content.push_str(w0);
+    for level in 1..=depth {
+        content.push_str(&format!("sequence \"w{level}\" {{\n"));
+        for beat in 1..=10 {
+            content.push_str(&format!("    @1/{beat}\n    sequence \"w{}\"\n", level - 1));
+        }
+        content.push_str("}\n");
+    }
+    content.push_str(&format!(
+        "show \"Show\" {{\n    @1/1\n    sequence \"w{depth}\"\n}}\n"
+    ));
+    content
+}
+
+#[test]
+fn a_fan_out_of_hollow_sequences_parses_quickly() {
+    // Played, a fan-out of calls to sequences that play nothing costs no
+    // more than its calls: seven levels of ten (ten million calls).
+    for w0 in [
+        "sequence \"w0\" {\n}\n",
+        "sequence \"w0\" {\n    @0.000\n    sequence \"z\"\n}\nsequence \"z\" {\n}\n",
+    ] {
+        let content = fan_out(7, w0);
+        let started = std::time::Instant::now();
+        let shows = parse_light_shows(&content).unwrap();
+        assert!(shows["Show"].cues.is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
+fn a_hollow_sequence_reaches_as_far_as_its_calls() {
+    // "w1" calls the empty "w0" on beats 1 and 3: a pass of two beats.
+    // Three passes inside "w2", twice: "w2"'s passes are six beats.
+    let content = format!("{AT_120}sequence \"w0\" {{\n}}\nsequence \"w1\" {{\n    @1/1\n    sequence \"w0\"\n    @1/3\n    sequence \"w0\"\n}}\nsequence \"w2\" {{\n    @1/1\n    sequence \"w1\", loop: 3\n}}\nshow \"Show\" {{\n    @1/1\n    sequence \"w2\", loop: 2\n}}\n");
+    let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+    let call = &layout.shows[0].calls[0];
+    let ends: Vec<f64> = call.pass_ends.iter().map(|d| d.as_secs_f64()).collect();
+    close_to(&ends, &[3.0, 6.0]);
+}
+
+#[test]
+fn calls_that_lay_out_nothing_do_not_eat_a_layouts_cap() {
+    let defs = "sequence \"todo\" {\n}\nsequence \"b\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    sequence \"todo\"\n    sequence \"todo\"\n    sequence \"todo\"\n}\nsequence \"c\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    @1/2\n    sequence \"todo\"\n}\n";
+    for (call, n) in [
+        ("sequence \"b\", loop: 600", 600),
+        ("sequence \"c\", loop: 2000", 2000),
+    ] {
+        let content = format!("{AT_120}{defs}show \"Show\" {{\n    @1/1\n    {call}\n}}\n");
+        let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+        let laid = &layout.shows[0].calls[0];
+        assert_eq!(laid.cues.len(), n, "{call}");
+        assert!(!laid.truncated, "{call}");
+        assert_eq!(laid.pass_ends.len(), n, "{call}");
+    }
+}
+
+#[test]
+fn a_length_in_seconds_does_not_drift() {
+    // At 160, a second a pass for 200 passes, through a change to 90: each
+    // pass starts exactly n seconds on, ends where the next starts, and so
+    // when wrapped.
+    let defs = "tempo {\n    start: 0.0s\n    bpm: 160\n    time_signature: 4/4\n    changes: [\n        @40/1 { bpm: 90 }\n    ]\n}\nsequence \"s\", length: 1s {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n}\nsequence \"w\" {\n    @1/1\n    sequence \"s\"\n}\n";
+    let start = Duration::from_millis(1500); // bar 2 at 160
+    let mut direct = Vec::new();
+    for call in ["s", "w"] {
+        let content =
+            format!("{defs}show \"Show\" {{\n    @2/1\n    sequence \"{call}\", loop: 200\n}}\n");
+        let shows = parse_light_shows(&content).unwrap();
+        let times: Vec<Duration> = shows["Show"]
+            .cues
+            .iter()
+            .filter(|c| !c.effects.is_empty())
+            .map(|c| c.time)
+            .collect();
+        assert_eq!(times.len(), 200);
+        for (n, time) in times.iter().enumerate() {
+            assert_eq!(
+                *time,
+                start + Duration::from_secs(n as u64),
+                "{call} pass {n}"
+            );
+        }
+        if call == "s" {
+            let layout = crate::lighting::parser::layout_sequence_calls(&content, None).unwrap();
+            let ends = &layout.shows[0].calls[0].pass_ends;
+            for (n, end) in ends.iter().enumerate() {
+                assert_eq!(*end, start + Duration::from_secs(n as u64 + 1), "end {n}");
+            }
+            direct = times;
+        } else {
+            assert_eq!(times, direct);
+        }
+    }
 }

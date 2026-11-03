@@ -259,15 +259,12 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
     })
 }
 
+/// A light show's time signature (`tempo::parse_signature_in`, in a light
+/// show's range).
 pub(crate) fn parse_time_signature(value: &str) -> Result<(u32, u32), Box<dyn Error>> {
-    let value = value.trim();
-    let parts: Vec<&str> = value.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid time signature format: {}", value).into());
-    }
-    let numerator: u32 = parts[0].trim().parse()?;
-    let denominator: u32 = parts[1].trim().parse()?;
-    Ok((numerator, denominator))
+    let signature =
+        super::super::tempo::parse_signature_in(value, super::super::tempo::SignatureRange::Light)?;
+    Ok((signature.numerator, signature.denominator))
 }
 
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
@@ -357,10 +354,13 @@ mod tests {
     }
 
     #[test]
-    fn time_signature_zero_numerator() {
-        // Parses successfully — semantic validation is separate
-        let (num, den) = parse_time_signature("0/4").unwrap();
-        assert_eq!((num, den), (0, 4));
+    fn time_signature_zero_is_refused() {
+        // No bar of no beats, nor of beats of no length.
+        assert!(parse_time_signature("0/4").is_err());
+        assert!(parse_time_signature("4/0").is_err());
+        // Odd metres a light show takes.
+        assert_eq!(parse_time_signature("4/3").unwrap(), (4, 3));
+        assert_eq!(parse_time_signature("6/7").unwrap(), (6, 7));
     }
 
     // ── parse_time_parameter ─────────────────────────────────────
