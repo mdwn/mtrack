@@ -32,6 +32,7 @@ import type {
 import { absoluteTimestamp } from "./types";
 import {
   CueClock,
+  CueClockRestarted,
   TempoMap,
   layoutSequences,
   rampDuration,
@@ -677,6 +678,17 @@ export function computeAdjustedCuePositions(
   cues: Cue[],
   tempo?: TempoSection,
 ): AdjustedCuePosition[] {
+  try {
+    return placeCues(cues, tempo);
+  } catch (e) {
+    // The module was started afresh part way through: the offsets so far
+    // are gone, so the walk starts over in the new one.
+    if (!(e instanceof CueClockRestarted)) throw e;
+    return placeCues(cues, tempo);
+  }
+}
+
+function placeCues(cues: Cue[], tempo?: TempoSection): AdjustedCuePosition[] {
   const map = tempo ? tempoMapOf(tempo) : undefined;
   const clock = new CueClock();
   return cues.map((cue, index) => {
@@ -729,8 +741,22 @@ export interface ShowSequences {
   calls: Map<number, LaidOutCall[]>;
   /** The cues the player could not parse, with why, by index */
   cueErrors: Map<number, string>;
-  /** Why nothing could be laid out at all */
+  /** Why the file does not parse at all, when it does not: the calls are
+   *  then the last that did */
   error?: string;
+  /** Why the player would not load the file, though it lays out */
+  problem?: string;
+}
+
+/** An error the player gave about the file written out for it, without the
+ *  line and column, which are that file's and not the user's: its first
+ *  line, the place dropped. */
+function withoutPlace(message: string): string {
+  return message
+    .split("\n")[0]
+    .replace(/\s*at line \d+, column \d+/gi, "")
+    .replace(/\bline \d+(?::\d+)?[:,]?\s*/gi, "")
+    .trim();
 }
 
 /** Layouts by source text, as a parse is not free. */
@@ -742,15 +768,21 @@ const lastLayout: {
   sequences?: Sequence[];
   tempo?: TempoSection;
   tempoKey?: string;
+  lane?: string;
   layout?: ShowSequences;
 } = {};
+/** The last layout of each lane that parsed: drawn while the file does not
+ *  (mid-edit). */
+const lastGood = new Map<string, ShowSequences>();
 
 /** The layout of the sequences `cues` play: one parse per distinct source
- *  and tempo, however many ask. */
+ *  and tempo, however many ask. `lane` names the lane asking, so that while
+ *  its cues do not parse its last good layout is drawn. */
 export function showSequences(
   cues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
+  lane = "",
 ): ShowSequences {
   const key = tempo ? JSON.stringify(tempoKey(tempo)) : "-";
   if (
@@ -758,7 +790,8 @@ export function showSequences(
     lastLayout.cues === cues &&
     lastLayout.sequences === sequences &&
     lastLayout.tempo === tempo &&
-    lastLayout.tempoKey === key
+    lastLayout.tempoKey === key &&
+    lastLayout.lane === lane
   ) {
     return lastLayout.layout;
   }
@@ -773,18 +806,34 @@ export function showSequences(
     const show = laid.shows[0];
     layout = {
       calls: new Map(),
-      cueErrors: new Map(show?.cue_errors ?? []),
-      error: laid.error,
+      cueErrors: new Map(
+        (show?.cue_errors ?? []).map(([cue, e]) => [cue, withoutPlace(e)]),
+      ),
+      error: laid.error && withoutPlace(laid.error),
+      problem: laid.problem && withoutPlace(laid.problem),
     };
     for (const call of show?.calls ?? []) {
       const list = layout.calls.get(call.cue) ?? [];
-      list.push(call);
+      list.push({ ...call, error: call.error && withoutPlace(call.error) });
       layout.calls.set(call.cue, list);
     }
     if (layoutCache.size > 64) layoutCache.clear();
     layoutCache.set(sourceKey, layout);
   }
-  Object.assign(lastLayout, { cues, sequences, tempo, tempoKey: key, layout });
+  if (layout.error) {
+    const good = lastGood.get(lane);
+    if (good) layout = { ...good, error: layout.error };
+  } else {
+    lastGood.set(lane, layout);
+  }
+  Object.assign(lastLayout, {
+    cues,
+    sequences,
+    tempo,
+    tempoKey: key,
+    lane,
+    layout,
+  });
   return layout;
 }
 
@@ -822,12 +871,14 @@ export function expandSequencesIntoCues(
   showCues: Cue[],
   sequences: Sequence[],
   tempo?: TempoSection,
+  lane = "",
 ): Cue[] {
   const expanded: Cue[] = [...showCues];
   for (const calls of showSequences(
     showCues,
     sequences,
     tempo,
+    lane,
   ).calls.values()) {
     for (const call of calls) {
       for (const cue of call.cues) {
@@ -858,31 +909,37 @@ export interface SequencePlay {
   passMs: number;
   /** All its passes (as many as were laid out) */
   totalMs: number;
-  /** The passes laid out, when the cap on cues stopped short of them all */
+  /** Whether the cap on cues drawn stopped short of them all */
   truncated: boolean;
-  /** Why it cannot be played, when it cannot */
+  /** How many of its cues land past a pass's `length:` and do not play */
+  dropped: number;
+  /** Why this call does not play, when it does not */
   error?: string;
 }
 
 /** How the first sequence cue `index` of `cues` plays: from the layout of
- *  them all (one parse for every cue that asks). */
+ *  them all (one parse for every cue that asks). A cue the player cannot
+ *  read says why; a file that does not parse at all is the show's to say,
+ *  not each cue's. */
 export function sequencePlay(
   cues: Cue[],
   sequences: Sequence[],
   tempo: TempoSection | undefined,
   index: number,
+  lane = "",
 ): SequencePlay | undefined {
-  const layout = showSequences(cues, sequences, tempo);
+  const layout = showSequences(cues, sequences, tempo, lane);
   const call = layout.calls.get(index)?.[0];
-  const cueError = layout.cueErrors.get(index) ?? layout.error;
   if (!call) {
     const ref = cues[index]?.sequences.find((s) => !s.stop);
+    const cueError = layout.cueErrors.get(index);
     return ref && cueError
       ? {
           name: ref.name,
           passMs: 0,
           totalMs: 0,
           truncated: false,
+          dropped: 0,
           error: cueError,
         }
       : undefined;
@@ -893,6 +950,7 @@ export function sequencePlay(
     passMs: ms(call.pass_ends[0] ?? call.start),
     totalMs: ms(call.end),
     truncated: call.truncated,
+    dropped: call.dropped,
     error: call.error,
   };
 }

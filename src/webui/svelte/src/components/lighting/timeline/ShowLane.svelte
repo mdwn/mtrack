@@ -134,7 +134,7 @@
         // For sequence refs, how the first plays, as the player lays it out
         const seqPlay =
           subLaneType === "sequences"
-            ? sequencePlay(cues, sequenceDefs, tempo, ap.index)
+            ? sequencePlay(cues, sequenceDefs, tempo, ap.index, name)
             : undefined;
         if (seqPlay && ms + seqPlay.totalMs > blockEndMs) {
           blockEndMs = ms + seqPlay.totalMs;

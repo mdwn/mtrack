@@ -882,6 +882,7 @@
     sequence={lightFile.sequences[editingSequenceIndex]}
     {groups}
     {sequenceNames}
+    sequences={lightFile.sequences}
     tempo={lightFile.tempo}
     onchange={handleSequenceChange}
     ondelete={() => deleteSequence(editingSequenceIndex!)}

@@ -32,6 +32,8 @@
     sequence: Sequence;
     groups: string[];
     sequenceNames: string[];
+    /** The file's sequences, for the ones this one plays */
+    sequences: Sequence[];
     tempo?: TempoSection;
     onchange: (sequence: Sequence) => void;
     ondelete: () => void;
@@ -42,6 +44,7 @@
     sequence,
     groups,
     sequenceNames,
+    sequences,
     tempo,
     onchange,
     ondelete,
@@ -219,6 +222,7 @@
             name={sequence.name}
             cues={sequence.cues}
             laneType="sequence"
+            {sequences}
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}

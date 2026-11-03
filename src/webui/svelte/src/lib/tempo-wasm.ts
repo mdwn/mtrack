@@ -226,7 +226,13 @@ export class TempoMap {
       new Float64Array(api().memory.buffer, ptr, this.#values.length).set(
         this.#values,
       );
-      this.#handle = api().tm_new(this.#values.length) || 0;
+      const handle = api().tm_new(this.#values.length);
+      // A trap answers NaN: a map that silently had no tempo would draw
+      // every bar wrong, so it is a failure, not a map.
+      if (Number.isNaN(handle)) {
+        throw new Error("the tempo map could not be built (it trapped)");
+      }
+      this.#handle = handle;
       this.#generation = generation;
       maps.register(this, { handle: this.#handle, generation });
     }
@@ -348,6 +354,13 @@ const clocks = new FinalizationRegistry<{
   if (held.generation === generation) loaded?.clock_free(held.handle);
 });
 
+/** A cue clock's module was started afresh part way through its cues. */
+export class CueClockRestarted extends Error {
+  constructor() {
+    super("the tempo map was started again part way through placing cues");
+  }
+}
+
 /** The running offset of a list of cues, placing each in turn, as the
  *  player places a show's cues (`CueClock`). */
 export class CueClock {
@@ -358,9 +371,15 @@ export class CueClock {
     void this.handle;
   }
 
-  /** The clock in the module; a fresh one in a module started afresh. */
+  /** Whether it has placed a cue: its offsets are then its own. */
+  #placed = false;
+
+  /** The clock in the module. A clock part way through its cues cannot
+   *  carry on in a module started afresh (its offsets are gone): that is a
+   *  `CueClockRestarted`, for the walk to start over. */
   get handle(): number {
     if (this.#generation !== generation) {
+      if (this.#placed) throw new CueClockRestarted();
       this.#handle = api().clock_new() || 0;
       this.#generation = generation;
       clocks.register(this, { handle: this.#handle, generation });
@@ -379,6 +398,7 @@ export class CueClock {
     reset: boolean,
   ): PlacedCue | undefined {
     const clock = this.handle;
+    this.#placed = true;
     const placed = api().clock_place(
       clock,
       map?.handle ?? 0,
@@ -432,8 +452,10 @@ export interface LaidOutCall {
   end: number;
   /** Where each pass laid out ends */
   pass_ends: number[];
-  /** Whether the cap on cues laid out stopped it before its last pass */
+  /** Whether the cap on cues laid out stopped it before its last cue */
   truncated: boolean;
+  /** How many of its cues land past a pass's `length:` and do not play */
+  dropped: number;
   /** Why it cannot be played, when it cannot (it then has no cues) */
   error?: string;
   /** Its distinct effects, which its cues name by index */
@@ -450,7 +472,10 @@ export interface SequenceLayout {
     /** The cues passed over, with why: `[cue, error]` */
     cue_errors: [number, string][];
   }[];
+  /** Why nothing could be laid out (the file does not parse at all) */
   error?: string;
+  /** Why the player would not load the file, though it lays out */
+  problem?: string;
 }
 
 const encoder = new TextEncoder();
@@ -478,7 +503,11 @@ export function layoutSequences(
       new Uint8Array(api().memory.buffer, pointer(api().text_output()), len),
     );
     const parsed = JSON.parse(json) as Partial<SequenceLayout>;
-    return { shows: parsed.shows ?? [], error: parsed.error };
+    return {
+      shows: parsed.shows ?? [],
+      error: parsed.error,
+      problem: parsed.problem,
+    };
   } catch (e) {
     return { shows: [], error: e instanceof Error ? e.message : String(e) };
   }

@@ -81,22 +81,36 @@
   // Expand sequence references into concrete cues for layer lane display
   let expandedCues = $derived(
     sequences.length > 0
-      ? expandSequencesIntoCues(cues, sequences, tempo)
+      ? expandSequencesIntoCues(cues, sequences, tempo, name)
       : cues,
   );
 
-  // What the player cannot lay out, said rather than silently left off.
+  // What the player cannot lay out, said once for the show rather than
+  // silently left off: a file that does not parse (the last layout that did
+  // is drawn meanwhile), one the player would not load, cues it cannot read.
   let layoutProblem = $derived.by(() => {
     if (sequences.length === 0) return "";
-    const layout = showSequences(cues, sequences, tempo);
-    if (layout.error)
-      return $t("timeline.layoutError", { values: { error: layout.error } });
+    const layout = showSequences(cues, sequences, tempo, name);
+    const said: string[] = [];
+    if (layout.error) {
+      said.push(
+        $t("timeline.layoutError", { values: { error: layout.error } }),
+      );
+    }
+    if (layout.problem) {
+      said.push(
+        $t("timeline.fileProblem", { values: { error: layout.problem } }),
+      );
+    }
     const errors = [...layout.cueErrors.values()];
-    return errors.length
-      ? $t("timeline.cueErrors", {
+    if (errors.length) {
+      said.push(
+        $t("timeline.cueErrors", {
           values: { count: errors.length, error: errors[0] },
-        })
-      : "";
+        }),
+      );
+    }
+    return said.join("\n");
   });
 
   const LAYER_LABELS: Record<string, string> = {

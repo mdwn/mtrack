@@ -333,6 +333,14 @@
             values: { error: seqPlay.error },
           })}>!</span
         >
+      {:else if seqPlay?.dropped}
+        <span
+          class="badge seq-problem"
+          data-testid="seq-dropped"
+          title={$t("timeline.cueBlock.seqDropped", {
+            values: { count: seqPlay.dropped },
+          })}>!</span
+        >
       {:else if seqPlay?.truncated}
         <span
           class="badge seq-problem"

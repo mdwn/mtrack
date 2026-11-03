@@ -23,6 +23,7 @@ import {
   computeAdjustedCuePositions,
   expandSequencesIntoCues,
   sequencePlay,
+  showSequences,
   getAdjustedGridLines,
   offsetMarkers,
   offsetTimeline,
@@ -602,4 +603,84 @@ test("a sequence that cannot play is said so, and the rest drawn as written", ()
   expect(drawn[0].effects[0].sequenceName).toBe("s");
   expect(sequencePlay(show, [seq], t, 0)!.error).toBeUndefined();
   expect(sequencePlay(show, [seq], t, 1)!.error).toContain("not_there");
+});
+
+test("while the file does not parse, the last layout that did is drawn", () => {
+  const t = tempo(120, [4, 4], []);
+  const effect = (type: string): CueEffect => ({
+    groups: ["front_wash"],
+    effect: { type, colors: ["red"], duration: "1beat" },
+  });
+  const seq: Sequence = {
+    name: "s",
+    cues: [{ ...cueAt(1, 1), effects: [effect("static")] }],
+  };
+  const show = (type: string) => [
+    { ...cueAt(1, 1), sequences: [{ name: "s" }] },
+    { ...cueAt(3, 1), effects: [effect(type)] },
+  ];
+  const lane = "parse-lane";
+  const good = showSequences(show("static"), [seq], t, lane);
+  expect(good.error).toBeUndefined();
+  expect(good.calls.get(0)?.length).toBe(1);
+  // Mid-edit: the effect's type is not one the grammar reads.
+  const bad = showSequences(show("no such }"), [seq], t, lane);
+  expect(bad.error).toBeTruthy();
+  // Said without the written-out file's line and column.
+  expect(bad.error).not.toMatch(/line \d+/i);
+  expect(bad.calls.get(0)?.length).toBe(1);
+  // And not on each cue.
+  expect(sequencePlay(show("no such }"), [seq], t, 0, lane)!.error).toBe(
+    undefined,
+  );
+});
+
+test("a cue past a pass's length is counted on its call", () => {
+  // At 240 a measure is a second: "s"'s cue 1.5s in falls past one pass
+  // of "b" and does not play.
+  const t = tempo(240, [4, 4], []);
+  const red = (duration: string): CueEffect => ({
+    groups: ["front_wash"],
+    effect: { type: "static", colors: ["red"], duration },
+  });
+  const s: Sequence = {
+    name: "s",
+    cues: [
+      { ...emptyCue(absoluteTimestamp(0)), effects: [red("200ms")] },
+      { ...emptyCue(absoluteTimestamp(1500)), effects: [red("200ms")] },
+    ],
+  };
+  const b: Sequence = {
+    name: "b",
+    length: "1measure",
+    cues: [{ ...cueAt(1, 1), sequences: [{ name: "s" }] }],
+  };
+  const show = [{ ...cueAt(1, 1), sequences: [{ name: "b" }] }];
+  const play = sequencePlay(show, [s, b], t, 0)!;
+  expect(play.error).toBeUndefined();
+  expect(play.dropped).toBe(1);
+});
+
+test("a file the player would not load says why, and still lays out", () => {
+  const t = tempo(120, [4, 4], []);
+  const effect = (colors: string[]): CueEffect => ({
+    groups: ["front_wash"],
+    effect: { type: "static", colors, duration: "1s" },
+  });
+  const a: Sequence = {
+    name: "a",
+    cues: [{ ...emptyCue(absoluteTimestamp(0)), effects: [effect(["red"])] }],
+  };
+  const broken: Sequence = {
+    name: "broken",
+    cues: [
+      { ...emptyCue(absoluteTimestamp(0)), effects: [effect(["nocolor"])] },
+    ],
+  };
+  const show = [
+    { ...emptyCue(absoluteTimestamp(0)), sequences: [{ name: "a" }] },
+  ];
+  const layout = showSequences(show, [a, broken], t, "problem-lane");
+  expect(layout.problem).toBeTruthy();
+  expect(layout.calls.get(0)?.[0].cues.length).toBe(1);
 });
