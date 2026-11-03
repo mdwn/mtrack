@@ -797,19 +797,33 @@ test("a failing tempo map is said until that failure stops", () => {
       "handle",
     )!;
     let fail = true;
+    let tries = 0;
     Object.defineProperty(TempoMap.prototype, "handle", {
       configurable: true,
       get() {
-        if (fail) throw new TempoMapFailed("injected");
+        if (fail) {
+          tries++;
+          throw new TempoMapFailed("injected");
+        }
         return handle.get!.call(this);
       },
     });
     try {
       showSequences(cues, [seq], t2);
       expect(tempoProblemOf(t2)).toBe("injected");
+      // Asked again, as every render asks, it is not made again (each try
+      // of a map that traps starts the module again): until the tempo, the
+      // source or the module changes.
+      const made = tries;
       fail = false;
+      showSequences([...cues], [seq], t2);
+      getTempoAtMs(0, t2);
+      expect(tries).toBe(made);
+      expect(tempoProblemOf(t2)).toBe("injected");
+      // Edited, it is made again, and the cues are laid out through it.
+      t2.bpm = 120;
       const laid = showSequences(cues, [seq], t2);
-      expect(laid.calls.get(0)?.[0].cues[0].time).toBeCloseTo(4);
+      expect(laid.calls.get(0)?.[0].cues[0].time).toBeCloseTo(2);
       expect(tempoProblemOf(t2)).toBeUndefined();
     } finally {
       Object.defineProperty(TempoMap.prototype, "handle", handle);

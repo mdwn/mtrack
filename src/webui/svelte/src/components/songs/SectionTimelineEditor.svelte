@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { formatClock } from "../../lib/util/format";
+  import { DEFAULT_BPM } from "../../lib/tempo-wasm";
   import { nearestBeatPosition } from "../../lib/util/beatGrid";
   import { t } from "svelte-i18n";
   import type {
@@ -637,7 +638,7 @@
   function handleTempoEmptyClick(ms: number) {
     if (!tempo) {
       // No tempo map yet — create one and open its editor right away.
-      ontempochange?.({ bpm: 120, time_signature: "4/4" });
+      ontempochange?.({ bpm: DEFAULT_BPM, time_signature: "4/4" });
       tempoDialogTarget = "start";
       return;
     }

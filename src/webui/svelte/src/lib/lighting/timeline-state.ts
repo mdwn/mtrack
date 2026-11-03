@@ -36,6 +36,7 @@ import {
   DEFAULT_BPM,
   TempoMap,
   cachedTempoMap,
+  tempoModuleGeneration,
   withTempoMap,
   layoutSequences,
   rampDuration,
@@ -871,6 +872,14 @@ function sameLane(a: LayoutLane | undefined, b: LayoutLane): boolean {
   return !!a && a.file === b.file && a.kind === b.kind && a.name === b.name;
 }
 
+/** The last layout made without its tempo, its map failing: with the
+ *  source and the module it was made for. */
+const lastFailed: {
+  sourceKey?: string;
+  generation?: number;
+  layout?: ShowSequences;
+} = {};
+
 /** The last layout that parsed of each lane of one file (`lastGoodFile`):
  *  drawn while the file does not (mid-edit). Another file starts afresh. */
 const lastGood = new Map<string, ShowSequences>();
@@ -903,6 +912,16 @@ export function showSequences(
   const sourceKey = `${key}\n${source}`;
   let mapFailed = false;
   let layout = layoutCache.get(sourceKey);
+  // Laid out without its tempo (its map failed) a moment ago: not tried
+  // again until the source, the tempo or the module changes.
+  if (
+    !layout &&
+    lastFailed.sourceKey === sourceKey &&
+    lastFailed.generation === tempoModuleGeneration()
+  ) {
+    layout = lastFailed.layout;
+    mapFailed = true;
+  }
   if (!layout) {
     const laid = layoutSequences(
       source,
@@ -934,6 +953,12 @@ export function showSequences(
     if (!mapFailed) {
       if (layoutCache.size > 64) layoutCache.clear();
       layoutCache.set(sourceKey, layout);
+    } else {
+      Object.assign(lastFailed, {
+        sourceKey,
+        generation: tempoModuleGeneration(),
+        layout,
+      });
     }
   }
   if (lane.file !== lastGoodFile) {

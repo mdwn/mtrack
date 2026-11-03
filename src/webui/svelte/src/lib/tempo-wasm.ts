@@ -348,8 +348,7 @@ function sameKey(a: TempoMapKey, b: TempoMapKey): boolean {
  *  cheaper than resolving it again. */
 const mapCache = new WeakMap<object, { key: TempoMapKey; map: TempoMap }>();
 
-/** The tempo the player assumes without one, in BPM (at 4/4). */
-export const DEFAULT_BPM = 120;
+export { DEFAULT_BPM } from "../gen/tempo-defaults";
 
 /** Why a map cannot be used, by what it was resolved from, by the kind of
  *  failure: it cannot be made (`map`), or a cue walk through it cannot
@@ -397,17 +396,46 @@ export function cachedTempoMap(
   key: TempoMapKey,
   input: () => TempoMapInput,
 ): TempoMap {
+  // One that could not be made is not tried again (each try traps, and
+  // starts the module again) until what it is made from, or the module,
+  // changes.
+  const failed = buildFailures.get(owner);
+  if (failed && failed.generation === generation && sameKey(failed.key, key)) {
+    throw new TempoMapFailed(failed.message);
+  }
   const hit = mapCache.get(owner);
   let map: TempoMap;
-  if (hit && sameKey(hit.key, key)) {
-    void hit.map.handle;
-    map = hit.map;
-  } else {
-    map = new TempoMap(input());
-    mapCache.set(owner, { key, map });
+  try {
+    if (hit && sameKey(hit.key, key)) {
+      void hit.map.handle;
+      map = hit.map;
+    } else {
+      map = new TempoMap(input());
+      mapCache.set(owner, { key, map });
+    }
+  } catch (e) {
+    if (e instanceof TempoMapFailed) {
+      buildFailures.set(owner, { key, generation, message: e.message });
+    }
+    throw e;
   }
+  buildFailures.delete(owner);
   setFailure(owner, "map", undefined);
   return map;
+}
+
+/** The maps that could not be made, by what they are made from: with what
+ *  they were made from and the module they were tried in (as it was left
+ *  after the try). */
+const buildFailures = new WeakMap<
+  object,
+  { key: TempoMapKey; generation: number; message: string }
+>();
+
+/** Which start of the module is live: it changes whenever a trap starts it
+ *  again. */
+export function tempoModuleGeneration(): number {
+  return generation;
 }
 
 /** `use` with the map `owner` resolves to; `failed` when it could not be

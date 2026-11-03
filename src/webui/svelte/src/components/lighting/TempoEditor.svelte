@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { DEFAULT_BPM } from "../../lib/tempo-wasm";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import TimestampInput from "./TimestampInput.svelte";
@@ -88,7 +89,7 @@
   function enableTempo() {
     onchange({
       start: { value: 0, unit: "s" },
-      bpm: 120,
+      bpm: DEFAULT_BPM,
       time_signature: [4, 4],
       changes: [],
     });

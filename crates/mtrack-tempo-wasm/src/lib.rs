@@ -67,6 +67,13 @@ thread_local! {
     static CLOCKS: RefCell<Vec<Option<CueClock>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The tempo the player assumes without one, in BPM: read once, when the
+/// module is built, into the web UI's `DEFAULT_BPM`.
+#[no_mangle]
+pub extern "C" fn default_bpm() -> f64 {
+    tempo::DEFAULT_BPM
+}
+
 /// A buffer of `len` numbers for the caller to fill before a call that
 /// reads its input from it.
 #[no_mangle]
