@@ -26,7 +26,8 @@
     msToPixel,
     computeAdjustedCuePositions,
     offsetMarkers,
-    tempoProblem,
+    tempoFailures,
+    tempoProblemOf,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import TimelineToolbar from "./TimelineToolbar.svelte";
@@ -79,6 +80,13 @@
     onplay,
     onstop,
   }: Props = $props();
+
+  // Why this file's tempo map cannot be used, while it cannot: the
+  // timeline is drawn without it meanwhile.
+  let tempoProblem = $derived.by(() => {
+    void $tempoFailures; // asked again whenever a map starts or stops failing
+    return tempoProblemOf(lightFile.tempo);
+  });
 
   // Timeline state
   let pixelsPerMs = $state(0.15);
@@ -624,9 +632,9 @@
     </div>
   {/if}
 
-  {#if $tempoProblem}
+  {#if tempoProblem}
     <div class="tempo-problem" role="alert" data-testid="tempo-problem">
-      {$t("timeline.tempoProblem", { values: { error: $tempoProblem } })}
+      {$t("timeline.tempoProblem", { values: { error: tempoProblem } })}
     </div>
   {/if}
 

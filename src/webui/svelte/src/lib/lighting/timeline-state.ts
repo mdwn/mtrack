@@ -30,12 +30,12 @@ import type {
   EffectType,
 } from "./types";
 import { absoluteTimestamp } from "./types";
-import { writable } from "svelte/store";
 import {
   CueClock,
   CueClockRestarted,
-  TempoMapFailed,
   TempoMap,
+  cachedTempoMap,
+  withTempoMap,
   layoutSequences,
   rampDuration,
   type LaidOutCall,
@@ -101,72 +101,36 @@ function mapInput(tempo: TempoSection): TempoMapInput {
   };
 }
 
-/** Resolved maps by tempo section. A section can be edited in place, so
- *  each is kept with the values it was resolved from and checked against
- *  them: a walk over the changes, far cheaper than resolving them again. */
-const mapCache = new WeakMap<
-  TempoSection,
-  {
-    key: (number | string | undefined)[];
-    map: TempoMap;
-  }
->();
-
-function cached(tempo: TempoSection) {
-  const key = tempoKey(tempo);
-  const hit = mapCache.get(tempo);
-  if (hit && sameKey(hit.key, key)) {
-    // Made again, in a module started afresh, before it is handed out.
-    void hit.map.handle;
-    return hit;
-  }
-  const entry = { key, map: new TempoMap(mapInput(tempo)) };
-  mapCache.set(tempo, entry);
-  sayTempoProblem(undefined);
-  return entry;
-}
-
-/** The tempo map of a tempo section, as the player resolves it. */
+/** The tempo map of a tempo section, as the player resolves it (throws
+ *  `TempoMapFailed` when it cannot be made). */
 export function tempoMapOf(tempo: TempoSection): TempoMap {
-  return cached(tempo).map;
+  return cachedTempoMap(tempo, tempoKey(tempo), () => mapInput(tempo));
 }
 
-/** Why the tempo map could not be used, when it last could not (it
- *  trapped): the timeline is drawn without it meanwhile, and says so. */
-export const tempoProblem = writable<string | undefined>(undefined);
-let saidProblem: string | undefined;
+export { tempoFailures, tempoProblemOf } from "../tempo-wasm";
 
-/** Says (or clears) the tempo map's problem: after the render that found
- *  it, as it is found while drawing. */
-function sayTempoProblem(problem: string | undefined): void {
-  if (problem === saidProblem) return;
-  saidProblem = problem;
-  queueMicrotask(() => tempoProblem.set(problem));
-}
-
-/** `use` with the tempo map of `tempo`; `without` when there is none, or
- *  when its map could not be built or failed while used (a trap, again on
- *  a second try): what is drawn is then drawn as if without a tempo, and
- *  {@link tempoProblem} says why, rather than the timeline failing. */
+/** `use` with the tempo map of `tempo`; `without` when there is none --
+ *  and when its map could not be made or failed while used, which is drawn
+ *  as without a tempo (`tempoProblemOf` says why meanwhile), rather than failing.
+ *  `failed`, if given, is told so. */
 function withMap<T>(
   tempo: TempoSection | undefined,
   use: (map: TempoMap) => T,
   without: () => T,
+  failed: () => T = without,
 ): T {
   if (!tempo) return without();
-  try {
-    return use(cached(tempo).map);
-  } catch (e) {
-    if (!(e instanceof TempoMapFailed)) throw e;
-    console.error("the tempo map failed; drawing without it", e);
-    sayTempoProblem(e.message);
-    return without();
-  }
+  return withTempoMap(
+    tempo,
+    tempoKey(tempo),
+    () => mapInput(tempo),
+    use,
+    failed,
+  );
 }
 
-/** The default tempo the player assumes without one: 120 BPM, 4/4. */
-const DEFAULT_BEAT_MS = 500;
-const DEFAULT_BAR_MS = 4 * DEFAULT_BEAT_MS;
+/** The tempo assumed without one, as the player assumes it. */
+const DEFAULT_BPM = 120;
 
 function tempoKey(tempo: TempoSection): (number | string | undefined)[] {
   const key: (number | string | undefined)[] = [
@@ -191,15 +155,6 @@ function tempoKey(tempo: TempoSection): (number | string | undefined)[] {
     );
   }
   return key;
-}
-
-function sameKey(
-  a: (number | string | undefined)[],
-  b: (number | string | undefined)[],
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 /** Quarter notes from bar 1 beat 1 at an absolute ms position. */
@@ -745,7 +700,7 @@ export function offsetToMs(
   return withMap(
     tempo,
     (map) => map.offsetDuration(measures, anchorMs / 1000) * 1000,
-    () => measures * DEFAULT_BAR_MS,
+    () => 0,
   );
 }
 
@@ -759,7 +714,7 @@ export function measuresToMs(
   return withMap(
     tempo,
     (map) => map.measuresToDuration(measures, atMs / 1000) * 1000,
-    () => measures * DEFAULT_BAR_MS,
+    () => 0,
   );
 }
 
@@ -773,7 +728,7 @@ export function beatsToMs(
   return withMap(
     tempo,
     (map) => map.beatsToDuration(beats, atMs / 1000) * 1000,
-    () => beats * DEFAULT_BEAT_MS,
+    () => 0,
   );
 }
 
@@ -946,12 +901,17 @@ export function showSequences(
   const sourceKey = `${key}\n${source}`;
   let layout = layoutCache.get(sourceKey);
   if (!layout) {
+    let mapFailed = false;
     const laid = layoutSequences(
       source,
       withMap(
         tempo,
         (map) => map,
         () => undefined,
+        () => {
+          mapFailed = true;
+          return undefined;
+        },
       ),
     );
     const show = laid.shows[0];
@@ -968,8 +928,11 @@ export function showSequences(
       list.push({ ...call, error: call.error && withoutPlace(call.error) });
       layout.calls.set(call.cue, list);
     }
-    if (layoutCache.size > 64) layoutCache.clear();
-    layoutCache.set(sourceKey, layout);
+    // Laid out without the tempo (its map failed), it is not the tempo's.
+    if (!mapFailed) {
+      if (layoutCache.size > 64) layoutCache.clear();
+      layoutCache.set(sourceKey, layout);
+    }
   }
   if (lane.file !== lastGoodFile) {
     lastGood.clear();
@@ -1120,7 +1083,7 @@ export function getTempoAtMs(ms: number, tempo?: TempoSection): number {
   return withMap(
     tempo,
     (map) => map.bpmAt(ms / 1000),
-    () => 60000 / DEFAULT_BEAT_MS,
+    () => DEFAULT_BPM,
   );
 }
 

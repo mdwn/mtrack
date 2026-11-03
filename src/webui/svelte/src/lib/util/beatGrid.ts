@@ -187,6 +187,11 @@ export function nearestBeatPosition(
   grid: BeatGrid | null | undefined,
   seconds: number,
 ): { measure: number; beat?: number } | null {
+  // A grid with beats but no measures (an old, hand-written one) names
+  // bar 1, as the editors always have.
+  if (grid && grid.beats.length > 0 && grid.measure_starts.length === 0) {
+    return { measure: 1 };
+  }
   const at = nearestBeat(grid, seconds);
   if (!at) return null;
   return at.beat > 1 ? at : { measure: at.measure };

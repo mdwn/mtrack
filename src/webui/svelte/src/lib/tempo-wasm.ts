@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import { writable } from "svelte/store";
+
 // The player's tempo map and cue clock (src/tempo.rs), and its light show
 // parser for laying out the sequences a show plays, compiled to
 // WebAssembly (crates/mtrack-tempo-wasm): where bars, beats, tempo changes,
@@ -326,6 +328,94 @@ export class TempoMap {
   /** The times the tempo or the time signature in effect changes. */
   boundaries(): number[] {
     return output(api().tm_boundaries(this.handle));
+  }
+}
+
+/** A key a resolved map is kept with: the values it was resolved from. */
+export type TempoMapKey = readonly (number | string | undefined)[];
+
+function sameKey(a: TempoMapKey, b: TempoMapKey): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/** Resolved maps by what they were resolved from (a tempo section, a
+ *  song's tempo config). It can be edited in place, so each map is kept
+ *  with the values it was resolved from and checked against them: far
+ *  cheaper than resolving it again. */
+const mapCache = new WeakMap<object, { key: TempoMapKey; map: TempoMap }>();
+
+/** The map `owner` resolves to (`input`, for `key`): kept, and made again
+ *  in a module started afresh before it is handed out. Throws
+ *  `TempoMapFailed` when it cannot be made. */
+export function cachedTempoMap(
+  owner: object,
+  key: TempoMapKey,
+  input: () => TempoMapInput,
+): TempoMap {
+  const hit = mapCache.get(owner);
+  if (hit && sameKey(hit.key, key)) {
+    void hit.map.handle;
+    return hit.map;
+  }
+  const map = new TempoMap(input());
+  mapCache.set(owner, { key, map });
+  return map;
+}
+
+/** The maps that failed, by what they were resolved from, with why: each
+ *  cleared when its own map next works. */
+const failing = new WeakMap<object, string>();
+
+/** Bumped whenever a map starts or stops failing: for a view to ask again
+ *  (`tempoProblemOf`) about the map it draws. */
+export const tempoFailures = writable(0);
+let bumpQueued = false;
+
+function bump(): void {
+  if (bumpQueued) return;
+  bumpQueued = true;
+  // After the render that found it, as it is found while drawing.
+  queueMicrotask(() => {
+    bumpQueued = false;
+    tempoFailures.update((n) => n + 1);
+  });
+}
+
+/** Why the map `owner` resolves to cannot be used (it trapped), while it
+ *  cannot: what uses it is drawn as without a tempo meanwhile. */
+export function tempoProblemOf(owner: object | undefined): string | undefined {
+  return owner ? failing.get(owner) : undefined;
+}
+
+/** `use` with the map `owner` resolves to; `failed` when it could not be
+ *  made or failed while used (a trap, again on a second try), rather than
+ *  failing the caller: the failure is logged and kept (`tempoProblemOf`)
+ *  until this map next works. */
+export function withTempoMap<T>(
+  owner: object,
+  key: TempoMapKey,
+  input: () => TempoMapInput,
+  use: (map: TempoMap) => T,
+  failed: () => T,
+): T {
+  try {
+    const answer = use(cachedTempoMap(owner, key, input));
+    if (failing.delete(owner)) bump();
+    return answer;
+  } catch (e) {
+    if (!(e instanceof TempoMapFailed)) throw e;
+    if (!failing.has(owner)) {
+      console.error("the tempo map failed; drawing without it", e);
+    }
+    if (failing.get(owner) !== e.message) {
+      failing.set(owner, e.message);
+      bump();
+    }
+    return failed();
   }
 }
 

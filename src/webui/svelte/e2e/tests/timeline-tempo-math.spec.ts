@@ -18,6 +18,7 @@
 
 import { test, expect } from "@playwright/test";
 import { loadTempoMap } from "../../src/lib/tempo-wasm";
+import { nearestBeat, nearestBeatPosition } from "../../src/lib/util/beatGrid";
 import {
   beatsToMs,
   computeAdjustedCuePositions,
@@ -728,4 +729,17 @@ test("another file's last good layout is not drawn for this one", () => {
   expect(kept.calls.get(0)?.length).toBe(1);
   expect(kept.problem).toBeUndefined();
   expect(kept.cueErrors.size).toBe(0);
+});
+
+test("the nearest beat on a beat grid, as each editor snaps to it", () => {
+  const grid = { beats: [0, 0.5, 1, 1.5, 2, 2.5], measure_starts: [0, 4] };
+  expect(nearestBeat(grid, 0.7)).toEqual({ measure: 1, beat: 2 });
+  expect(nearestBeat(grid, 1.9)).toEqual({ measure: 2, beat: 1 });
+  expect(nearestBeatPosition(grid, 1.9)).toEqual({ measure: 2 });
+  expect(nearestBeatPosition(grid, 2.6)).toEqual({ measure: 2, beat: 2 });
+  // A grid with beats but no measures names bar 1, as the editors did.
+  const bare = { beats: [0, 0.5], measure_starts: [] };
+  expect(nearestBeatPosition(bare, 0.5)).toEqual({ measure: 1 });
+  expect(nearestBeat(bare, 0.5)).toBeNull();
+  expect(nearestBeatPosition(null, 0.5)).toBeNull();
 });

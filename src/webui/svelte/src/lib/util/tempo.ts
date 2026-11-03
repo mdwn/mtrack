@@ -13,7 +13,7 @@
 //
 
 import type { TempoChangeConfig, TempoConfig } from "../api/songs";
-import { TempoMap } from "../tempo-wasm";
+import { withTempoMap, type TempoMap } from "../tempo-wasm";
 
 /** The beat a tempo change sits on; absent means the downbeat. */
 export function changeBeat(change: TempoChangeConfig): number {
@@ -26,34 +26,36 @@ export function parseTimeSignature(raw: string | undefined): [number, number] {
   return match ? [parseInt(match[1]), parseInt(match[2])] : [4, 4];
 }
 
-/** Resolved maps by tempo config, kept with what they were resolved from:
- *  a config is edited in place. */
-const configMaps = new WeakMap<TempoConfig, { key: string; map: TempoMap }>();
 const noTempo: TempoConfig = { bpm: 120 };
 
-/** The song's tempo map, as the player resolves its `tempo:` block. */
-export function configTempoMap(
+/** `use` with the song's tempo map, as the player resolves its `tempo:`
+ *  block (kept, as the lighting timeline's are); `failed` when the map
+ *  cannot be used. */
+function withConfigMap<T>(
   tempo: TempoConfig | null | undefined,
-): TempoMap {
+  use: (map: TempoMap) => T,
+  failed: () => T,
+): T {
   const config = tempo ?? noTempo;
-  const key = JSON.stringify(config);
-  const hit = configMaps.get(config);
-  if (hit && hit.key === key) return hit.map;
-  const map = new TempoMap({
-    startSecs: config.start ?? 0,
-    bpm: config.bpm,
-    signature: parseTimeSignature(config.time_signature),
-    changes: (config.changes ?? []).map((c) => ({
-      at: { measure: c.measure, beat: changeBeat(c) },
-      bpm: c.bpm,
-      signature: c.time_signature
-        ? parseTimeSignature(c.time_signature)
-        : undefined,
-      transition: c.transition,
-    })),
-  });
-  configMaps.set(config, { key, map });
-  return map;
+  return withTempoMap(
+    config,
+    [JSON.stringify(config)],
+    () => ({
+      startSecs: config.start ?? 0,
+      bpm: config.bpm,
+      signature: parseTimeSignature(config.time_signature),
+      changes: (config.changes ?? []).map((c) => ({
+        at: { measure: c.measure, beat: changeBeat(c) },
+        bpm: c.bpm,
+        signature: c.time_signature
+          ? parseTimeSignature(c.time_signature)
+          : undefined,
+        transition: c.transition,
+      })),
+    }),
+    use,
+    failed,
+  );
 }
 
 /** The time signature measure `measure` is in, as the player has it: a
@@ -63,7 +65,12 @@ export function sigAtMeasure(
   tempo: TempoConfig | null | undefined,
   measure: number,
 ): [number, number] {
-  return configTempoMap(tempo).signatureInMeasure(measure);
+  return withConfigMap(
+    tempo,
+    (map) => map.signatureInMeasure(measure),
+    // Without its map, as without a tempo: the signature written first.
+    () => parseTimeSignature(tempo?.time_signature),
+  );
 }
 
 /** Beats in a measure — its meter's numerator. */
