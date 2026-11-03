@@ -120,14 +120,19 @@ impl Sequence {
         self.cues.iter().map(|c| c.time).min().unwrap_or_default()
     }
 
-    /// The beats from the sequence's start to `time`, through its tempo map
-    /// (at the default tempo without one).
-    pub(crate) fn beats_from_start(&self, time: Duration) -> f64 {
-        let start = self.start_time();
-        snap_beats(match &self.tempo_map {
-            Some(tm) => tm.beats_at(time, 0.0) - tm.beats_at(start, 0.0),
-            None => time.saturating_sub(start).as_secs_f64() * DEFAULT_BPM / 60.0,
-        })
+    /// The quarter-note beat position of `time`, through its tempo map (at
+    /// the default tempo without one): counted from its start
+    /// ([`start_time`](Self::start_time)), less that of the start.
+    pub(crate) fn beats_at(&self, time: Duration) -> f64 {
+        match &self.tempo_map {
+            Some(tm) => tm.beats_at(time, 0.0),
+            None => time.as_secs_f64() * DEFAULT_BPM / 60.0,
+        }
+    }
+
+    /// The beats from `start` (its start) to `time`.
+    pub(crate) fn beats_between(&self, start: Duration, time: Duration) -> f64 {
+        snap_beats(self.beats_at(time) - self.beats_at(start))
     }
 
     /// How many beats its declared `length:` is, from its start: what a
@@ -135,7 +140,8 @@ impl Sequence {
     /// until its content ends where it plays: see `expand_sequence_call`.)
     pub(crate) fn declared_beats(&self) -> Option<f64> {
         let length = self.length?;
-        Some(self.beats_from_start(self.start_time() + length))
+        let start = self.start_time();
+        Some(self.beats_between(start, start + length))
     }
 }
 

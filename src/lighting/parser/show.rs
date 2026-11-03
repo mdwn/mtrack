@@ -1153,19 +1153,24 @@ fn expand_sequence_call(
     let inherited = |index: usize| sequence.limits.get(index).map_or(&[][..], Vec::as_slice);
     let has_effects = sequence.cues.iter().any(|c| !c.effects.is_empty());
     let label = name.unwrap_or("a loop");
-    // Whether `time` is within a show: past its end, a sequence played for
-    // good stops there; anything else is an error.
-    let reaches = |time: Duration| -> Result<bool, Box<dyn Error>> {
-        if past_show(time.as_secs_f64()) && endless {
-            return Ok(false);
+    // A time past the end a show can have is an error -- but for a sequence
+    // played for good, which plays what falls inside it and stops there.
+    let within = |time: Duration| -> Result<(), Box<dyn Error>> {
+        if !endless {
+            within_show(time, label)?;
         }
-        within_show(time, label).map(|_| true)
+        Ok(())
     };
+    let past = |time: Duration| past_show(time.as_secs_f64());
+    // The beats from the body's start to `time`: its start's position found
+    // once, not once a cue.
+    let base_beats = sequence.beats_at(base);
+    let from_start = |time: Duration| snap_beats(sequence.beats_at(time) - base_beats);
     // In beats, each cue (and each pass end it carries) is placed by its
     // anchor's beat (its own, for one with none), counted from the start of
     // the body.
     let anchor_beats_of = |time: Duration, own: Option<Duration>| {
-        sequence.beats_from_start(time.saturating_sub(own.unwrap_or_default()))
+        from_start(time.saturating_sub(own.unwrap_or_default()))
     };
     let anchor_beats: Vec<f64> = sequence
         .cues
@@ -1195,7 +1200,7 @@ fn expand_sequence_call(
         .enumerate()
         .filter(|(index, _)| distance(*index).is_none())
         .filter_map(|(_, cue)| content_end_of(cue, has_effects))
-        .map(|end| sequence.beats_from_start(end))
+        .map(from_start)
         .fold(0.0, f64::max);
     // Where `beats` beats from `at` fall.
     let at_beats = |tm: &TempoMap, beats: f64| {
@@ -1206,31 +1211,30 @@ fn expand_sequence_call(
         let score = |t: Duration| t.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
         snap_beats(tm.beats_at(score(time), 0.0) - tm.beats_at(score(at), 0.0))
     };
+    // How far a time placed here (`placed`, `own` from its anchor in the
+    // body) is from the anchor it keeps: only a body in seconds laid out in
+    // seconds is anchored where it is played; a body in beats keeps its own
+    // anchors (none, for its own cues).
+    let anchor_of = |placed: Duration, own: Option<Duration>| {
+        if beats_tm.is_none() && in_seconds {
+            from_anchor(placed.saturating_sub(at))
+        } else {
+            own
+        }
+    };
     // Where a time of the body's (`time`, `own` from its anchor, the anchor
     // `beats` in) falls in a pass starting `start_beats` from `at` (in
-    // beats) or at `start_time`, and how far that is from the anchor it
-    // keeps.
+    // beats) or at `start_time`, and how far that is from its anchor.
     let place = |time: Duration,
                  own: Option<Duration>,
                  beats: f64,
                  start_beats: f64,
-                 start_time: Duration| match beats_tm {
-        Some(tm) => (
-            at_beats(tm, start_beats + beats).saturating_add(own.unwrap_or_default()),
-            own,
-        ),
-        None => {
-            let placed = start_time.saturating_add(time.saturating_sub(base));
-            // Only a body in seconds is anchored where it is played; a body
-            // in beats laid out here for want of a tempo map keeps its own
-            // cues' anchors.
-            let from = if in_seconds {
-                from_anchor(placed.saturating_sub(at))
-            } else {
-                own
-            };
-            (placed, from)
-        }
+                 start_time: Duration| {
+        let placed = match beats_tm {
+            Some(tm) => at_beats(tm, start_beats + beats).saturating_add(own.unwrap_or_default()),
+            None => start_time.saturating_add(time.saturating_sub(base)),
+        };
+        (placed, anchor_of(placed, own))
     };
 
     let mut cues = Vec::new();
@@ -1241,6 +1245,16 @@ fn expand_sequence_call(
     let mut start_time = at;
     let mut end = at;
     'passes: for pass in 0..passes {
+        // A pass that starts past the end of a show (of a sequence played
+        // for good) is not played, nor any after it.
+        let pass_start = match beats_tm {
+            Some(tm) => at_beats(tm, start_beats),
+            None => start_time,
+        };
+        if past(pass_start) {
+            within(pass_start)?;
+            break 'passes;
+        }
         // Where the pass is stopped by the next, when its length is
         // declared; and where its content ends, for the next when not.
         let stop = match beats_tm {
@@ -1250,18 +1264,12 @@ fn expand_sequence_call(
                 .map(|length| start_time.saturating_add(length)),
         };
         if let Some(stop) = stop {
-            if !reaches(stop)? {
-                break 'passes;
-            }
+            within(stop)?;
         }
-        // The pass's end, as its cues carry it.
+        // The pass's end, as its cues carry it: placed here as they are.
         let own_limit = stop.map(|stop| PassLimit {
             time: stop,
-            from_anchor: if beats_tm.is_none() && in_seconds {
-                from_anchor(stop.saturating_sub(at))
-            } else {
-                None
-            },
+            from_anchor: anchor_of(stop, None),
             sequence: label.to_string(),
         });
         let mut content_end = start_time;
@@ -1282,8 +1290,11 @@ fn expand_sequence_call(
                 start_time,
             );
             cue.time = time;
-            if !reaches(cue.time)? {
-                break 'passes;
+            // Past the end of a show (of a sequence played for good), a cue
+            // is not played; the cues after it in the body may yet be.
+            if past(cue.time) {
+                within(cue.time)?;
+                continue;
             }
             // The ends of the passes it belongs to, placed with it: those
             // of the sequences it comes from, and -- bar a pass's first cue,
@@ -1331,14 +1342,16 @@ fn expand_sequence_call(
                 }
             }
             // A cue past the end of a pass it belongs to does not play, and
-            // so does not make this pass last longer.
+            // so does not make this pass last longer. (A pass of a sequence
+            // played inside another was laid out when that one was built,
+            // at its tempo: there, what it holds is judged as it lands.)
             let plays = !limits
                 .iter()
                 .any(|limit| past_pass_end(cue.time, limit.time));
             if let Some(cue_end) = content_end_of(&cue, has_effects).filter(|_| plays) {
-                if !reaches(cue_end)? {
-                    break 'passes;
-                }
+                // An effect that starts inside a show plays on, past its
+                // end, in a sequence played for good.
+                within(cue_end)?;
                 content_end = content_end.max(cue_end);
                 if placed_from_anchor.is_some() {
                     nested_end = nested_end.max(cue_end);
@@ -1362,11 +1375,7 @@ fn expand_sequence_call(
             }
             (Some(tm), None) => {
                 start_beats = (start_beats + own_beats).max(beats_to(tm, nested_end));
-                let next = at_beats(tm, start_beats);
-                if !reaches(next)? {
-                    break 'passes;
-                }
-                end = next;
+                end = at_beats(tm, start_beats);
                 start_time = end;
             }
             (None, None) => {

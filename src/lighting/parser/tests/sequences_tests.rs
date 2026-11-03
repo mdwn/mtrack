@@ -2605,3 +2605,42 @@ fn a_long_sequence_played_for_good_stops_at_the_end_of_a_show() {
     let content = "sequence \"long\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    @99.500\n    front_wash: static, color: \"blue\", duration: 1s\n}\nshow \"Show\" {\n    @0.000\n    sequence \"long\", loop: 10000\n}\n";
     assert!(parse_light_shows(content).is_err());
 }
+
+#[test]
+fn a_sequence_played_for_good_inside_another_keeps_the_others_cues() {
+    // 6c: "outer" plays "long" for good, and a back wash on its bar 2:
+    // played from bar 30 (116s), the back wash is at 120s, though "long"'s
+    // cues come first and reach the end of a show.
+    let content = "tempo {\n    start: 0.0s\n    bpm: 60\n    time_signature: 4/4\n}\nsequence \"long\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    @26/4\n    front_wash: static, color: \"blue\", duration: 1beat\n}\nsequence \"outer\" {\n    @1/1\n    sequence \"long\", loop: loop\n    @2/1\n    back_wash: static, color: \"green\", duration: 1beat\n}\nshow \"Show\" {\n    @30/1\n    sequence \"outer\"\n}\n";
+    let back_wash = |content: &str| -> Vec<f64> {
+        parse_light_shows(content).unwrap()["Show"]
+            .cues
+            .iter()
+            .filter(|c| {
+                c.effects
+                    .iter()
+                    .any(|e| e.groups.iter().any(|g| g == "back_wash"))
+            })
+            .map(|c| c.time.as_secs_f64())
+            .collect()
+    };
+    close_to(&back_wash(content), &[120.0]);
+    // E1, in seconds: the back wash 1s in, played from 10s.
+    let content = "sequence \"inner\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n    @199.000\n    front_wash: static, color: \"blue\", duration: 1s\n}\nsequence \"outer\" {\n    @0.000\n    sequence \"inner\", loop: loop\n    @1.000\n    back_wash: static, color: \"green\", duration: 1s\n}\nshow \"Show\" {\n    @10.000\n    sequence \"outer\"\n}\n";
+    close_to(&back_wash(content), &[11.0]);
+}
+
+#[test]
+fn a_sequence_played_for_good_inside_another_parses_quickly() {
+    // 6d, 6e: a long nested loop costs as many cues as it has, not their
+    // square (13s, before).
+    let content = "tempo {\n    start: 0.0s\n    bpm: 60\n    time_signature: 4/4\n}\nsequence \"long\" {\n    @1/1\n    front_wash: static, color: \"red\", duration: 1beat\n    @2/4\n    front_wash: static, color: \"blue\", duration: 1beat\n}\nsequence \"outer\" {\n    @1/1\n    sequence \"long\", loop: loop\n    @2/1\n    back_wash: static, color: \"green\", duration: 1beat\n}\nshow \"Show\" {\n    @30/1\n    sequence \"outer\"\n}\n";
+    let started = std::time::Instant::now();
+    let shows = parse_light_shows(content).unwrap();
+    assert!(shows["Show"].cues.len() > 10_000);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+}
