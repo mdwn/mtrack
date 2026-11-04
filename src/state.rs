@@ -547,15 +547,16 @@ fn attach_pointing(
     }
 }
 
-/// Whether a snapshot channel carries where a head points rather than what
-/// it shows: pan, tilt and their fine bytes, as the engine has them, under
-/// the `#n` a snapshot names a ganged channel's mirrors by.
-pub fn is_pointing_channel(name: &str) -> bool {
+/// Whether a snapshot channel carries a level that lights the rig -- one
+/// going dark takes to 0, as the engine has it (`fades_to_dark`) -- rather
+/// than where a head points, an optic or a setting. The channel's name is
+/// read under the `#n` a snapshot names a ganged channel's mirrors by.
+pub fn is_level_channel(name: &str) -> bool {
     let base = match name.split_once('#') {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
     };
-    crate::lighting::engine::is_position_channel(base)
+    crate::lighting::engine::fades_to_dark(base)
 }
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
@@ -1390,6 +1391,7 @@ mod tests {
             !bar.contains_key("dimmer#2"),
             "an unganged channel has no mirrors"
         );
-        assert!(is_pointing_channel("pan#2") && !is_pointing_channel("red#2"));
+        assert!(is_level_channel("red#2") && !is_level_channel("pan#2"));
+        assert!(!is_level_channel("zoom#2") && !is_level_channel("gobo"));
     }
 }
