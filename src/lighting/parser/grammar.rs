@@ -20,7 +20,7 @@ pub struct LightingParser;
 
 /// The items a parsed file holds -- its includes, fixture types, venues,
 /// shows, sequences and tempo blocks -- out of the `file` rule's pair.
-pub(super) fn items<'i>(
+pub(crate) fn items<'i>(
     pairs: pest::iterators::Pairs<'i, Rule>,
 ) -> impl Iterator<Item = pest::iterators::Pair<'i, Rule>> {
     pairs.flat_map(|p| {

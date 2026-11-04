@@ -24,7 +24,7 @@
 
 use pest::Parser;
 
-use super::parser::grammar::{LightingParser, Rule};
+use super::parser::grammar::{items, LightingParser, Rule};
 use super::parser::parse_fixture_types;
 use super::types::{MovementLimits, StrobeCurve};
 
@@ -64,12 +64,9 @@ pub fn patch_fixture_type(
         }
     }
 
-    let file = LightingParser::parse(Rule::file, content)
-        .map_err(|e| format!("the file does not parse: {e}"))?
-        .next()
-        .ok_or("the file is empty")?;
-    let declaration = file
-        .into_inner()
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| format!("the file does not parse: {e}"))?;
+    let declaration = items(pairs)
         .filter(|p| p.as_rule() == Rule::fixture_type)
         .find(|p| {
             p.clone()
