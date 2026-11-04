@@ -83,10 +83,9 @@ impl ParsedCue {
 /// loop body's cues, its sequence references still to place.
 pub(super) struct CueBlock {
     cues: Vec<ParsedCue>,
-    /// The block's own `tempo` block, if it has one.
-    tempo_map: Option<TempoMap>,
-    /// The tempo map the cues were parsed under: its own, else the file's.
-    effective_tempo: Option<TempoMap>,
+    /// The tempo map the cues were parsed under: the block's own `tempo`
+    /// block, else the file's. The one place that is decided.
+    pub(super) effective_tempo: Option<TempoMap>,
 }
 
 impl CueBlock {
@@ -224,12 +223,7 @@ pub fn parse_light_file_within(
             )
             .into());
         }
-        let mut show = parse_light_show_definition(pair, &global_tempo, &library)?;
-        // If show doesn't have its own tempo, use global tempo
-        if show.tempo_map.is_none() {
-            show.tempo_map = global_tempo.clone();
-        }
-        parsed_shows.push(show);
+        parsed_shows.push(parse_light_show_definition(pair, &global_tempo, &library)?);
     }
 
     // Enforce naming rules:
@@ -269,7 +263,8 @@ fn parse_light_show_definition(
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
-    let mut tempo_map: Option<TempoMap> = None;
+    // The map the show plays to: its own, else the file's.
+    let mut tempo_map = global_tempo.clone();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -278,9 +273,10 @@ fn parse_light_show_definition(
             }
             Rule::show_content => {
                 let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
-                tempo_map = block.tempo_map.clone();
+                tempo_map = block.effective_tempo.clone();
                 cues = block.place(library)?;
             }
+
             _ => {}
         }
     }
@@ -294,7 +290,6 @@ fn parse_light_show_definition(
 /// A sequence definition as written, its cues expanded.
 pub(super) struct SequenceDefinition {
     name: String,
-    pub(super) tempo_map: Option<TempoMap>,
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
     /// Its cues, their references still to place.
@@ -373,14 +368,12 @@ pub(super) fn parse_sequence_structure(
         }
     }
 
-    let block = block.unwrap_or_else(|| CueBlock {
-        cues: Vec::new(),
-        tempo_map: None,
-        effective_tempo: global_tempo.clone(),
-    });
+    let block = match block {
+        Some(block) => block,
+        None => parse_cue_block(std::iter::empty(), global_tempo, library)?,
+    };
     Ok(SequenceDefinition {
         name,
-        tempo_map: block.tempo_map.clone(),
         length,
         block,
     })
@@ -431,7 +424,6 @@ fn parse_cue_block<'i>(
     }
     Ok(CueBlock {
         cues,
-        tempo_map,
         effective_tempo,
     })
 }
