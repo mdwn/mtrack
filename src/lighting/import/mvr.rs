@@ -1195,7 +1195,7 @@ fn geometry(
 }
 
 /// MVR millimeters, re-origined, to stage meters.
-fn to_stage(mm: &Vec3, origin_mm: &Vec3) -> Vec3 {
+pub(crate) fn to_stage(mm: &Vec3, origin_mm: &Vec3) -> Vec3 {
     [
         (mm[0] - origin_mm[0]) / 1000.0,
         (mm[1] - origin_mm[1]) / 1000.0,

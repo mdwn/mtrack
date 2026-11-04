@@ -32,6 +32,7 @@ use serde::Serialize;
 use super::gdtf;
 use super::system::LightingSystem;
 
+pub(crate) use mvr::to_stage;
 pub use mvr::{
     import_mvr, import_mvr_bytes, inspect_mvr, inspect_mvr_bytes, HandEdit, MvrImport,
     MvrImportOptions, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
