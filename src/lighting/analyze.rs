@@ -36,6 +36,7 @@ use std::time::Duration;
 use crate::lighting::effects::{EffectInstance, EffectLayer, FixtureInfo};
 use crate::lighting::evaluate::apply_timeline_update;
 use crate::lighting::parser::LightShow;
+use crate::lighting::readiness::group_names;
 use crate::lighting::tempo::TempoMap;
 use crate::lighting::timeline::LightingTimeline;
 use crate::lighting::EffectEngine;
@@ -89,19 +90,28 @@ impl Analysis {
 /// question, answered where the venue is known.
 pub fn analyze_show(shows: Vec<LightShow>, fallback_tempo_map: Option<&TempoMap>) -> Analysis {
     let cue_count: usize = shows.iter().map(|s| s.cues.len()).sum();
+    let targets = group_names(&shows);
 
     let timeline = LightingTimeline::new(shows);
     // The state can only change where a cue fires or an effect ends, so those
     // are the only boundaries worth testing. Sampling on a fixed grid instead
     // would quantise every window to the step size and still cost more.
     let boundaries = boundaries(&timeline);
-    analyze_between(timeline, cue_count, fallback_tempo_map, &boundaries)
+    analyze_between(
+        timeline,
+        &targets,
+        cue_count,
+        fallback_tempo_map,
+        &boundaries,
+    )
 }
 
 /// Analyses `timeline`, its running set probed once between each pair of
-/// `boundaries`.
+/// `boundaries`; `targets` are the group names its shows target
+/// ([`group_names`]).
 fn analyze_between(
     mut timeline: LightingTimeline,
+    targets: &[String],
     cue_count: usize,
     fallback_tempo_map: Option<&TempoMap>,
     boundaries: &[Duration],
@@ -120,8 +130,8 @@ fn analyze_between(
     // effects targeting names it does not know, and analysis is about the show,
     // not the rig — a group that resolves to nothing in the current venue still
     // occupies the time the author gave it.
-    for name in target_names(&timeline) {
-        engine.register_fixture(stand_in_fixture(&name));
+    for name in targets {
+        engine.register_fixture(stand_in_fixture(name));
     }
     timeline.start();
 
@@ -197,17 +207,6 @@ fn analyze_between(
 
     analysis.span = last_active_end.saturating_sub(first_active.unwrap_or_default());
     analysis
-}
-
-/// Every distinct name the show's cues target.
-fn target_names(timeline: &LightingTimeline) -> Vec<String> {
-    let mut names: Vec<String> = timeline
-        .cue_effects()
-        .flat_map(|(_, effects)| effects.iter().flat_map(|e| e.groups.iter().cloned()))
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 /// A minimal RGB+dimmer fixture, so effects targeting a group name validate.
@@ -662,6 +661,7 @@ show "T" {
     fn analyze_at_authored_ends(source: &str) -> Analysis {
         let shows = shows(source);
         let cue_count = shows.iter().map(|s| s.cues.len()).sum();
+        let targets = group_names(&shows);
         let timeline = LightingTimeline::new(shows);
         let mut times: Vec<Duration> = Vec::new();
         for (time, effects) in timeline.cue_effects() {
@@ -670,7 +670,7 @@ show "T" {
         }
         times.sort();
         times.dedup();
-        analyze_between(timeline, cue_count, None, &times)
+        analyze_between(timeline, &targets, cue_count, None, &times)
     }
 
     /// Without a freeze or a speed master, an effect's real end is its
