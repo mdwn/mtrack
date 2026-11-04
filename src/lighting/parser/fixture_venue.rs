@@ -21,6 +21,7 @@ use super::super::types::{
 };
 use super::error::get_error_context;
 use super::grammar::{LightingParser, Rule};
+use super::utils::split_unit;
 use pest::iterators::Pair;
 use pest::Parser;
 
@@ -358,12 +359,11 @@ fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Erro
 /// Parses a physical value with its unit: `270deg`, `-135.5deg`, `0.5hz`.
 fn parse_phys_value(text: &str) -> Result<(f64, PhysicalUnit), Box<dyn Error>> {
     let text = text.trim();
-    let (number, unit) = if let Some(n) = text.strip_suffix("deg") {
-        (n, PhysicalUnit::Degrees)
-    } else if let Some(n) = text.strip_suffix("hz") {
-        (n, PhysicalUnit::Hertz)
-    } else {
-        return Err(format!("physical value \"{text}\" needs a unit: deg or hz").into());
+    let (number, unit) = split_unit(text);
+    let unit = match unit {
+        "deg" => PhysicalUnit::Degrees,
+        "hz" => PhysicalUnit::Hertz,
+        _ => return Err(format!("physical value \"{text}\" needs a unit: deg or hz").into()),
     };
     let value = number
         .parse::<f64>()

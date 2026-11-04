@@ -24,6 +24,7 @@ use super::grammar::Rule;
 use super::types::{Effect, ParseContext};
 use super::utils::{
     parse_color_string, parse_frequency_string, parse_percentage_to_f64, parse_speed_string,
+    split_unit,
 };
 use pest::iterators::Pair;
 
@@ -280,10 +281,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
 
 /// Parses an angle written with its unit: `45deg`, `-20.5deg`.
 fn parse_degrees(value: &str) -> Result<f64, Box<dyn Error>> {
-    let number = value
-        .trim()
-        .strip_suffix("deg")
-        .ok_or_else(|| format!("angle '{value}' must be written in degrees, e.g. 45deg"))?;
+    let (number, unit) = split_unit(value);
+    if unit != "deg" {
+        return Err(format!("angle '{value}' must be written in degrees, e.g. 45deg").into());
+    }
     number
         .trim()
         .parse::<f64>()
