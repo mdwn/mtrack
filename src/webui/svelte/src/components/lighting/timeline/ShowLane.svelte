@@ -192,20 +192,19 @@
     let adjustedMs = x / pixelsPerMs;
     adjustedMs = Math.max(0, adjustedMs);
 
-    // Subtract cumulative offset to get the raw timestamp ms
-    // The score time under the offset there, placed through the tempo map
-    // the player uses for a cue under that offset, so the new cue lands
-    // where it was clicked.
+    // Subtract cumulative offset to get the raw timestamp ms: the score
+    // time, on the tempo map the offset moves as a whole, so the new cue
+    // lands where it was clicked.
     const offsetMs = getCumulativeOffsetAtMs(adjustedMs);
     let rawMs = adjustedMs - offsetMs;
     rawMs = Math.max(0, rawMs);
 
     if (snapEnabled && tempo) {
-      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution, offsetMs);
+      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution);
     }
 
     const ts: Timestamp = tempo
-      ? msToTimestamp(rawMs, "measure_beat", tempo, offsetMs)
+      ? msToTimestamp(rawMs, "measure_beat", tempo)
       : absoluteTimestamp(rawMs);
 
     const newCue = emptyCue(ts);
@@ -237,24 +236,19 @@
 
   function handleCueMove(index: number, deltaMs: number) {
     const cue = cues[index];
-    // Move operates on score times under the offset the cue sits under
-    // (offset is structural, not per-cue position), through the tempo map
-    // the player uses for it, so the cue moves by what was dragged.
-    const offsetMs =
-      laneType === "show"
-        ? (computeAdjustedCuePositions(cues, tempo)[index]
-            ?.cumulativeOffsetMs ?? 0)
-        : 0;
-    const currentMs = timestampToMs(cue.timestamp, tempo, offsetMs);
+    // Move operates on score times (offset is structural, not per-cue
+    // position; the tempo map moves with it as a whole), so the cue moves
+    // by what was dragged.
+    const currentMs = timestampToMs(cue.timestamp, tempo);
     let newMs = Math.max(0, currentMs + deltaMs);
 
     if (snapEnabled && tempo) {
-      newMs = snapToNearestGrid(newMs, tempo, snapResolution, offsetMs);
+      newMs = snapToNearestGrid(newMs, tempo, snapResolution);
     }
 
     const newTs: Timestamp =
       cue.timestamp.type === "measure_beat" && tempo
-        ? msToTimestamp(newMs, "measure_beat", tempo, offsetMs)
+        ? msToTimestamp(newMs, "measure_beat", tempo)
         : absoluteTimestamp(newMs);
 
     oncuechange(index, { ...cue, timestamp: newTs });

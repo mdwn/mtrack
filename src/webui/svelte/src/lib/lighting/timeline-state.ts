@@ -76,9 +76,6 @@ interface TempoGrid {
    *  starts `segments[i + 1]`), for walks that place them differently. */
   changes: ResolvedChange[];
   /** Whether any change is positioned in time rather than by bar */
-  anyTimed: boolean;
-  /** The walks for cues under each offset met so far */
-  offsetSegments: Map<number, TempoSegment[]>;
 }
 
 /** A change as the tempo walk applies it. */
@@ -367,8 +364,6 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
     segments,
     meters,
     changes,
-    anyTimed: tempo.changes.some((c) => c.timestamp.type === "absolute"),
-    offsetSegments: new Map<number, TempoSegment[]>(),
   };
 
   const timed = tempo.changes
@@ -550,103 +545,10 @@ function durationToMs(d: { value: number; unit: string }): number {
   }
 }
 
-/** The segments the player walks for a cue under an offset of `offsetMs`:
- *  the tempo changes positioned in time are taken `offsetMs` later (each at
- *  the beat the unshifted map has there), those positioned by bar stay on
- *  their bars. Its walk, step for step, kept with the grid per offset. */
-function offsetSegments(grid: TempoGrid, offsetMs: number): TempoSegment[] {
-  const cached = grid.offsetSegments.get(offsetMs);
-  if (cached) return cached;
-  let cur: TempoSegment = { ...grid.segments[0], ramp: undefined };
-  const walk = [cur];
-  for (let i = 0; i < grid.changes.length; i++) {
-    const change = grid.changes[i];
-    const seg = grid.segments[i + 1];
-    const changeBeats = change.timed
-      ? Math.max(0, beatsAtMs(grid, seg.startMs + offsetMs))
-      : seg.startBeats;
-    const dt = Math.max(0, segmentMsFor(cur, changeBeats - cur.startBeats));
-    const bpmAtChange = segmentBpmAt(cur, dt);
-    const next: TempoSegment = {
-      ...cur,
-      startMs: cur.startMs + dt,
-      startBeats: changeBeats,
-      ramp: rampAfter(cur, dt),
-    };
-    if (change.bpm !== undefined) {
-      next.bpm = change.bpm;
-      next.ramp =
-        change.rampBeats === undefined
-          ? undefined
-          : {
-              fromBpm: bpmAtChange,
-              toBpm: change.bpm,
-              totalMs: rampDurationMs(
-                bpmAtChange,
-                change.bpm,
-                change.rampBeats,
-              ),
-              elapsedMs: 0,
-            };
-    }
-    walk.push(next);
-    cur = next;
-  }
-  if (grid.offsetSegments.size > 64) grid.offsetSegments.clear();
-  grid.offsetSegments.set(offsetMs, walk);
-  return walk;
-}
-
-/** The ms of a beat position for a cue under an offset of `offsetMs`, as
- *  the player places it (before the offset itself is added). With no
- *  offset, or no change positioned in time, the unshifted position. */
-function msAtBeatsOffset(
-  grid: TempoGrid,
-  beats: number,
-  offsetMs: number,
-): number {
-  if (offsetMs === 0 || !grid.anyTimed || beats < 0) {
-    return msAtBeats(grid, beats);
-  }
-  const walk = offsetSegments(grid, offsetMs);
-  // The player stops at the first change past the position.
-  let cur = walk[0];
-  for (let i = 1; i < walk.length && walk[i].startBeats <= beats; i++) {
-    cur = walk[i];
-  }
-  return cur.startMs + Math.max(0, segmentMsFor(cur, beats - cur.startBeats));
-}
-
-/** The inverse of `msAtBeatsOffset`: the beat position the player puts at
- *  a score time for a cue under an offset of `offsetMs`. */
-function beatsAtMsOffset(
-  grid: TempoGrid,
-  ms: number,
-  offsetMs: number,
-): number {
-  const first = grid.segments[0];
-  if (offsetMs === 0 || !grid.anyTimed || ms < first.startMs) {
-    return beatsAtMs(grid, ms);
-  }
-  const walk = offsetSegments(grid, offsetMs);
-  let cur = walk[0];
-  for (let i = 1; i < walk.length; i++) {
-    // Where the walk above would stop: a change before the last one's
-    // beat is never reached.
-    if (walk[i].startMs > ms || walk[i].startBeats < cur.startBeats) break;
-    cur = walk[i];
-  }
-  return cur.startBeats + segmentBeatsIn(cur, ms - cur.startMs);
-}
-
 /** Convert a Timestamp to absolute milliseconds: its place in the tempo
- *  map, or, with `offsetMs`, the score time the player gives a cue there
- *  under that offset (before the offset itself is added). */
-export function timestampToMs(
-  ts: Timestamp,
-  tempo?: TempoSection,
-  offsetMs = 0,
-): number {
+ *  map. Under an offset the whole map moves with the cue, so a cue's score
+ *  time is this whatever its offset (the offset itself is added after). */
+export function timestampToMs(ts: Timestamp, tempo?: TempoSection): number {
   if (ts.type === "absolute") {
     return ts.ms ?? 0;
   }
@@ -655,10 +557,9 @@ export function timestampToMs(
   if (!tempo) return 0;
 
   const grid = buildTempoGrid(tempo);
-  return msAtBeatsOffset(
+  return msAtBeats(
     grid,
     beatsAtMeasureBeat(grid.meters, ts.measure ?? 1, ts.beat ?? 1),
-    offsetMs,
   );
 }
 
@@ -670,19 +571,13 @@ export function msToTimestamp(
   ms: number,
   preferType: "absolute" | "measure_beat",
   tempo?: TempoSection,
-  offsetMs = 0,
 ): Timestamp {
   if (preferType === "absolute" || !tempo) {
     return { type: "absolute", ms };
   }
 
-  // With `offsetMs`, `ms` is a score time under that offset, as
-  // `timestampToMs(ts, tempo, offsetMs)` gives it.
   const grid = buildTempoGrid(tempo);
-  const at = measureBeatAtBeats(
-    grid.meters,
-    beatsAtMsOffset(grid, ms, offsetMs),
-  );
+  const at = measureBeatAtBeats(grid.meters, beatsAtMs(grid, ms));
   let measure = at.measure;
   let beat = Math.round(at.beat);
   if (beat - 1 >= meterAtMeasure(grid.meters, measure).quarters) {
@@ -864,30 +759,19 @@ export function snapToNearestGrid(
   ms: number,
   tempo: TempoSection,
   resolution: SnapResolution,
-  offsetMs = 0,
 ): number {
-  // With `offsetMs`, `ms` is a score time under that offset, and so is
-  // the grid it snaps to.
   const grid = buildTempoGrid(tempo);
-  const beats = beatsAtMsOffset(grid, ms, offsetMs);
+  const beats = beatsAtMs(grid, ms);
   if (resolution === "measure") {
     const measures = Math.round(measuresAtBeats(grid.meters, beats));
-    return msAtBeatsOffset(
-      grid,
-      beatsAtMeasures(grid.meters, measures),
-      offsetMs,
-    );
+    return msAtBeats(grid, beatsAtMeasures(grid.meters, measures));
   }
   // Steps count from the bar's downbeat, so an odd metre's bar keeps its
   // subdivisions.
   const { measure } = measureBeatAtBeats(grid.meters, beats);
   const bar = beatsAtMeasureBeat(grid.meters, measure, 1);
   const step = SNAP_BEATS[resolution];
-  return msAtBeatsOffset(
-    grid,
-    bar + Math.round((beats - bar) / step) * step,
-    offsetMs,
-  );
+  return msAtBeats(grid, bar + Math.round((beats - bar) / step) * step);
 }
 
 /** Snap a duration to the nearest grid step at a given playback position. */
@@ -1125,11 +1009,9 @@ export function computeAdjustedCuePositions(
   return cues.map((cue, index) => {
     const rawMs = timestampToMs(cue.timestamp, tempo);
     const applied = cumulativeOffsetMs;
-    // Placed as the player places it: under an offset, the tempo changes
-    // positioned in time move with it.
-    const adjustedMs =
-      (applied !== 0 ? timestampToMs(cue.timestamp, tempo, applied) : rawMs) +
-      applied;
+    // Placed as the player places it: under an offset the whole tempo map
+    // moves with the cue, so the cue is its score time plus the offset.
+    const adjustedMs = rawMs + applied;
     let offsetMs = 0;
     const offsets =
       cue.offset_measures !== undefined && cue.offset_measures > 0;

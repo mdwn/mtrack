@@ -225,12 +225,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`measure_to_time_with_offset` shifts the position by its offset**: it moved only the
-  time-positioned tempo changes, by the offset's worth of beats on the unshifted map, and left the
-  position itself (and bar-positioned changes) where they were. The whole map shifts now, as it
-  does for lengths and tempo lookups, so a bar-positioned cue after a time-positioned tempo
-  change under an `offset` lands where `bpm_at_time` has the change. (The web UI timeline still
-  places such a cue the old way.)
+- **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
+  `offset N measures` is its score position's time plus the offset, with every tempo change,
+  positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups
+  already followed. The position walk moved only the time-positioned changes, by the offset's
+  worth of beats on the unshifted map (a cue at @5/1 after a change at 6 s under a one-bar offset
+  fired at 11 s; it fires at 12 s), and the lighting timeline placed, dragged and snapped cues the
+  same wrong way; it follows the one rule now.
 - **A length in measures at a tempo that is not a number no longer hangs**: the bar walk it
   used looked for a beat position that is not finite for ever; the one bar walk now stops, as the
   bar-and-beat lookup already did.
