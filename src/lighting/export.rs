@@ -38,6 +38,7 @@ use std::path::Path;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::effects::out_of_frame;
 use super::import::fixture_filename_stem;
 use super::types::{ChannelDef, Fixture, FixtureType, Vec3, Venue};
 
@@ -650,12 +651,8 @@ const FOCUS_TOLERANCE_DEG: f64 = 1.0;
 /// space: −(third column of R = Rz·Ry·Rx), the mounting's −Z. Straight down
 /// for an unrotated fixture.
 pub fn rest_beam(fixture: &Fixture) -> Vec3 {
-    let [rx, ry, rz] = fixture.rotation().unwrap_or([0.0; 3]).map(f64::to_radians);
-    [
-        -(rz.cos() * ry.sin() * rx.cos() + rz.sin() * rx.sin()),
-        -(rz.sin() * ry.sin() * rx.cos() - rz.cos() * rx.sin()),
-        -(ry.cos() * rx.cos()),
-    ]
+    let rotation = fixture.rotation().unwrap_or([0.0; 3]);
+    out_of_frame(rotation, [0.0, 0.0, 1.0]).map(|c| -c)
 }
 
 /// How far along the beam an aim point sits when the beam never meets the
@@ -723,22 +720,9 @@ fn aimed_at<'a>(fixture: &Fixture, venue: &'a Venue) -> Option<&'a str> {
 ///
 /// [`Matrix::rotation_degrees`]: super::mvr::Matrix::rotation_degrees
 fn matrix_text(position: &Vec3, rotation_deg: &Vec3, origin_mm: &Vec3) -> String {
-    let (rx, ry, rz) = (
-        rotation_deg[0].to_radians(),
-        rotation_deg[1].to_radians(),
-        rotation_deg[2].to_radians(),
-    );
-    let rotate = |v: [f64; 3]| -> [f64; 3] {
-        let (cx, sx) = (rx.cos(), rx.sin());
-        let v = [v[0], cx * v[1] - sx * v[2], sx * v[1] + cx * v[2]];
-        let (cy, sy) = (ry.cos(), ry.sin());
-        let v = [cy * v[0] + sy * v[2], v[1], -sy * v[0] + cy * v[2]];
-        let (cz, sz) = (rz.cos(), rz.sin());
-        [cz * v[0] - sz * v[1], sz * v[0] + cz * v[1], v[2]]
-    };
-    let u = rotate([1.0, 0.0, 0.0]);
-    let v = rotate([0.0, 1.0, 0.0]);
-    let w = rotate([0.0, 0.0, 1.0]);
+    let u = out_of_frame(*rotation_deg, [1.0, 0.0, 0.0]);
+    let v = out_of_frame(*rotation_deg, [0.0, 1.0, 0.0]);
+    let w = out_of_frame(*rotation_deg, [0.0, 0.0, 1.0]);
     let o = [
         position[0] * 1000.0 + origin_mm[0],
         position[1] * 1000.0 + origin_mm[1],
