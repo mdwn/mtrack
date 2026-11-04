@@ -160,7 +160,7 @@ impl BeatGrid {
             // Beat positions within the measure are expressed in the tempo
             // map's quarter-note units; step one denominator note at a time.
             let step = 4.0 / time_signature.denominator as f64;
-            for k in 0..time_signature.numerator {
+            for k in 0..time_signature.grid_beats_per_measure() {
                 let beat_position = 1.0 + k as f64 * step;
                 let Some(time) = map.measure_to_time_with_offset(measure, beat_position, 0, 0.0)
                 else {
@@ -285,7 +285,7 @@ impl BeatGrid {
                     original_measure_beat: Some((measure.number, 1.0)),
                     bpm: tempo_moved.then_some(refined[index]),
                     time_signature: meter_moved
-                        .then(|| TimeSignature::new(measure.beats as u32, 4)),
+                        .then(|| TimeSignature::from_grid_beats(measure.beats as u32)),
                     transition: TempoTransition::Snap,
                 }
             })
@@ -296,7 +296,7 @@ impl BeatGrid {
             // lead-in an author would otherwise have to measure by hand.
             self.lead_in(),
             refined[0],
-            TimeSignature::new(first.beats as u32, 4),
+            TimeSignature::from_grid_beats(first.beats as u32),
             changes,
         ))
     }

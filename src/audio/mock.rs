@@ -18,7 +18,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread,
 };
 
 use tracing::{info, span, Level};
@@ -137,7 +136,7 @@ mod tests {
         let cancel_clone = cancel_handle.clone();
         let clock_clone = clock.clone();
 
-        let handle = thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             // play_from may return an error due to the mock's internal mpsc
             // channel timing, but the key is that it doesn't panic.
             let _ = device_clone.play_from(
@@ -184,7 +183,7 @@ mod tests {
         let cancel_clone = cancel_handle.clone();
         let clock_clone = clock.clone();
 
-        let handle = thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = device_clone.play_from(
                 song,
                 &mappings,
@@ -226,7 +225,7 @@ mod tests {
         let cancel_clone = cancel_handle.clone();
         let clock_clone = clock.clone();
 
-        let handle = thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = device_clone.play_from(
                 song,
                 &mappings,

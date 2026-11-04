@@ -150,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The web UI's tempo guess from a click track is the map lighting plays to**: the suggestion
+  for a song without a MIDI file is derived from the beat grid as `@bar/beat` cueing derives it
+  (each steady run's measured tempo, to a hundredth of a BPM, a change where the tempo moves by
+  more than half a percent or the bar length changes), in place of a separate estimator that
+  rounded to whole BPM and snapped boundaries by its own rules.
 - **gRPC `next` and `previous` answer as the player does**: the song the player is on after
   the move -- the one it moved to, or the one it stays on while a song plays or at the list's
   end -- as MCP has answered. They refused with `FailedPrecondition` ("can't navigate while
@@ -257,6 +262,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tempo guessed from a MIDI file in 6/8 lands on the right bar** (#636): the guess rolled a
+  bar over every *numerator* quarter notes, so in any metre but x/4 a tempo or signature change
+  was placed bars early (a 6/8 file's change at bar 5 was guessed at bar 3), further the longer
+  the file. A bar is as many quarter notes as the tempo map has it. The file's tempo is now read
+  as playback reads it: 120 BPM until its first tempo event, the conductor track's events for a
+  Format 1 file, each track's own (offset) for a Format 2 file, the last event at a tick winning.
 - **MCP reports a caller's fault as the caller's**: a stale config checksum, a profile index
   past the end, a seek or a section loop the player refused (nothing playing, no such section)
   and a play that could not start came back as `internal_error`; they are `invalid_params`

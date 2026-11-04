@@ -4235,7 +4235,7 @@ mod run_beat_clock_tests {
         let beat_clock = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info(
             &[crate::midi::playback::TempoEntry {
                 tick: 0,
-                micros_per_tick: 500_000.0 / 480.0,
+                micros_per_beat: 500_000,
             }],
             480,
             480,

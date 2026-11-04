@@ -519,7 +519,11 @@ pub(super) async fn get_song_tempo_guess(
         }
     };
 
-    match crate::audio::tempo_guess::guess_tempo(beat_grid) {
+    // The grid's tempo map, as lighting derives it, is the suggestion.
+    match beat_grid
+        .to_tempo_map()
+        .map(|map| crate::audio::midi_tempo::GuessedTempo::from_tempo_map(&map))
+    {
         Some(guessed) => (
             StatusCode::OK,
             Json(json!({

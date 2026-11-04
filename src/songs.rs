@@ -840,7 +840,7 @@ impl Song {
         let end = self.length().max(midi_end);
         // A MIDI file's clock runs on past the file's end at its last tempo.
         if let Some(tempo) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
-            let ticks = tempo.ticks_until(end);
+            let ticks = tempo.beat_clock_until(end);
             if !ticks.is_empty() {
                 return Some(ticks);
             }
@@ -1690,24 +1690,17 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         midly::Timing::Metrical(tpb) => tpb.as_int(),
         _ => return Err("timecode-based MIDI timing not supported".into()),
     };
-    let (tempo_map, tpb, total_ticks) = crate::midi::playback::PrecomputedMidi::build_tempo_info(
-        &smf.tracks,
-        ticks_per_beat,
-        smf.header.format,
-    );
+    let timing =
+        crate::midi::playback::MidiTiming::of(&smf.tracks, ticks_per_beat, smf.header.format);
     let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
         &smf.tracks,
-        ticks_per_beat,
+        &timing,
         smf.header.format,
     );
     // Only a file with explicit tempo events has a tempo of its own to clock.
     // One without leaves the clock to the song's `tempo:` or click track, or,
     // with neither, to nobody (`Song::beat_clock`).
-    let beat_clock = (!tempo_map.is_empty()).then_some(MidiTempo {
-        entries: tempo_map,
-        ticks_per_beat: tpb,
-        total_ticks,
-    });
+    let beat_clock = (!timing.tempo.is_empty()).then_some(timing);
     Ok(MidiSheet {
         precomputed,
         beat_clock,
@@ -1963,30 +1956,8 @@ fn deduplicate_track_names(tracks: &mut [Track]) {
 /// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
     pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
-    /// The file's tempo, when it has tempo events to drive a beat clock.
-    pub(crate) beat_clock: Option<MidiTempo>,
-}
-
-/// A MIDI file's tempo events, from which its beat clock is laid out.
-pub(crate) struct MidiTempo {
-    entries: Vec<crate::midi::playback::TempoEntry>,
-    ticks_per_beat: u16,
-    total_ticks: u64,
-}
-
-impl MidiTempo {
-    /// The clock's pulse times over the file, and on past its end at its
-    /// last tempo until `until`.
-    pub(crate) fn ticks_until(&self, until: Duration) -> Vec<Duration> {
-        crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
-            &self.entries,
-            self.ticks_per_beat,
-            self.total_ticks,
-            until,
-        )
-        .ticks_from(Duration::ZERO)
-        .to_vec()
-    }
+    /// The file's timing, when it has tempo events to drive a beat clock.
+    pub(crate) beat_clock: Option<crate::midi::playback::MidiTiming>,
 }
 
 /// A song that failed to load from disk.
