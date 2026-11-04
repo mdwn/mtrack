@@ -150,6 +150,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A tempo change positioned in time before `start:` is applied at the start**: the beat
+  grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
+  times tempo-aware effect rates ran it from its own time, so a ramp written before the start
+  was part way through (or over) by bar 1. It starts at bar 1 now, with the rest (start 2 s,
+  120 bpm, a 4-beat ramp to 60 at 0.5 s: 120 at 2 s, where it read 86.25; 75 at 4 s, where it
+  read 60).
 - **A ramp written at the same instant as a snap ramps from the snapped tempo**: tempo-aware
   effect rates during such a ramp now ramp from the snapped tempo, as the beat grid already did
   (the tempo lookup used to read the tempo a nanosecond before the change and ramp from there).

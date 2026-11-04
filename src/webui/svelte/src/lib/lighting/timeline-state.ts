@@ -72,18 +72,6 @@ interface MeterSpan {
 interface TempoGrid {
   segments: TempoSegment[];
   meters: MeterSpan[];
-  /** The change that starts each segment after the first (`changes[i]`
-   *  starts `segments[i + 1]`), for walks that place them differently. */
-  changes: ResolvedChange[];
-  /** Whether any change is positioned in time rather than by bar */
-}
-
-/** A change as the tempo walk applies it. */
-interface ResolvedChange {
-  timed: boolean;
-  bpm?: number;
-  /** A ramp's length in quarter notes, as sized; none for a snap */
-  rampBeats?: number;
 }
 
 /** Grid line for rendering on the ruler. */
@@ -359,11 +347,9 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
       signature: [initialSig[0], initialSig[1]],
     },
   ];
-  const changes: ResolvedChange[] = [];
   const grid = {
     segments,
     meters,
-    changes,
   };
 
   const timed = tempo.changes
@@ -472,13 +458,6 @@ function resolveTempoGrid(tempo: TempoSection): TempoGrid {
               elapsedMs: 0,
             };
       next.bpm = change.bpm;
-      changes.push({
-        timed: change.timestamp.type === "absolute",
-        bpm: change.bpm,
-        rampBeats: length,
-      });
-    } else {
-      changes.push({ timed: change.timestamp.type === "absolute" });
     }
     segments.push(next);
   }
