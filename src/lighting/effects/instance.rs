@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::types::{BlendMode, EffectLayer, EffectType};
+use super::types::{BlendMode, EffectLayer, EffectType, DEFAULT_BLEND, DEFAULT_LAYER};
 
 /// An instance of an effect with timing and targeting information.
 /// All effects have a finite duration — there are no perpetual or permanent effects.
@@ -97,8 +97,8 @@ impl EffectInstance {
             effect_type,
             target_fixtures,
             priority: 0,
-            layer: EffectLayer::Background,
-            blend_mode: BlendMode::Replace,
+            layer: DEFAULT_LAYER,
+            blend_mode: DEFAULT_BLEND,
             start_time: None,
             cue_time: None,
             up_time,
