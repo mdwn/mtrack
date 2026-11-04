@@ -1588,12 +1588,17 @@ impl EffectEngine {
         history: crate::lighting::timeline::SeekHistory,
         scope: StopScope,
     ) -> Vec<EffectError> {
+        self.stop_by_scope(scope);
+        self.replay(history)
+    }
+
+    /// Stops what `scope` says a replay starts over.
+    fn stop_by_scope(&mut self, scope: StopScope) {
         match scope {
             StopScope::Nothing => {}
             StopScope::Show => self.stop_show_effects(),
             StopScope::All => self.stop_all_effects(),
         }
-        self.replay(history)
     }
 
     /// Replays `history` in this engine, up to its start point.
@@ -1691,11 +1696,7 @@ impl EffectEngine {
             again,
             errors,
         } = prepared;
-        match scope {
-            StopScope::Nothing => {}
-            StopScope::Show => self.stop_show_effects(),
-            StopScope::All => self.stop_all_effects(),
-        }
+        self.stop_by_scope(scope);
         if let (Some(reads), Some(history)) = (&pose_reads, again) {
             if reads
                 .read
