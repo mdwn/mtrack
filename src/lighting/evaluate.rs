@@ -302,7 +302,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     let has_dimmer: HashMap<String, bool> = engine
         .get_fixture_registry()
         .iter()
-        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
 
     let mut active_effects: Vec<EvaluatedEffect> = engine
@@ -829,7 +829,7 @@ show "T" {
         }
         let has_dimmer: HashMap<String, bool> = fixtures
             .iter()
-            .map(|f| (f.name.clone(), f.channels.contains_key("dimmer")))
+            .map(|f| (f.name.clone(), f.has_dimmer()))
             .collect();
 
         timeline.start();

@@ -752,7 +752,7 @@ impl EffectEngine {
                 }
                 continue;
             }
-            let has_dimmer = info.is_some_and(|i| i.channels.contains_key("dimmer"));
+            let has_dimmer = info.is_some_and(FixtureInfo::has_dimmer);
             let mut resolved = FixtureState::new();
             resolved.physical = state.physical.clone();
             for (channel, channel_state) in &state.channels {

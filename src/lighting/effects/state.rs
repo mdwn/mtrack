@@ -295,7 +295,7 @@ impl FixtureState {
         cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
     ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
-        let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
+        let has_dedicated_dimmer = fixture_info.has_dimmer();
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
         let cell_owned = |channel: &str| {

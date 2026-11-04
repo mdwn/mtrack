@@ -684,6 +684,13 @@ impl FixtureInfo {
         self.cached_capabilities.contains(capability)
     }
 
+    /// Whether the fixture has a dimmer channel of its own. Without one,
+    /// its level is carried on its colour channels.
+    #[inline]
+    pub fn has_dimmer(&self) -> bool {
+        self.has_capability(FixtureCapabilities::DIMMING)
+    }
+
     /// Get the cached fixture profile
     #[inline]
     pub fn profile(&self) -> &FixtureProfile {
@@ -1101,5 +1108,27 @@ mod tests {
         assert_eq!(f.fixture_type, "generic_spot");
         assert_eq!(f.max_strobe_frequency, Some(25.0));
         assert_eq!(f.channels.len(), 4);
+    }
+
+    #[test]
+    fn has_dimmer_is_a_dimmer_channel_of_its_own() {
+        let with = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "red"]),
+            None,
+        );
+        let without = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["red", "green", "blue", "dimmer_fine"]),
+            None,
+        );
+        assert!(with.has_dimmer());
+        assert!(!without.has_dimmer());
     }
 }

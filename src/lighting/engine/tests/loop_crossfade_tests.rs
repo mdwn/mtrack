@@ -207,7 +207,7 @@ fn shown_bytes(
     let registry = engine.get_fixture_registry();
     let has_dimmer: HashMap<String, bool> = registry
         .iter()
-        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
     let mut bytes = HashMap::new();
     for snapshot in crate::state::fixture_snapshots_with_cells(states, &has_dimmer, registry) {

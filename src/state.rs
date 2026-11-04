@@ -286,7 +286,7 @@ async fn init_dimmer_map(effect_engine: &Arc<Mutex<EffectEngine>>) -> HashMap<St
         engine
             .get_fixture_registry()
             .iter()
-            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+            .map(|(name, info)| (name.clone(), info.has_dimmer()))
             .collect()
     })
     .await
