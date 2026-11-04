@@ -169,7 +169,7 @@ impl TransitionCurve {
     /// How long a whole transition from `old_bpm` to `new_bpm` lasts when it
     /// is written to span `beats` beats: the time in which the curve covers
     /// exactly that many, as a DAW renders "over N beats". The inverse of
-    /// [`TransitionCurve::beats_in_duration`] over the whole transition.
+    /// [`TransitionCurve::beats_in_remaining_transition`] from its start.
     pub fn duration_for_beats(&self, old_bpm: f64, new_bpm: f64, beats: f64) -> f64 {
         match self {
             TransitionCurve::Linear => {
