@@ -147,7 +147,7 @@ impl FixtureRegistry {
         if fixture.parent.is_none() && !fixture.cells.is_empty() {
             let mut names = Vec::with_capacity(fixture.cells.len());
             for cell in &fixture.cells {
-                let name = format!("{}/{}", fixture.name, cell.name);
+                let name = cell_fixture_name(&fixture.name, &cell.name);
                 let channels: HashMap<String, u16> = cell
                     .channels
                     .iter()
@@ -739,11 +739,10 @@ impl EffectEngine {
                 if states.contains_key(parent) {
                     continue;
                 }
-                let cell_name = name.rsplit('/').next().unwrap_or(name);
                 let cell = self
                     .fixtures
                     .get(parent)
-                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name));
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(name)));
                 if let Some(cell) = cell {
                     out.insert(
                         name.clone(),
@@ -764,9 +763,9 @@ impl EffectEngine {
             }
             out.insert(name.clone(), resolved);
             for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
-                let cell_name = format!("{name}/{}", cell.name);
-                let own = states.get(&cell_name);
-                out.insert(cell_name, cell_state(state.cell_values(cell, own)));
+                let sub = cell_fixture_name(name, &cell.name);
+                let own = states.get(&sub);
+                out.insert(sub, cell_state(state.cell_values(cell, own)));
             }
         }
         out
@@ -1343,7 +1342,7 @@ impl EffectEngine {
             } else {
                 commands.extend(
                     fixture_state.to_dmx_commands_with_cells(fixture_info, |cell| {
-                        current_fixture_states.get(&format!("{fixture_name}/{cell}"))
+                        current_fixture_states.get(&cell_fixture_name(fixture_name, cell))
                     }),
                 );
             }

@@ -582,7 +582,9 @@ pub(crate) fn attach_cell_snapshots(
         let parent_state = states.get(parent).unwrap_or(&empty);
         let mut cells = std::collections::BTreeMap::new();
         for cell in &info.cells {
-            let own = states.get(&format!("{parent}/{}", cell.name));
+            let own = states.get(&crate::lighting::effects::cell_fixture_name(
+                parent, &cell.name,
+            ));
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
@@ -1135,7 +1137,7 @@ mod tests {
     /// `EffectEngine::register` builds one: the cell's own channels, and
     /// `parent` set so `attach_cell_snapshots` folds its state back in.
     fn sub_fixture(parent: &str, cell: &Cell) -> FixtureInfo {
-        let name = format!("{parent}/{}", cell.name);
+        let name = crate::lighting::effects::cell_fixture_name(parent, &cell.name);
         let channels: HashMap<String, u16> = cell
             .channels
             .iter()

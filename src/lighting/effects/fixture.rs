@@ -495,6 +495,17 @@ pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
 }
 
 /// Each additive primary and the subtractive channel that removes it.
+/// The name a pixel fixture's cell registers under beside it: the
+/// fixture's, a slash, the cell's.
+pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
+    format!("{fixture}/{cell}")
+}
+
+/// The cell's own name in a name [`cell_fixture_name`] built.
+pub fn cell_name(sub_fixture: &str) -> &str {
+    sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
+}
+
 pub const CMY_OF_RGB: [(&str, &str); 3] =
     [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
 
@@ -1130,5 +1141,13 @@ mod tests {
         );
         assert!(with.has_dimmer());
         assert!(!without.has_dimmer());
+    }
+
+    #[test]
+    fn a_cell_name_is_its_fixture_then_the_cell() {
+        let name = cell_fixture_name("bar", "cell3");
+        assert_eq!(name, "bar/cell3");
+        assert_eq!(cell_name(&name), "cell3");
+        assert_eq!(cell_name("bar"), "bar");
     }
 }

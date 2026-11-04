@@ -29,8 +29,8 @@ mod tests;
 pub use color::Color;
 pub use error::EffectError;
 pub use fixture::{
-    multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy,
-    MULTIPLIER_PREFIXES,
+    cell_fixture_name, cell_name, multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile,
+    StrobeStrategy, MULTIPLIER_PREFIXES,
 };
 pub(crate) use instance::fade_progress;
 pub use instance::EffectInstance;
