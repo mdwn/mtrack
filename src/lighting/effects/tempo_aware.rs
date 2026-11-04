@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use crate::tempo::{steady_secs, DEFAULT_BPM};
+use crate::tempo::{steady_secs, DEFAULT_BPM, DEFAULT_TIME_SIGNATURE};
 
 /// Helper to convert duration to frequency/cycles per second
 #[inline]
@@ -47,8 +47,11 @@ fn measures_to_duration_secs(
             .beats_per_measure();
         steady_secs(bpm, measures * beats_per_measure)
     } else {
-        // Fallback: assume default BPM, 4/4 time
-        steady_secs(DEFAULT_BPM, measures * 4.0)
+        // Fallback: assume default BPM and meter
+        steady_secs(
+            DEFAULT_BPM,
+            measures * DEFAULT_TIME_SIGNATURE.beats_per_measure(),
+        )
     }
 }
 

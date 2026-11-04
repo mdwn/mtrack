@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use super::super::tempo::{
     parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
-    TempoTransition, TimeSignature, TransitionCurve,
+    TempoTransition, TransitionCurve, DEFAULT_TIME_SIGNATURE,
 };
+
 use super::grammar::Rule;
 use super::utils::{parse_measure_time, parse_time_string, split_unit};
 use pest::iterators::Pair;
@@ -26,7 +27,8 @@ use pest::iterators::Pair;
 pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<dyn Error>> {
     let mut start_offset = Duration::ZERO;
     let mut bpm = crate::lighting::tempo::DEFAULT_BPM;
-    let mut time_signature = TimeSignature::new(4, 4); // Default
+    let mut time_signature = DEFAULT_TIME_SIGNATURE;
+
     let mut changes = Vec::new();
 
     // tempo = { "tempo" ~ "{" ~ tempo_content ~ "}" }

@@ -18,6 +18,12 @@ use std::time::Duration;
 /// Default BPM used when no tempo map is available.
 pub const DEFAULT_BPM: f64 = 120.0;
 
+/// The meter assumed when none is given: common time.
+pub const DEFAULT_TIME_SIGNATURE: TimeSignature = TimeSignature {
+    numerator: 4,
+    denominator: 4,
+};
+
 /// Time signature (numerator/denominator)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {
