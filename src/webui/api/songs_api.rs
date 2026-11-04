@@ -128,19 +128,6 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
-/// Helper to find a song's YAML config path (tries .yaml then .yml).
-fn find_yaml_path(base: &std::path::Path) -> Option<std::path::PathBuf> {
-    let yaml = base.join("song.yaml");
-    if yaml.exists() {
-        return Some(yaml);
-    }
-    let yml = base.join("song.yml");
-    if yml.exists() {
-        return Some(yml);
-    }
-    None
-}
-
 /// Reads a YAML file in a blocking task, returning a text/yaml response.
 async fn read_yaml_response(path: std::path::PathBuf) -> axum::response::Response {
     match super::helpers::spawn_blocking_io("read song config", move || {
@@ -173,7 +160,7 @@ pub(super) async fn get_song(
     let result = {
         let all_songs = state.player.songs();
         match all_songs.get(&name) {
-            Ok(song) => match find_yaml_path(song.base_path()) {
+            Ok(song) => match Some(song.config_path_or_default()).filter(|p| p.is_file()) {
                 Some(path) => GetSongResult::YamlPath(path),
                 None => GetSongResult::Summary(
                     (
@@ -193,7 +180,7 @@ pub(super) async fn get_song(
             },
             Err(_) => {
                 if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
-                    match find_yaml_path(failure.base_path()) {
+                    match Some(failure.config_path().to_path_buf()).filter(|p| p.is_file()) {
                         Some(path) => GetSongResult::YamlPath(path),
                         None => GetSongResult::NotFound(
                             (
@@ -358,13 +345,11 @@ pub(super) async fn delete_song(
     let _song_writes = SONG_WRITES.lock().await;
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
-    // Resolve the song directory through the registry with path verification.
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
+    // Resolve the song's YAML through the registry with path verification.
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
         Ok(p) => p,
         Err(e) => return *e,
     };
-
-    let config_path = song_dir.join_filename("song.yaml");
     if !config_path.exists() {
         return (
             StatusCode::NOT_FOUND,
@@ -709,13 +694,12 @@ pub(super) async fn put_song(
     // Held from the lookup: a song deleted before the lock was taken is
     // not written back.
     let _writing = SONG_WRITES.lock().await;
-    // Look up the song in the registry to get its actual path (handles nested dirs).
-    let song_dir = match resolve_song_dir(&state.player, &state.songs_path(), &name) {
+    // Look up the song in the registry to get its actual YAML (handles
+    // nested folders and flat `<name>.yaml` songs).
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
         Ok(p) => p,
         Err(e) => return *e,
     };
-
-    let config_path = song_dir.join_filename("song.yaml");
 
     // Validate the YAML before writing to disk.
     if let Err(e) = validate_song_body(&body) {
@@ -885,6 +869,30 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// Resolves an existing song directory by checking the player's registry first
 /// (handles nested paths like `artist/album/song`), then falling back to a
 /// direct path join. Returns an error response if the song isn't found.
+/// The YAML file a song is read from and written to: the one it was loaded
+/// from ([`songs::Song::config_path_or_default`], a failed load's likewise),
+/// or `song.yaml` in its folder for one the registry has not seen; within
+/// the verified song folder, which is within the songs root.
+fn song_config_path(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
+    let song_dir = resolve_song_dir(player, songs_path, name)?;
+    let songs = player.songs();
+    let loaded = match songs.get(name) {
+        Ok(song) => Some(song.config_path_or_default()),
+        Err(_) => songs
+            .failures()
+            .iter()
+            .find(|f| f.name() == name)
+            .map(|f| f.config_path().to_path_buf()),
+    };
+    Ok(loaded
+        .filter(|path| path.starts_with(song_dir.as_path()))
+        .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
+}
+
 pub(super) fn resolve_song_dir(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
@@ -1314,6 +1322,40 @@ mod test {
         assert!(body.contains("YmlSong"));
     }
 
+    /// A flat-layout song (`<name>.yaml` beside others) is read from its own
+    /// file, not from a `song.yaml` that is not there.
+    #[tokio::test]
+    async fn get_song_in_a_flat_layout_reads_its_own_yaml() {
+        let (state, _dir) = test_state();
+        crate::testutil::write_wav(
+            state.songs_path().join("track1.wav"),
+            vec![vec![0_i32; 4410]],
+            44100,
+        )
+        .unwrap();
+        std::fs::write(
+            state.songs_path().join("FlatSong.yaml"),
+            "name: FlatSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs().await.unwrap();
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/FlatSong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.starts_with("name: FlatSong"), "{body}");
+    }
+
     #[tokio::test]
     async fn put_song_valid() {
         let (state, _dir) = test_state();
@@ -1371,8 +1413,10 @@ mod test {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// A song loaded from a file of any name answers with that file: the
+    /// summary is for a song with no file at all.
     #[tokio::test]
-    async fn get_song_no_config_yaml_returns_summary() {
+    async fn get_song_reads_the_file_the_song_was_loaded_from() {
         let (state, _dir) = test_state();
         let song_dir = state.songs_path().join("CustomSong");
         std::fs::create_dir(&song_dir).unwrap();
@@ -1398,9 +1442,7 @@ mod test {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["config_file"], false);
-        assert_eq!(parsed["name"], "CustomSong");
+        assert!(body.starts_with("name: CustomSong"), "{body}");
     }
 
     #[tokio::test]

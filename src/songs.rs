@@ -745,6 +745,16 @@ impl Song {
         self.config_path.as_deref()
     }
 
+    /// The YAML file this song is written to: the one it was loaded from, or
+    /// `song.yaml` in its folder for one with no such file yet. The one
+    /// answer for every surface that reads or edits a song's YAML; a flat
+    /// `<name>.yaml` song's is that file, not `song.yaml` beside it.
+    pub fn config_path_or_default(&self) -> PathBuf {
+        self.config_path
+            .clone()
+            .unwrap_or_else(|| self.base_path.join("song.yaml"))
+    }
+
     /// Gets the per-song samples configuration.
     pub fn samples_config(&self) -> &config::SamplesConfig {
         &self.samples_config
@@ -1949,6 +1959,8 @@ impl MidiTempo {
 pub struct SongLoadFailure {
     name: String,
     base_path: PathBuf,
+    /// The YAML file that did not load.
+    config_path: PathBuf,
     error: String,
 }
 
@@ -1961,6 +1973,12 @@ impl SongLoadFailure {
     /// Returns the base path of the failed song.
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// The YAML file that did not load, as [`Song::config_path_or_default`]
+    /// answers for a song that did.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Returns the error message describing the failure.
@@ -2148,6 +2166,9 @@ pub fn get_all_songs_with_defaults(
                                         failures.push(SongLoadFailure {
                                             name: song_config.name().to_string(),
                                             base_path: canonical_parent,
+                                            config_path: path
+                                                .canonicalize()
+                                                .unwrap_or_else(|_| path.to_path_buf()),
                                             error: format!("{}", e),
                                         });
                                     }
@@ -2183,6 +2204,9 @@ pub fn get_all_songs_with_defaults(
                                 failures.push(SongLoadFailure {
                                     name,
                                     base_path,
+                                    config_path: path
+                                        .canonicalize()
+                                        .unwrap_or_else(|_| path.to_path_buf()),
                                     error: format!("{}", e),
                                 });
                             }

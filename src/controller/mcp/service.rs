@@ -1077,10 +1077,7 @@ impl McpServer {
             .songs()
             .get(&args.name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let path = song.config_path_or_default();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "name": song.name(),
@@ -1265,10 +1262,7 @@ impl McpServer {
                 // (`<root>/<name>/song.yaml`) both round-trip through their
                 // original file rather than writing to `<base>/song.yaml`,
                 // which is shared across all flat-layout songs.
-                let path = existing
-                    .config_path()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| existing.base_path().join("song.yaml"));
+                let path = existing.config_path_or_default();
                 crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
                     .map_err(safepath_err)?
                     .as_path()
@@ -2418,10 +2412,7 @@ impl McpServer {
             )
         })?;
 
-        let config_path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let config_path = song.config_path_or_default();
         let reference = path
             .strip_prefix(song.base_path())
             .unwrap_or(&path)
@@ -2629,10 +2620,7 @@ impl McpServer {
         song: &crate::songs::Song,
         path: &std::path::Path,
     ) -> Result<Registration, McpError> {
-        let config_path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let config_path = song.config_path_or_default();
 
         // The reference is stored relative to the song directory, matching how
         // a hand-written block spells it.
@@ -2681,10 +2669,7 @@ impl McpServer {
             .songs()
             .get(&args.name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let path = song.config_path_or_default();
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,

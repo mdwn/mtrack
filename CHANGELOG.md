@@ -246,6 +246,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The web UI reads a flat-layout song's own YAML**: `GET /api/songs/<name>` looked for
+  `song.yaml` or `song.yml` in the song's folder, so a song kept as `<name>.yaml` beside others
+  answered with a bare summary (or another song's file). It now reads the file the song was
+  loaded from, as every other surface does.
 - **`mtrack seek 90s` seeks**: the CLI parsed a position with the lighting DSL's time parser,
   which does not take an `s` suffix, so `90s` or `1:30s` fell through to a seek to a *section*
   of that name. It now parses positions as every other surface does (`90`, `90s`, `1:30`,
