@@ -562,7 +562,9 @@ impl TempoMap {
     }
 
     /// Convert a measure/beat position to absolute time with an offset.
-    /// The offset is applied to both the target position and tempo change positions.
+    /// `measure_offset` moves the position itself (score measure to playback
+    /// measure); `offset_secs` shifts the tempo map the way it shifts cue
+    /// times, so the position's time is shifted by it too.
     pub fn measure_to_time_with_offset(
         &self,
         measure: u32,
@@ -598,7 +600,8 @@ impl TempoMap {
         );
 
         // Walk through tempo changes, converting each to a beat position and accumulating time
-        self.integrate_through_segments(target_beats, &ts_changes, offset_duration)
+        self.integrate_through_segments(target_beats, &ts_changes)
+            .map(|time| time.saturating_add(offset_duration))
     }
 
     /// Build a sorted list of time signature changes as (measure, beat, TimeSignature).
@@ -788,7 +791,6 @@ impl TempoMap {
         &self,
         target_beats: f64,
         ts_changes: &[(u32, f64, TimeSignature)],
-        offset_duration: Duration,
     ) -> Option<Duration> {
         let mut current_bpm = self.initial_bpm;
         let mut accumulated_time = self.start_offset;
@@ -796,10 +798,7 @@ impl TempoMap {
         let mut current_ramp: Option<SegmentRamp> = None;
 
         for change in &self.changes {
-            let change_time = change
-                .position
-                .absolute_time()?
-                .saturating_add(offset_duration);
+            let change_time = change.position.absolute_time()?;
             let change_beats = self.compute_change_beats(change, change_time, ts_changes)?;
 
             if change_beats > target_beats {
@@ -959,7 +958,7 @@ impl TempoMap {
                 .start_offset
                 .saturating_sub(duration_from_secs(steady_secs(self.initial_bpm, -beats)));
         }
-        self.integrate_through_segments(beats, ts_changes, Duration::ZERO)
+        self.integrate_through_segments(beats, ts_changes)
             .unwrap_or(self.start_offset)
     }
 
@@ -1461,7 +1460,7 @@ mod tests {
             assert!(ticks.len() > 20_000, "{}", ticks.len());
             for (k, at) in ticks[lead..].iter().enumerate() {
                 let want = tempo
-                    .integrate_through_segments(k as f64 / 24.0, &ts_changes, Duration::ZERO)
+                    .integrate_through_segments(k as f64 / 24.0, &ts_changes)
                     .unwrap();
                 assert_eq!(*at, want, "pulse {k}");
             }
@@ -1951,6 +1950,34 @@ mod tests {
     fn measure_to_time_invalid_beat_below_one() {
         let map = simple_tempo_map(120.0);
         assert!(map.measure_to_time_with_offset(1, 0.5, 0, 0.0).is_none());
+    }
+
+    /// `offset_secs` shifts the whole map: a position after a change, at a
+    /// bar or at a time, is that much later. (It used to shift only the
+    /// placement of time-positioned changes, by the offset's worth of beats
+    /// on the unshifted map, and leave the position itself unshifted.)
+    #[test]
+    fn measure_to_time_with_offset_secs_shifts_the_position() {
+        for position in [
+            TempoChangePosition::MeasureBeat(3, 1.0),
+            TempoChangePosition::Time(Duration::from_secs(4)),
+        ] {
+            let map = TempoMap::new(
+                Duration::ZERO,
+                120.0,
+                TimeSignature::new(4, 4),
+                vec![snap_change(position.clone(), Some(60.0), None)],
+            );
+            // Bars 1-2 at 120 are 4 s, bars 3-4 at 60 are 8 s; bar 5 is 2 s
+            // later under an offset of 2 s.
+            for (offset, want) in [(0.0, 12.0), (2.0, 14.0)] {
+                let bar5 = map.measure_to_time_with_offset(5, 1.0, 0, offset).unwrap();
+                assert!(
+                    (bar5.as_secs_f64() - want).abs() < 1e-9,
+                    "{position:?} offset {offset}: {bar5:?}"
+                );
+            }
+        }
     }
 
     #[test]

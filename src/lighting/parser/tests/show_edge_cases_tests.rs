@@ -1986,17 +1986,18 @@ show "Empty" {
     assert!(show.cues.is_empty());
 }
 
-/// Under an offset, a tempo change positioned in time moves with it while
-/// one positioned by bar stays on its bar: a bar-positioned cue after an
-/// offset is placed through the shifted timed change. The web UI timeline
-/// (timeline-tempo-math.spec.ts) places it the same way.
+/// Under an offset the whole tempo map moves with it, a tempo change
+/// positioned in time along with one positioned by bar: a bar-positioned
+/// cue after an offset is at its score time plus the offset, where
+/// `bpm_at_time` under that offset has the change too. (The web UI
+/// timeline, timeline-tempo-math.spec.ts, still takes a timed change the
+/// offset's worth of beats later on the unshifted map, as the player did.)
 #[test]
 fn test_offset_shifts_time_positioned_tempo_changes() {
-    // Snap: the change at 6s is taken at 8s, beat 14 of the unshifted map,
-    // so bar 5 (beat 16) is 7s + 2s, plus the 2s offset. Ramp: the change
-    // is taken at beat 15.25, so the 4-beat ramp from 120 has 0.75 beats to
-    // run before bar 5.
-    for (transition, want_secs) in [("", 11.0), (", transition: 4", 10.014_201_009)] {
+    // Snap: the change at 6s is beat 12, so bar 5 (beat 16) is 6s + 4s,
+    // plus the 2s offset. Ramp: the 4-beat ramp from 120 to 60 averages
+    // 90, so bar 5 is 6s + 8/3s, plus the offset.
+    for (transition, want_secs) in [("", 12.0), (", transition: 4", 10.0 + 2.0 / 3.0)] {
         let content = format!(
             r#"tempo {{
     start: 0.0s
