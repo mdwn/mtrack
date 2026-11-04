@@ -553,6 +553,12 @@ fn exact_eighths(x: f64) -> bool {
     x < EXACT_BEATS && (x * 8.0).fract() == 0.0
 }
 
+/// Whether a change anchored at `beat` of its bar is on the downbeat, so
+/// it governs that bar; one anchored mid-bar governs from the next.
+fn on_downbeat(beat: f64) -> bool {
+    (beat - 1.0).abs() < 0.001
+}
+
 /// The time signature changes as the beat grid has them, in bar order: a
 /// change anchored mid-bar governs from the next bar.
 #[derive(Debug, Clone)]
@@ -583,7 +589,7 @@ impl Metres {
         for (change_m, change_b, new_ts) in &self.changes {
             // Apply changes that occur before this measure, or exactly at
             // the start (beat ≈ 1) of this measure.
-            if *change_m < measure || (*change_m == measure && (*change_b - 1.0).abs() < 0.001) {
+            if *change_m < measure || (*change_m == measure && on_downbeat(*change_b)) {
                 ts = *new_ts;
             }
         }
@@ -596,7 +602,7 @@ impl Metres {
     fn next_boundary(&self, measure: u32) -> Option<u32> {
         self.changes
             .iter()
-            .map(|(m, b, _)| if (b - 1.0).abs() < 0.001 { *m } else { m + 1 })
+            .map(|(m, b, _)| if on_downbeat(*b) { *m } else { m + 1 })
             .filter(|&bar| bar > measure)
             .min()
     }
