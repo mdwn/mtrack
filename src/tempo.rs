@@ -854,42 +854,32 @@ impl TempoMap {
     /// Get time signature at a given time
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
     ///
-    /// As the beat grid has it: a change anchored mid-bar governs from the
-    /// next bar.
+    /// As the beat grid has it: the signature of the bar the time falls in,
+    /// so a change anchored mid-bar governs from the next bar.
     pub fn time_signature_at_time(&self, time: Duration, offset_secs: f64) -> TimeSignature {
-        let offset_duration = Duration::from_secs_f64(offset_secs);
-        let mut ts = self.initial_time_signature;
+        let Some(score_time) = time.checked_sub(Duration::from_secs_f64(offset_secs)) else {
+            return self.initial_time_signature;
+        };
+        let segments = self.segments();
+        let (measure, _) = segments
+            .metres
+            .measure_beat_at(segments.beats_at(score_time));
+        segments.metres.at_measure(measure)
+    }
 
-        for change in &self.changes {
-            let Some(new_ts) = change.time_signature else {
-                continue;
-            };
-            let Some(at) = change.position.absolute_time() else {
-                continue;
-            };
-            if at.saturating_add(offset_duration) > time {
-                break;
-            }
-            let (m, b) = change
-                .original_measure_beat
-                .unwrap_or_else(|| self.time_to_measure_beat(at));
-            if (b - 1.0).abs() >= 0.001
-                && self
-                    .measure_to_time_with_offset(m + 1, 1.0, 0, 0.0)
-                    .is_some_and(|next_bar| next_bar.saturating_add(offset_duration) > time)
-            {
-                continue;
-            }
-            ts = new_ts;
-        }
-
-        ts
+    /// The time signature in effect at a measure (1-indexed), as the beat
+    /// grid has it: a change anchored mid-bar governs from the next bar.
+    pub(crate) fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
+        self.segments().metres.at_measure(measure)
     }
 
     /// The time signature set by the changes up to and at `change`'s time,
     /// whichever order those at it are listed in, at once, whether or not a
     /// barline has been reached since: what a transition in measures counts
-    /// its length in, as `TempoMap::new` does.
+    /// its length in, as `TempoMap::new` does. Not the grid's rule
+    /// (`Metres::at_measure`, where a mid-bar change waits for the next
+    /// bar): a ramp written "over 2 measures" beside a metre change is two
+    /// bars of the new metre, whichever beat they are written at.
     fn time_signature_through(&self, change: &TempoChange) -> TimeSignature {
         let at = change.position.absolute_time();
         let mut ts = self.initial_time_signature;
