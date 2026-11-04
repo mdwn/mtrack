@@ -17,15 +17,32 @@ use std::time::Duration;
 use super::super::effects::{BlendMode, EffectLayer, EffectType};
 use super::super::tempo::TempoMap;
 
-/// Bundles the per-cue context that flows through the parsing pipeline,
-/// replacing the 5-7 individual parameters previously threaded through
-/// `parse_effect_definition` and friends.
+/// The cue an effect is parsed in: the tempo map in force, the cue's time
+/// and the show `offset` it includes.
 #[derive(Clone)]
 pub(crate) struct ParseContext {
     pub tempo_map: Option<TempoMap>,
     pub cue_time: Duration,
     pub offset_secs: f64,
-    pub unshifted_score_time: Option<Duration>,
+}
+
+impl ParseContext {
+    /// A duration parameter's value -- `duration`, `up_time`, `hold_time`,
+    /// `down_time`, on any effect -- read at the cue's place in the score:
+    /// its time less the offset, on the unshifted map, which is the map
+    /// shifted by the offset as the cue was (#525). One in beats or
+    /// measures so integrates through the tempo changes and ramps from
+    /// there, as the cue times do. Two other rules apply on purpose: a
+    /// sequence's effects are resolved again where the sequence is
+    /// expanded (`Effect::resolve_musical_durations`, #529), and its
+    /// `length:` is read from its first cue (`declared_length`), there
+    /// being no cue to read it at.
+    pub fn duration(&self, value: &str) -> Result<Duration, Box<dyn std::error::Error>> {
+        let score_time = self
+            .cue_time
+            .saturating_sub(Duration::from_secs_f64(self.offset_secs));
+        super::utils::parse_duration_string(value, &self.tempo_map, Some(score_time), 0.0)
+    }
 }
 
 /// A file's shows by name, in the order the file has them: the timeline

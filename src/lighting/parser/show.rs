@@ -805,11 +805,6 @@ fn parse_cue(
         tempo_map: tempo_map.clone(),
         cue_time: abs_time,
         offset_secs: applied_offset_secs,
-        unshifted_score_time: if unshifted_score_time != Duration::ZERO {
-            Some(unshifted_score_time)
-        } else {
-            None
-        },
     };
     for effect_pair in effect_pairs {
         base.effects
