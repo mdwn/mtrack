@@ -396,13 +396,17 @@ enum ChangeAt {
 }
 
 /// Where the beat walk stands just past a change: the beat position and
-/// time of the change, and the tempo from there.
+/// time of the change, the tempo from there, and the time signature set by
+/// the changes through it (at once, whether or not a barline has been
+/// reached since: what a ramp in measures counts its length in; the grid
+/// applies a mid-bar change from the next bar, `Metres::at_measure`).
 #[derive(Debug, Clone, Copy)]
 struct SegmentState {
     beats: f64,
     time: Duration,
     bpm: f64,
     ramp: Option<SegmentRamp>,
+    metre: TimeSignature,
 }
 
 impl SegmentState {
@@ -413,22 +417,27 @@ impl SegmentState {
             time: map.start_offset,
             bpm: map.initial_bpm,
             ramp: None,
+            metre: map.initial_time_signature,
         }
     }
 
-    /// The state just past a change reached at `at` from this one: the
+    /// The state just past `change`, reached at `at` from this one: the
     /// change's position in beats and time, through any gradual transition
-    /// still in progress, then the tempo it sets, `change_bpm` by
-    /// `transition`. A ramp in measures is sized in the metre `metre` gives
-    /// for the state at the change, asked for only then. A change before
-    /// this state's time counts as at it, as the beat walks have it.
-    fn through(
+    /// still in progress, then the tempo it sets. A ramp in measures counts
+    /// its length in the signature set at its position: by the changes
+    /// through this one and any other at the same position, `beside` (asked
+    /// for only then, given the state at the change), whichever order they
+    /// are listed in. A change before this state's time counts as at it, as
+    /// the beat walks have it.
+    fn through<'c, I>(
         &self,
         at: ChangeAt,
-        change_bpm: Option<f64>,
-        transition: TempoTransition,
-        metre: impl FnOnce(&SegmentState) -> TimeSignature,
-    ) -> SegmentState {
+        change: &TempoChange,
+        beside: impl FnOnce(&SegmentState) -> I,
+    ) -> SegmentState
+    where
+        I: Iterator<Item = &'c TempoChange>,
+    {
         let (beats, time, advanced_secs) = match at {
             ChangeAt::Beats(beats) => {
                 let secs = segment_secs_for_beats(self.ramp.as_ref(), self.bpm, beats - self.beats);
@@ -454,9 +463,15 @@ impl SegmentState {
             time,
             bpm: self.bpm,
             ramp: self.ramp.and_then(|ramp| ramp.advanced_by(advanced_secs)),
+            metre: change.time_signature.unwrap_or(self.metre),
         };
-        if let Some(new_bpm) = change_bpm {
-            let ramp = SegmentRamp::started_by(transition, bpm_at_change, new_bpm, || metre(&next));
+        if let Some(new_bpm) = change.bpm {
+            let ramp = SegmentRamp::started_by(change.transition, bpm_at_change, new_bpm, || {
+                beside(&next)
+                    .filter_map(|other| other.time_signature)
+                    .last()
+                    .unwrap_or(next.metre)
+            });
             next.ramp = ramp;
             next.bpm = new_bpm;
         }
@@ -705,7 +720,6 @@ impl TempoMap {
             initial_time_signature,
             changes: Vec::new(),
         };
-        let mut current_time_sig = initial_time_signature;
         // The metre changes resolved so far, as the beat grid has them.
         let mut metres = Metres::new(initial_time_signature);
 
@@ -755,34 +769,27 @@ impl TempoMap {
                 (change, ChangeAt::Beats(beats))
             };
 
-            // A ramp in measures matches bpm_at_time: its length is counted
-            // in the time signature in effect after this change and any
-            // other at the same position, whichever order they are listed in
-            // (`time_signature_through`, before the pending ones are
-            // resolved).
-            let next = state.through(at, change.bpm, change.transition, |reached| {
+            // The pending changes at the same position (before they are
+            // resolved): time-positioned ones at the same time, bar-positioned
+            // ones at the same beat.
+            let next = state.through(at, &change, |reached| {
                 let absolute_time = match at {
                     ChangeAt::Time(t) => t,
                     ChangeAt::Beats(_) => reached.time,
                 };
-                let mut sizing_time_sig = current_time_sig;
-                for pending in timed.iter() {
-                    if pending.position.absolute_time() != Some(absolute_time) {
-                        break;
-                    }
-                    if let Some(new_ts) = pending.time_signature {
-                        sizing_time_sig = new_ts;
-                    }
-                }
-                for (m, b, pending) in barred.iter() {
-                    if metres.beats_at(*m, *b) > reached.beats + 1e-9 {
-                        break;
-                    }
-                    if let Some(new_ts) = pending.time_signature {
-                        sizing_time_sig = new_ts;
-                    }
-                }
-                sizing_time_sig
+                let beats = reached.beats;
+                let metres = &metres;
+                timed
+                    .iter()
+                    .take_while(move |pending| {
+                        pending.position.absolute_time() == Some(absolute_time)
+                    })
+                    .chain(
+                        barred
+                            .iter()
+                            .take_while(move |(m, b, _)| metres.beats_at(*m, *b) <= beats + 1e-9)
+                            .map(|(_, _, pending)| pending),
+                    )
             });
             let absolute_time = match at {
                 ChangeAt::Time(t) => t,
@@ -806,7 +813,6 @@ impl TempoMap {
             // A change's own metre does not move it: one at beat 1 governs
             // from its bar on, one mid-bar from the next.
             if let Some(new_ts) = change.time_signature {
-                current_time_sig = new_ts;
                 let (m, b) = match &change.position {
                     TempoChangePosition::MeasureBeat(m, b) => (*m, *b),
                     TempoChangePosition::Time(_) => metres.measure_beat_at(next.beats),
@@ -834,15 +840,17 @@ impl TempoMap {
         let mut metres = Metres::new(self.initial_time_signature);
         let mut states = Vec::with_capacity(self.changes.len() + 1);
         let mut state = SegmentState::at_bar_one(self);
-        for change in &self.changes {
+        for (i, change) in self.changes.iter().enumerate() {
             let at = match change.original_measure_beat {
                 Some((m, b)) => ChangeAt::Beats(metres.beats_at(m, b)),
                 None => {
                     ChangeAt::Time(change.position.absolute_time().unwrap_or(self.start_offset))
                 }
             };
-            let next = state.through(at, change.bpm, change.transition, |_| {
-                self.time_signature_through(change)
+            let next = state.through(at, change, |_| {
+                self.changes[i + 1..].iter().take_while(|later| {
+                    later.position.absolute_time() == change.position.absolute_time()
+                })
             });
             if let Some(new_ts) = change.time_signature {
                 let (m, b) = change
@@ -928,27 +936,6 @@ impl TempoMap {
     /// grid has it: a change anchored mid-bar governs from the next bar.
     pub(crate) fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
         self.segments().metres.at_measure(measure)
-    }
-
-    /// The time signature set by the changes up to and at `change`'s time,
-    /// whichever order those at it are listed in, at once, whether or not a
-    /// barline has been reached since: what a transition in measures counts
-    /// its length in, as `TempoMap::new` does. Not the grid's rule
-    /// (`Metres::at_measure`, where a mid-bar change waits for the next
-    /// bar): a ramp written "over 2 measures" beside a metre change is two
-    /// bars of the new metre, whichever beat they are written at.
-    fn time_signature_through(&self, change: &TempoChange) -> TimeSignature {
-        let at = change.position.absolute_time();
-        let mut ts = self.initial_time_signature;
-        for prev_change in &self.changes {
-            if prev_change.position.absolute_time() > at {
-                break;
-            }
-            if let Some(new_ts) = prev_change.time_signature {
-                ts = new_ts;
-            }
-        }
-        ts
     }
 
     /// Convert a duration in beats to absolute Duration at a given time.
@@ -2429,6 +2416,35 @@ mod tests {
         assert_eq!(at(12_500), TimeSignature::new(4, 4));
         assert_eq!(at(13_200), TimeSignature::new(4, 4));
         assert_eq!(at(14_000), TimeSignature::new(3, 4));
+    }
+
+    /// A ramp in measures on a change that sets the signature too is sized
+    /// in that signature, when the map is resolved and when it is walked
+    /// afterwards alike: one bar of 3/4 from 120 to 60 is 2 s, so bar 4 is
+    /// at 7 s.
+    #[test]
+    fn a_ramp_in_measures_counts_its_own_changes_signature() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![
+                TempoChange {
+                    position: TempoChangePosition::MeasureBeat(2, 1.0),
+                    original_measure_beat: None,
+                    bpm: Some(60.0),
+                    time_signature: Some(TimeSignature::new(3, 4)),
+                    transition: TempoTransition::Measures(1.0, TransitionCurve::Linear),
+                },
+                snap_change(TempoChangePosition::MeasureBeat(4, 1.0), Some(200.0), None),
+            ],
+        );
+        let resolved = map.changes[1].position.absolute_time().unwrap();
+        assert!((resolved.as_secs_f64() - 7.0).abs() < 1e-9, "{resolved:?}");
+        let bar4 = map.measure_to_time_with_offset(4, 1.0, 0, 0.0).unwrap();
+        assert_eq!(bar4, resolved);
+        assert_eq!(map.bpm_at_time(Duration::from_millis(4_500), 0.0), 60.0);
+        assert_eq!(map.bpm_at_time(Duration::from_secs(7), 0.0), 200.0);
     }
 
     /// A ramp in measures sized in the signature set at its position, by
