@@ -858,7 +858,11 @@ impl Engine {
             // this profile cannot drive, naming the fixtures. The per-tick
             // drop warning in update_effects is the backstop, not the report.
             self.warned_missing_universes.lock().clear();
-            for (universe, fixtures) in unconfigured_universes(&fixture_infos, &self.universes) {
+            for (universe, fixtures) in
+                crate::lighting::lint::unconfigured_universes(&fixture_infos, |universe| {
+                    self.universes.contains_key(&universe)
+                })
+            {
                 warn!(
                     universe,
                     fixtures = fixtures.join(", "),
@@ -1027,78 +1031,6 @@ impl Drop for Engine {
         {
             error!("Error joining handle");
         }
-    }
-}
-
-/// Groups fixtures by the universes `configured` has no entry for:
-/// universe → fixture names, both sorted for stable reporting. Generic over
-/// the map's value so tests don't need to construct output threads.
-fn unconfigured_universes<V>(
-    fixture_infos: &[crate::lighting::effects::FixtureInfo],
-    configured: &HashMap<u16, V>,
-) -> std::collections::BTreeMap<u16, Vec<String>> {
-    let mut gaps: std::collections::BTreeMap<u16, Vec<String>> = Default::default();
-    for fixture_info in fixture_infos {
-        if !configured.contains_key(&fixture_info.universe) {
-            gaps.entry(fixture_info.universe)
-                .or_default()
-                .push(fixture_info.name.clone());
-        }
-    }
-    for fixtures in gaps.values_mut() {
-        fixtures.sort();
-    }
-    gaps
-}
-
-#[cfg(test)]
-mod universe_gap_tests {
-    use std::collections::HashMap;
-
-    use super::unconfigured_universes;
-    use crate::lighting::effects::FixtureInfo;
-
-    fn fixture(name: &str, universe: u16) -> FixtureInfo {
-        let mut channels = HashMap::new();
-        channels.insert("dimmer".to_string(), 1);
-        FixtureInfo::new(
-            name.to_string(),
-            universe,
-            1,
-            "Par".to_string(),
-            channels,
-            None,
-        )
-    }
-
-    #[test]
-    fn reports_only_unconfigured_universes_with_sorted_fixtures() {
-        let fixtures = vec![
-            fixture("Wash1", 1),
-            fixture("Truss2", 9),
-            fixture("Truss1", 9),
-            fixture("Side1", 4),
-        ];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-
-        let gaps = unconfigured_universes(&fixtures, &configured);
-        assert_eq!(gaps.len(), 2);
-        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
-        assert_eq!(
-            gaps[&9],
-            vec!["Truss1".to_string(), "Truss2".to_string()],
-            "fixture names sort for stable reports"
-        );
-        assert!(!gaps.contains_key(&1));
-    }
-
-    #[test]
-    fn a_fully_configured_venue_reports_nothing() {
-        let fixtures = vec![fixture("Wash1", 1)];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-        assert!(unconfigured_universes(&fixtures, &configured).is_empty());
     }
 }
 

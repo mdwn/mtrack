@@ -131,6 +131,26 @@ impl GroupCapabilities {
     }
 }
 
+/// Fixtures grouped by the universes `configured` says nothing drives:
+/// universe -> fixture names, both sorted for stable reporting.
+pub fn unconfigured_universes(
+    fixtures: &[crate::lighting::effects::FixtureInfo],
+    configured: impl Fn(u16) -> bool,
+) -> BTreeMap<u16, Vec<String>> {
+    let mut gaps: BTreeMap<u16, Vec<String>> = Default::default();
+    for fixture in fixtures {
+        if !configured(fixture.universe) {
+            gaps.entry(fixture.universe)
+                .or_default()
+                .push(fixture.name.clone());
+        }
+    }
+    for names in gaps.values_mut() {
+        names.sort_unstable();
+    }
+    gaps
+}
+
 /// A venue-level finding: fixtures patched on a universe the active
 /// profile configures no output for. Reported at registration and on
 /// first drop today; this makes it a pre-show answer. `configured` is the
@@ -139,19 +159,9 @@ pub fn universe_coverage(
     fixtures: &[crate::lighting::effects::FixtureInfo],
     configured: &[u16],
 ) -> Vec<Warning> {
-    let mut by_universe: std::collections::BTreeMap<u16, Vec<&str>> = Default::default();
-    for fixture in fixtures {
-        if !configured.contains(&fixture.universe) {
-            by_universe
-                .entry(fixture.universe)
-                .or_default()
-                .push(&fixture.name);
-        }
-    }
-    by_universe
+    unconfigured_universes(fixtures, |universe| configured.contains(&universe))
         .into_iter()
-        .map(|(universe, mut names)| {
-            names.sort_unstable();
+        .map(|(universe, names)| {
             Warning::new(
                 "unconfigured-universe",
                 format!(
@@ -1029,6 +1039,38 @@ show "s" {
             warnings[1].message
         );
         assert!(universe_coverage(&fixtures, &[1, 2, 3]).is_empty());
+    }
+
+    #[test]
+    fn unconfigured_universes_group_sorted_fixtures() {
+        let fixture = |name: &str, universe: u16| {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            crate::lighting::effects::FixtureInfo::new(
+                name.to_string(),
+                universe,
+                1,
+                "Par".to_string(),
+                channels,
+                None,
+            )
+        };
+        let fixtures = vec![
+            fixture("Wash1", 1),
+            fixture("Truss2", 9),
+            fixture("Truss1", 9),
+            fixture("Side1", 4),
+        ];
+        let gaps = unconfigured_universes(&fixtures, |universe| universe == 1);
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
+        assert_eq!(
+            gaps[&9],
+            vec!["Truss1".to_string(), "Truss2".to_string()],
+            "fixture names sort for stable reports"
+        );
+        assert!(!gaps.contains_key(&1));
+        assert!(unconfigured_universes(&fixtures[..1], |universe| universe == 1).is_empty());
     }
 
     #[test]
