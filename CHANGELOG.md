@@ -150,6 +150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
+  a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
+  at that time, its own effect first, as a show cue always has; it used to make two, with its
+  own effect after the first sequence's.
+- **A unit written twice is no unit**: `5msms` or `2ss` in a duration, rate, angle or tempo
+  `start:` is an error; the unit used to be stripped as often as it repeated. A non-numeric
+  tempo `start:` names the whole value in its error, and an inline loop's `repeats: 0` says
+  "Loop count must be at least 1", as a reference's `loop: 0` does.
 - **A tempo change positioned in time before `start:` is applied at the start**: the beat
   grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
   times tempo-aware effect rates ran it from its own time, so a ramp written before the start
@@ -244,6 +252,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path in it, or one the song already has, is refused. A song already broken this way loads
   again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
   is in the song's folder.
+- **A sequence written past a tempo change is placed by the beats it spans**: a sequence's
+  cues, and its pass, are counted in beats on the map it was written against, through the
+  tempo changes there, and laid down by that count where it is used. They were counted at the
+  map's starting tempo whatever it did afterwards, so a sequence of one bar at `@3/1`, after a
+  change from 120 to 60 BPM, was placed as two bars. The same count places a sequence inside
+  another, which ran at the outer's starting tempo through every change, with its durations in
+  beats or measures re-read where it plays.
+- **`stop sequence` finds a sequence expanded inside another**: an effect belongs to the
+  innermost sequence it is written in. Expanding the outer renamed every effect to the outer's,
+  so `stop sequence "inner"` stopped nothing (and `stop sequence "outer"` now stops only the
+  outer's own effects).
+- **A sequence of layer commands loops**: a pass with no effect in it lasts until its last cue,
+  as an inline loop's always has; it lasted no time, stacking every pass on the first. A pass
+  starts at its earliest cue, not the first one written.
 - **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
   `offset N measures` is its score position's time plus the offset, with every tempo change,
   positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups
