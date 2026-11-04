@@ -225,6 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does for lengths and tempo lookups, so a bar-positioned cue after a time-positioned tempo
   change under an `offset` lands where `bpm_at_time` has the change. (The web UI timeline still
   places such a cue the old way.)
+- **A length in measures at a tempo that is not a number no longer hangs**: the bar walk it
+  used looked for a beat position that is not finite for ever; the one bar walk now stops, as the
+  bar-and-beat lookup already did.
 - **A song without a show no longer brings the last song's back on an edit**: the last song's
   light show file watcher went on running under a song with no show of its own (MIDI DMX only,
   or no lights, and with ambient light fading in over the last song until it was all the way in),

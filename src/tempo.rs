@@ -512,40 +512,42 @@ impl Metres {
         target_beats
     }
 
-    /// The (measure, beat) of a quarter-note beat position (0 at bar 1 beat
-    /// 1); bar 1 for one before it.
-    fn measure_beat_at(&self, beats: f64) -> (u32, f64) {
-        let mut remaining = snap_beats(beats.max(0.0));
+    /// The bar a quarter-note beat position (0 at bar 1 beat 1, not
+    /// negative) falls in: its number, the beats into it, and the beats it
+    /// holds. The walk stops at a bar of no length, or when the position is
+    /// not finite (it would never be reached).
+    fn bar_at(&self, beats: f64) -> (u32, f64, f64) {
+        let mut remaining = beats;
         let mut measure: u32 = 1;
         loop {
             let per_measure = self.at_measure(measure).beats_per_measure();
             if per_measure <= 0.0 || remaining < per_measure || !remaining.is_finite() {
-                return (measure, 1.0 + remaining);
+                return (measure, remaining, per_measure);
             }
             remaining -= per_measure;
             measure += 1;
         }
     }
 
+    /// The (measure, beat) of a quarter-note beat position, snapped; bar 1
+    /// for one before it.
+    fn measure_beat_at(&self, beats: f64) -> (u32, f64) {
+        let (measure, into, _) = self.bar_at(snap_beats(beats.max(0.0)));
+        (measure, 1.0 + into)
+    }
+
     /// Measures elapsed (0 at bar 1 beat 1, fractional within a bar) at a
-    /// quarter-note beat position.
+    /// quarter-note beat position; before bar 1, in bars of the initial
+    /// time signature.
     fn measures_at(&self, beats: f64) -> f64 {
         if beats < 0.0 {
             return beats / self.initial.beats_per_measure();
         }
-        let mut remaining = beats;
-        let mut measure: u32 = 1;
-        loop {
-            let per_measure = self.at_measure(measure).beats_per_measure();
-            if per_measure <= 0.0 {
-                return (measure - 1) as f64;
-            }
-            if remaining < per_measure {
-                return (measure - 1) as f64 + remaining / per_measure;
-            }
-            remaining -= per_measure;
-            measure += 1;
+        let (measure, into, per_measure) = self.bar_at(beats);
+        if per_measure <= 0.0 {
+            return (measure - 1) as f64;
         }
+        (measure - 1) as f64 + into / per_measure
     }
 
     /// The quarter-note beat position at a measure position (the inverse of
@@ -1670,6 +1672,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A tempo that is no tempo gives a beat position that is not a
+    /// number; a length in measures from it answers rather than walking
+    /// bars for ever looking for it.
+    #[test]
+    fn a_length_in_measures_at_no_tempo_does_not_hang() {
+        let map = simple_tempo_map(f64::NAN);
+        map.measures_to_duration(1.0, Duration::from_secs(1), 0.0);
+        map.measures_before(1.0, Duration::from_secs(1));
     }
 
     #[test]
