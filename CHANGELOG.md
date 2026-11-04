@@ -246,6 +246,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
+  and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
+  profile names it) parked at centre no longer makes a dark rig read as lit. The MVR export's
+  test of whether a fixture moves goes by the same rule, so a head with only sectioned pan or
+  tilt channels counts as a mover and is not linked to a focus point near its rest beam.
+- **`diff_show` positions are on the map the player plays**: a song's shows all play to the first
+  show's `tempo` block (or the song's tempo), and the diff's `@measure/beat` positions now report
+  where each cue lands on that map. A second file's own block placed its cues' positions, so the
+  diff said a cue was where that file put it, not where it plays.
+- **A light show added in the song editor lands in the song's folder, and the song keeps
+  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
+  was written beside the song folders, and named an added file with the folder, which
+  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
+  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
+  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
+  removal takes the entry out. New files are saved before the config, so the reload the
+  config save starts finds them; the song's other files after it, so a tempo saved with them
+  is the one they are checked against; removed files are deleted last, once the config no
+  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
+  path in it, or one the song already has, is refused. A song already broken this way loads
+  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
+  is in the song's folder.
 - **A sequence written past a tempo change is placed by the beats it spans**: a sequence's
   cues, and its pass, are counted in beats on the map it was written against, through the
   tempo changes there, and laid down by that count where it is used. They were counted at the

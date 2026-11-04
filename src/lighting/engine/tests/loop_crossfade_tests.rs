@@ -214,13 +214,13 @@ fn shown_bytes(
         let info = &registry[&snapshot.name];
         for (channel, &value) in &snapshot.channels {
             if let Some(&offset) = info.channels.get(channel) {
-                bytes.insert(info.address + offset - 1, value);
+                bytes.insert(info.dmx_channel(offset), value);
             }
         }
         for (cell, values) in &snapshot.cells {
             let def = info.cells.iter().find(|c| &c.name == cell).unwrap();
             for (channel, &value) in values {
-                bytes.insert(info.address + def.channels[channel].offset - 1, value);
+                bytes.insert(info.dmx_channel(def.channels[channel].offset), value);
             }
         }
     }

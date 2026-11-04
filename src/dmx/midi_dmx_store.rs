@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use super::universe::{dim_rate, dim_step};
+
 /// Stores an f64 in an AtomicU64 via bit representation.
 fn store_f64(atom: &AtomicU64, val: f64) {
     atom.store(val.to_bits(), Ordering::Relaxed);
@@ -179,13 +181,8 @@ impl MidiDmxStore {
 
             if dim {
                 let current = load_f64(&slot.current);
-                let dim_rate = self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0);
-                let rate = if dim_rate > f64::EPSILON {
-                    (value_f64 - current) / dim_rate
-                } else {
-                    0.0 // instant
-                };
-                store_f64(&slot.rate, rate);
+                let ticks = self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0);
+                store_f64(&slot.rate, dim_rate(current, value_f64, ticks));
             } else {
                 store_f64(&slot.rate, 0.0); // instant
             }
@@ -252,13 +249,7 @@ impl MidiDmxStore {
                 continue;
             }
 
-            let new_current = if rate > f64::EPSILON {
-                (current + rate).min(target)
-            } else if rate < -f64::EPSILON {
-                (current + rate).max(target)
-            } else {
-                target // instant (rate == 0)
-            };
+            let new_current = dim_step(current, target, rate);
 
             if (new_current - current).abs() > f64::EPSILON {
                 any_changed = true;

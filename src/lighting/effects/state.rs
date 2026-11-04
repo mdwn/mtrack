@@ -314,7 +314,7 @@ impl FixtureState {
                 for (offset, byte) in super::physical::resolve_normalized(def, value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
+                        channel: fixture_info.dmx_channel(offset),
                         value: byte,
                     });
                 }
@@ -337,7 +337,7 @@ impl FixtureState {
                 for (offset, byte) in super::physical::resolve_normalized(def, 1.0 - value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
+                        channel: fixture_info.dmx_channel(offset),
                         value: byte,
                     });
                 }
@@ -349,7 +349,7 @@ impl FixtureState {
                 for (offset, byte) in super::physical::resolve_normalized(def, value) {
                     commands.push(DmxCommand {
                         universe: fixture_info.universe,
-                        channel: fixture_info.address + offset - 1,
+                        channel: fixture_info.dmx_channel(offset),
                         value: byte,
                     });
                 }
@@ -359,7 +359,7 @@ impl FixtureState {
             for (offset, byte) in resolved.bytes {
                 commands.push(DmxCommand {
                     universe: fixture_info.universe,
-                    channel: fixture_info.address + offset - 1,
+                    channel: fixture_info.dmx_channel(offset),
                     value: byte,
                 });
             }

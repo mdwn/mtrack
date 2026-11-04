@@ -102,25 +102,11 @@ fn ascii_skeleton(name: &str) -> String {
 /// An MVR transform as a row-major 4×4 with the translation converted from
 /// millimeters, re-origined by `origin_mm`.
 fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
+    let o = super::import::to_stage(&matrix.o, origin_mm);
     [
-        [
-            matrix.u[0],
-            matrix.v[0],
-            matrix.w[0],
-            (matrix.o[0] - origin_mm[0]) / 1000.0,
-        ],
-        [
-            matrix.u[1],
-            matrix.v[1],
-            matrix.w[1],
-            (matrix.o[1] - origin_mm[1]) / 1000.0,
-        ],
-        [
-            matrix.u[2],
-            matrix.v[2],
-            matrix.w[2],
-            (matrix.o[2] - origin_mm[2]) / 1000.0,
-        ],
+        [matrix.u[0], matrix.v[0], matrix.w[0], o[0]],
+        [matrix.u[1], matrix.v[1], matrix.w[1], o[1]],
+        [matrix.u[2], matrix.v[2], matrix.w[2], o[2]],
         [0.0, 0.0, 0.0, 1.0],
     ]
 }

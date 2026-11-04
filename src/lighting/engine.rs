@@ -88,6 +88,12 @@ fn base_channel(channel: &str) -> &str {
     base.strip_suffix("_fine").unwrap_or(base)
 }
 
+/// Whether a channel carries where a head points -- pan or tilt, a section
+/// (`pan:1`) or fine byte of either -- rather than what it shows.
+pub(crate) fn is_position_channel(channel: &str) -> bool {
+    matches!(CrossKind::of(channel), CrossKind::Position)
+}
+
 impl CrossKind {
     fn of(channel: &str) -> CrossKind {
         match base_channel(channel) {
@@ -175,9 +181,8 @@ impl FixtureRegistry {
         #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
-                let dmx_channel = fixture.address + offset - 1;
                 self.dmx_to_fixture_map.insert(
-                    (fixture.universe, dmx_channel),
+                    (fixture.universe, fixture.dmx_channel(offset)),
                     (fixture.name.clone(), channel_name.clone()),
                 );
             }
@@ -535,7 +540,7 @@ impl EffectEngine {
         for fixture in self.fixtures.as_map().values() {
             for (name, &offset) in &fixture.channels {
                 kinds.insert(
-                    (fixture.universe, fixture.address + offset - 1),
+                    (fixture.universe, fixture.dmx_channel(offset)),
                     CrossKind::of(name),
                 );
             }
@@ -581,7 +586,7 @@ impl EffectEngine {
     /// carry a position (pan, tilt): a crossfade holds those rather than
     /// fading them, so no fade takes one dark.
     pub fn position_channels(&self) -> HashSet<(u16, u16)> {
-        self.channels_where(|name| matches!(CrossKind::of(name), CrossKind::Position))
+        self.channels_where(is_position_channel)
     }
 
     /// Every DMX channel (universe, channel) a patched fixture drives for a
@@ -590,7 +595,7 @@ impl EffectEngine {
     fn channels_where(&self, keep: impl Fn(&str) -> bool) -> HashSet<(u16, u16)> {
         let mut out = HashSet::new();
         for fixture in self.fixtures.as_map().values() {
-            let at = |offset: u16| (fixture.universe, fixture.address + offset - 1);
+            let at = |offset: u16| (fixture.universe, fixture.dmx_channel(offset));
             for (name, def) in &fixture.channel_defs {
                 if !keep(name) {
                     continue;
@@ -1060,11 +1065,10 @@ impl EffectEngine {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
                         if let Some(&offset) = fixture_info.channels.get(channel_name) {
-                            let dmx_channel = fixture_info.address + offset - 1;
                             let dmx_value = (normalized_value * 255.0) as u8;
                             commands.push(DmxCommand {
                                 universe: fixture_info.universe,
-                                channel: dmx_channel,
+                                channel: fixture_info.dmx_channel(offset),
                                 value: dmx_value,
                             });
                             // Update merged state for simulator visibility.
@@ -1584,12 +1588,17 @@ impl EffectEngine {
         history: crate::lighting::timeline::SeekHistory,
         scope: StopScope,
     ) -> Vec<EffectError> {
+        self.stop_by_scope(scope);
+        self.replay(history)
+    }
+
+    /// Stops what `scope` says a replay starts over.
+    fn stop_by_scope(&mut self, scope: StopScope) {
         match scope {
             StopScope::Nothing => {}
             StopScope::Show => self.stop_show_effects(),
             StopScope::All => self.stop_all_effects(),
         }
-        self.replay(history)
     }
 
     /// Replays `history` in this engine, up to its start point.
@@ -1687,11 +1696,7 @@ impl EffectEngine {
             again,
             errors,
         } = prepared;
-        match scope {
-            StopScope::Nothing => {}
-            StopScope::Show => self.stop_show_effects(),
-            StopScope::All => self.stop_all_effects(),
-        }
+        self.stop_by_scope(scope);
         if let (Some(reads), Some(history)) = (&pose_reads, again) {
             if reads
                 .read

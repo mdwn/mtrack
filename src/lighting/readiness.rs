@@ -54,12 +54,7 @@ pub fn songs_with_lighting(songs: &crate::songs::Songs) -> Vec<(Arc<Song>, Vec<L
         if song.dsl_lighting_shows().is_empty() {
             continue;
         }
-        // In the order the player has them.
-        let shows: Vec<LightShow> = song
-            .dsl_lighting_shows()
-            .iter()
-            .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-            .collect();
+        let shows = crate::lighting::evaluate::registered_shows(&song);
         out.push((song, shows));
     }
     out
@@ -123,21 +118,13 @@ impl VenueFacts {
         }
         // A venue that does not register lights nothing; say why rather than
         // letting it read as an empty rig.
-        let fixtures = match system.get_current_venue_fixtures() {
+        let fixtures = match system.load_current_venue_fixtures() {
             Ok(fixtures) => fixtures,
-            Err(e) => {
-                let venue = system.current_venue().unwrap_or_default().to_string();
-                facts.venue_error = Some(match system.venue_problem(&venue) {
-                    Some((fixture, reason)) => VenueError {
-                        venue,
-                        fixture,
-                        reason,
-                    },
-                    None => VenueError {
-                        venue,
-                        fixture: String::new(),
-                        reason: e.to_string(),
-                    },
+            Err(fault) => {
+                facts.venue_error = Some(VenueError {
+                    venue: fault.venue.unwrap_or_default(),
+                    fixture: fault.fixture.unwrap_or_default(),
+                    reason: fault.reason,
                 });
                 Vec::new()
             }

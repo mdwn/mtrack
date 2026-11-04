@@ -163,13 +163,12 @@ struct Level {
 }
 
 impl Level {
-    /// The level at `now`, 0.0 to 1.0.
+    /// The level at `now`, 0.0 to 1.0: `to` once the fade is over.
     fn at(&self, now: Instant) -> f64 {
-        if self.over.is_zero() {
-            return self.to;
-        }
-        let progress = (now.saturating_duration_since(self.started).as_secs_f64()
-            / self.over.as_secs_f64())
+        let progress = crate::section_loop::crossfade_progress(
+            now.saturating_duration_since(self.started),
+            self.over,
+        )
         .min(1.0);
         self.from + (self.to - self.from) * progress
     }
@@ -788,6 +787,35 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::dmx::ola_client::OlaClientFactory;
+
+    /// A fade of no time is at its end at once, exactly there; one of some
+    /// time runs linearly to it and holds.
+    #[test]
+    fn a_level_fades_linearly_and_holds_at_its_end() {
+        let started = Instant::now();
+        for from in (0..=100).map(|n| f64::from(n) / 100.0) {
+            for to in [0.0, 1.0] {
+                let level = Level {
+                    from,
+                    to,
+                    started,
+                    over: Duration::ZERO,
+                };
+                assert_eq!(level.at(started), to, "from {from} to {to} at once");
+                assert_eq!(level.at(started + Duration::from_secs(1)), to);
+            }
+        }
+        let level = Level {
+            from: 0.2,
+            to: 1.0,
+            started,
+            over: Duration::from_secs(2),
+        };
+        assert_eq!(level.at(started), 0.2);
+        assert!((level.at(started + Duration::from_secs(1)) - 0.6).abs() < 1e-12);
+        assert_eq!(level.at(started + Duration::from_secs(2)), 1.0);
+        assert_eq!(level.at(started + Duration::from_secs(5)), 1.0);
+    }
 
     /// An engine whose lighting configuration plays `show` (written to a
     /// file in the returned directory) as its ambient light, with the wash

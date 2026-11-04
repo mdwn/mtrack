@@ -568,6 +568,22 @@ pub struct SectionBounds {
     pub end_time: Duration,
 }
 
+impl SectionBounds {
+    /// The section of `song` the playhead at `at` sits inside, if any,
+    /// resolved to absolute time bounds via the song's beat grid: the first
+    /// in the song's order whose bounds hold `at`.
+    pub fn at(song: &Song, at: Duration) -> Option<SectionBounds> {
+        song.sections().iter().find_map(|s| {
+            let (start_time, end_time) = song.resolve_section(&s.name)?;
+            (at >= start_time && at < end_time).then(|| SectionBounds {
+                name: s.name.clone(),
+                start_time,
+                end_time,
+            })
+        })
+    }
+}
+
 /// State machine for reactive section looping.
 ///
 /// In reactive mode, sections are "offered" to the performer as playback

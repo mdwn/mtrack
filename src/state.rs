@@ -547,14 +547,15 @@ fn attach_pointing(
     }
 }
 
-/// Whether a channel name carries where a head points rather than what it
-/// shows: pan, tilt and their fine bytes.
+/// Whether a snapshot channel carries where a head points rather than what
+/// it shows: pan, tilt and their fine bytes, as the engine has them, under
+/// the `#n` a snapshot names a ganged channel's mirrors by.
 pub fn is_pointing_channel(name: &str) -> bool {
     let base = match name.split_once('#') {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
     };
-    matches!(base, "pan" | "tilt" | "pan_fine" | "tilt_fine")
+    crate::lighting::engine::is_position_channel(base)
 }
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry

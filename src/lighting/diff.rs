@@ -29,8 +29,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::lighting::analyze::{analyze_show, DarkWindow};
-use crate::lighting::effects::{BlendMode, EffectLayer};
+use crate::lighting::effects::{BlendMode, EffectLayer, DEFAULT_BLEND, DEFAULT_LAYER};
 use crate::lighting::parser::LightShow;
+use crate::lighting::timeline::shows_tempo_map;
 use crate::tempo::TempoMap;
 
 /// One effect, resolved.
@@ -199,16 +200,13 @@ pub fn diff_shows(
 /// Every layer command in the shows, in time order.
 fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCommandEntry> {
     let mut out = Vec::new();
+    let map = shows_tempo_map(shows, tempo);
     for show in shows {
-        let map = show.tempo_map.as_ref().or(tempo);
         for cue in &show.cues {
             for cmd in &cue.layer_commands {
                 out.push(LayerCommandEntry {
                     time: cue.time,
-                    position: map.map(|m| {
-                        let (measure, beat) = m.time_to_measure_beat(cue.time);
-                        format!("@{measure}/{beat:.2}")
-                    }),
+                    position: map.map(|m| m.position_label(cue.time)),
                     command: format!("{:?}", cmd.command_type).to_lowercase(),
                     layer: cmd
                         .layer
@@ -257,8 +255,8 @@ fn entries(
 ) -> BTreeMap<(String, &'static str), Vec<DiffEntry>> {
     let mut out: BTreeMap<(String, &'static str), Vec<DiffEntry>> = BTreeMap::new();
 
+    let map = shows_tempo_map(shows, tempo);
     for show in shows {
-        let map = show.tempo_map.as_ref().or(tempo);
         for cue in &show.cues {
             for effect in &cue.effects {
                 let groups = effect.groups.join(", ");
@@ -267,18 +265,15 @@ fn entries(
                     .or_default()
                     .push(DiffEntry {
                         time: cue.time,
-                        position: map.map(|m| {
-                            let (measure, beat) = m.time_to_measure_beat(cue.time);
-                            format!("@{measure}/{beat:.2}")
-                        }),
+                        position: map.map(|m| m.position_label(cue.time)),
                         groups,
                         effect_type,
-                        layer: effect.layer.unwrap_or(EffectLayer::Background),
+                        layer: effect.layer.unwrap_or(DEFAULT_LAYER),
                         duration: effect.total_duration(),
                         // Both default to what the engine applies when the DSL
                         // omits them, so an unannotated effect compares as it
                         // will actually run.
-                        blend_mode: effect.blend_mode.unwrap_or(BlendMode::Replace),
+                        blend_mode: effect.blend_mode.unwrap_or(DEFAULT_BLEND),
                         parameters: effect.effect_type.parameters(),
                     });
             }
@@ -702,6 +697,46 @@ show "T" {
             "{:?}",
             d.changed[0].before
         );
+    }
+
+    #[test]
+    fn positions_follow_the_tempo_map_the_player_plays() {
+        // Two files, each with its own tempo block: the player places every
+        // cue on the first show's map, and the positions report where they
+        // land there -- not where the second file's own block put them.
+        let first = r#"
+tempo {
+    start: 0ms
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "A" {
+    @1/1
+    wash: static color: "blue", duration: 1s
+}
+"#;
+        let second = r#"
+tempo {
+    start: 0ms
+    bpm: 60
+    time_signature: 4/4
+}
+
+show "B" {
+    @3/1
+    wash: static color: "red", duration: 1s
+}
+"#;
+        let before: Vec<LightShow> = shows(first).into_iter().chain(shows(second)).collect();
+        let d = diff_shows(Vec::new(), before, None, None);
+        let b = d
+            .added
+            .iter()
+            .find(|e| e.time == Duration::from_secs(8))
+            .unwrap();
+        // Bar 3 at 60 BPM is 8s; at 120 BPM, the map B plays on, 8s is bar 5.
+        assert_eq!(b.position.as_deref(), Some("@5/1.00"));
     }
 
     #[test]

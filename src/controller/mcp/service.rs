@@ -627,19 +627,13 @@ impl McpServer {
                 .songs()
                 .get(name)
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-            // In file order, then their order in the file, as the player
-            // has them.
-            let shows: Vec<_> = song
-                .dsl_lighting_shows()
-                .iter()
-                .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-                .collect();
+            let shows = crate::lighting::evaluate::registered_shows(&song);
 
             // Merged and time-sorted, the way the player's own timeline
             // combines a song's shows. Concatenating per show would restart
             // indices at zero for each one and interleave their times, so the
             // same song answered differently depending on which branch ran.
-            let tempo = shows.iter().find_map(|s| s.tempo_map.clone());
+            let tempo = crate::lighting::timeline::shows_tempo_map(&shows, None);
             let mut cues: Vec<(std::time::Duration, usize)> = shows
                 .iter()
                 .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
@@ -654,10 +648,7 @@ impl McpServer {
                         "index": index,
                         "time": format_duration(time),
                         "seconds": time.as_secs_f64(),
-                        "position": tempo.as_ref().map(|m| {
-                            let (measure, beat) = m.time_to_measure_beat(time);
-                            format!("@{measure}/{beat:.2}")
-                        }),
+                        "position": tempo.map(|m| m.position_label(time)),
                         "effects": effects,
                     })
                 })
@@ -3307,10 +3298,10 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
         .iter()
         .enumerate()
         .map(|(index, cue)| {
-            let position = show.tempo_map.as_ref().map(|map| {
-                let (measure, beat) = map.time_to_measure_beat(cue.time);
-                format!("@{measure}/{beat:.2}")
-            });
+            let position = show
+                .tempo_map
+                .as_ref()
+                .map(|map| map.position_label(cue.time));
             json!({
                 "index": index,
                 "time": cue.time.as_secs_f64(),
@@ -3402,6 +3393,12 @@ fn quarter_note_intervals(
 
 /// The meter a song declares, for reading its click grid in quarter notes:
 /// its own `tempo:` block, else the first of its shows with a `tempo` block.
+///
+/// Not [`Song::lighting_tempo_map`], deliberately: that falls back to the
+/// grid itself, and the grid read against a meter derived from the grid
+/// would answer nothing. This is a question about the declared meter only.
+///
+/// [`Song::lighting_tempo_map`]: crate::songs::Song::lighting_tempo_map
 fn declared_meter(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
     song.tempo_map().cloned().or_else(|| {
         song.dsl_lighting_shows()

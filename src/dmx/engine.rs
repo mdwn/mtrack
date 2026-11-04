@@ -515,12 +515,9 @@ impl Engine {
             universe.update_dim_speed(dimming_duration);
         }
         // Mirror dim rate to MIDI DMX store
-        let rate = if dimming_duration.is_zero() {
-            1.0
-        } else {
-            dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
-        };
-        self.midi_dmx_store.read().set_dim_rate(universe_id, rate);
+        self.midi_dmx_store
+            .read()
+            .set_dim_rate(universe_id, super::universe::dim_ticks(dimming_duration));
     }
 
     /// Updates the given universe by ID.
@@ -825,35 +822,27 @@ impl Engine {
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
             let lighting_system = lighting_system.lock();
-            let venue = lighting_system.current_venue().map(str::to_string);
-            let fixture_infos = match lighting_system.get_current_venue_fixtures() {
+            let fixture_infos = match lighting_system.load_current_venue_fixtures() {
                 Ok(infos) => {
                     self.record_venue_registration(VenueRegistration {
-                        venue,
+                        venue: lighting_system.current_venue().map(str::to_string),
                         ok: true,
                         fixture: None,
                         error: None,
                     });
                     infos
                 }
-                Err(e) => {
-                    let (fixture, error) = match venue
-                        .as_deref()
-                        .and_then(|v| lighting_system.venue_problem(v))
-                    {
-                        Some((fixture, reason)) => (Some(fixture), reason),
-                        None => (None, e.to_string()),
-                    };
+                Err(fault) => {
                     drop(lighting_system);
                     self.clear_registered_fixtures();
                     self.record_venue_registration(VenueRegistration {
                         ok: false,
-                        fixture,
+                        fixture: fault.fixture,
                         // No venue selected is not a failure to report.
-                        error: venue.as_ref().map(|_| error),
-                        venue,
+                        error: fault.venue.as_ref().map(|_| fault.reason),
+                        venue: fault.venue,
                     });
-                    return Err(e);
+                    return Err(fault.error);
                 }
             };
 
@@ -861,7 +850,11 @@ impl Engine {
             // this profile cannot drive, naming the fixtures. The per-tick
             // drop warning in update_effects is the backstop, not the report.
             self.warned_missing_universes.lock().clear();
-            for (universe, fixtures) in unconfigured_universes(&fixture_infos, &self.universes) {
+            for (universe, fixtures) in
+                crate::lighting::lint::unconfigured_universes(&fixture_infos, |universe| {
+                    self.universes.contains_key(&universe)
+                })
+            {
                 warn!(
                     universe,
                     fixtures = fixtures.join(", "),
@@ -881,7 +874,7 @@ impl Engine {
                 .flat_map(|f| {
                     f.channels
                         .values()
-                        .map(move |&offset| (f.universe, f.address + offset - 1))
+                        .map(move |&offset| (f.universe, f.dmx_channel(offset)))
                 })
                 .collect();
             midi_dmx_store
@@ -890,10 +883,9 @@ impl Engine {
             for fixture_info in &fixture_infos {
                 // Register slots in the MIDI DMX store for each fixture channel
                 for (channel_name, &offset) in &fixture_info.channels {
-                    let dmx_channel = fixture_info.address + offset - 1;
                     midi_dmx_store.register_slot(
                         fixture_info.universe,
-                        dmx_channel,
+                        fixture_info.dmx_channel(offset),
                         &fixture_info.name,
                         channel_name,
                     );
@@ -905,18 +897,7 @@ impl Engine {
             effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
             effect_engine.replace_fixtures(fixture_infos);
-            effect_engine.set_focus_points(
-                lighting_system
-                    .get_current_venue()
-                    .map(|venue| {
-                        venue
-                            .focus_points()
-                            .iter()
-                            .map(|(name, point)| (name.clone(), *point))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            );
+            effect_engine.set_focus_points(lighting_system.current_focus_points());
             drop(midi_dmx_store);
             self.ambient_follows_rig(&effect_engine);
         }
@@ -1031,78 +1012,6 @@ impl Drop for Engine {
         {
             error!("Error joining handle");
         }
-    }
-}
-
-/// Groups fixtures by the universes `configured` has no entry for:
-/// universe → fixture names, both sorted for stable reporting. Generic over
-/// the map's value so tests don't need to construct output threads.
-fn unconfigured_universes<V>(
-    fixture_infos: &[crate::lighting::effects::FixtureInfo],
-    configured: &HashMap<u16, V>,
-) -> std::collections::BTreeMap<u16, Vec<String>> {
-    let mut gaps: std::collections::BTreeMap<u16, Vec<String>> = Default::default();
-    for fixture_info in fixture_infos {
-        if !configured.contains_key(&fixture_info.universe) {
-            gaps.entry(fixture_info.universe)
-                .or_default()
-                .push(fixture_info.name.clone());
-        }
-    }
-    for fixtures in gaps.values_mut() {
-        fixtures.sort();
-    }
-    gaps
-}
-
-#[cfg(test)]
-mod universe_gap_tests {
-    use std::collections::HashMap;
-
-    use super::unconfigured_universes;
-    use crate::lighting::effects::FixtureInfo;
-
-    fn fixture(name: &str, universe: u16) -> FixtureInfo {
-        let mut channels = HashMap::new();
-        channels.insert("dimmer".to_string(), 1);
-        FixtureInfo::new(
-            name.to_string(),
-            universe,
-            1,
-            "Par".to_string(),
-            channels,
-            None,
-        )
-    }
-
-    #[test]
-    fn reports_only_unconfigured_universes_with_sorted_fixtures() {
-        let fixtures = vec![
-            fixture("Wash1", 1),
-            fixture("Truss2", 9),
-            fixture("Truss1", 9),
-            fixture("Side1", 4),
-        ];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-
-        let gaps = unconfigured_universes(&fixtures, &configured);
-        assert_eq!(gaps.len(), 2);
-        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
-        assert_eq!(
-            gaps[&9],
-            vec!["Truss1".to_string(), "Truss2".to_string()],
-            "fixture names sort for stable reports"
-        );
-        assert!(!gaps.contains_key(&1));
-    }
-
-    #[test]
-    fn a_fully_configured_venue_reports_nothing() {
-        let fixtures = vec![fixture("Wash1", 1)];
-        let mut configured = HashMap::new();
-        configured.insert(1u16, ());
-        assert!(unconfigured_universes(&fixtures, &configured).is_empty());
     }
 }
 

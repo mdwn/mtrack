@@ -148,7 +148,13 @@ where
 /// order same-time cues from different shows fire in. Empty when the song
 /// has no DSL lighting loaded.
 pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    song.dsl_lighting_shows()
+    shows_in(song.dsl_lighting_shows())
+}
+
+/// [`registered_shows`] of a song's `.light` files, for a song still being
+/// built from them.
+pub fn shows_in(files: &[crate::songs::DslLightingShow]) -> Vec<LightShow> {
+    files
         .iter()
         .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
         .collect()
@@ -192,30 +198,17 @@ pub fn evaluate_with_system(
     let (fixtures, focus_points, group_map) = match system {
         Some(system) => {
             let mut guard = system.lock();
-            let fixtures = match guard.get_current_venue_fixtures() {
+            let fixtures = match guard.load_current_venue_fixtures() {
                 Ok(fixtures) => fixtures,
                 // No current venue at all is not an error here: there is
                 // simply no rig, as without a system.
                 Err(_) if guard.get_current_venue().is_none() => Vec::new(),
-                Err(e) => {
-                    let venue = guard.current_venue().unwrap_or_default().to_string();
-                    venue_error = Some(match guard.venue_problem(&venue) {
-                        Some((_, problem)) => problem,
-                        None => e.to_string(),
-                    });
+                Err(fault) => {
+                    venue_error = Some(fault.reason);
                     Vec::new()
                 }
             };
-            let focus_points: HashMap<String, [f64; 3]> = guard
-                .get_current_venue()
-                .map(|venue| {
-                    venue
-                        .focus_points()
-                        .iter()
-                        .map(|(name, point)| (name.clone(), *point))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let focus_points = guard.current_focus_points();
             let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
             for name in crate::lighting::readiness::group_names(&shows) {
                 let resolved = guard.resolve_logical_group_graceful(&name);
@@ -1005,6 +998,27 @@ show "T" {
             ..evaluation
         };
         assert_eq!(lit.is_dark(), Some(false));
+    }
+
+    /// A GDTF profile names a head's pan `pan:1`, a section of the one
+    /// attribute: where it points, all the same, and not a lit channel.
+    #[test]
+    fn is_dark_ignores_a_gdtf_pan_section() {
+        let channels: HashMap<String, u8> = [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        let evaluation = Evaluation {
+            time: Duration::ZERO,
+            fixtures: vec![FixtureSnapshot {
+                name: "m".to_string(),
+                channels,
+                cells: Default::default(),
+            }],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        };
+        assert_eq!(evaluation.is_dark(), Some(true));
     }
 }
 

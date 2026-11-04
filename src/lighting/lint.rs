@@ -26,7 +26,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
-use crate::lighting::effects::{BlendMode, EffectLayer, EffectType, DEFAULT_BLEND, DEFAULT_LAYER};
+use crate::lighting::effects::{
+    BlendMode, EffectLayer, EffectType, MoveTarget, DEFAULT_BLEND, DEFAULT_LAYER,
+};
 use crate::lighting::parser::{effect_keyword, Cue, Effect, LightShow};
 use crate::lighting::timeline::EffectEnd;
 
@@ -66,6 +68,81 @@ pub struct LintContext<'a> {
     pub focus_points: Option<HashSet<String>>,
 }
 
+/// Something a show asks of a group: what an effect needs its fixtures to
+/// have ([`Want::of`]), or a pixel fixture for `per: cell`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Want {
+    /// A `move`: pan or tilt channels.
+    Move,
+    /// A colour cue (static colour, cycle, rainbow): colour channels.
+    Color,
+    /// A `strobe`: a strobe channel.
+    Strobe,
+    /// `per: cell`: a pixel fixture.
+    Cells,
+    /// A `dimmer` or `pulse`: a dimmer channel or colour channels.
+    Dimmer,
+}
+
+impl Want {
+    /// What an effect needs of its group's fixtures to do what it says,
+    /// if anything: a chase, or a static naming no colour, asks nothing
+    /// in particular.
+    pub fn of(effect_type: &EffectType) -> Option<Want> {
+        match effect_type {
+            EffectType::Strobe { .. } => Some(Want::Strobe),
+            EffectType::Dimmer { .. } | EffectType::Pulse { .. } => Some(Want::Dimmer),
+            EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => Some(Want::Color),
+            EffectType::Move { .. } => Some(Want::Move),
+            // A static's colour arrives as red, green and blue.
+            EffectType::Static { parameters, .. }
+                if ["red", "green", "blue"]
+                    .iter()
+                    .any(|c| parameters.contains_key(*c)) =>
+            {
+                Some(Want::Color)
+            }
+            EffectType::Static { .. } | EffectType::Chase { .. } => None,
+        }
+    }
+
+    /// The name used in the API and in findings.
+    pub fn name(self) -> &'static str {
+        match self {
+            Want::Move => "move",
+            Want::Color => "color",
+            Want::Strobe => "strobe",
+            Want::Cells => "cells",
+            Want::Dimmer => "dimmer",
+        }
+    }
+
+    /// What a fixture has it with, for a finding.
+    fn what(self) -> &'static str {
+        match self {
+            Want::Move => "pan or tilt channels",
+            Want::Color => "colour channels (RGB or CMY)",
+            Want::Strobe => "a strobe channel",
+            Want::Cells => "cells",
+            Want::Dimmer => "a dimmer or colour channels",
+        }
+    }
+}
+
+/// The focus points a `move` aims at: its `to`, and its `from` when it has
+/// one. Nothing for any other effect.
+pub fn focus_targets(effect_type: &EffectType) -> impl Iterator<Item = &str> {
+    let targets = match effect_type {
+        EffectType::Move { to, from, .. } => [Some(to), from.as_ref()],
+        _ => [None, None],
+    };
+    targets.into_iter().flatten().filter_map(|t| match t {
+        MoveTarget::Focus(name) => Some(name.as_str()),
+        _ => None,
+    })
+}
+
 /// How many of a group's fixtures have each capability an effect can ask
 /// for, derived from their channel maps.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -86,6 +163,17 @@ pub struct GroupCapabilities {
 }
 
 impl GroupCapabilities {
+    /// How many of the group's fixtures can do what `want` asks.
+    pub fn have(&self, want: Want) -> usize {
+        match want {
+            Want::Move => self.pan_tilt,
+            Want::Color => self.rgb,
+            Want::Strobe => self.strobe,
+            Want::Cells => self.cells,
+            Want::Dimmer => self.dimmer + self.rgb,
+        }
+    }
+
     /// Tallies a group from its resolved fixtures.
     pub fn from_fixtures<'f>(
         fixtures: impl IntoIterator<Item = &'f crate::lighting::effects::FixtureInfo>,
@@ -131,6 +219,26 @@ impl GroupCapabilities {
     }
 }
 
+/// Fixtures grouped by the universes `configured` says nothing drives:
+/// universe -> fixture names, both sorted for stable reporting.
+pub fn unconfigured_universes(
+    fixtures: &[crate::lighting::effects::FixtureInfo],
+    configured: impl Fn(u16) -> bool,
+) -> BTreeMap<u16, Vec<String>> {
+    let mut gaps: BTreeMap<u16, Vec<String>> = Default::default();
+    for fixture in fixtures {
+        if !configured(fixture.universe) {
+            gaps.entry(fixture.universe)
+                .or_default()
+                .push(fixture.name.clone());
+        }
+    }
+    for names in gaps.values_mut() {
+        names.sort_unstable();
+    }
+    gaps
+}
+
 /// A venue-level finding: fixtures patched on a universe the active
 /// profile configures no output for. Reported at registration and on
 /// first drop today; this makes it a pre-show answer. `configured` is the
@@ -139,19 +247,9 @@ pub fn universe_coverage(
     fixtures: &[crate::lighting::effects::FixtureInfo],
     configured: &[u16],
 ) -> Vec<Warning> {
-    let mut by_universe: std::collections::BTreeMap<u16, Vec<&str>> = Default::default();
-    for fixture in fixtures {
-        if !configured.contains(&fixture.universe) {
-            by_universe
-                .entry(fixture.universe)
-                .or_default()
-                .push(&fixture.name);
-        }
-    }
-    by_universe
+    unconfigured_universes(fixtures, |universe| configured.contains(&universe))
         .into_iter()
-        .map(|(universe, mut names)| {
-            names.sort_unstable();
+        .map(|(universe, names)| {
             Warning::new(
                 "unconfigured-universe",
                 format!(
@@ -347,44 +445,26 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let (needs, have, what): (&str, fn(&GroupCapabilities) -> usize, &str) =
-                match &effect.effect_type {
-                    EffectType::Strobe { .. } => ("strobe", |c| c.strobe, "a strobe channel"),
-                    EffectType::Dimmer { .. } | EffectType::Pulse { .. } => (
-                        "dimmer",
-                        |c| c.dimmer + c.rgb,
-                        "a dimmer or colour channels",
-                    ),
-                    EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
-                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
-                    }
-                    EffectType::Move { .. } => ("move", |c| c.pan_tilt, "pan or tilt channels"),
-                    // A static's colour arrives as red, green and blue.
-                    EffectType::Static { parameters, .. }
-                        if ["red", "green", "blue"]
-                            .iter()
-                            .any(|c| parameters.contains_key(*c)) =>
-                    {
-                        ("color", |c| c.rgb, "colour channels (RGB or CMY)")
-                    }
-                    EffectType::Static { .. } | EffectType::Chase { .. } => continue,
-                };
+            let Some(want) = Want::of(&effect.effect_type) else {
+                continue;
+            };
             for group in &effect.groups {
                 let Some(capabilities) = ctx.group_capabilities.get(group) else {
                     continue;
                 };
                 // An empty group is its own finding.
-                if capabilities.fixtures == 0 || have(capabilities) > 0 {
+                if capabilities.fixtures == 0 || capabilities.have(want) > 0 {
                     continue;
                 }
-                if reported.insert((group.clone(), needs)) {
+                if reported.insert((group.clone(), want)) {
                     out.push(Warning::new(
                         "capability-gap",
                         format!(
-                            "`{}` on `{group}` at {:.3}s needs {what}, and none of the \
+                            "`{}` on `{group}` at {:.3}s needs {}, and none of the \
                              group's {} fixtures has one — the cue will not do what it says",
                             effect_keyword(&effect.effect_type),
                             cue.time.as_secs_f64(),
+                            want.what(),
                             capabilities.fixtures,
                         ),
                     ));
@@ -402,15 +482,10 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let EffectType::Move { to, from, .. } = &effect.effect_type else {
+            if !matches!(effect.effect_type, EffectType::Move { .. }) {
                 continue;
-            };
-            let targets = [Some(to), from.as_ref()];
-            let focus_names = targets.iter().flatten().filter_map(|t| match t {
-                crate::lighting::effects::MoveTarget::Focus(name) => Some(name.as_str()),
-                _ => None,
-            });
-            for name in focus_names {
+            }
+            for name in focus_targets(&effect.effect_type) {
                 if let Some(points) = &ctx.focus_points {
                     if !points.contains(name) && reported.insert(("focus", name.to_string())) {
                         out.push(Warning::new(
@@ -426,10 +501,7 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
                     }
                 }
             }
-            let aims_at_focus = targets
-                .iter()
-                .flatten()
-                .any(|t| matches!(t, crate::lighting::effects::MoveTarget::Focus(_)));
+            let aims_at_focus = focus_targets(&effect.effect_type).next().is_some();
             for group in &effect.groups {
                 let Some(capabilities) = ctx.group_capabilities.get(group) else {
                     continue;
@@ -1029,6 +1101,38 @@ show "s" {
             warnings[1].message
         );
         assert!(universe_coverage(&fixtures, &[1, 2, 3]).is_empty());
+    }
+
+    #[test]
+    fn unconfigured_universes_group_sorted_fixtures() {
+        let fixture = |name: &str, universe: u16| {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            crate::lighting::effects::FixtureInfo::new(
+                name.to_string(),
+                universe,
+                1,
+                "Par".to_string(),
+                channels,
+                None,
+            )
+        };
+        let fixtures = vec![
+            fixture("Wash1", 1),
+            fixture("Truss2", 9),
+            fixture("Truss1", 9),
+            fixture("Side1", 4),
+        ];
+        let gaps = unconfigured_universes(&fixtures, |universe| universe == 1);
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[&4], vec!["Side1".to_string()]);
+        assert_eq!(
+            gaps[&9],
+            vec!["Truss1".to_string(), "Truss2".to_string()],
+            "fixture names sort for stable reports"
+        );
+        assert!(!gaps.contains_key(&1));
+        assert!(unconfigured_universes(&fixtures[..1], |universe| universe == 1).is_empty());
     }
 
     #[test]

@@ -28,7 +28,6 @@ use tracing::{debug, info, warn};
 
 use crate::audio::TargetFormat;
 use crate::config;
-use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
 use crate::util::filename_display;
 
@@ -1466,10 +1465,7 @@ impl fmt::Display for Song {
 /// here as it does there. Computed when the song loads, and again once a
 /// `.light` file has changed on disk (see [`Song::length`]).
 fn lighting_end(shows: &[DslLightingShow]) -> Duration {
-    let all: Vec<ParsedLightShow> = shows
-        .iter()
-        .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-        .collect();
+    let all = crate::lighting::evaluate::shows_in(shows);
     if all.is_empty() {
         return Duration::ZERO;
     }

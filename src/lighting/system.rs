@@ -26,6 +26,21 @@ use super::types::{Fixture, FixtureType, Venue};
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
 use crate::config::Lighting;
 
+/// Why the current venue's fixtures do not load
+/// ([`LightingSystem::load_current_venue_fixtures`]): the first fixture that
+/// cannot be driven and why, when the venue has one, else the load error.
+#[derive(Debug)]
+pub struct VenueFault {
+    /// The current venue; `None` when none is selected.
+    pub venue: Option<String>,
+    /// The first fixture (in patch order) that fails the venue, when one does.
+    pub fixture: Option<String>,
+    /// That fixture's problem, else the load error's text.
+    pub reason: String,
+    /// The load error itself.
+    pub error: Box<dyn Error>,
+}
+
 /// The lighting system configuration.
 pub struct LightingSystem {
     /// The native fixture types, as declared. A GDTF-sourced type is not
@@ -1208,6 +1223,39 @@ impl LightingSystem {
             .get(type_name)
             .and_then(|t| t.source())
             .map(|s| s.path.as_str())
+    }
+
+    /// The current venue's fixtures for the effects engine, or why they do
+    /// not load; what to make of no venue at all is the caller's.
+    pub fn load_current_venue_fixtures(
+        &self,
+    ) -> Result<Vec<crate::lighting::effects::FixtureInfo>, VenueFault> {
+        self.get_current_venue_fixtures().map_err(|error| {
+            let venue = self.current_venue().map(str::to_string);
+            let (fixture, reason) = match venue.as_deref().and_then(|v| self.venue_problem(v)) {
+                Some((fixture, reason)) => (Some(fixture), reason),
+                None => (None, error.to_string()),
+            };
+            VenueFault {
+                venue,
+                fixture,
+                reason,
+                error,
+            }
+        })
+    }
+
+    /// The current venue's focus points by name; none without a venue.
+    pub fn current_focus_points(&self) -> HashMap<String, crate::lighting::types::Vec3> {
+        self.get_current_venue()
+            .map(|venue| {
+                venue
+                    .focus_points()
+                    .iter()
+                    .map(|(name, point)| (name.clone(), *point))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Gets all fixtures from the current venue for effects engine registration

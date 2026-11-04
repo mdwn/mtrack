@@ -978,6 +978,13 @@ impl TempoMap {
             .measure_beat_at(segments.beats_at(target_time))
     }
 
+    /// An absolute time as the `@measure/beat` position reports show it,
+    /// the beat to two decimals: `@3/1.00`.
+    pub(crate) fn position_label(&self, at: Duration) -> String {
+        let (measure, beat) = self.time_to_measure_beat(at);
+        format!("@{measure}/{beat:.2}")
+    }
+
     /// Get BPM at a given time (accounting for tempo changes)
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
     ///

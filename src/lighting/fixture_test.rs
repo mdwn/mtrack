@@ -235,7 +235,7 @@ pub fn resolve_frame(
             };
             FrameChannel {
                 offset,
-                address: info.address + offset - 1,
+                address: info.dmx_channel(offset),
                 name,
                 value,
                 raw,
