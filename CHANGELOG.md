@@ -156,8 +156,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own effect after the first sequence's.
 - **A unit written twice is no unit**: `5msms` or `2ss` in a duration, rate, angle or tempo
   `start:` is an error; the unit used to be stripped as often as it repeated. A non-numeric
-  tempo `start:` names the whole value in its error, and an inline loop's `repeats: 0` says
-  "Loop count must be at least 1", as a reference's `loop: 0` does.
+  tempo `start:` names the whole value in its error, and an inline loop's `repeats:` is read
+  as a reference's `loop:` is: `repeats: 0` says "Loop count must be at least 1" and
+  `repeats: 2.5` "Invalid loop count: '2.5'. Expected 'once', 'loop', 'pingpong', 'random',
+  or a number".
 - **A tempo change positioned in time before `start:` is applied at the start**: the beat
   grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
   times tempo-aware effect rates ran it from its own time, so a ramp written before the start
