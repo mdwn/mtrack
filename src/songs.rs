@@ -88,6 +88,18 @@ impl Clone for DslLightingShow {
     }
 }
 
+/// The tempo map a song's `.light` files are parsed with: the song's
+/// explicit `tempo:` block if it has one, otherwise one derived from the
+/// click track's beat grid. See [`Song::lighting_tempo_map`].
+fn lighting_tempo(
+    tempo_map: Option<&crate::tempo::TempoMap>,
+    beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+) -> Option<crate::tempo::TempoMap> {
+    tempo_map
+        .cloned()
+        .or_else(|| beat_grid.and_then(|grid| grid.to_tempo_map()))
+}
+
 /// What tells a file has changed: its modified time, and its size, for two
 /// saves within one tick of the clock -- a truncate, then the write.
 type FileStamp = (std::time::SystemTime, u64);
@@ -387,9 +399,7 @@ impl Song {
         // song's `tempo:` config, else the click-derived beat grid. Parsing has
         // to happen here rather than earlier: the grid is what makes the third
         // option possible, and the parser resolves `@bar/beat` up front.
-        let lighting_tempo = tempo_map
-            .clone()
-            .or_else(|| beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()));
+        let lighting_tempo = lighting_tempo(tempo_map.as_ref(), beat_grid.as_ref());
         let dsl_lighting_shows = match config.lighting() {
             Some(lighting_shows) => lighting_shows
                 .iter()
@@ -646,7 +656,7 @@ impl Song {
         // parse them. Same precedence as `Song::new`: a show's own `tempo`
         // block wins, otherwise the click-derived grid.
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
-        let lighting_tempo = beat_grid.as_ref().and_then(|grid| grid.to_tempo_map());
+        let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
         for path in light_paths {
             dsl_lighting_shows.push(DslLightingShow::load(path, lighting_tempo.as_ref())?);
         }
@@ -848,9 +858,7 @@ impl Song {
     /// construct outright without a tempo, so the difference is not a matter
     /// of accuracy but of whether the show parses at all.
     pub fn lighting_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
-        self.tempo_map
-            .clone()
-            .or_else(|| self.beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()))
+        lighting_tempo(self.tempo_map.as_ref(), self.beat_grid.as_ref())
     }
 
     /// Where a draft of this song's lighting is taken to live, for resolving
