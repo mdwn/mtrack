@@ -2192,6 +2192,36 @@ mod tests {
         assert_eq!(early.bpm_at_time(Duration::from_secs(8), 0.0), 60.0);
     }
 
+    /// A ramp written at the same instant as a snap starts from the snapped
+    /// tempo, the one the beat walk has at the change (it used to be read a
+    /// nanosecond before the change, and ramp from the tempo before the
+    /// snap).
+    #[test]
+    fn a_ramp_beside_a_snap_starts_from_the_snapped_tempo() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            200.0,
+            TimeSignature::new(4, 4),
+            vec![
+                snap_change(
+                    TempoChangePosition::Time(Duration::from_secs(6)),
+                    Some(120.0),
+                    None,
+                ),
+                ramp_change(
+                    TempoChangePosition::Time(Duration::from_secs(6)),
+                    90.0,
+                    TempoTransition::Beats(8.0, TransitionCurve::Linear),
+                ),
+            ],
+        );
+        // 8 beats from 120 to 90 average 105: 32/7 s; a second in, the ramp
+        // is 7/32 of the way from 120 to 90.
+        assert_eq!(map.bpm_at_time(Duration::from_secs(6), 0.0), 120.0);
+        let at7 = map.bpm_at_time(Duration::from_secs(7), 0.0);
+        assert!((at7 - 113.4375).abs() < 1e-6, "{at7}");
+    }
+
     /// A time's beat position is read by the one walk lengths and cue
     /// positions use: a bar-positioned change at its written beats, a
     /// time-positioned one placed through them, exactly where `TempoMap::new`

@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A ramp written at the same instant as a snap ramps from the snapped tempo**: tempo-aware
+  effect rates during such a ramp now ramp from the snapped tempo, as the beat grid already did
+  (the tempo lookup used to read the tempo a nanosecond before the change and ramp from there).
 - **A light show's `tempo {}` refuses a zero time signature**: `time_signature: 0/4` or `3/0`
   parsed (and made a bar of no length, or of infinite length); the one signature parser now
   refuses them with a clear error, as a song's `tempo:` always has.
