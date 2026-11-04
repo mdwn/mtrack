@@ -33,6 +33,52 @@ const UNIVERSE_SIZE: usize = 512;
 /// The target number of updates per second.
 pub(crate) const TARGET_HZ: f64 = 44.0;
 
+/// A MIDI DMX dimming time as the ticks a full transition takes, at
+/// [`TARGET_HZ`]: one tick for none.
+pub(crate) fn dim_ticks(dimming: Duration) -> f64 {
+    if dimming.is_zero() {
+        1.0
+    } else {
+        dimming.as_secs_f64() * TARGET_HZ
+    }
+}
+
+/// What a MIDI DMX channel moves a tick, dimming from `current` to `target`
+/// over `ticks`. No ticks at all is not guarded: the rate is then infinite
+/// (or no number, for a dim to where it is), and [`dim_step`] and
+/// [`dimmed_at`] take either to the target at once.
+pub(crate) fn dim_rate(current: f64, target: f64, ticks: f64) -> f64 {
+    (target - current) / ticks
+}
+
+/// Where a MIDI DMX channel at `current`, moving `rate` a tick, is a tick
+/// on: at `target` once it gets there, or at once for an instant write
+/// (no rate). The universe thread's step; [`dimmed_at`] is its closed form.
+pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
+    if rate > 0.0 {
+        (current + rate).min(target)
+    } else if rate == 0.0 {
+        target
+    } else {
+        (current + rate).max(target)
+    }
+}
+
+/// Where a MIDI DMX channel written at `from`, moving `rate` a tick toward
+/// `target`, is `ticks` ticks on: [`dim_step`] that many times, in closed
+/// form.
+pub(crate) fn dimmed_at(from: f64, target: f64, rate: f64, ticks: f64) -> f64 {
+    if rate == 0.0 {
+        return target;
+    }
+    let value = from + rate * ticks;
+    if rate > 0.0 {
+        value.min(target)
+    } else {
+        value.max(target)
+    }
+}
+
 /// A fixture test's channels as a universe holds them: 0-based index and
 /// value, or none.
 type TestChannels = Option<Vec<(usize, u8)>>;
@@ -145,13 +191,8 @@ impl Universe {
     }
 
     /// Updates the dim speed.
-    pub fn update_dim_speed(&self, dim_rate: Duration) {
-        let mut global_dim_rate = self.global_dim_rate.write();
-        if dim_rate.is_zero() {
-            *global_dim_rate = 1.0
-        } else {
-            *global_dim_rate = dim_rate.as_secs_f64() * TARGET_HZ
-        }
+    pub fn update_dim_speed(&self, dimming: Duration) {
+        *self.global_dim_rate.write() = dim_ticks(dimming);
     }
 
     /// A 1-based DMX channel about to be written: the universe thread's
@@ -174,7 +215,11 @@ impl Universe {
         // that read while waiting for `rates`, against the order the
         // universe thread takes them in (target, rates, current).
         let rate = if dim {
-            (value - self.current.read()[channel_index]) / *self.global_dim_rate.read()
+            dim_rate(
+                self.current.read()[channel_index],
+                value,
+                *self.global_dim_rate.read(),
+            )
         } else {
             0.0
         };
@@ -307,13 +352,7 @@ impl Universe {
             // We want current == target, but due to floating points we'll test if they're close to each other.
             if (current[i] - target[i]).abs() > f64::EPSILON {
                 changed = true;
-                if rates[i] > 0.0 {
-                    current[i] = (current[i] + rates[i]).min(target[i])
-                } else if rates[i] == 0.0 {
-                    current[i] = target[i]
-                } else {
-                    current[i] = (current[i] + rates[i]).max(target[i])
-                }
+                current[i] = dim_step(current[i], target[i], rates[i]);
                 buffer.set_channel(
                     i,
                     current[i].min(u8::MAX.into()).max(u8::MIN.into()).round() as u8,
@@ -321,6 +360,63 @@ impl Universe {
             }
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod dimming_test {
+    use super::*;
+
+    /// A tick at a time lands where the closed form says, whatever the
+    /// rate: the store and the universe thread step, a replay jumps. (At
+    /// the write itself the closed form has an instant write landed
+    /// already; the step lands it a tick on.)
+    #[test]
+    fn stepping_a_dim_tick_by_tick_agrees_with_its_closed_form() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut random = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..2000 {
+            let from = (random() * 255.0).round();
+            let target = (random() * 255.0).round();
+            let ticks = match (random() * 4.0) as u8 {
+                0 => 0.0,
+                1 => 1.0,
+                2 => (random() * 10.0).round() + 1.0,
+                _ => random() * 4400.0 + 1.0,
+            };
+            let rate = dim_rate(from, target, ticks);
+            let steps = (random() * 80.0) as u32;
+            let mut current = from;
+            for n in 1..=steps {
+                current = dim_step(current, target, rate);
+                let closed = dimmed_at(from, target, rate, f64::from(n));
+                assert!(
+                    (current - closed).abs() < 1e-9,
+                    "from {from} to {target} over {ticks}: tick {n} at {current}, closed form {closed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dim_of_no_ticks_is_instant_both_ways() {
+        let rate = dim_rate(10.0, 200.0, 0.0);
+        assert_eq!(dim_step(10.0, 200.0, rate), 200.0);
+        assert_eq!(dimmed_at(10.0, 200.0, rate, 0.0), 200.0);
+        let stay = dim_rate(50.0, 50.0, 0.0);
+        assert_eq!(dim_step(50.0, 50.0, stay), 50.0);
+        assert_eq!(dimmed_at(50.0, 50.0, stay, 3.0), 50.0);
+    }
+
+    #[test]
+    fn dimming_time_to_ticks() {
+        assert_eq!(dim_ticks(Duration::ZERO), 1.0);
+        assert_eq!(dim_ticks(Duration::from_secs(2)), 2.0 * TARGET_HZ);
     }
 }
 

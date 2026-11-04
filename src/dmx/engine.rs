@@ -515,12 +515,9 @@ impl Engine {
             universe.update_dim_speed(dimming_duration);
         }
         // Mirror dim rate to MIDI DMX store
-        let rate = if dimming_duration.is_zero() {
-            1.0
-        } else {
-            dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
-        };
-        self.midi_dmx_store.read().set_dim_rate(universe_id, rate);
+        self.midi_dmx_store
+            .read()
+            .set_dim_rate(universe_id, super::universe::dim_ticks(dimming_duration));
     }
 
     /// Updates the given universe by ID.
