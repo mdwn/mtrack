@@ -28,6 +28,65 @@ pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
 }
 
+/// A transport command a controller's event maps to: what the OSC and MIDI
+/// controllers both take, and the one answer for what the player does on
+/// it. A failure is logged, as a controller has no reply to carry it in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum TransportAction {
+    Play,
+    Prev,
+    Next,
+    Stop,
+    AllSongs,
+    Playlist,
+    SectionAck,
+    StopSectionLoop,
+    AmbientMode(crate::dmx::engine::AmbientMode),
+    CancelAutoPlay,
+}
+
+impl TransportAction {
+    pub(crate) async fn run(self, player: &Player) {
+        match self {
+            TransportAction::Play => {
+                if let Err(e) = player.play().await {
+                    tracing::error!(err = e.as_ref(), "Failed to play song: {}", e);
+                }
+            }
+            TransportAction::Prev => {
+                player.prev().await;
+            }
+            TransportAction::Next => {
+                player.next().await;
+            }
+            TransportAction::Stop => {
+                player.stop().await;
+            }
+            TransportAction::AllSongs => {
+                if let Err(e) = player.switch_to_playlist("all_songs").await {
+                    tracing::error!("Failed to switch to all_songs: {}", e);
+                }
+            }
+            TransportAction::Playlist => {
+                let name = player.persisted_playlist_name();
+                if let Err(e) = player.switch_to_playlist(&name).await {
+                    tracing::error!("Failed to switch to playlist {}: {}", name, e);
+                }
+            }
+            TransportAction::SectionAck => {
+                if let Err(e) = player.section_ack().await {
+                    tracing::error!("Failed to ack section: {}", e);
+                }
+            }
+            TransportAction::StopSectionLoop => player.stop_section_loop(),
+            TransportAction::AmbientMode(mode) => player.set_ambient_mode(mode),
+            TransportAction::CancelAutoPlay => {
+                player.cancel_waiting_auto_play();
+            }
+        }
+    }
+}
+
 /// How long a controller starting waits for those it replaces to be gone. A
 /// driver stuck in blocking code, which an abort cannot interrupt, may never
 /// end, and its replacement would wait on it for good while reading "running".
