@@ -153,7 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
   a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
   at that time, its own effect first, as a show cue always has; it used to make two, with its
-  own effect after the first sequence's.
+  own effect after the first sequence's. An error in a sequence a cue references is reported
+  at the reference's own line now that a sequence's references are expanded as it is parsed,
+  where it used to name the earliest line in the enclosing sequence.
 - **A unit written twice is no unit**: `5msms` or `2ss` in a duration, rate, angle or tempo
   `start:` is an error; the unit used to be stripped as often as it repeated. A non-numeric
   tempo `start:` names the whole value in its error, and an inline loop's `repeats:` is read
