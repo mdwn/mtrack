@@ -935,6 +935,15 @@ impl TempoMap {
         self.segments().state_at(score_time).bpm_at(score_time)
     }
 
+    /// Seconds that `measures` bars take at the tempo and metre in force at
+    /// `anchor` (score time), as a show's `offset N measures` counts them:
+    /// at that one steady tempo, so an offset issued after a tempo change
+    /// does not undo the change by integrating back through it.
+    pub(crate) fn offset_duration(&self, measures: u32, anchor: Duration) -> f64 {
+        let beats = self.time_signature_at_time(anchor, 0.0).beats_per_measure();
+        steady_secs(self.bpm_at_time(anchor, 0.0), measures as f64 * beats)
+    }
+
     /// Get time signature at a given time
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
     ///

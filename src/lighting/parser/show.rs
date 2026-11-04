@@ -30,6 +30,7 @@ use super::types::{
 };
 use super::types::{SequenceCall, SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
+use crate::tempo::{snap_beats, steady_beats};
 use pest::iterators::Pair;
 use pest::Parser;
 
@@ -541,15 +542,7 @@ fn parse_sequence_cue_structure(
             let offset_measures = parse_offset_command(offset_pair.clone())?;
             cumulative_measure_offset += offset_measures; // Track cumulative measure offset
             if let Some(tm) = tempo_map {
-                // Calculate offset using the tempo at the anchor point
-                // Offsets should be calculated at a single tempo (the tempo at the anchor),
-                // not accounting for tempo changes during the offset period
-                // Once a tempo has changed, offsets going forward shouldn't "undo" the tempo
-                let bpm = tm.bpm_at_time(score_anchor, 0.0);
-                let ts = tm.time_signature_at_time(score_anchor, 0.0);
-                let seconds_per_beat = 60.0 / bpm;
-                let delta = offset_measures as f64 * ts.beats_per_measure() * seconds_per_beat;
-                total_offset += delta;
+                total_offset += tm.offset_duration(offset_measures, score_anchor);
             } else {
                 return Err("Offset command requires a tempo section".into());
             }
@@ -876,9 +869,10 @@ pub(super) fn expand_unexpanded_sequence_cue(
             let seq_bpm = sequence.bpm;
             // Snapped: the duration is whole nanoseconds, and its rounding error
             // multiplied by the iteration count crept the loop later every pass (#534).
-            let duration_beats = crate::tempo::snap_beats(
-                sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0),
-            );
+            let duration_beats = snap_beats(steady_beats(
+                seq_bpm,
+                sequence_duration_internal.as_secs_f64(),
+            ));
             let sequence_duration = if let Some(o_bpm) = outer_bpm {
                 Duration::from_secs_f64(duration_beats * 60.0 / o_bpm)
             } else {
@@ -899,8 +893,7 @@ pub(super) fn expand_unexpanded_sequence_cue(
                     // then rescale to the outer BPM.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
                     let rescaled_rel_time = if let Some(o_bpm) = outer_bpm {
-                        let rel_beats =
-                            crate::tempo::snap_beats(rel_time.as_secs_f64() * (seq_bpm / 60.0));
+                        let rel_beats = snap_beats(steady_beats(seq_bpm, rel_time.as_secs_f64()));
                         Duration::from_secs_f64(rel_beats * 60.0 / o_bpm)
                     } else {
                         rel_time
@@ -1224,15 +1217,7 @@ fn parse_cue_definition(
             let offset_measures = parse_offset_command(offset_pair.clone())?;
             cumulative_measure_offset_seq += offset_measures; // Track cumulative measure offset
             if let Some(tm) = tempo_map {
-                // Calculate offset using the tempo at the anchor point
-                // Offsets should be calculated at a single tempo (the tempo at the anchor),
-                // not accounting for tempo changes during the offset period
-                // Once a tempo has changed, offsets going forward shouldn't "undo" the tempo
-                let bpm = tm.bpm_at_time(score_anchor, 0.0);
-                let ts = tm.time_signature_at_time(score_anchor, 0.0);
-                let seconds_per_beat = 60.0 / bpm;
-                let delta = offset_measures as f64 * ts.beats_per_measure() * seconds_per_beat;
-                total_offset += delta;
+                total_offset += tm.offset_duration(offset_measures, score_anchor);
             } else {
                 return Err("Offset command requires a tempo section".into());
             }
@@ -1343,9 +1328,10 @@ fn parse_cue_definition(
             let seq_bpm = sequence.bpm;
             // Snapped: the duration is whole nanoseconds, and its rounding error
             // multiplied by the iteration count crept the loop later every pass (#534).
-            let duration_beats = crate::tempo::snap_beats(
-                sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0),
-            );
+            let duration_beats = snap_beats(steady_beats(
+                seq_bpm,
+                sequence_duration_internal.as_secs_f64(),
+            ));
             let sequence_duration = if let Some(ref tm) = tempo_map {
                 tm.beats_to_duration(duration_beats, abs_time, applied_offset_secs)
             } else {
@@ -1366,8 +1352,7 @@ fn parse_cue_definition(
                     // Convert absolute sequence cue time to relative (in seconds at seq BPM),
                     // then rescale to beats and convert to duration at expansion tempo.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    let rel_beats =
-                        crate::tempo::snap_beats(rel_time.as_secs_f64() * (seq_bpm / 60.0));
+                    let rel_beats = snap_beats(steady_beats(seq_bpm, rel_time.as_secs_f64()));
                     let rescaled_rel_time = if let Some(ref tm) = tempo_map {
                         tm.beats_to_duration(
                             iter_total_beats + rel_beats,
