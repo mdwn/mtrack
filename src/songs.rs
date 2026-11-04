@@ -1408,9 +1408,30 @@ impl Song {
         Ok(sources)
     }
 
+    /// The song as every surface summarises it; see [`SongSummary`].
+    pub fn summary(&self) -> SongSummary {
+        SongSummary {
+            name: self.name.clone(),
+            duration: self.length(),
+            sections: self
+                .sections
+                .iter()
+                .map(|s| SectionSummary {
+                    name: s.name.clone(),
+                    start_measure: s.start_measure,
+                    end_measure: s.end_measure,
+                    start_beat: s.start_beat,
+                    end_beat: s.end_beat,
+                    color: s.color.clone(),
+                })
+                .collect(),
+        }
+    }
+
     /// Returns a proto version of the song.
     pub fn to_proto(&self) -> Result<player::v1::Song, std::io::Error> {
-        let duration = match prost_types::Duration::try_from(self.duration) {
+        let summary = self.summary();
+        let duration = match prost_types::Duration::try_from(summary.duration) {
             Ok(duration) => duration,
             Err(e) => return Err(std::io::Error::other(e.to_string())),
         };
@@ -1419,27 +1440,51 @@ impl Song {
             measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
         });
 
-        let sections = self
+        let sections = summary
             .sections
-            .iter()
+            .into_iter()
             .map(|s| player::v1::Section {
-                name: s.name.clone(),
+                name: s.name,
                 start_measure: s.start_measure as u32,
                 end_measure: s.end_measure as u32,
                 start_beat: s.start_beat,
                 end_beat: s.end_beat,
-                color: s.color.clone(),
+                color: s.color,
             })
             .collect();
 
         Ok(player::v1::Song {
-            name: self.name.to_string(),
+            name: summary.name,
             duration: Some(duration),
             tracks: self.output_track_names(),
             beat_grid,
             sections,
         })
     }
+}
+
+/// A song as every surface summarises it: gRPC's `Song`, MCP's song summary
+/// and details, the web UI's song list and playback status, and the OSC
+/// broadcast render this, so they agree. `duration` is [`Song::length`]:
+/// how long the song plays, its lighting included, which is what a progress
+/// bar and a seek bound want.
+#[derive(Clone, Debug)]
+pub struct SongSummary {
+    pub name: String,
+    pub duration: Duration,
+    pub sections: Vec<SectionSummary>,
+}
+
+/// A section as every surface reports it: its bounds in full, so a client
+/// that draws it agrees with where the player resolves it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SectionSummary {
+    pub name: String,
+    pub start_measure: usize,
+    pub end_measure: usize,
+    pub start_beat: Option<f64>,
+    pub end_beat: Option<f64>,
+    pub color: Option<String>,
 }
 
 impl fmt::Display for Song {

@@ -352,15 +352,14 @@ impl Driver {
         osc_events: &Arc<OscEvents>,
         tx_sender: &Sender<OscPacket>,
     ) -> Result<(), Box<dyn Error>> {
-        let playlist = player.get_playlist();
-        let song = match playlist.current() {
-            Some(song) => song,
-            None => return Ok(()),
+        // The player's one status, as every surface reads it.
+        let status = player.playback_status().await;
+        let Some(song) = status.current_song else {
+            return Ok(());
         };
-        let is_playing = player.is_playing().await;
-        let elapsed = player.elapsed().await?;
-        let elapsed_duration = elapsed.unwrap_or_default();
-        let status_string = if is_playing {
+        let summary = song.summary();
+        let elapsed_duration = status.elapsed?.unwrap_or_default();
+        let status_string = if status.playing {
             STATUS_PLAYING
         } else {
             STATUS_STOPPED
@@ -368,21 +367,14 @@ impl Driver {
         let duration_string = format!(
             "{}/{}",
             util::duration_minutes_seconds(elapsed_duration),
-            util::duration_minutes_seconds(song.duration())
+            util::duration_minutes_seconds(summary.duration)
         );
-        let playlist_songs: Vec<String> = playlist.songs().to_vec();
-
-        // The player's status says what the transport is doing; this says
-        // whether audio is actually leaving the machine. A surface wants both —
-        // "playing" next to "stalled" is the combination worth a red light.
-        let audio_health = player
-            .hardware_status()
-            .audio_output
-            .map(|h| h.status.as_str());
+        let playlist_songs: Vec<String> = status.playlist.songs().to_vec();
+        let audio_health = status.audio_health.as_ref().map(|h| h.status.as_str());
 
         let mut packets = build_broadcast_packets(
             osc_events,
-            song.name(),
+            &summary.name,
             status_string,
             &duration_string,
             &playlist_songs,
@@ -404,7 +396,7 @@ impl Driver {
         packets.push(build_timeline_packet(
             &osc_events.timeline,
             elapsed_duration.as_secs_f64(),
-            song.duration().as_secs_f64(),
+            summary.duration.as_secs_f64(),
             &section_timings,
         ));
 

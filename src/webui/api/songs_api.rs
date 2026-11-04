@@ -69,10 +69,11 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 })
                 .collect();
 
+            let summary = song.summary();
             json!({
-                "name": song.name(),
-                "duration_ms": song.duration().as_millis() as u64,
-                "duration_display": song.duration_string(),
+                "name": summary.name,
+                "duration_ms": summary.duration.as_millis() as u64,
+                "duration_display": crate::util::duration_minutes_seconds(summary.duration),
                 "num_channels": song.num_channels(),
                 "sample_format": format!("{}", song.sample_format()),
                 "track_count": song.tracks().len(),
@@ -90,14 +91,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 "loop_playback": song.loop_playback(),
                 "loop_crossfade_ms": song.loop_crossfade().map(|d| d.as_millis() as u64),
                 "loop_crossfade_cut": song.loop_crossfade_cut(),
-                "sections": song.sections().iter().map(|s| json!({
-                    "name": s.name,
-                    "start_measure": s.start_measure,
-                    "end_measure": s.end_measure,
-                    "start_beat": s.start_beat,
-                    "end_beat": s.end_beat,
-                    "color": s.color,
-                })).collect::<Vec<_>>(),
+                "sections": summary.sections,
             })
         })
         .collect();
@@ -167,8 +161,8 @@ pub(super) async fn get_song(
                         StatusCode::OK,
                         Json(json!({
                             "name": song.name(),
-                            "duration_ms": song.duration().as_millis() as u64,
-                            "duration_display": song.duration_string(),
+                            "duration_ms": song.summary().duration.as_millis() as u64,
+                            "duration_display": crate::util::duration_minutes_seconds(song.summary().duration),
                             "num_channels": song.num_channels(),
                             "sample_format": format!("{}", song.sample_format()),
                             "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),

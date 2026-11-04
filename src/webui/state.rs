@@ -201,20 +201,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 grid
             });
 
-            let available_sections: Vec<serde_json::Value> = current_song
-                .sections()
-                .iter()
-                .map(|s| {
-                    json!({
-                        "name": s.name,
-                        "start_measure": s.start_measure,
-                        "end_measure": s.end_measure,
-                        "start_beat": s.start_beat,
-                        "end_beat": s.end_beat,
-                        "color": s.color,
-                    })
-                })
-                .collect();
+            let summary = current_song.summary();
+            let available_sections: Vec<serde_json::Value> =
+                summary.sections.iter().map(|s| json!(s)).collect();
 
             let pilot_hints: Vec<serde_json::Value> = current_song
                 .pilot_hints()
@@ -231,8 +220,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 .collect();
 
             (
-                current_song.name().to_string(),
-                current_song.length().as_millis() as u64,
+                summary.name,
+                summary.duration.as_millis() as u64,
                 tracks,
                 beat_grid,
                 current_song.loop_playback(),

@@ -702,9 +702,26 @@ impl McpServer {
     #[tool(description = "Start playback of the current song in the active playlist.")]
     async fn play(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.play().await.map_err(precondition_err)?;
+        let Some(song) = song else {
+            return Ok(ok_json(self.declined().await));
+        };
         Ok(ok_json(json!({
-            "now_playing": song.as_ref().map(|s| song_summary(s)),
+            "started": true,
+            "now_playing": song_summary(&song),
         })))
+    }
+
+    /// The reply for a play the player did not start: why, as the player
+    /// reads it (one already playing, an empty playlist), and what to do.
+    /// Echoing a requested time back here is what once read as success.
+    async fn declined(&self) -> Value {
+        json!({
+            "started": false,
+            "now_playing": Value::Null,
+            "reason": self.player.play_declined_reason().await,
+            "hint": "check `status`; call `stop` first, or use `seek` to \
+                     move within the current song",
+        })
     }
 
     #[tool(
@@ -721,17 +738,8 @@ impl McpServer {
             .play_from(start)
             .await
             .map_err(precondition_err)?;
-        // Same no-op as `play_song_from`: echoing the requested time back when
-        // nothing started is what made this misleading.
         let Some(song) = song else {
-            return Ok(ok_json(json!({
-                "started": false,
-                // See `play_song_from`: `None` covers several cases.
-                "reason": "the player did not start the song; the most common \
-                           cause is that one is already playing",
-                "hint": "check `status`; call `stop` first, or use `seek` to \
-                         move within the current song",
-            })));
+            return Ok(ok_json(self.declined().await));
         };
         Ok(ok_json(json!({
             "started": true,
@@ -758,22 +766,8 @@ impl McpServer {
             .await
             .map_err(precondition_err)?;
 
-        // The player refuses to start a song while one is already playing, and
-        // returns nothing. Echoing the requested `start_time` back in that case
-        // reads as success and is how this silently answered the wrong
-        // question — the caller believes they are at 1:49 while playback
-        // continues from wherever it was.
         let Some(song) = song else {
-            return Ok(ok_json(json!({
-                "started": false,
-                // The player returns nothing for more than one reason — a song
-                // already playing, a loop break, an empty playlist — and does
-                // not say which. Report the fact, not a guess at the cause.
-                "reason": "the player did not start the song; the most common \
-                           cause is that one is already playing",
-                "hint": "check `status`; call `stop` first, or use `seek` to \
-                         move within the current song",
-            })));
+            return Ok(ok_json(self.declined().await));
         };
 
         Ok(ok_json(json!({
@@ -1132,17 +1126,7 @@ impl McpServer {
             })
             .collect();
 
-        let sections: Vec<Value> = song
-            .sections()
-            .iter()
-            .map(|s| {
-                json!({
-                    "name": s.name,
-                    "start_measure": s.start_measure,
-                    "end_measure": s.end_measure,
-                })
-            })
-            .collect();
+        let summary = song.summary();
 
         // Summary-only beat grid: counts + measure starts (small, useful for
         // bar-boundary work) but without the per-beat times that dominate
@@ -1202,18 +1186,18 @@ impl McpServer {
             .collect();
 
         Ok(ok_json(json!({
-            "name": song.name(),
+            "name": summary.name,
             "base_path": song.base_path().display().to_string(),
             "config_path": song.config_path().map(|p| p.display().to_string()),
-            "duration": format_duration(song.length()),
-            "duration_seconds": song.length().as_secs_f64(),
+            "duration": format_duration(summary.duration),
+            "duration_seconds": summary.duration.as_secs_f64(),
             "num_channels": song.num_channels(),
             "loop_playback": song.loop_playback(),
             "loop_crossfade_seconds": song.loop_crossfade().map(|d| d.as_secs_f64()),
             "loop_crossfade_cut": song.loop_crossfade_cut(),
             "has_midi_playback": song.midi_playback().is_some(),
             "tracks": tracks,
-            "sections": sections,
+            "sections": summary.sections,
             "beat_grid": beat_grid,
             "bpm": bpm,
             "bpm_unit": bpm_unit,
@@ -3573,22 +3557,12 @@ pub(crate) fn format_duration(d: std::time::Duration) -> String {
 /// Builds a compact summary value for a song.
 pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
     let tracks: Vec<&str> = song.tracks().iter().map(|t| t.name()).collect();
-    let sections: Vec<Value> = song
-        .sections()
-        .iter()
-        .map(|s| {
-            json!({
-                "name": s.name,
-                "start_measure": s.start_measure,
-                "end_measure": s.end_measure,
-            })
-        })
-        .collect();
+    let summary = song.summary();
     json!({
-        "name": song.name(),
-        "duration": format_duration(song.length()),
+        "name": summary.name,
+        "duration": format_duration(summary.duration),
         "tracks": tracks,
-        "sections": sections,
+        "sections": summary.sections,
     })
 }
 
