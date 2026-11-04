@@ -33,11 +33,15 @@ const UNIVERSE_SIZE: usize = 512;
 /// The target number of updates per second.
 pub(crate) const TARGET_HZ: f64 = 44.0;
 
+/// The ticks a full transition takes before any dimming time is set, and
+/// under none: one, so a write lands next tick.
+pub(crate) const DEFAULT_DIM_TICKS: f64 = 1.0;
+
 /// A MIDI DMX dimming time as the ticks a full transition takes, at
 /// [`TARGET_HZ`]: one tick for none.
 pub(crate) fn dim_ticks(dimming: Duration) -> f64 {
     if dimming.is_zero() {
-        1.0
+        DEFAULT_DIM_TICKS
     } else {
         dimming.as_secs_f64() * TARGET_HZ
     }
@@ -123,7 +127,8 @@ impl Universe {
             rates: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             current: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             target: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
-            global_dim_rate: RwLock::new(1.0),
+            global_dim_rate: RwLock::new(DEFAULT_DIM_TICKS),
+
             max_channels: Arc::new(AtomicU16::new(0)),
             config,
             cancel_handle,

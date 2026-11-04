@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use super::universe::{dim_rate, dim_step};
+use super::universe::{dim_rate, dim_step, DEFAULT_DIM_TICKS};
 
 /// Stores an f64 in an AtomicU64 via bit representation.
 fn store_f64(atom: &AtomicU64, val: f64) {
@@ -167,7 +167,7 @@ impl MidiDmxStore {
     pub fn register_universe(&mut self, universe_id: u16) {
         self.dim_rates
             .entry(universe_id)
-            .or_insert_with(|| AtomicU64::new(1.0f64.to_bits()));
+            .or_insert_with(|| AtomicU64::new(DEFAULT_DIM_TICKS.to_bits()));
     }
 
     /// Writes a value from the MIDI thread. Lockless (atomics only).
@@ -181,7 +181,12 @@ impl MidiDmxStore {
 
             if dim {
                 let current = load_f64(&slot.current);
-                let ticks = self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0);
+                let ticks = self
+                    .dim_rates
+                    .get(&universe)
+                    .map(load_f64)
+                    .unwrap_or(DEFAULT_DIM_TICKS);
+
                 store_f64(&slot.rate, dim_rate(current, value_f64, ticks));
             } else {
                 store_f64(&slot.rate, 0.0); // instant

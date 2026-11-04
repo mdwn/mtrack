@@ -232,7 +232,9 @@ impl Engine {
                 start_dim_rate: dmx_engine
                     .universes
                     .get(&universe_id)
-                    .map_or(1.0, |universe| universe.dim_rate()),
+                    .map_or(crate::dmx::universe::DEFAULT_DIM_TICKS, |universe| {
+                        universe.dim_rate()
+                    }),
             });
         }
         let has_midi_dmx = !midi_dmx_playbacks.is_empty();
