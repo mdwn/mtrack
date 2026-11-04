@@ -479,14 +479,11 @@ impl FitReport {
             let focus_points: Vec<String> = venue.focus_points().keys().cloned().collect();
             // A venue that does not register lights nothing: the report
             // says why (`venue.error`) instead of showing an empty rig.
-            let (infos, venue_error) = match guard.get_current_venue_fixtures() {
+            let (infos, venue_error) = match guard.load_current_venue_fixtures() {
                 Ok(infos) => (infos, None),
-                Err(e) => (
+                Err(fault) => (
                     Vec::new(),
-                    Some(match guard.venue_problem(&venue_name) {
-                        Some((fixture, reason)) => json!({"fixture": fixture, "reason": reason}),
-                        None => json!({"fixture": null, "reason": e.to_string()}),
-                    }),
+                    Some(json!({"fixture": fault.fixture, "reason": fault.reason})),
                 ),
             };
             let mut fit_fixtures: Vec<FitFixture> = infos

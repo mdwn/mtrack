@@ -118,21 +118,13 @@ impl VenueFacts {
         }
         // A venue that does not register lights nothing; say why rather than
         // letting it read as an empty rig.
-        let fixtures = match system.get_current_venue_fixtures() {
+        let fixtures = match system.load_current_venue_fixtures() {
             Ok(fixtures) => fixtures,
-            Err(e) => {
-                let venue = system.current_venue().unwrap_or_default().to_string();
-                facts.venue_error = Some(match system.venue_problem(&venue) {
-                    Some((fixture, reason)) => VenueError {
-                        venue,
-                        fixture,
-                        reason,
-                    },
-                    None => VenueError {
-                        venue,
-                        fixture: String::new(),
-                        reason: e.to_string(),
-                    },
+            Err(fault) => {
+                facts.venue_error = Some(VenueError {
+                    venue: fault.venue.unwrap_or_default(),
+                    fixture: fault.fixture.unwrap_or_default(),
+                    reason: fault.reason,
                 });
                 Vec::new()
             }

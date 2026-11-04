@@ -822,35 +822,27 @@ impl Engine {
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
             let lighting_system = lighting_system.lock();
-            let venue = lighting_system.current_venue().map(str::to_string);
-            let fixture_infos = match lighting_system.get_current_venue_fixtures() {
+            let fixture_infos = match lighting_system.load_current_venue_fixtures() {
                 Ok(infos) => {
                     self.record_venue_registration(VenueRegistration {
-                        venue,
+                        venue: lighting_system.current_venue().map(str::to_string),
                         ok: true,
                         fixture: None,
                         error: None,
                     });
                     infos
                 }
-                Err(e) => {
-                    let (fixture, error) = match venue
-                        .as_deref()
-                        .and_then(|v| lighting_system.venue_problem(v))
-                    {
-                        Some((fixture, reason)) => (Some(fixture), reason),
-                        None => (None, e.to_string()),
-                    };
+                Err(fault) => {
                     drop(lighting_system);
                     self.clear_registered_fixtures();
                     self.record_venue_registration(VenueRegistration {
                         ok: false,
-                        fixture,
+                        fixture: fault.fixture,
                         // No venue selected is not a failure to report.
-                        error: venue.as_ref().map(|_| error),
-                        venue,
+                        error: fault.venue.as_ref().map(|_| fault.reason),
+                        venue: fault.venue,
                     });
-                    return Err(e);
+                    return Err(fault.error);
                 }
             };
 
@@ -905,18 +897,7 @@ impl Engine {
             effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
             effect_engine.replace_fixtures(fixture_infos);
-            effect_engine.set_focus_points(
-                lighting_system
-                    .get_current_venue()
-                    .map(|venue| {
-                        venue
-                            .focus_points()
-                            .iter()
-                            .map(|(name, point)| (name.clone(), *point))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            );
+            effect_engine.set_focus_points(lighting_system.current_focus_points());
             drop(midi_dmx_store);
             self.ambient_follows_rig(&effect_engine);
         }

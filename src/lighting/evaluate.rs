@@ -198,30 +198,17 @@ pub fn evaluate_with_system(
     let (fixtures, focus_points, group_map) = match system {
         Some(system) => {
             let mut guard = system.lock();
-            let fixtures = match guard.get_current_venue_fixtures() {
+            let fixtures = match guard.load_current_venue_fixtures() {
                 Ok(fixtures) => fixtures,
                 // No current venue at all is not an error here: there is
                 // simply no rig, as without a system.
                 Err(_) if guard.get_current_venue().is_none() => Vec::new(),
-                Err(e) => {
-                    let venue = guard.current_venue().unwrap_or_default().to_string();
-                    venue_error = Some(match guard.venue_problem(&venue) {
-                        Some((_, problem)) => problem,
-                        None => e.to_string(),
-                    });
+                Err(fault) => {
+                    venue_error = Some(fault.reason);
                     Vec::new()
                 }
             };
-            let focus_points: HashMap<String, [f64; 3]> = guard
-                .get_current_venue()
-                .map(|venue| {
-                    venue
-                        .focus_points()
-                        .iter()
-                        .map(|(name, point)| (name.clone(), *point))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let focus_points = guard.current_focus_points();
             let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
             for name in crate::lighting::readiness::group_names(&shows) {
                 let resolved = guard.resolve_logical_group_graceful(&name);
