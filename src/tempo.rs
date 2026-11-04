@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Default BPM used when no tempo map is available.
@@ -635,21 +636,27 @@ impl Metres {
 /// them. The arithmetic is `TempoMap::new`'s own, so a change lands
 /// exactly where it was resolved to, and a position converted one way and
 /// back lands where a cue at that position fires.
-struct Segments<'a> {
-    map: &'a TempoMap,
+#[derive(Debug, Clone)]
+struct Segments {
+    /// The time of each change, as `states[1..]` are reached.
+    change_times: Vec<Duration>,
     states: Vec<SegmentState>,
     metres: Metres,
 }
 
-impl Segments<'_> {
+impl Segments {
+    /// The state at bar 1.
+    fn at_bar_one(&self) -> &SegmentState {
+        &self.states[0]
+    }
+
     /// The state in force at a score time: that past the last change at or
     /// before it.
     fn state_at(&self, time: Duration) -> &SegmentState {
         let past = self
-            .map
-            .changes
+            .change_times
             .iter()
-            .take_while(|change| change.position.absolute_time().is_some_and(|at| at <= time))
+            .take_while(|at| **at <= time)
             .count();
         &self.states[past]
     }
@@ -658,9 +665,9 @@ impl Segments<'_> {
     /// integrating through gradual transitions; negative before bar 1, at
     /// the starting tempo. The inverse of [`Segments::time_at`].
     fn beats_at(&self, time: Duration) -> f64 {
-        let start = self.map.start_offset;
-        if time < start {
-            return -steady_beats(self.map.initial_bpm, (start - time).as_secs_f64());
+        let bar_one = self.at_bar_one();
+        if time < bar_one.time {
+            return -steady_beats(bar_one.bpm, (bar_one.time - time).as_secs_f64());
         }
         self.state_at(time).beats_at(time)
     }
@@ -668,12 +675,11 @@ impl Segments<'_> {
     /// The score time of a quarter-note beat position (0 at bar 1 beat 1);
     /// before bar 1, at the starting tempo.
     fn time_at(&self, beats: f64) -> Duration {
-        let start = self.map.start_offset;
+        let bar_one = self.at_bar_one();
         if beats < 0.0 {
-            return start.saturating_sub(duration_from_secs(steady_secs(
-                self.map.initial_bpm,
-                -beats,
-            )));
+            return bar_one
+                .time
+                .saturating_sub(duration_from_secs(steady_secs(bar_one.bpm, -beats)));
         }
         let past = self.states[1..]
             .iter()
@@ -701,6 +707,9 @@ pub struct TempoMap {
     pub initial_time_signature: TimeSignature,
     /// Sorted list of tempo changes (by time)
     pub changes: Vec<TempoChange>,
+    /// The map walked once, on first use (see [`Segments`]). A map is not
+    /// changed after `new`.
+    segments: OnceLock<Segments>,
 }
 
 impl TempoMap {
@@ -719,6 +728,7 @@ impl TempoMap {
             initial_bpm,
             initial_time_signature,
             changes: Vec::new(),
+            segments: OnceLock::new(),
         };
         // The metre changes resolved so far, as the beat grid has them.
         let mut metres = Metres::new(initial_time_signature);
@@ -836,7 +846,12 @@ impl TempoMap {
     /// `original_measure_beat` when it has one, placed in the bars the
     /// signature changes before it make, else at its time, through the
     /// tempo and any ramp before it, as `TempoMap::new` resolved it.
-    fn segments(&self) -> Segments<'_> {
+    fn segments(&self) -> &Segments {
+        self.segments.get_or_init(|| self.walk())
+    }
+
+    /// The walk [`TempoMap::segments`] keeps.
+    fn walk(&self) -> Segments {
         let mut metres = Metres::new(self.initial_time_signature);
         let mut states = Vec::with_capacity(self.changes.len() + 1);
         let mut state = SegmentState::at_bar_one(self);
@@ -862,7 +877,11 @@ impl TempoMap {
         }
         states.push(state);
         Segments {
-            map: self,
+            change_times: self
+                .changes
+                .iter()
+                .map(|change| change.position.absolute_time().unwrap_or(self.start_offset))
+                .collect(),
             states,
             metres,
         }
@@ -1026,7 +1045,7 @@ impl TempoMap {
         if !self.initial_bpm.is_finite() || self.initial_bpm <= 0.0 {
             return ticks;
         }
-        let states = self.segments().states;
+        let states = &self.segments().states;
 
         // The lead-in is whole bars at the starting tempo: gear counts beats,
         // and bars, from the first pulse after Start, so bar 1 must be a whole
