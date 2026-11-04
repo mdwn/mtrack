@@ -1658,3 +1658,83 @@ show "Test" {
         ]
     );
 }
+
+// ── `length:` is checked against the cues as written ──
+
+#[test]
+fn test_sequence_length_is_checked_against_its_cues_as_written() {
+    // The passes of a sequence a cue references may run past the length; a
+    // pass is cut off by the next, as a longer effect is. Checked against
+    // the expanded cues, this errored with "a cue starts 4.000s in".
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    x: static, color: "red", duration: 1beat
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    sequence "long"
+}
+
+show "Show" {
+    @1/1
+    sequence "short", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(6)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_length_rejects_a_written_cue_past_it_whatever_it_expands_to() {
+    // A cue holding only a reference to a sequence with no cues expands to
+    // nothing, but it is written at or past the length all the same.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "empty" {
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "empty"
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("a written cue past the length is rejected");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
