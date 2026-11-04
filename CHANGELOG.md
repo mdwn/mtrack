@@ -237,8 +237,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `song.yaml` then looked for inside the folder again. Either way the song failed to load with
   "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
   same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
-  removal takes the entry out. The files are saved before the config now, so the reload the
-  config save starts finds them.
+  removal takes the entry out. New files are saved before the config, so the reload the
+  config save starts finds them; the song's other files after it, so a tempo saved with them
+  is the one they are checked against; removed files are deleted last, once the config no
+  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
+  path in it, or one the song already has, is refused. A song already broken this way loads
+  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
+  is in the song's folder.
 - **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
   `offset N measures` is its score position's time plus the offset, with every tempo change,
   positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups
