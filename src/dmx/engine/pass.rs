@@ -134,8 +134,7 @@ impl Crossing {
         };
         let t = match self.hurry {
             Some(Hurry { at, from, over }) => {
-                from + (1.0 - from) * at.elapsed().as_secs_f64()
-                    / over.as_secs_f64().max(f64::EPSILON)
+                from + (1.0 - from) * crate::section_loop::crossfade_progress(at.elapsed(), over)
             }
             None => crate::section_loop::crossfade_progress(into, self.overlap),
         };
