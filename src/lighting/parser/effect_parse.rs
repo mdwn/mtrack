@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use super::super::effects::{
     BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
-    Easing, EffectLayer, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
+    Easing, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::grammar::Rule;
 use super::types::{Effect, ParseContext};
 use super::utils::{
-    parse_color_string, parse_frequency_string, parse_percentage_to_f64, parse_speed_string,
-    split_unit,
+    parse_color_string, parse_frequency_string, parse_layer, parse_percentage_to_f64,
+    parse_speed_string, split_unit,
 };
 use pest::iterators::Pair;
 
@@ -172,12 +172,9 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                                 color_parameters.push(value);
                             }
                             "layer" => {
-                                layer = Some(match value.as_str() {
-                                    "background" => EffectLayer::Background,
-                                    "midground" => EffectLayer::Midground,
-                                    "foreground" => EffectLayer::Foreground,
-                                    _ => return Err(format!("Invalid layer: '{}' (expected: background, midground, foreground)", value).into()),
-                                });
+                                layer = Some(parse_layer(&value).ok_or_else(|| {
+                                    format!("Invalid layer: '{}' (expected: background, midground, foreground)", value)
+                                })?);
                             }
                             "blend_mode" => {
                                 blend_mode = Some(match value.as_str() {

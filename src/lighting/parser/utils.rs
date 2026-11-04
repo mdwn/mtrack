@@ -15,7 +15,9 @@
 use std::error::Error;
 use std::time::Duration;
 
-use super::super::effects::{Color, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
+use super::super::effects::{
+    Color, EffectLayer, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
+};
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
 use pest::iterators::Pair;
@@ -40,6 +42,16 @@ pub(crate) fn split_unit(value: &str) -> (&str, &str) {
     let value = value.trim();
     let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     (number, &value[number.len()..])
+}
+
+/// The layer a `layer:` keyword names.
+pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
+    match value {
+        "background" => Some(EffectLayer::Background),
+        "midground" => Some(EffectLayer::Midground),
+        "foreground" => Some(EffectLayer::Foreground),
+        _ => None,
+    }
 }
 
 /// Parses a tempo-aware value string into a `TempoAwareValue`.

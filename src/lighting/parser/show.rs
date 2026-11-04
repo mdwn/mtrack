@@ -21,7 +21,7 @@ use super::super::effects::EffectLayer;
 use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, describe_pest_error};
-use super::grammar::{LightingParser, Rule};
+use super::grammar::{items, LightingParser, Rule};
 use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
@@ -29,7 +29,10 @@ use super::types::{
     pass_length, pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows,
     ParseContext, SequenceCall, SequenceLoop,
 };
-use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
+use super::utils::{
+    parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
+    parse_time_string,
+};
 use crate::tempo::{snap_beats, steady_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
 use pest::Parser;
@@ -96,7 +99,7 @@ pub fn parse_light_file_within(
     let mut includes = Vec::new();
 
     // First pass: collect tempo sections, sequences, and show pairs
-    for pair in pairs {
+    for pair in items(pairs) {
         match pair.as_rule() {
             Rule::tempo => {
                 // Parse tempo at file level (applies to all shows if no show-specific tempo)
@@ -109,23 +112,7 @@ pub fn parse_light_file_within(
                 show_pairs.push(pair);
             }
             Rule::include => includes.push(Include::from_pair(pair)),
-            _ => {
-                for inner_pair in pair.into_inner() {
-                    match inner_pair.as_rule() {
-                        Rule::tempo => {
-                            global_tempo = Some(parse_tempo_definition(inner_pair)?);
-                        }
-                        Rule::sequence => {
-                            sequence_pairs.push(inner_pair);
-                        }
-                        Rule::light_show => {
-                            show_pairs.push(inner_pair);
-                        }
-                        Rule::include => includes.push(Include::from_pair(inner_pair)),
-                        _ => {}
-                    }
-                }
-            }
+            _ => {}
         }
     }
 
@@ -618,14 +605,10 @@ fn parse_and_expand_inline_loop(
         .into_inner()
         .find(|p| p.as_rule() == Rule::number_value)
     {
-        repeats = count
-            .as_str()
-            .trim()
-            .parse::<usize>()
-            .map_err(|e| format!("Invalid repeats count: {}", e))?;
-        if repeats == 0 {
-            return Err("Loop repeats must be at least 1".into());
-        }
+        repeats = match parse_sequence_loop_param(count.as_str())? {
+            SequenceLoop::Count(n) => n,
+            _ => unreachable!("a number_value is a count"),
+        };
     }
 
     // The body's cues are timed from 0, relative to the loop's start; no
@@ -895,32 +878,17 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
 
                         match param_name.as_str() {
                             "layer" => {
-                                layer = Some(match param_value.as_str() {
-                                    "background" => EffectLayer::Background,
-                                    "midground" => EffectLayer::Midground,
-                                    "foreground" => EffectLayer::Foreground,
-                                    other => return Err(format!("Invalid layer: {}", other).into()),
-                                });
+                                layer =
+                                    Some(parse_layer(&param_value).ok_or_else(|| {
+                                        format!("Invalid layer: {}", param_value)
+                                    })?);
                             }
                             "intensity" => {
-                                // Parse percentage (e.g., "50%") or number (e.g., "0.5")
-                                let value = if param_value.ends_with('%') {
-                                    let percent_str = param_value.trim_end_matches('%');
-                                    percent_str.parse::<f64>()? / 100.0
-                                } else {
-                                    param_value.parse::<f64>()?
-                                };
-                                intensity = Some(value.clamp(0.0, 1.0));
+                                intensity =
+                                    Some(parse_percentage_to_f64(&param_value)?.clamp(0.0, 1.0));
                             }
                             "speed" => {
-                                // Parse percentage (e.g., "50%") or number (e.g., "0.5")
-                                let value = if param_value.ends_with('%') {
-                                    let percent_str = param_value.trim_end_matches('%');
-                                    percent_str.parse::<f64>()? / 100.0
-                                } else {
-                                    param_value.parse::<f64>()?
-                                };
-                                speed = Some(value.max(0.0));
+                                speed = Some(parse_percentage_to_f64(&param_value)?.max(0.0));
                             }
                             other => {
                                 return Err(

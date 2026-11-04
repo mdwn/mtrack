@@ -20,7 +20,7 @@ use super::super::types::{
     GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
 };
 use super::error::get_error_context;
-use super::grammar::{LightingParser, Rule};
+use super::grammar::{items, LightingParser, Rule};
 use super::utils::split_unit;
 use pest::iterators::Pair;
 use pest::Parser;
@@ -45,18 +45,11 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
         }
     };
 
-    for pair in pairs {
-        for inner_pair in pair.into_inner() {
-            match inner_pair.as_rule() {
-                Rule::fixture_type => {
-                    let fixture_type = parse_fixture_type_definition(inner_pair)
-                        .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
-                    fixture_types.insert(fixture_type.name().to_string(), fixture_type);
-                }
-                _ => {
-                    // Skip non-fixture_type rules (like comments)
-                }
-            }
+    for pair in items(pairs) {
+        if pair.as_rule() == Rule::fixture_type {
+            let fixture_type = parse_fixture_type_definition(pair)
+                .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
+            fixture_types.insert(fixture_type.name().to_string(), fixture_type);
         }
     }
 
@@ -84,18 +77,11 @@ pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Err
         }
     };
 
-    for pair in pairs {
-        for inner_pair in pair.into_inner() {
-            match inner_pair.as_rule() {
-                Rule::venue => {
-                    let venue = parse_venue_definition(inner_pair)
-                        .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
-                    venues.insert(venue.name().to_string(), venue);
-                }
-                _ => {
-                    // Ignore other rules
-                }
-            }
+    for pair in items(pairs) {
+        if pair.as_rule() == Rule::venue {
+            let venue = parse_venue_definition(pair)
+                .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
+            venues.insert(venue.name().to_string(), venue);
         }
     }
 
