@@ -1223,10 +1223,9 @@ impl Song {
         })
     }
 
-    /// Returns the duration string in minutes and seconds.
+    /// The duration as `M:SS`, as every surface formats one.
     pub fn duration_string(&self) -> String {
-        let secs = self.duration.as_secs();
-        format!("{}:{:02}", secs / 60, secs % 60)
+        crate::util::duration_minutes_seconds(self.duration)
     }
 
     /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.

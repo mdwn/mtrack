@@ -3566,12 +3566,15 @@ fn compute_tempo_segments_from(beats: &[f64], intervals: &[f64], weights: &[f64]
         .collect()
 }
 
-/// Formats a [`std::time::Duration`] as `M:SS.mmm`.
+/// Formats a [`std::time::Duration`] as `M:SS.mmm`: the `M:SS` every
+/// surface shows ([`crate::util::duration_minutes_seconds`]) with the
+/// milliseconds a tool wants, whole ones.
 pub(crate) fn format_duration(d: std::time::Duration) -> String {
-    let total = d.as_secs_f64();
-    let minutes = (total / 60.0).floor() as u64;
-    let seconds = total - (minutes as f64) * 60.0;
-    format!("{}:{:06.3}", minutes, seconds)
+    format!(
+        "{}.{:03}",
+        crate::util::duration_minutes_seconds(d),
+        d.subsec_millis()
+    )
 }
 
 /// Builds a compact summary value for a song.
@@ -4491,6 +4494,17 @@ mod snapshot_response_tests {
 
 #[cfg(test)]
 mod parse_duration_tests {
+    #[test]
+    fn a_position_formats_as_minutes_seconds_and_whole_milliseconds() {
+        let format = super::format_duration;
+        assert_eq!(format(std::time::Duration::from_millis(83_456)), "1:23.456");
+        assert_eq!(
+            format(std::time::Duration::from_micros(119_999_900)),
+            "1:59.999"
+        );
+        assert_eq!(format(std::time::Duration::ZERO), "0:00.000");
+    }
+
     #[test]
     fn a_duration_too_large_to_hold_is_turned_down() {
         assert_eq!(

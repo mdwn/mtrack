@@ -13,7 +13,6 @@
 //
 
 use crate::config;
-use crate::lighting::parser::utils::parse_time_string;
 use crate::proto::player::v1::player_service_client::PlayerServiceClient;
 use crate::proto::player::v1::{
     GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest,
@@ -53,8 +52,7 @@ fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
 pub async fn play(host_port: Option<String>, from: Option<String>) -> Result<(), Box<dyn Error>> {
     let mut client = connect(host_port).await?;
     if let Some(from_str) = from {
-        // Parse the time string
-        let start_time = parse_time_string(&from_str)?;
+        let start_time = util::parse_position(&from_str)?;
         let start_duration = prost_types::Duration::try_from(start_time)
             .map_err(|e| format!("Failed to convert duration: {}", e))?;
 
@@ -75,9 +73,8 @@ pub async fn play(host_port: Option<String>, from: Option<String>) -> Result<(),
 
 pub async fn seek(host_port: Option<String>, to: &str) -> Result<(), Box<dyn Error>> {
     let mut client = connect(host_port).await?;
-    // Try to parse the target as a time; anything unparseable is a section name.
-    match parse_time_string(to) {
-        Ok(position) => {
+    match seek_target(to) {
+        SeekTarget::Position(position) => {
             let position = prost_types::Duration::try_from(position)
                 .map_err(|e| format!("Failed to convert duration: {}", e))?;
             client
@@ -87,16 +84,30 @@ pub async fn seek(host_port: Option<String>, to: &str) -> Result<(), Box<dyn Err
                 .await?;
             println!("Seeked to {}", to);
         }
-        Err(_) => {
+        SeekTarget::Section(section_name) => {
             client
-                .seek_to_section(Request::new(SeekToSectionRequest {
-                    section_name: to.to_string(),
-                }))
+                .seek_to_section(Request::new(SeekToSectionRequest { section_name }))
                 .await?;
             println!("Seeked to section {}", to);
         }
     }
     Ok(())
+}
+
+/// What `mtrack seek` was given: a position, or a section's name.
+enum SeekTarget {
+    Position(Duration),
+    Section(String),
+}
+
+/// A target that parses as a position is one; anything else is a section
+/// name. The position parser is every surface's (`util::parse_position`),
+/// so `90s` and `1:30s` seek rather than naming a section.
+fn seek_target(to: &str) -> SeekTarget {
+    match util::parse_position(to) {
+        Ok(position) => SeekTarget::Position(position),
+        Err(_) => SeekTarget::Section(to.to_string()),
+    }
 }
 
 pub async fn previous(host_port: Option<String>) -> Result<(), Box<dyn Error>> {
@@ -191,6 +202,24 @@ pub async fn cues(host_port: Option<String>) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seek_parses_a_position_as_every_surface_does() {
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            ("1:30", 90.0),
+            ("1:30.5s", 90.5),
+        ] {
+            match seek_target(given) {
+                SeekTarget::Position(position) => {
+                    assert_eq!(position, Duration::from_secs_f64(secs), "{given}")
+                }
+                SeekTarget::Section(_) => panic!("{given} is a position"),
+            }
+        }
+        assert!(matches!(seek_target("chorus"), SeekTarget::Section(name) if name == "chorus"));
+    }
 
     mod print_song_tests {
         use super::*;

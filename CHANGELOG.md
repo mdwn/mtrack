@@ -246,6 +246,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mtrack seek 90s` seeks**: the CLI parsed a position with the lighting DSL's time parser,
+  which does not take an `s` suffix, so `90s` or `1:30s` fell through to a seek to a *section*
+  of that name. It now parses positions as every other surface does (`90`, `90s`, `1:30`,
+  `1:30.5s`).
 - **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
   and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
   profile names it) parked at centre no longer makes a dark rig read as lit. The MVR export's
