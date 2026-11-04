@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
-use crate::util::filename_display;
+use crate::util::{filename_display, FileStamp};
 
 /// Returns true if the extension is a supported audio (non-MIDI) format.
 pub fn is_supported_audio_extension(ext: &str) -> bool {
@@ -100,16 +100,6 @@ fn lighting_tempo(
         .or_else(|| beat_grid.and_then(|grid| grid.to_tempo_map()))
 }
 
-/// What tells a file has changed: its modified time, and its size, for two
-/// saves within one tick of the clock -- a truncate, then the write.
-type FileStamp = (std::time::SystemTime, u64);
-
-/// The [`FileStamp`] of `path`, if it can be read.
-fn modified_time(path: &Path) -> Option<FileStamp> {
-    let metadata = fs::metadata(path).ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
-}
-
 /// Reads and parses a DSL file.
 fn parse_dsl_file(
     file_path: &Path,
@@ -165,7 +155,7 @@ impl DslLightingShow {
     ) -> Result<Self, Box<dyn Error>> {
         // Read before parsing: an edit landing in between is newer than the
         // time kept, and parsed again next time.
-        let modified = modified_time(&file_path);
+        let modified = FileStamp::of(&file_path);
         let shows = parse_dsl_file(&file_path, tempo_map)?;
         Ok(Self::with_shows(file_path, shows, tempo_map, modified))
     }
@@ -211,7 +201,7 @@ impl DslLightingShow {
     fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
         let mut parsed = self.parsed.lock();
         if parsed.modified.is_some() {
-            let modified = modified_time(&self.file_path);
+            let modified = FileStamp::of(&self.file_path);
             if modified.is_some() && modified != parsed.modified {
                 parsed.modified = modified;
                 match parse_dsl_file(&self.file_path, self.tempo_map.as_ref()) {

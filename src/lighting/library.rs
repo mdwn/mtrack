@@ -113,10 +113,13 @@ struct Names {
     manufacturer: String,
 }
 
-fn modified_ns(meta: &std::fs::Metadata) -> Option<u128> {
-    meta.modified()
+/// How a [`FileStamp`] is kept in the index: its modified time as
+/// nanoseconds since the epoch.
+fn modified_ns(stamp: &crate::util::FileStamp) -> Option<u128> {
+    stamp
+        .modified
+        .duration_since(std::time::UNIX_EPOCH)
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
 }
 
@@ -152,8 +155,8 @@ fn names_of(
     index: &mut Index,
     dirty: &mut bool,
 ) -> Result<Names, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("cannot read it: {e}"))?;
-    let stat = (meta.len(), modified_ns(&meta));
+    let stamp = crate::util::FileStamp::of(path).ok_or("cannot read it")?;
+    let stat = (stamp.len, modified_ns(&stamp));
     if let Some(seen) = index.files.get(file_name) {
         if (seen.len, seen.modified_ns) == stat {
             if let Some(names) = index.names.get(&seen.sha256) {

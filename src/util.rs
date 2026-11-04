@@ -913,6 +913,27 @@ pub fn resolved_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// What tells a file has changed: its modified time and its length, for two
+/// saves within one tick of the clock -- a truncate, then the write. Compared
+/// for inequality, never ordered: a backup restored moves the time backwards,
+/// and that is a change too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub modified: std::time::SystemTime,
+    pub len: u64,
+}
+
+impl FileStamp {
+    /// The stamp of `path`, if it can be read.
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        })
+    }
+}
+
 /// Whether a path a config or a client names could leave the directory it is
 /// joined to: absolute, or with a `..` component. The one rule for a path that
 /// must stay inside the project; a `..` inside a name (`v1..2`) is no escape.
@@ -1305,6 +1326,37 @@ mod test {
     use std::time::Duration;
 
     use crate::util::{duration_minutes_seconds, escapes_project};
+
+    /// A save within the clock's tick of the last, and a backup restored
+    /// over the file, both read as changes.
+    #[test]
+    fn a_file_stamp_changes_with_the_length_and_with_time_moved_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("show.light");
+        std::fs::write(&path, "a").unwrap();
+        let first = crate::util::FileStamp::of(&path).unwrap();
+        std::fs::write(&path, "ab").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(first.modified)
+            .unwrap();
+        let same_tick = crate::util::FileStamp::of(&path).unwrap();
+        assert_eq!(same_tick.modified, first.modified);
+        assert_ne!(same_tick, first);
+
+        let earlier = first.modified - Duration::from_secs(60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        std::fs::write(&path, "a").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        assert_ne!(crate::util::FileStamp::of(&path).unwrap(), first);
+        assert!(crate::util::FileStamp::of(&dir.path().join("none")).is_none());
+    }
 
     #[test]
     fn a_path_escapes_the_project_as_absolute_or_by_a_parent_component() {

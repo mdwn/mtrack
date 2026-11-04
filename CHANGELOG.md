@@ -251,6 +251,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The light show watcher sees every save**: it reloaded a `.light` file only when its
+  modified time had moved forward, so a second save within one tick of the clock, or a backup
+  restored over the file, went unnoticed until the next edit. It now goes by the file's
+  modified time and length, as the song's own reload of a show does.
 - **The web UI reads a flat-layout song's own YAML**: `GET /api/songs/<name>` looked for
   `song.yaml` or `song.yml` in the song's folder, so a song kept as `<name>.yaml` beside others
   answered with a bare summary (or another song's file). It now reads the file the song was

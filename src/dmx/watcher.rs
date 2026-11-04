@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 use super::engine::Engine;
 use crate::lighting::timeline::LightingTimeline;
 use crate::lighting::validation::validate_light_shows;
+use crate::util::FileStamp;
 
 /// Handle to a running file watcher, shuts down when dropped.
 pub struct WatcherHandle {
@@ -82,20 +83,15 @@ pub fn start_watching(
 
     // Spawn a thread to handle file change events
     std::thread::spawn(move || {
-        // Track the last-known mtime per watched file so we can distinguish
+        // Track the last-known stamp per watched file so we can distinguish
         // "the file actually changed" from "something fired a spurious event"
         // (read-only access updating atime, the watcher's own read triggering
         // notify in certain backend configurations, etc.). Pre-seed with the
-        // current mtimes so the first event we process compares against a
+        // current stamps so the first event we process compares against a
         // real baseline rather than treating every watched file as "new".
-        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> = watched
+        let mut last_stamps: std::collections::HashMap<PathBuf, FileStamp> = watched
             .iter()
-            .filter_map(|p| {
-                std::fs::metadata(p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|t| (p.clone(), t))
-            })
+            .filter_map(|p| FileStamp::of(p).map(|stamp| (p.clone(), stamp)))
             .collect();
 
         for events in rx {
@@ -116,33 +112,33 @@ pub fn start_watching(
                         continue;
                     }
 
-                    // Second guard: mtime-based change detection. Reads
+                    // Second guard: stamp-based change detection
+                    // ([`FileStamp`]: modified time and length). Reads
                     // (which trigger IN_ACCESS / IN_OPEN / IN_CLOSE_NOWRITE
                     // on some inotify backend configurations) do NOT change
-                    // mtime, so a "did mtime advance?" check breaks the
-                    // self-sustaining read → event → reload → read loop
+                    // the stamp, so a "did the stamp change?" check breaks
+                    // the self-sustaining read → event → reload → read loop
                     // without affecting genuine write-driven reloads.
                     //
                     // Use `fold` rather than `any` so EVERY changed file's
-                    // mtime entry is refreshed in this pass. With `any`
+                    // stamp entry is refreshed in this pass. With `any`
                     // short-circuiting on the first hit, a multi-file save
                     // would update only the first file's baseline and
                     // trigger a spurious second reload when the next event
                     // arrives for one of the stale entries.
                     let any_changed = watched.iter().fold(false, |acc, p| {
-                        let changed = match std::fs::metadata(p).and_then(|m| m.modified()) {
-                            Ok(mt) => {
-                                let changed =
-                                    last_mtimes.get(p).map(|prev| mt > *prev).unwrap_or(true);
+                        let changed = match FileStamp::of(p) {
+                            Some(stamp) => {
+                                let changed = last_stamps.get(p) != Some(&stamp);
                                 if changed {
-                                    last_mtimes.insert(p.clone(), mt);
+                                    last_stamps.insert(p.clone(), stamp);
                                 }
                                 changed
                             }
                             // Metadata failed — be conservative and reload,
                             // so a transient stat error doesn't silently
                             // skip a real change.
-                            Err(_) => true,
+                            None => true,
                         };
                         acc || changed
                     });
