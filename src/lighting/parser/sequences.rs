@@ -276,14 +276,17 @@ impl SequenceLibrary {
             .and_then(|source| source.into_inner().find(|p| p.as_rule() == Rule::sequence))
             .ok_or("Sequence definition did not parse (internal error)")?;
 
-        let definition = parse_sequence_structure(pair, &self.global_tempo, self)?;
+        let definition = parse_sequence_structure(pair, &self.global_tempo)?;
         let tempo = definition
             .tempo_map
             .clone()
             .or_else(|| self.global_tempo.clone());
+        // Checked before any reference is placed: a cue past the length is
+        // an error whatever it would expand to, and a long expansion is
+        // spared.
         let length = definition.declared_length(tempo.as_ref())?;
         Ok(Sequence {
-            cues: definition.cues,
+            cues: definition.block.place(self)?,
             tempo_map: tempo,
             length,
         })

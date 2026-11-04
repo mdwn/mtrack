@@ -37,32 +37,85 @@ use crate::tempo::{snap_beats, steady_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
 use pest::Parser;
 
-/// What `parse_cue` makes of one cue.
+/// What `parse_cue` makes of one cue: what it puts on the timeline of
+/// itself, and the sequences it references, placed by [`CueBlock::place`]
+/// once the block's cues are all parsed -- a sequence's `length:` is
+/// checked against its cues as written before any reference expands.
 struct ParsedCue {
-    /// The cues it puts on the timeline, in time order.
+    /// Its time, with the offset in force.
+    time: Duration,
+    /// The offset in force at it, in seconds.
+    offset_secs: f64,
+    /// The cues it puts on the timeline of itself: its own cue, when it
+    /// holds anything of its own, and its inline loops' passes.
     cues: Vec<Cue>,
-    /// The times of the cues as written: itself, unless it holds nothing
-    /// but inline loops, and its inline loops' cues; not the passes of the
-    /// sequences it references. A sequence's `length:` is checked against
-    /// these.
-    written: Vec<Duration>,
+    /// Its own cue's place in `cues`, when it holds anything of its own.
+    base: Option<usize>,
+    /// The sequences it references, in order.
+    references: Vec<SequenceCall>,
     /// The offset in seconds the cues after it start from, if its `offset`
     /// or `reset` commands changed it.
     new_offset: Option<f64>,
     /// The measure offset the cues after it start from.
     measure_offset: u32,
-    /// The latest cue time it produced.
+    /// The latest cue time it produced of itself.
     last_time: Duration,
 }
 
+impl ParsedCue {
+    /// The times of its cues as written, in order: itself, unless it holds
+    /// nothing but inline loops (a cue holding only references counts, even
+    /// to a sequence that expands to nothing), and its inline loops' cues;
+    /// not the passes of the sequences it references.
+    fn written(&self) -> Vec<Duration> {
+        let mut written: Vec<Duration> = self.cues.iter().map(|c| c.time).collect();
+        if self.base.is_none() && !self.references.is_empty() {
+            written.push(self.time);
+        }
+        written.sort();
+        written
+    }
+}
+
 /// What `parse_cue_block` makes of a show's, a sequence's or an inline
-/// loop body's cues.
-struct CueBlock {
-    cues: Vec<Cue>,
-    /// The cues' times as written (see [`ParsedCue::written`]), in order.
-    written: Vec<Duration>,
+/// loop body's cues, its sequence references still to place.
+pub(super) struct CueBlock {
+    cues: Vec<ParsedCue>,
     /// The block's own `tempo` block, if it has one.
     tempo_map: Option<TempoMap>,
+    /// The tempo map the cues were parsed under: its own, else the file's.
+    effective_tempo: Option<TempoMap>,
+}
+
+impl CueBlock {
+    /// The cues' times as written (see [`ParsedCue::written`]), in order.
+    fn written(&self) -> Vec<Duration> {
+        self.cues.iter().flat_map(ParsedCue::written).collect()
+    }
+
+    /// The block's cues, each with the passes of the sequences it
+    /// references placed from it, in time order within each.
+    pub(super) fn place(self, library: &SequenceLibrary) -> Result<Vec<Cue>, Box<dyn Error>> {
+        let mut cues = Vec::new();
+        for mut parsed in self.cues {
+            for call in &parsed.references {
+                place_sequence(
+                    call,
+                    library,
+                    &self.effective_tempo,
+                    parsed.time,
+                    parsed.offset_secs,
+                    &mut parsed.cues,
+                    parsed.base,
+                )?;
+            }
+            // Generated cues come in source order, not time order (an
+            // inline loop may write @0.5 before @0.0).
+            parsed.cues.sort_by_key(|c| c.time);
+            cues.extend(parsed.cues);
+        }
+        Ok(cues)
+    }
 }
 
 /// Parses light shows from DSL content.
@@ -222,8 +275,9 @@ fn parse_light_show_definition(
                 name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::show_content => {
-                let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
-                (cues, tempo_map) = (block.cues, block.tempo_map);
+                let block = parse_cue_block(inner_pair.into_inner(), global_tempo)?;
+                tempo_map = block.tempo_map.clone();
+                cues = block.place(library)?;
             }
             _ => {}
         }
@@ -241,9 +295,8 @@ pub(super) struct SequenceDefinition {
     pub(super) tempo_map: Option<TempoMap>,
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
-    pub(super) cues: Vec<Cue>,
-    /// The times of its cues as written (see [`ParsedCue::written`]).
-    written: Vec<Duration>,
+    /// Its cues, their references still to place.
+    pub(super) block: CueBlock,
 }
 
 impl SequenceDefinition {
@@ -259,7 +312,8 @@ impl SequenceDefinition {
         let Some(written) = &self.length else {
             return Ok(None);
         };
-        let start = self.written.iter().min().copied().unwrap_or_default();
+        let written_times = self.block.written();
+        let start = written_times.iter().min().copied().unwrap_or_default();
         let length = parse_duration_string(written, &tempo_map.cloned(), Some(start), 0.0)
             .map_err(|e| {
                 format!(
@@ -272,7 +326,7 @@ impl SequenceDefinition {
                 format!("Sequence '{}': length must be greater than zero", self.name).into(),
             );
         }
-        if let Some(late) = self.written.iter().find(|&&t| t - start >= length) {
+        if let Some(late) = written_times.iter().find(|&&t| t - start >= length) {
             return Err(format!(
                 "Sequence '{}': a cue starts {:.3}s in, at or past its length of {} ({:.3}s)",
                 self.name,
@@ -289,13 +343,10 @@ impl SequenceDefinition {
 pub(super) fn parse_sequence_structure(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
-    library: &SequenceLibrary,
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
-    let mut tempo_map: Option<TempoMap> = None;
     let mut length = None;
-    let mut cues = Vec::new();
-    let mut written = Vec::new();
+    let mut block = None;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -309,19 +360,22 @@ pub(super) fn parse_sequence_structure(
                     .map(|p| p.as_str().trim().to_string());
             }
             Rule::sequence_content => {
-                let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
-                (cues, written, tempo_map) = (block.cues, block.written, block.tempo_map);
+                block = Some(parse_cue_block(inner_pair.into_inner(), global_tempo)?);
             }
             _ => {}
         }
     }
 
+    let block = block.unwrap_or_else(|| CueBlock {
+        cues: Vec::new(),
+        tempo_map: None,
+        effective_tempo: global_tempo.clone(),
+    });
     Ok(SequenceDefinition {
         name,
-        tempo_map,
+        tempo_map: block.tempo_map.clone(),
         length,
-        cues,
-        written,
+        block,
     })
 }
 
@@ -329,11 +383,10 @@ pub(super) fn parse_sequence_structure(
 /// each placed after the `offset` and `reset` commands of the cues before
 /// it. A `tempo` block among them governs all of them (the last one, if
 /// there are several), else `global_tempo`; the block's own map is returned
-/// with the cues.
+/// with the cues. The sequences the cues reference are not placed yet.
 fn parse_cue_block<'i>(
     pairs: impl Iterator<Item = Pair<'i, Rule>>,
     global_tempo: &Option<TempoMap>,
-    library: &SequenceLibrary,
 ) -> Result<CueBlock, Box<dyn Error>> {
     let mut tempo_map: Option<TempoMap> = None;
     let mut cue_pairs = Vec::new();
@@ -347,7 +400,6 @@ fn parse_cue_block<'i>(
     let effective_tempo = tempo_map.clone().or_else(|| global_tempo.clone());
 
     let mut cues = Vec::new();
-    let mut written = Vec::new();
     // What the cues so far leave in force: the offset in seconds, the
     // measure offset, and the last cue time standalone offsets anchor to.
     let mut offset_secs: f64 = 0.0;
@@ -357,23 +409,21 @@ fn parse_cue_block<'i>(
         let parsed = parse_cue(
             cue_pair,
             &effective_tempo,
-            library,
             offset_secs,
             cumulative_measure_offset,
             last_abs_time,
         )?;
-        cues.extend(parsed.cues);
-        written.extend(parsed.written);
         if let Some(change) = parsed.new_offset {
             offset_secs = change;
         }
         cumulative_measure_offset = parsed.measure_offset;
         last_abs_time = Some(parsed.last_time);
+        cues.push(parsed);
     }
     Ok(CueBlock {
         cues,
-        written,
         tempo_map,
+        effective_tempo,
     })
 }
 /// Calculate relative time from an absolute time and base time
@@ -643,7 +693,8 @@ fn parse_and_expand_inline_loop(
 
     // The body's cues are timed from 0, relative to the loop's start; no
     // sequences are available in an inline loop.
-    let loop_cues = parse_cue_block(pair.into_inner(), tempo_map, &SequenceLibrary::empty())?.cues;
+    let loop_cues =
+        parse_cue_block(pair.into_inner(), tempo_map)?.place(&SequenceLibrary::empty())?;
     if loop_cues.is_empty() {
         return Ok(Vec::new());
     }
@@ -677,7 +728,6 @@ fn parse_and_expand_inline_loop(
 fn parse_cue(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
-    library: &SequenceLibrary,
     offset_secs: f64,
     cumulative_measure_offset: u32,
     last_abs_time: Option<Duration>,
@@ -845,34 +895,18 @@ fn parse_cue(
             merge_into(&mut cues, base_index, cue);
         }
     }
-    // As written: the cue itself counts when it holds anything at all,
-    // references included, even to a sequence that expands to nothing.
-    let mut written: Vec<Duration> = cues.iter().map(|c| c.time).collect();
-    if base_index.is_none() && !sequence_ref_pairs.is_empty() {
-        written.push(abs_time);
-    }
-    written.sort();
-    for seq_ref_pair in sequence_ref_pairs {
-        let call = parse_sequence_reference_pair(seq_ref_pair)?;
-        place_sequence(
-            &call,
-            library,
-            tempo_map,
-            abs_time,
-            applied_offset_secs,
-            &mut cues,
-            base_index,
-        )?;
-    }
-
-    // Generated cues come in source order, not time order (an inline loop
-    // may write @0.5 before @0.0).
-    cues.sort_by_key(|c| c.time);
+    let references = sequence_ref_pairs
+        .into_iter()
+        .map(parse_sequence_reference_pair)
+        .collect::<Result<Vec<_>, _>>()?;
     let last_time = cues.iter().map(|c| c.time).max().unwrap_or(abs_time);
 
     Ok(ParsedCue {
+        time: abs_time,
+        offset_secs: applied_offset_secs,
         cues,
-        written,
+        base: base_index,
+        references,
         new_offset,
         measure_offset: cumulative_measure_offset,
         last_time: last_time.max(abs_time),

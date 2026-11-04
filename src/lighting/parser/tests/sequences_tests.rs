@@ -1887,3 +1887,36 @@ show "Show" {
         ]
     );
 }
+
+#[test]
+fn test_sequence_length_is_checked_before_its_references_expand() {
+    // A written cue past the length is the error, whatever the cue would
+    // expand to: the reference to a sequence that does not exist is never
+    // reached (nor would a huge one be expanded).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "short", length: 1measure {
+    @1/1
+    x: static, color: "red", duration: 1beat
+
+    @3/1
+    sequence "nope", loop: loop
+}
+
+show "Show" {
+    @1/1
+    sequence "short"
+}
+"#;
+    let err = parse_light_shows(content).expect_err("the length is checked first");
+    assert!(
+        err.to_string().contains(
+            "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
+        ),
+        "{err}"
+    );
+}
