@@ -33,7 +33,7 @@ use super::utils::{
     parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
     parse_time_string,
 };
-use crate::tempo::{snap_beats, steady_beats, DEFAULT_BPM};
+use crate::tempo::{snap_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
 use pest::Parser;
 
@@ -632,10 +632,9 @@ fn place_sequence(
     // multiplied by the iteration count crept the loop later every pass (#534).
     let beats_in = |time: Duration| match &sequence.tempo_map {
         Some(tm) => tm.beats_between(base_time, time),
-        None => snap_beats(steady_beats(
-            DEFAULT_BPM,
-            relative_time(time, base_time).as_secs_f64(),
-        )),
+        // In this order of operations, as it always was: a position must
+        // come out bit for bit the same.
+        None => snap_beats(relative_time(time, base_time).as_secs_f64() * (DEFAULT_BPM / 60.0)),
     };
     let pass_beats = beats_in(base_time + pass);
     for iteration in 0..loop_count {

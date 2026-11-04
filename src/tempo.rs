@@ -993,8 +993,11 @@ impl TempoMap {
     /// at that one steady tempo, so an offset issued after a tempo change
     /// does not undo the change by integrating back through it.
     pub(crate) fn offset_duration(&self, measures: u32, anchor: Duration) -> f64 {
-        let beats = self.time_signature_at_time(anchor, 0.0).beats_per_measure();
-        steady_secs(self.bpm_at_time(anchor, 0.0), measures as f64 * beats)
+        let beats_per_measure = self.time_signature_at_time(anchor, 0.0).beats_per_measure();
+        let seconds_per_beat = 60.0 / self.bpm_at_time(anchor, 0.0);
+        // In this order of operations, as the cue parser always had it: a
+        // stored offset must come out bit for bit the same.
+        measures as f64 * beats_per_measure * seconds_per_beat
     }
 
     /// Get time signature at a given time
@@ -1162,6 +1165,16 @@ impl TempoMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offset_duration_multiplies_in_the_cue_parsers_order() {
+        // The product's order of operations is the one the stored offsets
+        // of every show so far were computed in; another order differs in
+        // the last ulp at some tempos.
+        let tm = TempoMap::new(Duration::ZERO, 169.0, TimeSignature::new(4, 4), vec![]);
+        let secs = tm.offset_duration(6, Duration::ZERO);
+        assert_eq!(secs.to_bits(), (6.0 * 4.0 * (60.0 / 169.0_f64)).to_bits());
+    }
 
     mod metres_walk_tests {
         use super::*;
