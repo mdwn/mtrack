@@ -516,15 +516,17 @@ fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
 const EXACT_BEATS: f64 = (1u64 << 45) as f64;
 
 /// Whether `x` is a whole number of eighths of a beat below
-/// [`EXACT_BEATS`]. A time signature has a power-of-two denominator up to
-/// 32, so a bar is such a length, and so is any whole number of them below
-/// that bound: an f64 holds every such value exactly (2^45 / 2^-3 = 2^48
-/// of them, under its 2^53). So counting `n` such bars onto, or off, a
-/// position `x` in one step gives bit for bit what counting them one by
-/// one does: added to a sum of such bars, every partial sum is such a
-/// value; taken off any position `r` below the bound, each difference is a
-/// whole multiple of `r`'s ulp (at most 2^-8, which divides an eighth) no
-/// larger than `r`, which an f64 holds exactly too.
+/// [`EXACT_BEATS`]. A bar of a time signature with a power-of-two
+/// denominator up to 32 is such a length, and so is any whole number of
+/// them below that bound: an f64 holds every such value exactly (2^45 /
+/// 2^-3 = 2^48 of them, under its 2^53). So counting `n` such bars onto,
+/// or off, a position in one step gives bit for bit what counting them one
+/// by one does: added to a sum that is such a value, every partial sum is
+/// one too; taken off any position `r` below the bound, each difference is
+/// a whole multiple of `r`'s ulp (at most 2^-8, which divides an eighth)
+/// no larger than `r`, which an f64 holds exactly too. A light show's
+/// signature may have any denominator; a bar of 4/3 is not such a length,
+/// nor a sum once one is in it, and those count one bar at a time.
 fn exact_eighths(x: f64) -> bool {
     x < EXACT_BEATS && (x * 8.0).fract() == 0.0
 }
@@ -594,6 +596,7 @@ impl Metres {
                 .map_or(target_measure, |b| b.min(target_measure))
                 - current_measure;
             let bars = if exact_eighths(per_measure)
+                && exact_eighths(target_beats)
                 && target_beats + run as f64 * per_measure < EXACT_BEATS
             {
                 run
@@ -1249,6 +1252,46 @@ mod tests {
                     assert_eq!(a.to_bits(), b.to_bits(), "beats at {measure}/{beat}");
                 }
             }
+        }
+
+        #[test]
+        fn bars_of_any_denominator_count_as_bars_counted_one_by_one_do() {
+            // A light show's signature may have any denominator: a bar of
+            // 4/3 or 7/7 is not a whole number of eighths, and the sum of
+            // bars past it is no longer exact, so from there the count goes
+            // one bar at a time.
+            let mut odd = Vec::new();
+            for (n, d) in [(4, 3), (7, 7), (5, 64)] {
+                let mut metres = Metres::new(TimeSignature::new(4, 4));
+                metres.add(2, 1.0, TimeSignature::new(n, d));
+                metres.add(3, 1.0, TimeSignature::new(4, 4));
+                metres.add(500, 2.0, TimeSignature::new(n, d));
+                metres.add(900, 1.0, TimeSignature::new(3, 4));
+                odd.push(metres);
+            }
+            let mut differ = 0;
+            for metres in &odd {
+                // The one-bar walk's sum, bar by bar in its order of
+                // operations, carried from one measure to the next.
+                let mut one_by_one: f64 = 0.0;
+                for measure in 1..20_000 {
+                    if metres.beats_at(measure, 2.5).to_bits() != (one_by_one + 1.5).to_bits() {
+                        differ += 1;
+                    }
+                    if measure % 500 == 0 {
+                        assert_eq!(
+                            one_by_one.to_bits(),
+                            beats_at_one_by_one(metres, measure, 1.0).to_bits()
+                        );
+                        let at = measure as f64 * 1.37;
+                        let (m, into, per) = metres.bar_at(at);
+                        let (m1, into1, per1) = bar_at_one_by_one(metres, at);
+                        assert_eq!((m, into.to_bits(), per), (m1, into1.to_bits(), per1));
+                    }
+                    one_by_one += metres.at_measure(measure).beats_per_measure() - 0.0;
+                }
+            }
+            assert_eq!(differ, 0, "beat counts differing from the one-bar walk");
         }
     }
 
