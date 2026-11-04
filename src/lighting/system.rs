@@ -1226,8 +1226,7 @@ impl LightingSystem {
     }
 
     /// The current venue's fixtures for the effects engine, or why they do
-    /// not load. What to make of no venue at all is the caller's: a
-    /// [`VenueFault`] names none then.
+    /// not load; what to make of no venue at all is the caller's.
     pub fn load_current_venue_fixtures(
         &self,
     ) -> Result<Vec<crate::lighting::effects::FixtureInfo>, VenueFault> {

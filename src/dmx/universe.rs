@@ -44,16 +44,14 @@ pub(crate) fn dim_ticks(dimming: Duration) -> f64 {
 }
 
 /// What a MIDI DMX channel moves a tick, dimming from `current` to `target`
-/// over `ticks`. No ticks at all is not guarded: the rate is then infinite
-/// (or no number, for a dim to where it is), and [`dim_step`] and
-/// [`dimmed_at`] take either to the target at once.
+/// over `ticks`; over none, infinite (or no number), which [`dim_step`] and
+/// [`dimmed_at`] take to the target at once.
 pub(crate) fn dim_rate(current: f64, target: f64, ticks: f64) -> f64 {
     (target - current) / ticks
 }
 
 /// Where a MIDI DMX channel at `current`, moving `rate` a tick, is a tick
-/// on: at `target` once it gets there, or at once for an instant write
-/// (no rate). The universe thread's step; [`dimmed_at`] is its closed form.
+/// on: at `target` once there, or at once with no rate (an instant write).
 pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
     if rate > 0.0 {
         (current + rate).min(target)
@@ -64,9 +62,8 @@ pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
     }
 }
 
-/// Where a MIDI DMX channel written at `from`, moving `rate` a tick toward
-/// `target`, is `ticks` ticks on: [`dim_step`] that many times, in closed
-/// form.
+/// Where a channel written at `from`, moving `rate` a tick toward `target`,
+/// is `ticks` ticks on: [`dim_step`] that many times, in closed form.
 pub(crate) fn dimmed_at(from: f64, target: f64, rate: f64, ticks: f64) -> f64 {
     if rate == 0.0 {
         return target;

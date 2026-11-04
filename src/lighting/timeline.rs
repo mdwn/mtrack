@@ -278,10 +278,9 @@ pub struct LightingTimeline {
     open_ended: bool,
 }
 
-/// The tempo map a song's shows play to, every one of them: the first show's
-/// with a `tempo` block, in the order the song registers them, or with none,
-/// `fallback` -- the song's. A later show's own block does not place its
-/// cues; what the player plays, and every position reported for them.
+/// The tempo map a song's shows all play to: the first show's with a `tempo`
+/// block, in the order the song registers them, else `fallback` -- the
+/// song's. A later show's own block does not place its cues.
 pub fn shows_tempo_map<'a>(
     shows: &'a [LightShow],
     fallback: Option<&'a crate::lighting::tempo::TempoMap>,
