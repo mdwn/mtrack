@@ -383,3 +383,54 @@ fn test_stop_all_effects_clears_midi_dmx_store() {
         );
     }
 }
+
+/// MIDI DMX writes a channel as the show does: a 16-bit channel's fine
+/// byte and a ganged channel's mirrors go out with the coarse byte. The
+/// fast path used to write the coarse byte alone.
+#[test]
+fn midi_dmx_store_values_reach_fine_bytes_and_mirrors() {
+    use crate::lighting::types::ChannelDef;
+
+    let mut engine = EffectEngine::new();
+    let channels: HashMap<String, u16> = [("pan", 1), ("red", 3)]
+        .into_iter()
+        .map(|(n, o)| (n.to_string(), o))
+        .collect();
+    let fixture = FixtureInfo::new("bar".to_string(), 1, 10, "Bar".to_string(), channels, None);
+    let mut pan = ChannelDef::at(1);
+    pan.fine = Some(2);
+    let mut red = ChannelDef::at(3);
+    red.mirrors = vec![(4, None), (5, None)];
+    let fixture = fixture.with_channel_defs(
+        [("pan".to_string(), pan), ("red".to_string(), red)]
+            .into_iter()
+            .collect(),
+    );
+    engine.register_fixture(fixture);
+
+    let mut store = MidiDmxStore::new();
+    store.register_slot(1, 10, "bar", "pan");
+    store.register_slot(1, 12, "bar", "red");
+    store.register_universe(1);
+    let store = Arc::new(parking_lot::RwLock::new(store));
+    engine.set_midi_dmx_store(store.clone());
+    {
+        let s = store.read();
+        s.write(1, 10, 128, false);
+        s.write(1, 12, 200, false);
+        s.tick();
+    }
+
+    let commands = engine.update(Duration::from_millis(23), None).unwrap();
+    let mut sent: Vec<(u16, u8)> = commands
+        .iter()
+        .filter(|c| c.universe == 1)
+        .map(|c| (c.channel, c.value))
+        .collect();
+    sent.sort();
+    // 128/255 of the 16-bit scale is 0x8080: coarse 128, fine 128.
+    assert_eq!(
+        sent,
+        vec![(10, 128), (11, 128), (12, 200), (13, 200), (14, 200)]
+    );
+}

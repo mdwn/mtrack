@@ -1063,13 +1063,14 @@ impl EffectEngine {
                 for (slot_idx, normalized_value) in store.iter_active() {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
-                        if let Some(&offset) = fixture_info.channels.get(channel_name) {
-                            let dmx_value = (normalized_value * 255.0) as u8;
-                            commands.push(DmxCommand {
-                                universe: fixture_info.universe,
-                                channel: fixture_info.dmx_channel(offset),
-                                value: dmx_value,
-                            });
+                        if let Some(def) = fixture_info.channel_defs.get(channel_name) {
+                            for (offset, byte) in resolve_normalized(def, normalized_value) {
+                                commands.push(DmxCommand {
+                                    universe: fixture_info.universe,
+                                    channel: fixture_info.dmx_channel(offset),
+                                    value: byte,
+                                });
+                            }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
                                 .entry(fixture_name.clone())
