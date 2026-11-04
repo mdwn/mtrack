@@ -179,12 +179,8 @@ impl Engine {
                 // block fall back to the song's tempo map (song.yaml `tempo:`).
                 {
                     let mut effect_engine = dmx_engine.effect_engine.lock();
-                    effect_engine.set_tempo_map(
-                        timeline
-                            .tempo_map()
-                            .cloned()
-                            .or_else(|| song.lighting_tempo_map()),
-                    );
+                    effect_engine
+                        .set_tempo_map(timeline.tempo_map_or(song.lighting_tempo_map().as_ref()));
                 }
                 {
                     let mut current_timeline = dmx_engine.current_song_timeline.lock();

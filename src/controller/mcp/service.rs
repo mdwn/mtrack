@@ -639,7 +639,7 @@ impl McpServer {
             // combines a song's shows. Concatenating per show would restart
             // indices at zero for each one and interleave their times, so the
             // same song answered differently depending on which branch ran.
-            let tempo = shows.iter().find_map(|s| s.tempo_map.clone());
+            let tempo = crate::lighting::timeline::shows_tempo_map(&shows, None);
             let mut cues: Vec<(std::time::Duration, usize)> = shows
                 .iter()
                 .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
@@ -654,7 +654,7 @@ impl McpServer {
                         "index": index,
                         "time": format_duration(time),
                         "seconds": time.as_secs_f64(),
-                        "position": tempo.as_ref().map(|m| m.position_label(time)),
+                        "position": tempo.map(|m| m.position_label(time)),
                         "effects": effects,
                     })
                 })

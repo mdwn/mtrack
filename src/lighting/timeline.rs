@@ -278,22 +278,22 @@ pub struct LightingTimeline {
     open_ended: bool,
 }
 
+/// The tempo map a song's shows play to, every one of them: the first show's
+/// with a `tempo` block, in the order the song registers them, or with none,
+/// `fallback` -- the song's. A later show's own block does not place its
+/// cues; what the player plays, and every position reported for them.
+pub fn shows_tempo_map<'a>(
+    shows: &'a [LightShow],
+    fallback: Option<&'a crate::lighting::tempo::TempoMap>,
+) -> Option<&'a crate::lighting::tempo::TempoMap> {
+    shows.iter().find_map(|show| show.tempo_map.as_ref()).or(fallback)
+}
+
 impl LightingTimeline {
     /// Creates a new lighting timeline from DSL light shows
     pub fn new(shows: Vec<LightShow>) -> Self {
-        let mut all_cues = Vec::new();
-        let mut tempo_map: Option<crate::lighting::tempo::TempoMap> = None;
-
-        // Extract cues and tempo map from shows
-        // Use the first show's tempo map if available
-        for show in shows {
-            all_cues.extend(show.cues);
-            // Use the first show's tempo map
-            if tempo_map.is_none() {
-                tempo_map = show.tempo_map;
-            }
-        }
-
+        let tempo_map = shows_tempo_map(&shows, None).cloned();
+        let all_cues = shows.into_iter().flat_map(|show| show.cues).collect();
         let mut timeline = Self::new_with_cues(all_cues);
         timeline.tempo_map = tempo_map;
         timeline
@@ -358,8 +358,9 @@ impl LightingTimeline {
         self.tempo_map.as_ref()
     }
 
-    /// The tempo map the show's effects play to: the show's own, or for a
-    /// show without a `tempo` block, `fallback` -- the song's.
+    /// The tempo map the show's effects play to: the shows' own
+    /// ([`shows_tempo_map`]), or with no `tempo` block among them,
+    /// `fallback` -- the song's.
     pub fn tempo_map_or(
         &self,
         fallback: Option<&crate::lighting::tempo::TempoMap>,
