@@ -21,7 +21,7 @@ use super::super::tempo::{
 };
 
 use super::grammar::Rule;
-use super::utils::{parse_measure_time, parse_time_string, split_unit};
+use super::utils::{parse_measure_time, parse_time_string, parse_time_value, TimeValue};
 use pest::iterators::Pair;
 
 pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<dyn Error>> {
@@ -265,22 +265,14 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
 }
 
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
-    let (number, unit) = split_unit(value);
-    let number = number.trim();
-    let secs = |number: &str| {
-        number
-            .parse::<f64>()
-            .map(Duration::from_secs_f64)
-            .map_err(|e| format!("Failed to parse '{}' as f64: {}", number, e).into())
-    };
-    match unit {
-        "ms" => number
-            .parse::<u64>()
-            .map(Duration::from_millis)
-            .map_err(|e| format!("Failed to parse '{}' as u64: {}", number, e).into()),
-        "s" => secs(number),
-        // Assume seconds if no unit
-        _ => secs(value.trim()),
+    match parse_time_value(value) {
+        Ok(TimeValue::Seconds(secs)) => Ok(Duration::from_secs_f64(secs)),
+        Ok(_) => Err(format!(
+            "Failed to parse '{}' as f64: a tempo start is in s or ms",
+            value.trim()
+        )
+        .into()),
+        Err(e) => Err(format!("Failed to parse '{}' as f64: {}", value.trim(), e).into()),
     }
 }
 
@@ -332,6 +324,17 @@ mod tests {
     fn time_parameter_with_whitespace() {
         let d = parse_time_parameter("  100ms  ").unwrap();
         assert_eq!(d, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn time_parameter_fractional_milliseconds() {
+        let d = parse_time_parameter("1.5ms").unwrap();
+        assert_eq!(d, Duration::from_micros(1500));
+        let error = parse_time_parameter("2beats").unwrap_err().to_string();
+        assert!(
+            error.contains("'2beats'") && error.contains("s or ms"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -171,6 +171,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to -- absolute, or with a `..` component, is refused -- so a name with `..` inside it
   (`v1..2`) is now taken, where the web UI refused any two dots; `.` is refused as a folder to
   create, as it is as a name.
+- **Milliseconds may be fractional**: `1.5ms` is a duration, a rate and a tempo `start:` like any
+  other; it was an error, milliseconds being read as a whole number. Every time is read through
+  one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
+  allowed it.
 - **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
   a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
   at that time, its own effect first, as a show cue always has; it used to make two, with its

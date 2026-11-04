@@ -178,12 +178,10 @@ impl MusicalLength {
     /// The musical length a duration string spells, or `None` for one in
     /// seconds (or that does not parse; `parse_duration_string` reports that).
     pub fn parse(value: &str) -> Option<MusicalLength> {
-        let (number, unit) = super::utils::split_unit(value);
-        let number = number.trim().parse().ok()?;
-        match unit {
-            "measures" | "measure" => Some(MusicalLength::Measures(number)),
-            "beats" | "beat" => Some(MusicalLength::Beats(number)),
-            _ => None,
+        match super::utils::parse_time_value(value).ok()? {
+            super::utils::TimeValue::Measures(n) => Some(MusicalLength::Measures(n)),
+            super::utils::TimeValue::Beats(n) => Some(MusicalLength::Beats(n)),
+            super::utils::TimeValue::Seconds(_) => None,
         }
     }
 
