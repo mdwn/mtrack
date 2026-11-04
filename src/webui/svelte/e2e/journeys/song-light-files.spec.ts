@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Page } from "@playwright/test";
 import { api, expect, test } from "./harness";
 
 // A song's lighting files live in the song's folder and song.yaml names
@@ -63,12 +64,22 @@ test.use({
   },
 });
 
+/** The song's Lighting tab, once the page is live: the player reports
+ *  locked until the first status message arrives over the socket, and
+ *  the editor's add and remove buttons refuse while it does. */
+async function openLightingTab(page: Page) {
+  await expect(
+    page.locator(".topnav__lock:not(.topnav__lock--locked)"),
+  ).toBeVisible();
+  await page.locator("#song-tab-lighting").click();
+}
+
 test("a light show added in the song editor is written to the song's folder and loads", async ({
   page,
   project,
 }) => {
   await page.goto("/#/songs/Lit");
-  await page.locator("#song-tab-lighting").click();
+  await openLightingTab(page);
 
   // Add a show file by name; the prompt is the app's own dialog.
   await page.getByRole("button", { name: "+ DSL" }).click();
@@ -99,7 +110,7 @@ test("a light show added in the song editor is written to the song's folder and 
   // Removing it takes the entry out of song.yaml as well, so the song
   // still loads without the file.
   await page.reload();
-  await page.locator("#song-tab-lighting").click();
+  await openLightingTab(page);
   await page.locator(".light-file-remove").click();
   await page
     .getByRole("dialog")
@@ -123,7 +134,7 @@ test("a show typed into a lighting-less song's Raw DSL tab is saved in the song'
   project,
 }) => {
   await page.goto("/#/songs/Lit");
-  await page.locator("#song-tab-lighting").click();
+  await openLightingTab(page);
   await page.getByRole("button", { name: "Raw DSL" }).click();
   await page
     .locator(".raw-textarea")
@@ -149,7 +160,7 @@ test("the song's own name for the first show gives one file", async ({
   project,
 }) => {
   await page.goto("/#/songs/Lit");
-  await page.locator("#song-tab-lighting").click();
+  await openLightingTab(page);
   await page.getByRole("button", { name: "+ DSL" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.locator("input").fill("Lit");
