@@ -460,7 +460,7 @@ show "Test Show" {
     // All effects should be marked with sequence name
     for cue in &show.cues {
         for effect in &cue.effects {
-            assert_eq!(effect.sequence_name, Some("simple_sequence".to_string()));
+            assert_eq!(effect.sequences, vec!["simple_sequence".to_string()]);
         }
     }
 
@@ -1447,9 +1447,10 @@ show \"Test\" {{
 
 #[test]
 fn test_stop_sequence_stops_an_inner_sequence_inside_an_outer() {
-    // An effect belongs to the innermost sequence it is written in, so
-    // `stop sequence "inner"` names it. Expanding the outer used to rename
-    // every effect to the outer's, leaving nothing for the inner's stop.
+    // An effect belongs to every sequence it is started through, so `stop
+    // sequence "inner"` names it as `stop sequence "outer"` does. Expanding
+    // the outer used to rename every effect to the outer's, leaving nothing
+    // for the inner's stop.
     let content = r#"
 sequence "inner" {
     @0.000
@@ -1475,9 +1476,10 @@ show "Test" {
     let owners: Vec<(&str, Option<&str>)> = show.cues[0]
         .effects
         .iter()
-        .map(|e| (e.groups[0].as_str(), e.sequence_name.as_deref()))
+        .map(|e| (e.groups[0].as_str(), e.sequence_name()))
         .collect();
     assert_eq!(owners, vec![("b", Some("outer")), ("a", Some("inner"))]);
+    assert_eq!(show.cues[0].effects[1].sequences, ["inner", "outer"]);
     assert_eq!(show.cues[1].stop_sequences, vec!["inner".to_string()]);
 }
 
@@ -1736,5 +1738,152 @@ show "Show" {
             "Sequence 'short': a cue starts 4.000s in, at or past its length of 1measure"
         ),
         "{err}"
+    );
+}
+
+// ── Stop by chain: an effect belongs to every sequence it started through ──
+
+/// When each effect of `content`'s one show really ends, by cue order.
+fn effect_ends(content: &str) -> Vec<Duration> {
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.values().next().unwrap();
+    crate::lighting::timeline::effect_ends(&show.cues)
+        .into_iter()
+        .map(|end| end.until())
+        .collect()
+}
+
+#[test]
+fn test_a_pass_stops_the_inner_sequences_of_the_pass_before() {
+    // Each pass of "outer" stops the pass before it, inner chase included:
+    // the chases of passes 1 and 2 end where the next pass starts (2s, 4s),
+    // and the show's `stop sequence "outer"` at @4/1 ends pass 3's at 6s,
+    // with it still running.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: chase, speed: 1beats, duration: 16beats, blend_mode: multiply
+}
+
+sequence "outer", length: 1measure {
+    @1/1
+    sequence "inner"
+    o: static, color: "white", duration: 1s
+}
+
+show "Show" {
+    @1/1
+    sequence "outer", loop: 3
+
+    @4/1
+    stop sequence "outer"
+}
+"#;
+    let ends = effect_ends(content);
+    // Cue by cue: pass 1 (o, x), pass 2, pass 3; o lasts its second.
+    assert_eq!(
+        ends,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(3),
+            Duration::from_secs(4),
+            Duration::from_secs(5),
+            Duration::from_secs(6),
+        ]
+    );
+}
+
+#[test]
+fn test_stop_outer_ends_only_the_inner_started_through_it() {
+    // "inner" started by the show itself, then through "outer": `stop
+    // sequence "outer"` at 4s ends the second only; `stop sequence
+    // "inner"` at 6s ends the first.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: static, color: "red", duration: 16beats
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner"
+}
+
+show "Show" {
+    @1/1
+    sequence "inner"
+
+    @2/1
+    sequence "outer"
+
+    @3/1
+    stop sequence "outer"
+
+    @4/1
+    stop sequence "inner"
+}
+"#;
+    assert_eq!(
+        effect_ends(content),
+        vec![Duration::from_secs(6), Duration::from_secs(4)]
+    );
+}
+
+#[test]
+fn test_stop_inner_from_the_show_ends_every_instance_started_through_it() {
+    // "inner" started through "outer" is stopped by the outer's own `stop
+    // sequence "inner"` at @2/1 (2s); the stop written in the same cue as
+    // the start is a pass boundary and ends nothing. Started by the show
+    // at @4/1 after a stop, it runs its 4s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "inner" {
+    @1/1
+    x: static, color: "red", duration: 8beats
+}
+
+sequence "outer" {
+    @1/1
+    sequence "inner"
+    stop sequence "inner"
+    o: static, color: "green", duration: 1s
+
+    @2/1
+    stop sequence "inner"
+}
+
+show "Show" {
+    @1/1
+    sequence "outer"
+
+    @3/1
+    stop sequence "inner"
+
+    @4/1
+    sequence "inner"
+}
+"#;
+    assert_eq!(
+        effect_ends(content),
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(10)
+        ]
     );
 }

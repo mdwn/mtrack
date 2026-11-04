@@ -138,7 +138,9 @@ pub struct Effect {
     pub up_time: Option<Duration>,
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
-    pub sequence_name: Option<String>, // Track which sequence this effect came from (for stopping)
+    /// The sequences it was started through, innermost first; empty for a
+    /// show's own effect. `stop sequence X` stops it when X is any of them.
+    pub sequences: Vec<String>,
     /// `per: cell` (design §17.3): the effect's targets are the group's
     /// fixtures expanded to their cells, in spatial order.
     pub per_cell: bool,
@@ -231,6 +233,12 @@ impl MusicalDurations {
 }
 
 impl Effect {
+    /// The sequence it is written in, if any: the innermost it was started
+    /// through.
+    pub fn sequence_name(&self) -> Option<&str> {
+        self.sequences.first().map(String::as_str)
+    }
+
     /// Resolves the durations written in beats or measures at `at_time` on
     /// `tempo_map` (with a show `offset` of `offset_secs`), leaving the ones
     /// written in seconds as they are.
@@ -318,7 +326,7 @@ mod tests {
             up_time: None,
             hold_time: None,
             down_time: None,
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -341,7 +349,7 @@ mod tests {
             up_time: up,
             hold_time: hold,
             down_time: down,
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),

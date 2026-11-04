@@ -259,10 +259,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change from 120 to 60 BPM, was placed as two bars. The same count places a sequence inside
   another, which ran at the outer's starting tempo through every change, with its durations in
   beats or measures re-read where it plays.
-- **`stop sequence` finds a sequence expanded inside another**: an effect belongs to the
-  innermost sequence it is written in. Expanding the outer renamed every effect to the outer's,
-  so `stop sequence "inner"` stopped nothing (and `stop sequence "outer"` now stops only the
-  outer's own effects).
+- **`stop sequence` stops by chain**: an effect belongs to every sequence it was started
+  through, so `stop sequence "inner"` stops every instance of the inner started through an
+  outer, wherever the outer started it, and `stop sequence "outer"` -- written, or a looped
+  outer's own stop at each pass -- stops the inner's effects with the outer's. Expanding the
+  outer used to rename every effect to the outer's, so `stop sequence "inner"` stopped nothing.
 - **A sequence of layer commands loops**: a pass with no effect in it lasts until its last cue,
   as an inline loop's always has; it lasted no time, stacking every pass on the first. A pass
   starts at its earliest cue, not the first one written.

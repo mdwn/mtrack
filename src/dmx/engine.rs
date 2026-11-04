@@ -4875,7 +4875,7 @@ mod test {
             // Create a timeline with a cue at t=0
             use crate::lighting::parser::{Cue, Effect};
             let effect = Effect {
-                sequence_name: None,
+                sequences: Vec::new(),
                 ignored_parameters: Vec::new(),
                 tempo_offset_secs: 0.0,
                 musical: Default::default(),
@@ -4974,7 +4974,7 @@ mod test {
             let cue = Cue {
                 time: std::time::Duration::from_secs(1),
                 effects: vec![Effect {
-                    sequence_name: None,
+                    sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),
@@ -5068,7 +5068,7 @@ mod test {
             let cue = Cue {
                 time: std::time::Duration::ZERO,
                 effects: vec![Effect {
-                    sequence_name: None,
+                    sequences: Vec::new(),
                     ignored_parameters: Vec::new(),
                     tempo_offset_secs: 0.0,
                     musical: Default::default(),

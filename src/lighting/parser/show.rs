@@ -561,9 +561,9 @@ fn merge_into(cues: &mut Vec<Cue>, base: Option<usize>, cue: Cue) {
 /// through, inside a sequence as in a show. Each pass after the first stops
 /// the one before it, so its effects do not pile up; the first starts the
 /// sequence afresh after any earlier `stop sequence`. An effect belongs to
-/// the innermost sequence it is written in, and its tempo-aware rates and
-/// its durations in beats or measures are read at the tempo where it plays
-/// (#525, #529).
+/// every sequence it is started through, this one after the ones inside
+/// it, and its tempo-aware rates and its durations in beats or measures
+/// are read at the tempo where it plays (#525, #529).
 fn place_sequence(
     call: &SequenceCall,
     library: &SequenceLibrary,
@@ -610,9 +610,7 @@ fn place_sequence(
                 cue.start_sequences.push(name.clone());
             }
             for effect in &mut cue.effects {
-                if effect.sequence_name.is_none() {
-                    effect.sequence_name = Some(name.clone());
-                }
+                effect.sequences.push(name.clone());
                 effect.tempo_offset_secs = offset_secs;
                 if let Some(tm) = tempo_map {
                     effect.resolve_musical_durations(tm, cue.time, offset_secs);

@@ -104,10 +104,7 @@ fn lint_end(source: &str) -> Duration {
             stopped.remove(name);
         }
         for e in &cue.effects {
-            if e.sequence_name
-                .as_ref()
-                .is_some_and(|n| stopped.contains(n))
-            {
+            if e.sequences.iter().any(|n| stopped.contains(n)) {
                 continue;
             }
             let layer = e
@@ -120,9 +117,7 @@ fn lint_end(source: &str) -> Duration {
                 .map(|(_, at)| *at);
             let stopped_at = stops
                 .iter()
-                .filter(|(name, at)| {
-                    Some(name.as_str()) == e.sequence_name.as_deref() && *at > cue.time
-                })
+                .filter(|(name, at)| e.sequences.contains(name) && *at > cue.time)
                 .map(|(_, at)| *at);
             end = end.max(
                 cleared_at
@@ -134,11 +129,7 @@ fn lint_end(source: &str) -> Duration {
         }
         // A stop at a pass's own boundary ends that pass only.
         for name in &cue.stop_sequences {
-            if !cue
-                .effects
-                .iter()
-                .any(|e| e.sequence_name.as_ref() == Some(name))
-            {
+            if !cue.effects.iter().any(|e| e.sequences.contains(name)) {
                 stopped.insert(name.clone());
             }
         }

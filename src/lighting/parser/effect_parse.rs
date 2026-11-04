@@ -207,7 +207,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
         up_time,
         hold_time,
         down_time,
-        sequence_name: None, // Will be set when expanding sequences
+        sequences: Vec::new(), // Set as the sequences it is in are expanded
         per_cell,
         spread,
         ignored_parameters,
