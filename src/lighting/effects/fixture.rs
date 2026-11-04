@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
+use crate::lighting::engine::{base_channel, is_position_channel};
 
 /// Get the layer suffix for multiplier channel names
 #[inline]
@@ -637,11 +638,13 @@ impl FixtureInfo {
         if channels.contains_key("strobe") {
             capabilities = capabilities.with(FixtureCapabilities::STROBING);
         }
-        if channels.contains_key("pan") {
-            capabilities = capabilities.with(FixtureCapabilities::PANNING);
-        }
-        if channels.contains_key("tilt") {
-            capabilities = capabilities.with(FixtureCapabilities::TILTING);
+        // A head moves on any channel that carries where it points: `pan`,
+        // a GDTF profile's `pan:1`, a fine byte.
+        for channel in channels.keys().filter(|c| is_position_channel(c)) {
+            capabilities = capabilities.with(match base_channel(channel) {
+                "pan" => FixtureCapabilities::PANNING,
+                _ => FixtureCapabilities::TILTING,
+            });
         }
         if channels.contains_key("zoom") {
             capabilities = capabilities.with(FixtureCapabilities::ZOOMING);
@@ -1119,6 +1122,33 @@ mod tests {
         assert_eq!(f.fixture_type, "generic_spot");
         assert_eq!(f.max_strobe_frequency, Some(25.0));
         assert_eq!(f.channels.len(), 4);
+    }
+
+    /// A head moves on any channel that carries where it points, by the
+    /// one rule the crossfade and `is_dark` go by: a GDTF profile's
+    /// `pan:1`, or a fine byte on its own, counts; `pan_speed` does not.
+    #[test]
+    fn a_head_moves_on_a_pan_section_or_fine_byte() {
+        let sectioned = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan:1", "tilt_fine"]),
+            None,
+        );
+        assert!(sectioned.has_capability(FixtureCapabilities::PANNING));
+        assert!(sectioned.has_capability(FixtureCapabilities::TILTING));
+        let speed_only = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan_speed"]),
+            None,
+        );
+        assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
+        assert!(!speed_only.has_capability(FixtureCapabilities::TILTING));
     }
 
     #[test]

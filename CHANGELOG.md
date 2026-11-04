@@ -303,6 +303,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1:30.5s`), with the leading `@` the DSL's parser took (`@1:30`), surrounding whitespace
   trimmed, and fractions kept to the microsecond where the DSL's parser cut them to the
   millisecond.
+- **MIDI DMX writes a channel's fine byte and mirrors**: a 16-bit channel driven from MIDI got
+  its coarse byte alone, and a ganged channel its first copy; both go out as a show's value
+  does, through the one byte resolution.
+- **`evaluate_show` reads an optic or a setting as dark**: `is_dark` counts only the levels
+  going dark takes to 0 -- not zoom, focus, iris, frost, nor a snap channel such as a gobo --
+  the rule the fade to dark goes by, so a zoom at its setting no longer makes a dark rig read
+  as lit.
+- **A head moves on a `pan:1` or a fine byte**: a fixture's panning and tilting are derived by
+  the rule the crossfade goes by, so a GDTF profile's sectioned pan or tilt, or a fine byte on
+  its own, makes it a mover for lint, validation and the fit, where only a channel named
+  exactly `pan` or `tilt` did.
+- **A GDTF export's home for a head is the centre of the span it is pointed over**: the
+  `Default` of a pan or tilt goes through the one degree span the pointing math uses -- the
+  channel's range, else a function's degrees, else the assumed travel -- where it took the
+  range alone and fell back to 128.
 - **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
   and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
   profile names it) parked at centre no longer makes a dark rig read as lit. The MVR export's

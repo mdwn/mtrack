@@ -83,7 +83,7 @@ pub(crate) fn unscale_by_speed(elapsed: Duration, speed: f64) -> Duration {
 
 /// A channel's name without its section (`dimmer:background`, as GDTF
 /// profiles with several emitters name theirs) or its fine byte.
-fn base_channel(channel: &str) -> &str {
+pub(crate) fn base_channel(channel: &str) -> &str {
     let base = channel.split(':').next().unwrap_or(channel);
     base.strip_suffix("_fine").unwrap_or(base)
 }
