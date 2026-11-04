@@ -913,6 +913,21 @@ pub fn resolved_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// What kind of fault an error a client caused or met is: classified once,
+/// by the error itself, for each transport to answer with its own code (a
+/// one-line table each in gRPC, the web API and MCP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaultKind {
+    /// What was named is not there.
+    NotFound,
+    /// The player or the config is not in the state the request needs.
+    Precondition,
+    /// The request itself is wrong.
+    Invalid,
+    /// mtrack's own fault.
+    Internal,
+}
+
 /// What tells a file has changed: its modified time and its length, for two
 /// saves within one tick of the clock -- a truncate, then the write. Compared
 /// for inequality, never ordered: a backup restored moves the time backwards,

@@ -340,13 +340,7 @@ pub(super) async fn activate_playlist(
             Json(json!({"status": "activated", "name": name})),
         )
             .into_response(),
-        Err(e) => {
-            let status = match e {
-                crate::player::SwitchPlaylistError::NotFound(_) => StatusCode::NOT_FOUND,
-                crate::player::SwitchPlaylistError::Playing => StatusCode::CONFLICT,
-            };
-            (status, Json(json!({"error": e.to_string()}))).into_response()
-        }
+        Err(e) => super::helpers::fault_response(e.kind(), e.to_string()),
     }
 }
 

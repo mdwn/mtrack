@@ -17,6 +17,8 @@ use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::{info, span, Level};
 
+use crate::util::FaultKind;
+
 use crate::{
     config,
     player::Player,
@@ -225,14 +227,19 @@ fn ambient_to_proto(
     }
 }
 
+/// A fault as a gRPC status: the one table from [`FaultKind`] to a code.
+fn fault_status(kind: FaultKind, message: String) -> Status {
+    match kind {
+        FaultKind::NotFound => Status::not_found(message),
+        FaultKind::Precondition => Status::failed_precondition(message),
+        FaultKind::Invalid => Status::invalid_argument(message),
+        FaultKind::Internal => Status::internal(message),
+    }
+}
+
 /// Converts a ConfigError to a gRPC Status.
 fn config_error_to_status(e: config::ConfigError) -> Status {
-    match e {
-        config::ConfigError::StaleChecksum { .. } => Status::failed_precondition(e.to_string()),
-        config::ConfigError::InvalidProfileIndex { .. } => Status::out_of_range(e.to_string()),
-        config::ConfigError::Validation(_) => Status::invalid_argument(e.to_string()),
-        _ => Status::internal(e.to_string()),
-    }
+    fault_status(e.kind(), e.to_string())
 }
 
 /// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to
@@ -382,12 +389,7 @@ impl PlayerService for PlayerServer {
         self.player
             .switch_to_playlist(&playlist_name)
             .await
-            .map_err(|e| match e {
-                crate::player::SwitchPlaylistError::NotFound(_) => Status::not_found(e.to_string()),
-                crate::player::SwitchPlaylistError::Playing => {
-                    Status::failed_precondition(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SwitchToPlaylistResponse {}))
     }
 

@@ -1533,6 +1533,16 @@ pub enum SwitchPlaylistError {
     NotFound(String),
 }
 
+impl SwitchPlaylistError {
+    /// What kind of fault this is, for a transport's code.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SwitchPlaylistError::Playing => crate::util::FaultKind::Precondition,
+            SwitchPlaylistError::NotFound(_) => crate::util::FaultKind::NotFound,
+        }
+    }
+}
+
 /// Why [`Player::reload_songs`] left the songs as they were.
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadSongsError {

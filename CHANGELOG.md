@@ -251,6 +251,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP reports a caller's fault as the caller's**: a stale config checksum, a profile index
+  past the end, a seek or a section loop the player refused (nothing playing, no such section)
+  and a play that could not start came back as `internal_error`; they are `invalid_params`
+  now, as a config that would not validate already was. Every transport maps one
+  classification of each error (not found, precondition, invalid, internal) to its own codes;
+  gRPC answers a bad profile index with `InvalidArgument` rather than `OutOfRange`.
 - **The light show watcher sees every save**: it reloaded a `.light` file only when its
   modified time had moved forward, so a second save within one tick of the clock, or a backup
   restored over the file, went unnoticed until the next edit. It now goes by the file's

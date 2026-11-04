@@ -62,6 +62,7 @@ use tokio::task::AbortHandle;
 
 use crate::lighting::readiness::{group_names, VenueFacts};
 use crate::player::Player;
+use crate::util::FaultKind;
 
 /// Resource URI exposing the live player status as JSON. Clients can read it
 /// directly or subscribe for `notifications/resources/updated` pushes on each
@@ -700,7 +701,7 @@ impl McpServer {
 
     #[tool(description = "Start playback of the current song in the active playlist.")]
     async fn play(&self) -> Result<CallToolResult, McpError> {
-        let song = self.player.play().await.map_err(internal_err)?;
+        let song = self.player.play().await.map_err(precondition_err)?;
         Ok(ok_json(json!({
             "now_playing": song.as_ref().map(|s| song_summary(s)),
         })))
@@ -715,7 +716,11 @@ impl McpServer {
         Parameters(args): Parameters<PlayFromArgs>,
     ) -> Result<CallToolResult, McpError> {
         let start = parse_duration(&args.start_time)?;
-        let song = self.player.play_from(start).await.map_err(internal_err)?;
+        let song = self
+            .player
+            .play_from(start)
+            .await
+            .map_err(precondition_err)?;
         // Same no-op as `play_song_from`: echoing the requested time back when
         // nothing started is what made this misleading.
         let Some(song) = song else {
@@ -751,7 +756,7 @@ impl McpServer {
             .player
             .play_song_from(&args.song_name, start)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
 
         // The player refuses to start a song while one is already playing, and
         // returns nothing. Echoing the requested `start_time` back in that case
@@ -786,7 +791,10 @@ impl McpServer {
         Parameters(args): Parameters<SeekArgs>,
     ) -> Result<CallToolResult, McpError> {
         let position = parse_duration(&args.position)?;
-        self.player.seek_to(position).await.map_err(internal_err)?;
+        self.player
+            .seek_to(position)
+            .await
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({
             "position": format_duration(position),
         })))
@@ -800,7 +808,7 @@ impl McpServer {
         self.player
             .seek_to_section(&args.section_name)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({ "section": args.section_name })))
     }
 
@@ -849,7 +857,7 @@ impl McpServer {
         self.player
             .switch_to_playlist(&args.name)
             .await
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+            .map_err(|e| fault_err(e.kind(), e.to_string()))?;
         Ok(ok_json(json!({ "active_playlist": args.name })))
     }
 
@@ -907,7 +915,7 @@ impl McpServer {
         self.player
             .loop_section(&args.section_name)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({ "looping": args.section_name })))
     }
 
@@ -925,7 +933,7 @@ impl McpServer {
         arming the loop so it engages at the section end."
     )]
     async fn section_ack(&self) -> Result<CallToolResult, McpError> {
-        self.player.section_ack().await.map_err(internal_err)?;
+        self.player.section_ack().await.map_err(precondition_err)?;
         Ok(ok_json(json!({ "ok": true })))
     }
 
@@ -3596,13 +3604,29 @@ pub(crate) fn internal_err<E: std::fmt::Display>(e: E) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+/// A fault as an MCP error: the one table from [`FaultKind`] to a code.
+/// MCP has one code for what the caller got wrong, so every fault short of
+/// mtrack's own is `invalid_params`, never `internal_error`.
+fn fault_err(kind: FaultKind, message: String) -> McpError {
+    match kind {
+        FaultKind::Internal => McpError::internal_error(message, None),
+        FaultKind::NotFound | FaultKind::Precondition | FaultKind::Invalid => {
+            McpError::invalid_params(message, None)
+        }
+    }
+}
+
+/// A player refusal (not playing, no such section, already playing) as an
+/// MCP error: a precondition the caller can see to, not a fault of the
+/// server.
+fn precondition_err<E: std::fmt::Display>(e: E) -> McpError {
+    fault_err(FaultKind::Precondition, e.to_string())
+}
+
 /// A config store error as an MCP error: a change the config would not load
 /// with is the caller's to fix, not a fault of the server.
 fn config_err(e: crate::config::ConfigError) -> McpError {
-    match e {
-        crate::config::ConfigError::Validation(_) => McpError::invalid_params(e.to_string(), None),
-        e => internal_err(e),
-    }
+    fault_err(e.kind(), e.to_string())
 }
 
 /// Sends a `notifications/resources/updated` to a peer with a JSON payload
