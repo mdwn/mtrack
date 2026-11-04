@@ -627,13 +627,7 @@ impl McpServer {
                 .songs()
                 .get(name)
                 .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-            // In file order, then their order in the file, as the player
-            // has them.
-            let shows: Vec<_> = song
-                .dsl_lighting_shows()
-                .iter()
-                .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
-                .collect();
+            let shows = crate::lighting::evaluate::registered_shows(&song);
 
             // Merged and time-sorted, the way the player's own timeline
             // combines a song's shows. Concatenating per show would restart

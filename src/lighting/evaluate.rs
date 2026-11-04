@@ -148,7 +148,13 @@ where
 /// order same-time cues from different shows fire in. Empty when the song
 /// has no DSL lighting loaded.
 pub fn registered_shows(song: &crate::songs::Song) -> Vec<LightShow> {
-    song.dsl_lighting_shows()
+    shows_in(song.dsl_lighting_shows())
+}
+
+/// [`registered_shows`] of a song's `.light` files, for a song still being
+/// built from them.
+pub fn shows_in(files: &[crate::songs::DslLightingShow]) -> Vec<LightShow> {
+    files
         .iter()
         .flat_map(|dsl| dsl.shows().values().cloned().collect::<Vec<_>>())
         .collect()

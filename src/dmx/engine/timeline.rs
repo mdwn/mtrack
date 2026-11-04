@@ -150,11 +150,7 @@ pub(super) enum MidiDmxStart {
 pub(crate) fn song_lighting_timeline(
     song: &Song,
 ) -> Option<crate::lighting::timeline::LightingTimeline> {
-    let all_shows: Vec<_> = song
-        .dsl_lighting_shows()
-        .iter()
-        .flat_map(|dsl_show| dsl_show.shows().values().cloned().collect::<Vec<_>>())
-        .collect();
+    let all_shows = crate::lighting::evaluate::registered_shows(song);
     if all_shows.is_empty() {
         return None;
     }
