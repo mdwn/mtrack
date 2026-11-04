@@ -18,14 +18,13 @@ use std::time::Duration;
 
 use super::super::effects::{
     BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
-    Easing, EffectLayer, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
+    Easing, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
-use super::super::tempo::TempoMap;
 use super::grammar::Rule;
 use super::types::{Effect, ParseContext};
 use super::utils::{
-    parse_color_string, parse_duration_string, parse_frequency_string, parse_percentage_to_f64,
-    parse_speed_string,
+    parse_color_string, parse_frequency_string, parse_layer, parse_percentage_to_f64,
+    parse_speed_string, split_unit,
 };
 use pest::iterators::Pair;
 
@@ -36,22 +35,6 @@ fn color_to_normalized_params(color: &Color) -> (f64, f64, f64) {
         color.g as f64 / 255.0,
         color.b as f64 / 255.0,
     )
-}
-
-/// Helper to calculate score time from cue_time and offset
-fn calculate_score_time(cue_time: Duration, offset_secs: f64) -> Duration {
-    cue_time.saturating_sub(Duration::from_secs_f64(offset_secs))
-}
-
-/// Helper to parse duration in score space
-fn parse_duration_in_score_space(
-    value: &str,
-    tempo_map: &Option<TempoMap>,
-    cue_time: Duration,
-    offset_secs: f64,
-) -> Result<Duration, Box<dyn Error>> {
-    let score_time = calculate_score_time(cue_time, offset_secs);
-    parse_duration_string(value, tempo_map, Some(score_time), 0.0)
 }
 
 /// A `color:` value, or an error naming it.
@@ -100,10 +83,6 @@ pub(crate) fn parse_effect_definition(
 }
 
 fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box<dyn Error>> {
-    let tempo_map = &ctx.tempo_map;
-    let cue_time = ctx.cue_time;
-    let offset_secs = ctx.offset_secs;
-    let unshifted_score_time = ctx.unshifted_score_time;
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
         parameters: HashMap::new(),
@@ -130,58 +109,8 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                 }
             }
             Rule::effect_type => {
-                effect_type = match inner_pair.as_str() {
-                    "static" => EffectType::Static {
-                        parameters: HashMap::new(),
-                        duration: Duration::ZERO,
-                    },
-                    "cycle" => EffectType::ColorCycle {
-                        colors: Vec::new(),
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        direction: CycleDirection::Forward,
-                        transition: CycleTransition::Snap,
-                        duration: Duration::ZERO,
-                    },
-                    "strobe" => EffectType::Strobe {
-                        frequency: TempoAwareFrequency::Fixed(8.0),
-                        duration: Duration::ZERO,
-                    },
-                    "pulse" => EffectType::Pulse {
-                        base_level: 0.5,
-                        pulse_amplitude: 0.5,
-                        frequency: TempoAwareFrequency::Fixed(1.0),
-                        duration: Duration::ZERO,
-                    },
-                    "chase" => EffectType::Chase {
-                        pattern: ChasePattern::Linear,
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        direction: ChaseDirection::LeftToRight,
-                        transition: CycleTransition::Snap,
-                        duration: Duration::ZERO,
-                    },
-                    "dimmer" => EffectType::Dimmer {
-                        start_level: 0.0,
-                        end_level: 1.0,
-                        duration: Duration::from_secs(1),
-                        curve: DimmerCurve::Linear,
-                    },
-                    "rainbow" => EffectType::Rainbow {
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        saturation: 1.0,
-                        brightness: 1.0,
-                        duration: Duration::ZERO,
-                    },
-                    "move" => EffectType::Move {
-                        to: MoveTarget::Angles {
-                            pan: None,
-                            tilt: None,
-                        },
-                        from: None,
-                        easing: Easing::default(),
-                        duration: Duration::ZERO,
-                    },
-                    _ => return Err(format!("Unknown effect type: {}", inner_pair.as_str()).into()),
-                };
+                effect_type = effect_with_defaults(inner_pair.as_str())
+                    .ok_or_else(|| format!("Unknown effect type: {}", inner_pair.as_str()))?;
             }
             Rule::parameters => {
                 for param_pair in inner_pair.into_inner() {
@@ -193,12 +122,9 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                                 color_parameters.push(value);
                             }
                             "layer" => {
-                                layer = Some(match value.as_str() {
-                                    "background" => EffectLayer::Background,
-                                    "midground" => EffectLayer::Midground,
-                                    "foreground" => EffectLayer::Foreground,
-                                    _ => return Err(format!("Invalid layer: '{}' (expected: background, midground, foreground)", value).into()),
-                                });
+                                layer = Some(parse_layer(&value).ok_or_else(|| {
+                                    format!("Invalid layer: '{}' (expected: background, midground, foreground)", value)
+                                })?);
                             }
                             "blend_mode" => {
                                 blend_mode = Some(match value.as_str() {
@@ -212,40 +138,8 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                                     }
                                 });
                             }
-                            "up_time" => {
-                                // Use unshifted_score_time for tempo lookup to get correct tempo
-                                // Duration is independent of offsets - it's calculated in score space
-                                let tempo_lookup_time = unshifted_score_time.unwrap_or_else(|| {
-                                    cue_time.saturating_sub(Duration::from_secs_f64(offset_secs))
-                                });
-                                let duration = parse_duration_string(
-                                    value.as_str(),
-                                    tempo_map,
-                                    Some(tempo_lookup_time),
-                                    0.0, // Use 0.0 offset since we're using score-space time
-                                )?;
-                                up_time = Some(duration);
-                            }
-                            "hold_time" => {
-                                // Resolved exactly as `duration` is: in score space, so a
-                                // hold in measures integrates through gradual transitions
-                                // and follows the offset-shifted tempo changes the cue
-                                // times do. It used to count "playback measures" with
-                                // every tempo change as a step at its unshifted bar, which
-                                // disagreed with both inside a ramp or an offset show.
-                                let score_time_for_calc =
-                                    unshifted_score_time.unwrap_or_else(|| {
-                                        cue_time
-                                            .saturating_sub(Duration::from_secs_f64(offset_secs))
-                                    });
-                                let duration = parse_duration_string(
-                                    value.as_str(),
-                                    tempo_map,
-                                    Some(score_time_for_calc),
-                                    0.0,
-                                )?;
-                                hold_time = Some(duration);
-                            }
+                            "up_time" => up_time = Some(ctx.duration(&value)?),
+                            "hold_time" => hold_time = Some(ctx.duration(&value)?),
                             "per" => {
                                 per_cell = match value.as_str() {
                                     "cell" | "cells" => true,
@@ -261,16 +155,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                             "spread" => {
                                 spread = parse_degrees(&value)?;
                             }
-                            "down_time" => {
-                                // Use score-space time consistent with up_time
-                                let duration = parse_duration_in_score_space(
-                                    value.as_str(),
-                                    tempo_map,
-                                    cue_time,
-                                    offset_secs,
-                                )?;
-                                down_time = Some(duration);
-                            }
+                            "down_time" => down_time = Some(ctx.duration(&value)?),
                             _ => {
                                 parameters.insert(key, value);
                             }
@@ -305,20 +190,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
     if !matches!(&final_effect_type, EffectType::Dimmer { .. }) {
         let effect_duration = final_effect_type.duration();
         if effect_duration.is_zero() && hold_time.is_none() {
-            let effect_name = match &final_effect_type {
-                EffectType::Static { .. } => "static",
-                EffectType::ColorCycle { .. } => "cycle",
-                EffectType::Strobe { .. } => "strobe",
-                EffectType::Pulse { .. } => "pulse",
-                EffectType::Chase { .. } => "chase",
-                EffectType::Rainbow { .. } => "rainbow",
-                EffectType::Move { .. } => "move",
-                EffectType::Dimmer { .. } => unreachable!(),
-            };
             return Err(format!(
                 "Effect '{}' requires a 'duration' or 'hold_time' parameter. \
                  All effects must have an explicit, finite duration.",
-                effect_name
+                effect_keyword(&final_effect_type)
             )
             .into());
         }
@@ -332,21 +207,94 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
         up_time,
         hold_time,
         down_time,
-        sequence_name: None, // Will be set when expanding sequences
+        sequences: Vec::new(), // Set as the sequences it is in are expanded
         per_cell,
         spread,
         ignored_parameters,
-        tempo_offset_secs: offset_secs,
+        tempo_offset_secs: ctx.offset_secs,
         musical,
     })
 }
 
+/// The effect an author's keyword names, with every parameter at its
+/// default, or `None` for a word that names none.
+fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
+    Some(match keyword {
+        "static" => EffectType::Static {
+            parameters: HashMap::new(),
+            duration: Duration::ZERO,
+        },
+        "cycle" => EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        },
+        "strobe" => EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(8.0),
+            duration: Duration::ZERO,
+        },
+        "pulse" => EffectType::Pulse {
+            base_level: 0.5,
+            pulse_amplitude: 0.5,
+            frequency: TempoAwareFrequency::Fixed(1.0),
+            duration: Duration::ZERO,
+        },
+        "chase" => EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        },
+        "dimmer" => EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(1),
+            curve: DimmerCurve::Linear,
+        },
+        "rainbow" => EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(1.0),
+            saturation: 1.0,
+            brightness: 1.0,
+            duration: Duration::ZERO,
+        },
+        "move" => EffectType::Move {
+            to: MoveTarget::Angles {
+                pan: None,
+                tilt: None,
+            },
+            from: None,
+            easing: Easing::default(),
+            duration: Duration::ZERO,
+        },
+        _ => return None,
+    })
+}
+
+/// The keyword an author writes for an effect type: what
+/// [`effect_with_defaults`] reads. (`EffectType::name` is the type's own
+/// spelling, `ColorCycle` for `cycle`.)
+pub(crate) fn effect_keyword(effect_type: &EffectType) -> &'static str {
+    match effect_type {
+        EffectType::Static { .. } => "static",
+        EffectType::ColorCycle { .. } => "cycle",
+        EffectType::Strobe { .. } => "strobe",
+        EffectType::Pulse { .. } => "pulse",
+        EffectType::Chase { .. } => "chase",
+        EffectType::Dimmer { .. } => "dimmer",
+        EffectType::Rainbow { .. } => "rainbow",
+        EffectType::Move { .. } => "move",
+    }
+}
+
 /// Parses an angle written with its unit: `45deg`, `-20.5deg`.
 fn parse_degrees(value: &str) -> Result<f64, Box<dyn Error>> {
-    let number = value
-        .trim()
-        .strip_suffix("deg")
-        .ok_or_else(|| format!("angle '{value}' must be written in degrees, e.g. 45deg"))?;
+    let (number, unit) = split_unit(value);
+    if unit != "deg" {
+        return Err(format!("angle '{value}' must be written in degrees, e.g. 45deg").into());
+    }
     number
         .trim()
         .parse::<f64>()
@@ -371,8 +319,6 @@ pub(crate) fn apply_parameters_to_effect_type(
 ) -> Result<(EffectType, Vec<String>), Box<dyn Error>> {
     let mut ignored: Vec<String> = Vec::new();
     let tempo_map = &ctx.tempo_map;
-    let cue_time = ctx.cue_time;
-    let offset_secs = ctx.offset_secs;
     match &mut effect_type {
         EffectType::Static {
             parameters: static_params,
@@ -397,12 +343,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         static_params.insert("green".to_string(), g);
                         static_params.insert("blue".to_string(), b);
                     }
-                    "duration" => {
-                        // Convert shifted cue_time back to score-space for duration calculation
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => {
                         // A bare number is a channel level, which `static`
                         // accepts by name — that is how a fixture's own channels
@@ -465,11 +406,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             }
                         };
                     }
-                    "duration" => {
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -488,12 +425,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             );
                         }
                     },
-                    "duration" => {
-                        // Convert shifted cue_time back to score-space for duration calculation
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -522,12 +454,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             );
                         }
                     },
-                    "duration" => {
-                        // Convert shifted cue_time back to score-space for duration calculation
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -585,11 +512,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             }
                         };
                     }
-                    "duration" => {
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -610,11 +533,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         let val = parse_level(key, value)?;
                         *end_level = val;
                     }
-                    "duration" => {
-                        let dur =
-                            parse_duration_string(value, tempo_map, Some(cue_time), offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     "curve" => {
                         *curve = match value.as_str() {
                             "linear" => DimmerCurve::Linear,
@@ -661,10 +580,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             }
                         }
                     }
-                    "duration" => {
-                        *duration =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -711,11 +627,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         let val = parse_level(key, value)?;
                         *brightness = val;
                     }
-                    "duration" => {
-                        let dur =
-                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = dur;
-                    }
+                    "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -736,7 +648,6 @@ mod tests {
             tempo_map: None,
             cue_time: Duration::ZERO,
             offset_secs: 0.0,
-            unshifted_score_time: None,
         }
     }
 
@@ -784,25 +695,17 @@ mod tests {
         assert!((b - 0.0).abs() < 1e-9);
     }
 
-    // ── calculate_score_time ───────────────────────────────────────
+    // ── effect_with_defaults / effect_keyword ──────────────────────
 
     #[test]
-    fn score_time_no_offset() {
-        let result = calculate_score_time(Duration::from_secs(10), 0.0);
-        assert_eq!(result, Duration::from_secs(10));
-    }
-
-    #[test]
-    fn score_time_with_offset() {
-        let result = calculate_score_time(Duration::from_secs(10), 3.0);
-        assert_eq!(result, Duration::from_secs(7));
-    }
-
-    #[test]
-    fn score_time_offset_larger_than_cue() {
-        // saturating_sub prevents underflow
-        let result = calculate_score_time(Duration::from_secs(2), 5.0);
-        assert_eq!(result, Duration::ZERO);
+    fn every_effect_keyword_round_trips() {
+        for keyword in [
+            "static", "cycle", "strobe", "pulse", "chase", "dimmer", "rainbow", "move",
+        ] {
+            let effect = effect_with_defaults(keyword).expect(keyword);
+            assert_eq!(effect_keyword(&effect), keyword);
+        }
+        assert!(effect_with_defaults("flicker").is_none());
     }
 
     // ── clean_string_value ─────────────────────────────────────────

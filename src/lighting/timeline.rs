@@ -112,10 +112,11 @@ impl SeekHistory {
 /// show's own move takes the heads (#599) -- so a clear in one cue does not
 /// take out an effect another cue starts at the same time. Cue by cue, a
 /// cue's sequence starts clear their stopped status, its effects are taken
-/// unless their sequence is stopped by then, and its stops then count for
-/// the cues after it: an iteration-boundary stop (where the cue also starts
-/// effects from the same sequence) only goes to the engine, while an
-/// explicit stop also suppresses future cues from that sequence. `fired`
+/// unless a sequence they were started through is stopped by then, and its
+/// stops then count for the cues after it: an iteration-boundary stop
+/// (where the cue also starts effects from the same sequence) only goes to
+/// the engine, while an explicit stop also suppresses future cues from that
+/// sequence. `fired`
 /// sees each effect started, with its cue's and its own place.
 fn fire<'a>(
     stopped_sequences: &mut HashSet<String>,
@@ -131,9 +132,9 @@ fn fire<'a>(
         }
         for (place, effect) in cue.effects.iter().enumerate() {
             if effect
-                .sequence_name
-                .as_ref()
-                .is_some_and(|name| stopped_sequences.contains(name))
+                .sequences
+                .iter()
+                .any(|name| stopped_sequences.contains(name))
             {
                 continue;
             }
@@ -141,11 +142,8 @@ fn fire<'a>(
             fired(index, place, &instance);
             effects.push((cue.time, Step::Start(instance)));
         }
-        let cue_sequence_names: HashSet<&String> = cue
-            .effects
-            .iter()
-            .filter_map(|e| e.sequence_name.as_ref())
-            .collect();
+        let cue_sequence_names: HashSet<&String> =
+            cue.effects.iter().flat_map(|e| &e.sequences).collect();
         for seq_name in &cue.stop_sequences {
             if !cue_sequence_names.contains(seq_name) {
                 stopped_sequences.insert(seq_name.clone());
@@ -159,7 +157,7 @@ fn fire<'a>(
         );
     }
     out.extend(stops);
-    effects.sort_by_key(|(_, step)| !matches!(step, Step::Start(e) if e.sequence.is_some()));
+    effects.sort_by_key(|(_, step)| !matches!(step, Step::Start(e) if !e.sequences.is_empty()));
     out.extend(effects);
 }
 
@@ -536,7 +534,7 @@ impl LightingTimeline {
     /// cue_time is the song time when this effect was supposed to start (for deterministic randomness).
     pub fn create_effect_instance(effect: &Effect, cue_time: Duration) -> EffectInstance {
         let id = EFFECT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let effect_id = if let Some(ref seq_name) = effect.sequence_name {
+        let effect_id = if let Some(seq_name) = effect.sequence_name() {
             format!("seq_{}_effect_{}", seq_name, id)
         } else {
             format!("song_effect_{}", id)
@@ -564,7 +562,7 @@ impl LightingTimeline {
         effect_instance.per_cell = effect.per_cell;
         effect_instance.spread = effect.spread;
         effect_instance.tempo_offset_secs = effect.tempo_offset_secs;
-        effect_instance.sequence = effect.sequence_name.clone();
+        effect_instance.sequences = effect.sequences.clone();
 
         effect_instance
     }
@@ -627,7 +625,7 @@ mod tests {
 
         // Timeline with cues should not be finished initially
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -904,7 +902,7 @@ mod tests {
         parameters.insert("dimmer".to_string(), "60%".to_string());
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -951,7 +949,7 @@ mod tests {
         parameters.insert("color".to_string(), "blue".to_string());
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1018,7 +1016,7 @@ mod tests {
         parameters.insert("color".to_string(), "blue".to_string());
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1067,7 +1065,7 @@ mod tests {
         parameters.insert("color".to_string(), "red".to_string());
 
         let effect1 = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1086,7 +1084,7 @@ mod tests {
         };
 
         let effect2 = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1243,7 +1241,7 @@ mod tests {
 
         // Create cue with both an effect and a layer command
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1293,7 +1291,7 @@ mod tests {
         use crate::lighting::parser::Cue;
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1356,7 +1354,7 @@ mod tests {
         use crate::lighting::parser::Cue;
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1425,7 +1423,7 @@ mod tests {
         use crate::lighting::parser::Cue;
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1540,7 +1538,7 @@ mod tests {
         use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
 
         let bg_effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1559,7 +1557,7 @@ mod tests {
         };
 
         let fg_effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1645,7 +1643,7 @@ mod tests {
         use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
 
         let effect = Effect {
-            sequence_name: None,
+            sequences: Vec::new(),
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1715,7 +1713,7 @@ mod tests {
         use crate::lighting::parser::Cue;
 
         let seq_effect = |seq: &str| Effect {
-            sequence_name: Some(seq.to_string()),
+            sequences: vec![seq.to_string()],
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),
@@ -1794,7 +1792,7 @@ mod tests {
         use crate::lighting::parser::Cue;
 
         let seq_effect = |seq: &str| Effect {
-            sequence_name: Some(seq.to_string()),
+            sequences: vec![seq.to_string()],
             ignored_parameters: Vec::new(),
             tempo_offset_secs: 0.0,
             musical: Default::default(),

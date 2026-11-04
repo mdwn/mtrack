@@ -15,7 +15,9 @@
 use std::error::Error;
 use std::time::Duration;
 
-use super::super::effects::{Color, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
+use super::super::effects::{
+    Color, EffectLayer, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
+};
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
 use pest::iterators::Pair;
@@ -29,6 +31,26 @@ pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>
         Ok(num / 100.0)
     } else {
         Ok(value.parse::<f64>()?)
+    }
+}
+
+/// A value written as a number and its unit -- `2.5s`, `4beats`, `45deg`
+/// -- split into the number as written and the unit: the letters it ends
+/// in, `""` for a bare number. Each caller takes the units it knows and
+/// reports its own errors.
+pub(crate) fn split_unit(value: &str) -> (&str, &str) {
+    let value = value.trim();
+    let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    (number, &value[number.len()..])
+}
+
+/// The layer a `layer:` keyword names.
+pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
+    match value {
+        "background" => Some(EffectLayer::Background),
+        "midground" => Some(EffectLayer::Midground),
+        "foreground" => Some(EffectLayer::Foreground),
+        _ => None,
     }
 }
 
@@ -51,37 +73,28 @@ pub(crate) fn parse_tempo_aware_string(
         return Ok(TempoAwareValue::Fixed(val));
     }
 
-    // Try parsing as a time-based value
-    if value.ends_with("ms") {
-        let num_str = value.trim_end_matches("ms");
-        let num = num_str.parse::<f64>()?;
-        let duration_secs = num / 1000.0;
-        Ok(TempoAwareValue::Seconds(duration_secs))
-    } else if value.ends_with("measures") || value.ends_with("measure") {
-        let num_str = value
-            .trim_end_matches("measures")
-            .trim_end_matches("measure");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareValue::Measures(num))
-        } else {
-            Err(format!("Measure-based {kind_label} values require a tempo section").into())
+    let (number, unit) = split_unit(value);
+    match unit {
+        "ms" => Ok(TempoAwareValue::Seconds(number.parse::<f64>()? / 1000.0)),
+        "measures" | "measure" => {
+            let num = number.parse::<f64>()?;
+            if tempo_map.is_some() {
+                Ok(TempoAwareValue::Measures(num))
+            } else {
+                Err(format!("Measure-based {kind_label} values require a tempo section").into())
+            }
         }
-    } else if value.ends_with("beats") || value.ends_with("beat") {
-        let num_str = value.trim_end_matches("beats").trim_end_matches("beat");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareValue::Beats(num))
-        } else {
-            Err(format!("Beat-based {kind_label} values require a tempo section").into())
+        "beats" | "beat" => {
+            let num = number.parse::<f64>()?;
+            if tempo_map.is_some() {
+                Ok(TempoAwareValue::Beats(num))
+            } else {
+                Err(format!("Beat-based {kind_label} values require a tempo section").into())
+            }
         }
-    } else if value.ends_with('s') {
-        let num_str = value.trim_end_matches('s');
-        let num = num_str.parse::<f64>()?;
-        Ok(TempoAwareValue::Seconds(num))
-    } else {
+        "s" => Ok(TempoAwareValue::Seconds(number.parse::<f64>()?)),
         // Fallback: try parsing as a number
-        Ok(TempoAwareValue::Fixed(value.parse::<f64>()?))
+        _ => Ok(TempoAwareValue::Fixed(value.parse::<f64>()?)),
     }
 }
 
@@ -110,39 +123,30 @@ pub(crate) fn parse_duration_string(
     at_time: Option<Duration>,
     offset_secs: f64,
 ) -> Result<Duration, Box<dyn Error>> {
-    let value = value.trim();
-    if value.ends_with("ms") {
-        let num_str = value.trim_end_matches("ms");
-        let num = num_str.parse::<u64>()?;
-        Ok(Duration::from_millis(num))
-    } else if value.ends_with("measures") || value.ends_with("measure") {
-        let num_str = value
-            .trim_end_matches("measures")
-            .trim_end_matches("measure");
-        let num = num_str.parse::<f64>()?;
-        if let Some(tm) = tempo_map {
-            let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.measures_to_duration(num, time, offset_secs))
-        } else {
-            Err("Measure-based durations require a tempo section".into())
+    let (number, unit) = split_unit(value);
+    match unit {
+        "ms" => Ok(Duration::from_millis(number.parse::<u64>()?)),
+        "measures" | "measure" => {
+            let num = number.parse::<f64>()?;
+            if let Some(tm) = tempo_map {
+                let time = at_time.unwrap_or(Duration::ZERO);
+                Ok(tm.measures_to_duration(num, time, offset_secs))
+            } else {
+                Err("Measure-based durations require a tempo section".into())
+            }
         }
-    } else if value.ends_with("beats") || value.ends_with("beat") {
-        let num_str = value.trim_end_matches("beats").trim_end_matches("beat");
-        let num = num_str.parse::<f64>()?;
-        if let Some(tm) = tempo_map {
-            let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.beats_to_duration(num, time, offset_secs))
-        } else {
-            Err("Beat-based durations require a tempo section".into())
+        "beats" | "beat" => {
+            let num = number.parse::<f64>()?;
+            if let Some(tm) = tempo_map {
+                let time = at_time.unwrap_or(Duration::ZERO);
+                Ok(tm.beats_to_duration(num, time, offset_secs))
+            } else {
+                Err("Beat-based durations require a tempo section".into())
+            }
         }
-    } else if value.ends_with('s') {
-        let num_str = value.trim_end_matches('s');
-        let num = num_str.parse::<f64>()?;
-        Ok(Duration::from_secs_f64(num))
-    } else {
+        "s" => Ok(Duration::from_secs_f64(number.parse::<f64>()?)),
         // Assume seconds if no unit
-        let num = value.parse::<f64>()?;
-        Ok(Duration::from_secs_f64(num))
+        _ => Ok(Duration::from_secs_f64(value.trim().parse::<f64>()?)),
     }
 }
 
@@ -526,6 +530,22 @@ mod tests {
     #[test]
     fn duration_invalid() {
         assert!(parse_duration_string("notanumber", &None, None, 0.0).is_err());
+        // A unit written twice is no unit; it used to be stripped twice over.
+        assert!(parse_duration_string("5msms", &None, None, 0.0).is_err());
+        assert!(parse_duration_string("2ss", &None, None, 0.0).is_err());
+    }
+
+    // ── split_unit ───────────────────────────────────────────────
+
+    #[test]
+    fn split_unit_takes_the_trailing_letters() {
+        assert_eq!(split_unit(" 2.5s "), ("2.5", "s"));
+        assert_eq!(split_unit("4beats"), ("4", "beats"));
+        assert_eq!(split_unit("-20.5deg"), ("-20.5", "deg"));
+        assert_eq!(split_unit("3 measures"), ("3 ", "measures"));
+        assert_eq!(split_unit("1e3"), ("1e3", ""));
+        assert_eq!(split_unit("0.5"), ("0.5", ""));
+        assert_eq!(split_unit("abc"), ("", "abc"));
     }
 
     // ── parse_color_string ─────────────────────────────────────────

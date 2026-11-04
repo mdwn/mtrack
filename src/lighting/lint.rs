@@ -26,9 +26,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use crate::audio::click_analysis::BeatGrid;
-use crate::lighting::effects::{BlendMode, EffectLayer, EffectType};
-use crate::lighting::parser::LightShow;
-use crate::lighting::parser::{Cue, Effect};
+use crate::lighting::effects::{BlendMode, EffectLayer, EffectType, DEFAULT_BLEND, DEFAULT_LAYER};
+use crate::lighting::parser::{effect_keyword, Cue, Effect, LightShow};
 use crate::lighting::timeline::EffectEnd;
 
 /// A non-fatal finding.
@@ -203,7 +202,7 @@ fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
     let mut reported = HashSet::new();
     for cue in &show.cues {
         for effect in &cue.effects {
-            let kind = dsl_keyword(&effect.effect_type);
+            let kind = effect_keyword(&effect.effect_type);
             let varies = matches!(
                 effect.effect_type,
                 EffectType::Chase { .. }
@@ -271,20 +270,6 @@ fn cell_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) {
     }
 }
 
-/// The keyword an author writes for an effect type.
-fn dsl_keyword(effect_type: &EffectType) -> &'static str {
-    match effect_type {
-        EffectType::Static { .. } => "static",
-        EffectType::ColorCycle { .. } => "cycle",
-        EffectType::Strobe { .. } => "strobe",
-        EffectType::Pulse { .. } => "pulse",
-        EffectType::Chase { .. } => "chase",
-        EffectType::Dimmer { .. } => "dimmer",
-        EffectType::Rainbow { .. } => "rainbow",
-        EffectType::Move { .. } => "move",
-    }
-}
-
 /// A parameter the effect type does not use.
 ///
 /// The DSL accepts any parameter and each effect type takes what it recognises,
@@ -300,7 +285,7 @@ fn parameters_the_effect_ignores(shows: &[LightShow], out: &mut Vec<Warning>) {
                 // The DSL keyword, not the Rust variant: `ColorCycle` would be
                 // reported as "colorcycle", which is not a word the author can
                 // have written.
-                let kind = dsl_keyword(&effect.effect_type);
+                let kind = effect_keyword(&effect.effect_type);
                 // Once per (group, effect type, parameter): a show repeating
                 // the same mistake on forty cues has one problem, not forty —
                 // but the message names a group and a time, so two groups
@@ -398,7 +383,7 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
                         format!(
                             "`{}` on `{group}` at {:.3}s needs {what}, and none of the \
                              group's {} fixtures has one — the cue will not do what it says",
-                            dsl_keyword(&effect.effect_type),
+                            effect_keyword(&effect.effect_type),
                             cue.time.as_secs_f64(),
                             capabilities.fixtures,
                         ),
@@ -564,13 +549,12 @@ fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<War
 
     for end in ends {
         let (cue, effect) = (cues[end.cue], &cues[end.cue].effects[end.effect]);
-        // Both default to the same values the engine applies when the DSL
-        // omits them, so an unannotated effect is checked as it will run.
-        let blend = effect.blend_mode.unwrap_or(BlendMode::Replace);
-        if blend != BlendMode::Replace {
+        // Both default to what the engine applies when the DSL omits them,
+        // so an unannotated effect is checked as it will run.
+        if effect.blend_mode.unwrap_or(DEFAULT_BLEND) != BlendMode::Replace {
             continue;
         }
-        let layer = effect.layer.unwrap_or(EffectLayer::Background);
+        let layer = effect.layer.unwrap_or(DEFAULT_LAYER);
         let end = end.until();
         if end <= cue.time {
             continue;

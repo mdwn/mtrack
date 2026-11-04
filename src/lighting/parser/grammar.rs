@@ -17,3 +17,17 @@ use pest_derive::Parser;
 #[derive(Parser)]
 #[grammar = "src/lighting/grammar.pest"]
 pub struct LightingParser;
+
+/// The items a parsed file holds -- its includes, fixture types, venues,
+/// shows, sequences and tempo blocks -- out of the `file` rule's pair.
+pub(crate) fn items<'i>(
+    pairs: pest::iterators::Pairs<'i, Rule>,
+) -> impl Iterator<Item = pest::iterators::Pair<'i, Rule>> {
+    pairs.flat_map(|p| {
+        if p.as_rule() == Rule::file {
+            p.into_inner().collect::<Vec<_>>()
+        } else {
+            vec![p]
+        }
+    })
+}

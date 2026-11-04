@@ -116,7 +116,7 @@ show "Song" {
         .cues
         .iter()
         .flat_map(|c| c.effects.iter())
-        .all(|e| e.sequence_name.as_deref() == Some("strike-2")));
+        .all(|e| e.sequence_name() == Some("strike-2")));
 }
 
 #[test]

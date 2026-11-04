@@ -45,5 +45,5 @@ pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
     BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve, Easing,
-    EffectLayer, EffectType, MoveTarget,
+    EffectLayer, EffectType, MoveTarget, DEFAULT_BLEND, DEFAULT_LAYER,
 };

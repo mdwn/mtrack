@@ -331,6 +331,9 @@ pub enum EffectLayer {
     Foreground = 2, // Top layer (e.g., strobe effects)
 }
 
+/// The layer an effect runs on when the DSL names none.
+pub const DEFAULT_LAYER: EffectLayer = EffectLayer::Background;
+
 /// Blend mode for combining effects
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BlendMode {
@@ -345,6 +348,9 @@ pub enum BlendMode {
     /// Screen - screen blend mode
     Screen,
 }
+
+/// The blend mode an effect runs with when the DSL names none.
+pub const DEFAULT_BLEND: BlendMode = BlendMode::Replace;
 
 #[cfg(test)]
 mod tests {

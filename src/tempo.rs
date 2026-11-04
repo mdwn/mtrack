@@ -511,6 +511,26 @@ fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
         .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+/// Positions below this many beats are counted in whole bars at a time;
+/// see [`exact_eighths`].
+const EXACT_BEATS: f64 = (1u64 << 45) as f64;
+
+/// Whether `x` is a whole number of eighths of a beat below
+/// [`EXACT_BEATS`]. A bar of a time signature with a power-of-two
+/// denominator up to 32 is such a length, and so is any whole number of
+/// them below that bound: an f64 holds every such value exactly (2^45 /
+/// 2^-3 = 2^48 of them, under its 2^53). So counting `n` such bars onto,
+/// or off, a position in one step gives bit for bit what counting them one
+/// by one does: added to a sum that is such a value, every partial sum is
+/// one too; taken off any position `r` below the bound, each difference is
+/// a whole multiple of `r`'s ulp (at most 2^-8, which divides an eighth)
+/// no larger than `r`, which an f64 holds exactly too. A light show's
+/// signature may have any denominator; a bar of 4/3 is not such a length,
+/// nor a sum once one is in it, and those count one bar at a time.
+fn exact_eighths(x: f64) -> bool {
+    x < EXACT_BEATS && (x * 8.0).fract() == 0.0
+}
+
 /// The time signature changes as the beat grid has them, in bar order: a
 /// change anchored mid-bar governs from the next bar.
 #[derive(Debug, Clone)]
@@ -548,31 +568,46 @@ impl Metres {
         ts
     }
 
+    /// The first bar past `measure` where a signature change applies (see
+    /// [`Metres::at_measure`]), or `None` when none does: up to it, every
+    /// bar from `measure` on has the signature `measure` has.
+    fn next_boundary(&self, measure: u32) -> Option<u32> {
+        self.changes
+            .iter()
+            .map(|(m, b, _)| if (b - 1.0).abs() < 0.001 { *m } else { m + 1 })
+            .filter(|&bar| bar > measure)
+            .min()
+    }
+
     /// Total quarter-note beats from measure 1, beat 1 to the given
     /// (target_measure, target_beat), accounting for time signature changes.
+    ///
+    /// Counted a run of same-signature bars at a time where that is exact
+    /// (see [`exact_eighths`]), bar by bar where it is not, to the same
+    /// beat either way.
     fn beats_at(&self, target_measure: u32, target_beat: f64) -> f64 {
         let mut target_beats = 0.0;
         let mut current_measure: u32 = 1;
-        let mut current_beat_in_measure = 1.0;
 
-        while current_measure < target_measure
-            || (current_measure == target_measure && current_beat_in_measure < target_beat)
-        {
-            let ts_for_this_measure = self.at_measure(current_measure);
-
-            // If we're at the target measure, calculate partial beats
-            if current_measure == target_measure {
-                target_beats += target_beat - current_beat_in_measure;
-                break;
-            }
-
-            // Add remaining beats in current measure
-            let beats_per_current_measure = ts_for_this_measure.beats_per_measure();
-            let beats_already_counted = current_beat_in_measure - 1.0;
-            target_beats += beats_per_current_measure - beats_already_counted;
-
-            current_measure += 1;
-            current_beat_in_measure = 1.0;
+        while current_measure < target_measure {
+            let per_measure = self.at_measure(current_measure).beats_per_measure();
+            let run = self
+                .next_boundary(current_measure)
+                .map_or(target_measure, |b| b.min(target_measure))
+                - current_measure;
+            let bars = if exact_eighths(per_measure)
+                && exact_eighths(target_beats)
+                && target_beats + run as f64 * per_measure < EXACT_BEATS
+            {
+                run
+            } else {
+                1
+            };
+            target_beats += bars as f64 * per_measure;
+            current_measure += bars;
+        }
+        if current_measure == target_measure && 1.0 < target_beat {
+            target_beats += target_beat - 1.0;
         }
 
         target_beats
@@ -582,6 +617,10 @@ impl Metres {
     /// negative) falls in: its number, the beats into it, and the beats it
     /// holds. The walk stops at a bar of no length, or when the position is
     /// not finite (it would never be reached).
+    ///
+    /// Counted a run of same-signature bars at a time where that is exact
+    /// (see [`exact_eighths`]), bar by bar where it is not, to the same
+    /// bar and beat either way.
     fn bar_at(&self, beats: f64) -> (u32, f64, f64) {
         let mut remaining = beats;
         let mut measure: u32 = 1;
@@ -590,8 +629,25 @@ impl Metres {
             if per_measure <= 0.0 || remaining < per_measure || !remaining.is_finite() {
                 return (measure, remaining, per_measure);
             }
-            remaining -= per_measure;
-            measure += 1;
+            let bars = if exact_eighths(per_measure) && remaining < EXACT_BEATS {
+                // Never past the bar the position is in: the quotient
+                // rounds up to a whole number only from within half an ulp
+                // of it, and two exact values a whole ulp apart are further
+                // than that; the check is for form's sake.
+                let run = self
+                    .next_boundary(measure)
+                    .map_or(u32::MAX - measure, |b| b - measure)
+                    .max(1);
+                let mut bars = ((remaining / per_measure).floor() as u32).clamp(1, run);
+                if remaining - bars as f64 * per_measure < 0.0 {
+                    bars -= 1;
+                }
+                bars.max(1)
+            } else {
+                1
+            };
+            remaining -= bars as f64 * per_measure;
+            measure += bars;
         }
     }
 
@@ -935,6 +991,18 @@ impl TempoMap {
         self.segments().state_at(score_time).bpm_at(score_time)
     }
 
+    /// Seconds that `measures` bars take at the tempo and metre in force at
+    /// `anchor` (score time), as a show's `offset N measures` counts them:
+    /// at that one steady tempo, so an offset issued after a tempo change
+    /// does not undo the change by integrating back through it.
+    pub(crate) fn offset_duration(&self, measures: u32, anchor: Duration) -> f64 {
+        let beats_per_measure = self.time_signature_at_time(anchor, 0.0).beats_per_measure();
+        let seconds_per_beat = 60.0 / self.bpm_at_time(anchor, 0.0);
+        // In this order of operations, as the cue parser always had it: a
+        // stored offset must come out bit for bit the same.
+        measures as f64 * beats_per_measure * seconds_per_beat
+    }
+
     /// Get time signature at a given time
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
     ///
@@ -991,6 +1059,14 @@ impl TempoMap {
         offset_secs: f64,
     ) -> Duration {
         self.span(Span::Measures(measures), at_time, offset_secs, true)
+    }
+
+    /// The beats from `from` to `to` (score times), as the position walk
+    /// counts them: through every tempo change and ramp between. What
+    /// [`Self::beats_to_duration`] lays from `from` back to `to`.
+    pub(crate) fn beats_between(&self, from: Duration, to: Duration) -> f64 {
+        let segments = self.segments();
+        snap_beats(segments.beats_at(to) - segments.beats_at(from))
     }
 
     /// How long the `beats` before `end` last: the same position walk as
@@ -1092,6 +1168,132 @@ impl TempoMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offset_duration_multiplies_in_the_cue_parsers_order() {
+        // The product's order of operations is the one the stored offsets
+        // of every show so far were computed in; another order differs in
+        // the last ulp at some tempos.
+        let tm = TempoMap::new(Duration::ZERO, 169.0, TimeSignature::new(4, 4), vec![]);
+        let secs = tm.offset_duration(6, Duration::ZERO);
+        assert_eq!(secs.to_bits(), (6.0 * 4.0 * (60.0 / 169.0_f64)).to_bits());
+    }
+
+    mod metres_walk_tests {
+        use super::*;
+
+        /// The bar walk one bar at a time, as `Metres::bar_at` had it.
+        fn bar_at_one_by_one(metres: &Metres, beats: f64) -> (u32, f64, f64) {
+            let mut remaining = beats;
+            let mut measure: u32 = 1;
+            loop {
+                let per_measure = metres.at_measure(measure).beats_per_measure();
+                if per_measure <= 0.0 || remaining < per_measure || !remaining.is_finite() {
+                    return (measure, remaining, per_measure);
+                }
+                remaining -= per_measure;
+                measure += 1;
+            }
+        }
+
+        /// The beat count one bar at a time, as `Metres::beats_at` had it.
+        fn beats_at_one_by_one(metres: &Metres, target_measure: u32, target_beat: f64) -> f64 {
+            let mut target_beats = 0.0;
+            let mut current_measure: u32 = 1;
+            let mut current_beat_in_measure = 1.0;
+            while current_measure < target_measure
+                || (current_measure == target_measure && current_beat_in_measure < target_beat)
+            {
+                if current_measure == target_measure {
+                    target_beats += target_beat - current_beat_in_measure;
+                    break;
+                }
+                let per = metres.at_measure(current_measure).beats_per_measure();
+                target_beats += per - (current_beat_in_measure - 1.0);
+                current_measure += 1;
+                current_beat_in_measure = 1.0;
+            }
+            target_beats
+        }
+
+        fn metres() -> Metres {
+            let mut metres = Metres::new(TimeSignature::new(4, 4));
+            metres.add(5, 1.0, TimeSignature::new(7, 8));
+            metres.add(9, 2.5, TimeSignature::new(3, 4));
+            metres.add(40, 1.0, TimeSignature::new(5, 16));
+            metres.add(40, 3.0, TimeSignature::new(12, 8));
+            metres
+        }
+
+        #[test]
+        fn bars_counted_at_once_land_where_bars_counted_one_by_one_do() {
+            // Bit for bit, at positions of every kind: whole bars, snapped
+            // millionths, and the noise a time conversion leaves.
+            let metres = metres();
+            let mut positions: Vec<f64> = Vec::new();
+            for i in 0..4000 {
+                let beats = i as f64 * 0.731;
+                positions.push(beats);
+                positions.push(snap_beats(beats));
+                positions.push(beats * (1.0 + f64::EPSILON * i as f64));
+                positions.push(i as f64 * 3.5);
+            }
+            positions.extend([0.0, 1e6, 2.0_f64.powi(20), f64::INFINITY, f64::NAN]);
+            for beats in positions {
+                let (m, into, per) = metres.bar_at(beats);
+                let (m1, into1, per1) = bar_at_one_by_one(&metres, beats);
+                assert_eq!((m, per), (m1, per1), "bar at {beats}");
+                assert_eq!(into.to_bits(), into1.to_bits(), "beats into bar at {beats}");
+            }
+            for measure in 0..3000 {
+                for beat in [0.5, 1.0, 1.25, 2.0, 3.999_999, 4.0, 6.5] {
+                    let a = metres.beats_at(measure, beat);
+                    let b = beats_at_one_by_one(&metres, measure, beat);
+                    assert_eq!(a.to_bits(), b.to_bits(), "beats at {measure}/{beat}");
+                }
+            }
+        }
+
+        #[test]
+        fn bars_of_any_denominator_count_as_bars_counted_one_by_one_do() {
+            // A light show's signature may have any denominator: a bar of
+            // 4/3 or 7/7 is not a whole number of eighths, and the sum of
+            // bars past it is no longer exact, so from there the count goes
+            // one bar at a time.
+            let mut odd = Vec::new();
+            for (n, d) in [(4, 3), (7, 7), (5, 64)] {
+                let mut metres = Metres::new(TimeSignature::new(4, 4));
+                metres.add(2, 1.0, TimeSignature::new(n, d));
+                metres.add(3, 1.0, TimeSignature::new(4, 4));
+                metres.add(500, 2.0, TimeSignature::new(n, d));
+                metres.add(900, 1.0, TimeSignature::new(3, 4));
+                odd.push(metres);
+            }
+            let mut differ = 0;
+            for metres in &odd {
+                // The one-bar walk's sum, bar by bar in its order of
+                // operations, carried from one measure to the next.
+                let mut one_by_one: f64 = 0.0;
+                for measure in 1..20_000 {
+                    if metres.beats_at(measure, 2.5).to_bits() != (one_by_one + 1.5).to_bits() {
+                        differ += 1;
+                    }
+                    if measure % 500 == 0 {
+                        assert_eq!(
+                            one_by_one.to_bits(),
+                            beats_at_one_by_one(metres, measure, 1.0).to_bits()
+                        );
+                        let at = measure as f64 * 1.37;
+                        let (m, into, per) = metres.bar_at(at);
+                        let (m1, into1, per1) = bar_at_one_by_one(metres, at);
+                        assert_eq!((m, into.to_bits(), per), (m1, into1.to_bits(), per1));
+                    }
+                    one_by_one += metres.at_measure(measure).beats_per_measure() - 0.0;
+                }
+            }
+            assert_eq!(differ, 0, "beat counts differing from the one-bar walk");
+        }
+    }
 
     mod beat_clock_ticks_tests {
         use super::*;

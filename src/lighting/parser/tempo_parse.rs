@@ -20,7 +20,7 @@ use super::super::tempo::{
     TempoTransition, TimeSignature, TransitionCurve,
 };
 use super::grammar::Rule;
-use super::utils::{parse_measure_time, parse_time_string};
+use super::utils::{parse_measure_time, parse_time_string, split_unit};
 use pest::iterators::Pair;
 
 pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<dyn Error>> {
@@ -263,25 +263,22 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
 }
 
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
-    let trimmed = value.trim();
-    if trimmed.ends_with("ms") {
-        let num_str = trimmed.trim_end_matches("ms").trim();
-        let num = num_str
+    let (number, unit) = split_unit(value);
+    let number = number.trim();
+    let secs = |number: &str| {
+        number
+            .parse::<f64>()
+            .map(Duration::from_secs_f64)
+            .map_err(|e| format!("Failed to parse '{}' as f64: {}", number, e).into())
+    };
+    match unit {
+        "ms" => number
             .parse::<u64>()
-            .map_err(|e| format!("Failed to parse '{}' as u64: {}", num_str, e))?;
-        Ok(Duration::from_millis(num))
-    } else if trimmed.ends_with('s') {
-        let num_str = trimmed.trim_end_matches('s').trim();
-        let num = num_str
-            .parse::<f64>()
-            .map_err(|e| format!("Failed to parse '{}' as f64: {}", num_str, e))?;
-        Ok(Duration::from_secs_f64(num))
-    } else {
+            .map(Duration::from_millis)
+            .map_err(|e| format!("Failed to parse '{}' as u64: {}", number, e).into()),
+        "s" => secs(number),
         // Assume seconds if no unit
-        let num = trimmed
-            .parse::<f64>()
-            .map_err(|e| format!("Failed to parse '{}' as f64: {}", trimmed, e))?;
-        Ok(Duration::from_secs_f64(num))
+        _ => secs(value.trim()),
     }
 }
 

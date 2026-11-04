@@ -31,7 +31,7 @@ use pest::Parser;
 use super::super::tempo::TempoMap;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
-use super::show::{expand_unexpanded_sequence_cue, parse_sequence_structure};
+use super::show::parse_sequence_structure;
 use super::types::{Sequence, SequenceCall};
 
 /// A sequence as written: its parameters and its source.
@@ -276,22 +276,18 @@ impl SequenceLibrary {
             .and_then(|source| source.into_inner().find(|p| p.as_rule() == Rule::sequence))
             .ok_or("Sequence definition did not parse (internal error)")?;
 
-        let definition = parse_sequence_structure(pair, &self.global_tempo)?;
+        let definition = parse_sequence_structure(pair, &self.global_tempo, self)?;
         let tempo = definition
             .tempo_map
             .clone()
             .or_else(|| self.global_tempo.clone());
+        // Checked before any reference is placed: a cue past the length is
+        // an error whatever it would expand to, and a long expansion is
+        // spared.
         let length = definition.declared_length(tempo.as_ref())?;
-        let mut cues = Vec::new();
-        for cue in definition.cues {
-            cues.extend(expand_unexpanded_sequence_cue(cue, &tempo, self)?);
-        }
         Ok(Sequence {
-            cues,
-            bpm: tempo
-                .as_ref()
-                .map(|tm| tm.initial_bpm)
-                .unwrap_or(crate::lighting::tempo::DEFAULT_BPM),
+            cues: definition.block.place(self)?,
+            tempo_map: tempo,
             length,
         })
     }

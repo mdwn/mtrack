@@ -43,7 +43,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
         None,
     );
     seq1_effect1.id = "seq_intro_effect_1".to_string();
-    seq1_effect1.sequence = Some("intro".to_string());
+    seq1_effect1.sequences = vec!["intro".to_string()];
     seq1_effect1.layer = EffectLayer::Background;
 
     let mut seq1_effect2 = EffectInstance::new(
@@ -62,7 +62,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
         None,
     );
     seq1_effect2.id = "seq_intro_effect_2".to_string();
-    seq1_effect2.sequence = Some("intro".to_string());
+    seq1_effect2.sequences = vec!["intro".to_string()];
     seq1_effect2.layer = EffectLayer::Midground;
 
     // Create an effect from a different sequence (on different fixture to avoid conflict)
@@ -82,7 +82,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
         None,
     );
     seq2_effect.id = "seq_outro_effect_1".to_string();
-    seq2_effect.sequence = Some("outro".to_string());
+    seq2_effect.sequences = vec!["outro".to_string()];
     seq2_effect.layer = EffectLayer::Background;
 
     // Create a non-sequence effect

@@ -27,6 +27,7 @@ pub(crate) mod utils; // Make utils accessible for tests
 mod tests;
 
 // Re-export public items
+pub(crate) use effect_parse::effect_keyword;
 pub use fixture_venue::{parse_fixture_types, parse_venues};
 pub use include::included_files;
 pub use show::{

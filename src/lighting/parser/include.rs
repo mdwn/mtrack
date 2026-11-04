@@ -26,7 +26,7 @@ use pest::iterators::Pair;
 use pest::Parser;
 
 use super::error::describe_pest_error;
-use super::grammar::{LightingParser, Rule};
+use super::grammar::{items, LightingParser, Rule};
 use super::sequences::SequenceLibrary;
 
 /// An `include` as written: its path and the line it is on.
@@ -143,13 +143,7 @@ fn add_file(
 
     let mut includes = Vec::new();
     let mut sequences = Vec::new();
-    for pair in pairs.flat_map(|p| {
-        if p.as_rule() == Rule::file {
-            p.into_inner().collect::<Vec<_>>()
-        } else {
-            vec![p]
-        }
-    }) {
+    for pair in items(pairs) {
         let what = match pair.as_rule() {
             Rule::include => {
                 includes.push(Include::from_pair(pair));
@@ -203,7 +197,7 @@ fn collect(path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<PathBuf>) {
         return;
     };
     let folder = path.parent().unwrap_or(Path::new(""));
-    for pair in pairs.flat_map(|p| p.into_inner()) {
+    for pair in items(pairs) {
         if pair.as_rule() != Rule::include {
             continue;
         }

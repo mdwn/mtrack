@@ -1413,8 +1413,8 @@ impl EffectEngine {
         self.cache.invalidate();
     }
 
-    /// Stop all effects from a specific sequence: those cued from it by
-    /// name.
+    /// Stop all effects from a specific sequence: those cued through it by
+    /// name, inside another sequence or not.
     pub fn stop_sequence(&mut self, sequence_name: &str) {
         self.take_out(|effect| effect.is_from_sequence(sequence_name));
         self.cache.invalidate();
