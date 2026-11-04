@@ -730,7 +730,11 @@ show "B" {
 "#;
         let before: Vec<LightShow> = shows(first).into_iter().chain(shows(second)).collect();
         let d = diff_shows(Vec::new(), before, None, None);
-        let b = d.added.iter().find(|e| e.time == Duration::from_secs(8)).unwrap();
+        let b = d
+            .added
+            .iter()
+            .find(|e| e.time == Duration::from_secs(8))
+            .unwrap();
         // Bar 3 at 60 BPM is 8s; at 120 BPM, the map B plays on, 8s is bar 5.
         assert_eq!(b.position.as_deref(), Some("@5/1.00"));
     }

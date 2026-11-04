@@ -88,6 +88,12 @@ fn base_channel(channel: &str) -> &str {
     base.strip_suffix("_fine").unwrap_or(base)
 }
 
+/// Whether a channel carries where a head points -- pan or tilt, a section
+/// (`pan:1`) or fine byte of either -- rather than what it shows.
+pub(crate) fn is_position_channel(channel: &str) -> bool {
+    matches!(CrossKind::of(channel), CrossKind::Position)
+}
+
 impl CrossKind {
     fn of(channel: &str) -> CrossKind {
         match base_channel(channel) {
@@ -581,7 +587,7 @@ impl EffectEngine {
     /// carry a position (pan, tilt): a crossfade holds those rather than
     /// fading them, so no fade takes one dark.
     pub fn position_channels(&self) -> HashSet<(u16, u16)> {
-        self.channels_where(|name| matches!(CrossKind::of(name), CrossKind::Position))
+        self.channels_where(is_position_channel)
     }
 
     /// Every DMX channel (universe, channel) a patched fixture drives for a

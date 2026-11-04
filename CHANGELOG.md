@@ -246,6 +246,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
+  and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
+  profile names it) parked at centre no longer makes a dark rig read as lit.
 - **`diff_show` positions are on the map the player plays**: a song's shows all play to the first
   show's `tempo` block (or the song's tempo), and the diff's `@measure/beat` positions now report
   where each cue lands on that map. A second file's own block placed its cues' positions, so the

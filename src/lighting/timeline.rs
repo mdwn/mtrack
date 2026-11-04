@@ -286,7 +286,10 @@ pub fn shows_tempo_map<'a>(
     shows: &'a [LightShow],
     fallback: Option<&'a crate::lighting::tempo::TempoMap>,
 ) -> Option<&'a crate::lighting::tempo::TempoMap> {
-    shows.iter().find_map(|show| show.tempo_map.as_ref()).or(fallback)
+    shows
+        .iter()
+        .find_map(|show| show.tempo_map.as_ref())
+        .or(fallback)
 }
 
 impl LightingTimeline {

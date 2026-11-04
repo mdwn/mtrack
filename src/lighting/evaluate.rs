@@ -1012,6 +1012,27 @@ show "T" {
         };
         assert_eq!(lit.is_dark(), Some(false));
     }
+
+    /// A GDTF profile names a head's pan `pan:1`, a section of the one
+    /// attribute: where it points, all the same, and not a lit channel.
+    #[test]
+    fn is_dark_ignores_a_gdtf_pan_section() {
+        let channels: HashMap<String, u8> = [("pan:1", 128u8), ("tilt:1", 90), ("dimmer", 0)]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        let evaluation = Evaluation {
+            time: Duration::ZERO,
+            fixtures: vec![FixtureSnapshot {
+                name: "m".to_string(),
+                channels,
+                cells: Default::default(),
+            }],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        };
+        assert_eq!(evaluation.is_dark(), Some(true));
+    }
 }
 
 #[cfg(test)]

@@ -3298,7 +3298,10 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
         .iter()
         .enumerate()
         .map(|(index, cue)| {
-            let position = show.tempo_map.as_ref().map(|map| map.position_label(cue.time));
+            let position = show
+                .tempo_map
+                .as_ref()
+                .map(|map| map.position_label(cue.time));
             json!({
                 "index": index,
                 "time": cue.time.as_secs_f64(),
