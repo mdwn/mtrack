@@ -3393,6 +3393,12 @@ fn quarter_note_intervals(
 
 /// The meter a song declares, for reading its click grid in quarter notes:
 /// its own `tempo:` block, else the first of its shows with a `tempo` block.
+///
+/// Not [`Song::lighting_tempo_map`], deliberately: that falls back to the
+/// grid itself, and the grid read against a meter derived from the grid
+/// would answer nothing. This is a question about the declared meter only.
+///
+/// [`Song::lighting_tempo_map`]: crate::songs::Song::lighting_tempo_map
 fn declared_meter(song: &crate::songs::Song) -> Option<crate::tempo::TempoMap> {
     song.tempo_map().cloned().or_else(|| {
         song.dsl_lighting_shows()
