@@ -926,6 +926,11 @@ impl TempoMap {
             return self.initial_time_signature;
         };
         let segments = self.segments();
+        if score_time < self.start_offset {
+            // Before bar 1 there are no bars: the signature the changes
+            // reached by then have set.
+            return segments.state_at(score_time).metre;
+        }
         let (measure, _) = segments
             .metres
             .measure_beat_at(segments.beats_at(score_time));
@@ -2396,6 +2401,29 @@ mod tests {
         let at = |ms| map.time_signature_at_time(Duration::from_millis(ms), 0.0);
         assert_eq!(at(10_600), TimeSignature::new(4, 4));
         assert_eq!(at(10_700), TimeSignature::new(3, 4));
+    }
+
+    /// Before the start, a signature change at bar 1 has not happened yet;
+    /// one positioned in time before the start has, from its time.
+    #[test]
+    fn time_signature_before_the_start_is_what_the_changes_so_far_set() {
+        let signature_change = |position| {
+            TempoMap::new(
+                Duration::from_secs(3),
+                120.0,
+                TimeSignature::new(6, 8),
+                vec![snap_change(position, None, Some(TimeSignature::new(2, 2)))],
+            )
+        };
+        let at = |map: &TempoMap, ms| map.time_signature_at_time(Duration::from_millis(ms), 0.0);
+        let at_bar_one = signature_change(TempoChangePosition::MeasureBeat(1, 1.0));
+        assert_eq!(at(&at_bar_one, 0), TimeSignature::new(6, 8));
+        assert_eq!(at(&at_bar_one, 2_000), TimeSignature::new(6, 8));
+        assert_eq!(at(&at_bar_one, 3_000), TimeSignature::new(2, 2));
+        let before = signature_change(TempoChangePosition::Time(Duration::from_secs(1)));
+        assert_eq!(at(&before, 500), TimeSignature::new(6, 8));
+        assert_eq!(at(&before, 1_000), TimeSignature::new(2, 2));
+        assert_eq!(at(&before, 4_000), TimeSignature::new(2, 2));
     }
 
     /// With the map shifted by an offset, a mid-bar signature change still
