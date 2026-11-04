@@ -468,11 +468,34 @@
     editedYaml = buildYaml();
   }
 
-  function setLightingFile(filename: string) {
+  /** A lighting file's song.yaml entry: its path relative to the song's
+   * folder. The editor hands over paths under the songs root (`Song/x.light`),
+   * which is how the lighting API addresses them; song.yaml resolves `file`
+   * from the song's own folder, so the folder comes off here. */
+  function songRelative(path: string): string {
+    const dir = song?.base_dir;
+    return dir && path.startsWith(`${dir}/`)
+      ? path.slice(dir.length + 1)
+      : path;
+  }
+
+  /** Whether a song.yaml `file` entry names `filename` in the song's
+   * folder: as written, with a leading `./`, or as an absolute path. */
+  function entryNames(entry: string, filename: string): boolean {
+    if (entry.replace(/^(\.\/)+/, "") === filename) return true;
+    const dir = song?.base_dir;
+    return (
+      entry.startsWith("/") &&
+      entry.endsWith(dir ? `/${dir}/${filename}` : `/${filename}`)
+    );
+  }
+
+  function setLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
-    if (!existing.some((l) => l.file === filename)) {
+    if (!existing.some((l) => entryNames(l.file, filename))) {
       parsedConfig = {
         ...parsedConfig,
         lighting: [...existing, { file: filename }],
@@ -481,11 +504,12 @@
     }
   }
 
-  function removeLightingFile(filename: string) {
+  function removeLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
-    const filtered = existing.filter((l) => l.file !== filename);
+    const filtered = existing.filter((l) => !entryNames(l.file, filename));
     parsedConfig = {
       ...parsedConfig,
       lighting: filtered.length > 0 ? filtered : undefined,
@@ -557,6 +581,12 @@
     saveMsg = "";
     saveOk = false;
     try {
+      // New lighting files first: writing them registers them in the
+      // config, and the reload the config save starts wants them on disk.
+      if (lightingDirty && lightingEditorRef) {
+        await lightingEditorRef.saveLightingFiles("before");
+      }
+
       // Save song config if dirty.
       if (configDirty) {
         const res = await updateSong(songName, editedYaml);
@@ -569,9 +599,10 @@
         rawYaml = editedYaml;
       }
 
-      // Save lighting files if dirty.
+      // The song's other lighting files, and the removed ones' deletion,
+      // once the config no longer names them.
       if (lightingDirty && lightingEditorRef) {
-        await lightingEditorRef.saveLightingFiles();
+        await lightingEditorRef.saveLightingFiles("after");
       }
 
       saveMsg = get(t)("common.saved");
