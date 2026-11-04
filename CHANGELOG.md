@@ -150,6 +150,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **gRPC `next` and `previous` answer as the player does**: the song the player is on after
+  the move -- the one it moved to, or the one it stays on while a song plays or at the list's
+  end -- as MCP has answered. They refused with `FailedPrecondition` ("can't navigate while
+  playing") and `OutOfRange` ("already at the end") before, from a check of their own. MCP's
+  `play` says `started` and why not (`reason`), as `play_from` does, the reason read from the
+  player as gRPC reads it.
 - **One rule for a path that must stay inside the project**: the web UI's lighting file paths,
   new song folders and file names are held to the rule a playlist's ambient show path is held
   to -- absolute, or with a `..` component, is refused -- so a name with `..` inside it

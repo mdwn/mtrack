@@ -83,6 +83,11 @@ pub struct PlayerStatus {
     /// The current song's lighting, `None` without a DMX engine;
     /// `Some(Read(None))` with no show loaded.
     pub lighting: Option<DmxRead<Option<LightingStatus>>>,
+    /// Whether audio is actually leaving the machine, when the device can
+    /// report it. The transport says what it is doing; a surface wants
+    /// both -- "playing" next to "stalled" is the combination worth a red
+    /// light.
+    pub audio_health: Option<super::AudioOutputHealth>,
 }
 
 impl PlayerStatus {
@@ -277,6 +282,7 @@ impl Player {
             deferred_reloads: self.deferred_reloads(),
             ambient: None,
             lighting: None,
+            audio_health: self.hardware_status().audio_output,
         }
     }
 }
