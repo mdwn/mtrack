@@ -23,6 +23,8 @@ use std::{
     time::Duration,
 };
 
+use std::ops::ControlFlow;
+
 use cpal::traits::{DeviceTrait, HostTrait};
 use tracing::{debug, error, info, span, Level};
 
@@ -390,6 +392,41 @@ pub(super) struct ResolvedOutputDevice {
 pub(super) fn resolve_output_device(
     name: &str,
 ) -> Result<Option<ResolvedOutputDevice>, Box<dyn Error>> {
+    let mut found = None;
+    walk_output_devices(|host_id, device, device_id| {
+        // Name first: a non-match is dropped here, before its configurations
+        // are queried and before anything is built from it, so its handle is
+        // released immediately.
+        if device_id.trim() != name.trim() {
+            return ControlFlow::Continue(());
+        }
+        let Some(configs) = output_configs(&device) else {
+            debug!(
+                device_name = %device_id,
+                "Device matched by name but reports no output configurations"
+            );
+            return ControlFlow::Continue(());
+        };
+        found = Some(ResolvedOutputDevice {
+            name: device_id,
+            host_id,
+            device,
+            configs,
+        });
+        ControlFlow::Break(())
+    })?;
+    Ok(found)
+}
+
+/// Every host's devices, visited one at a time in host then device order:
+/// the one enumeration behind the listing, the search and the open, with
+/// each caller's filter in `visit`. A device `visit` declines is dropped
+/// before anything else is asked of it, so its handle is held no longer
+/// than its id takes to read; a host whose devices will not list is logged
+/// and skipped. `visit` says whether to go on.
+fn walk_output_devices(
+    mut visit: impl FnMut(cpal::HostId, cpal::Device, String) -> ControlFlow<()>,
+) -> Result<(), Box<dyn Error>> {
     // Suppress noisy output here.
     let _silenced = silence_enumeration()?;
 
@@ -405,94 +442,58 @@ pub(super) fn resolve_output_device(
                 continue;
             }
         };
-
         for device in host_devices {
-            // Name first: a non-match is dropped here, before its configurations
-            // are queried and before anything is built from it, so its handle is
-            // released immediately.
-            let device_id = match device.id() {
-                Ok(id) => id.to_string(),
-                Err(_) => continue,
-            };
-            if device_id.trim() != name.trim() {
-                continue;
+            let Ok(id) = device.id() else { continue };
+            if visit(host_id, device, id.to_string()).is_break() {
+                return Ok(());
             }
-
-            let Some(configs) = output_configs(&device) else {
-                debug!(
-                    device_name = %device_id,
-                    "Device matched by name but reports no output configurations"
-                );
-                continue;
-            };
-
-            return Ok(Some(ResolvedOutputDevice {
-                name: device_id,
-                host_id,
-                device,
-                configs,
-            }));
         }
     }
-
-    Ok(None)
+    Ok(())
 }
 
 /// Lists audio devices as simple info structs (no trait objects).
 pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
-    // Suppress noisy output here.
-    let _silenced = silence_enumeration()?;
-
     let mut infos: Vec<AudioDeviceInfo> = Vec::new();
-    for host_id in cpal::available_hosts() {
-        let host_devices = match cpal::host_from_id(host_id)?.devices() {
-            Ok(d) => d,
-            Err(_) => continue,
+    walk_output_devices(|host_id, device, name| {
+        let Some(output_configs) = output_configs(&device) else {
+            return ControlFlow::Continue(());
         };
-        for device in host_devices {
-            let Some(output_configs) = output_configs(&device) else {
-                continue;
-            };
-            let max_channels = max_output_channels(&output_configs);
+        let max_channels = max_output_channels(&output_configs);
 
-            let mut sample_rates = std::collections::BTreeSet::new();
-            let mut formats = std::collections::BTreeSet::new();
+        let mut sample_rates = std::collections::BTreeSet::new();
+        let mut formats = std::collections::BTreeSet::new();
 
-            for cfg in output_configs {
-                let min_rate = cfg.min_sample_rate();
-                let max_rate = cfg.max_sample_rate();
-                for &rate in STANDARD_SAMPLE_RATES {
-                    if rate >= min_rate && rate <= max_rate {
-                        sample_rates.insert(rate);
-                    }
-                }
-
-                let mapped = map_cpal_format(cfg.sample_format());
-                formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
-            }
-            if max_channels > 0 {
-                if let Ok(id) = device.id() {
-                    let name = id.to_string();
-                    let virtual_node = is_virtual_node(&name);
-                    infos.push(AudioDeviceInfo {
-                        name,
-                        max_channels,
-                        host_name: host_id.name().to_string(),
-                        supported_sample_rates: sample_rates.into_iter().collect(),
-                        supported_formats: formats
-                            .into_iter()
-                            .map(|(sample_format, bits_per_sample)| SupportedFormat {
-                                sample_format,
-                                bits_per_sample,
-                            })
-                            .collect(),
-                        virtual_node,
-                        channels_known: channels_are_known(virtual_node, max_channels),
-                    });
+        for cfg in output_configs {
+            let min_rate = cfg.min_sample_rate();
+            let max_rate = cfg.max_sample_rate();
+            for &rate in STANDARD_SAMPLE_RATES {
+                if rate >= min_rate && rate <= max_rate {
+                    sample_rates.insert(rate);
                 }
             }
+
+            let mapped = map_cpal_format(cfg.sample_format());
+            formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
         }
-    }
+        let virtual_node = is_virtual_node(&name);
+        infos.push(AudioDeviceInfo {
+            name,
+            max_channels,
+            host_name: host_id.name().to_string(),
+            supported_sample_rates: sample_rates.into_iter().collect(),
+            supported_formats: formats
+                .into_iter()
+                .map(|(sample_format, bits_per_sample)| SupportedFormat {
+                    sample_format,
+                    bits_per_sample,
+                })
+                .collect(),
+            virtual_node,
+            channels_known: channels_are_known(virtual_node, max_channels),
+        });
+        ControlFlow::Continue(())
+    })?;
     resolve_virtual_channel_counts(&mut infos);
     infos.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(infos)
@@ -901,9 +902,6 @@ impl Device {
 
     /// Lists cpal devices.
     fn list_cpal_devices() -> Result<Vec<Device>, Box<dyn Error>> {
-        // Suppress noisy output here.
-        let _silenced = silence_enumeration()?;
-
         // Enumerate first, and build nothing while doing it.
         //
         // Constructing the placeholder `OutputManager` inside this walk reserves
@@ -913,55 +911,52 @@ impl Device {
         // what the web UI's picker (which only queries) advertises. On the test
         // rig that was 8 devices against 19, and choosing one of the missing 11
         // failed with "no device found with name ..." (#357).
-        let mut found: Vec<(cpal::HostId, cpal::Device, u16)> = Vec::new();
-        for host_id in cpal::available_hosts() {
-            let host_devices = match cpal::host_from_id(host_id)?.devices() {
-                Ok(host_devices) => host_devices,
-                Err(e) => {
-                    error!(
-                        err = e.to_string(),
-                        host = host_id.name(),
-                        "Unable to list devices for host"
-                    );
-                    continue;
-                }
-            };
-
-            for device in host_devices {
-                let Some(configs) = output_configs(&device) else {
-                    continue;
-                };
-                found.push((host_id, device, max_output_channels(&configs)));
+        let mut found: Vec<ResolvedOutputDevice> = Vec::new();
+        walk_output_devices(|host_id, device, name| {
+            if let Some(configs) = output_configs(&device) {
+                found.push(ResolvedOutputDevice {
+                    name,
+                    host_id,
+                    device,
+                    configs,
+                });
             }
-        }
+            ControlFlow::Continue(())
+        })?;
 
         // Now build. The manager here is a placeholder that `get` replaces, so
         // it holds nothing anyone depends on -- it just must not exist while the
         // enumeration above is still running.
-        let mut devices: Vec<Device> = Vec::new();
-        for (host_id, device, max_channels) in found {
-            let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
-            let temp_output_manager = Arc::new(OutputManager::new(
-                max_channels,
-                default_format.sample_rate,
-            )?);
-
-            devices.push(Device {
-                name: device.id()?.to_string(),
-                playback_delay: Duration::ZERO,
-                max_channels,
-                host_id,
-                device,
-                target_format: default_format,
-                output_manager: temp_output_manager,
-                audio_config: config::Audio::new("default"), // Default config for listing
-                metronome_defaults: parking_lot::Mutex::new(None),
-                output_buffer_size: None,
-            })
-        }
-
+        let mut devices = found
+            .into_iter()
+            .map(Device::placeholder)
+            .collect::<Result<Vec<Device>, _>>()?;
         devices.sort_by_key(|device| device.name.to_string());
         Ok(devices)
+    }
+
+    /// A `Device` for a resolved output device, with a placeholder format
+    /// and output manager that `get` replaces: what a listing holds, and
+    /// what a find hands to `get`.
+    fn placeholder(resolved: ResolvedOutputDevice) -> Result<Device, Box<dyn Error>> {
+        let max_channels = max_output_channels(&resolved.configs);
+        let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
+        let output_manager = Arc::new(OutputManager::new(
+            max_channels,
+            default_format.sample_rate,
+        )?);
+        Ok(Device {
+            name: resolved.name,
+            playback_delay: Duration::ZERO,
+            max_channels,
+            host_id: resolved.host_id,
+            device: resolved.device,
+            target_format: default_format,
+            output_manager,
+            audio_config: config::Audio::new("default"),
+            metronome_defaults: parking_lot::Mutex::new(None),
+            output_buffer_size: None,
+        })
     }
 
     /// Whether a device of this name can be located for opening.
@@ -978,29 +973,9 @@ impl Device {
     /// See [`resolve_output_device`] for why this scans rather than searching
     /// `list_cpal_devices()`.
     fn find_cpal_device(name: &str) -> Result<Option<Device>, Box<dyn Error>> {
-        let Some(resolved) = resolve_output_device(name)? else {
-            return Ok(None);
-        };
-
-        let max_channels = max_output_channels(&resolved.configs);
-        let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
-        let output_manager = Arc::new(OutputManager::new(
-            max_channels,
-            default_format.sample_rate,
-        )?);
-
-        Ok(Some(Device {
-            name: resolved.name,
-            playback_delay: Duration::ZERO,
-            max_channels,
-            host_id: resolved.host_id,
-            device: resolved.device,
-            target_format: default_format,
-            output_manager,
-            audio_config: config::Audio::new("default"),
-            metronome_defaults: parking_lot::Mutex::new(None),
-            output_buffer_size: None,
-        }))
+        resolve_output_device(name)?
+            .map(Device::placeholder)
+            .transpose()
     }
 
     /// Gets the given cpal device.
