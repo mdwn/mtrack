@@ -54,27 +54,32 @@ pub struct Sequence {
 }
 
 impl Sequence {
-    /// Calculate the duration of this sequence based on when all effects complete.
-    /// Returns the time from sequence start (0) to when the last effect completes.
-    pub fn duration(&self) -> Duration {
-        if self.cues.is_empty() {
-            return Duration::ZERO;
-        }
-
-        let mut max_completion_time = Duration::ZERO;
-
-        for cue in &self.cues {
-            for effect in &cue.effects {
-                let effect_duration = effect.total_duration();
-                let completion_time = cue.time + effect_duration;
-                if completion_time > max_completion_time {
-                    max_completion_time = completion_time;
-                }
-            }
-        }
-
-        max_completion_time
+    /// How long one pass lasts: its declared `length:`, else as
+    /// [`pass_length`] has it.
+    pub fn pass_length(&self) -> Duration {
+        self.length.unwrap_or_else(|| pass_length(&self.cues))
     }
+}
+
+/// When a pass of `cues` starts: at the earliest of them.
+pub(crate) fn pass_start(cues: &[Cue]) -> Duration {
+    cues.iter().map(|c| c.time).min().unwrap_or_default()
+}
+
+/// How long one pass of `cues` -- a sequence's, or an inline loop body's --
+/// lasts when nothing says: from its earliest cue until its last effect
+/// ends, or, when no cue has an effect, until its last cue.
+pub(crate) fn pass_length(cues: &[Cue]) -> Duration {
+    let start = pass_start(cues);
+    let effects_end = cues
+        .iter()
+        .flat_map(|c| c.effects.iter().map(move |e| c.time + e.total_duration()))
+        .max();
+    let last_cue = cues.iter().map(|c| c.time).max();
+    effects_end
+        .or(last_cue)
+        .unwrap_or_default()
+        .saturating_sub(start)
 }
 
 /// Loop mode for sequence references
@@ -470,78 +475,59 @@ mod tests {
         assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
-    // ── Sequence::duration ─────────────────────────────────────────
+    // ── pass_length ────────────────────────────────────────────────
 
-    #[test]
-    fn sequence_empty() {
-        let seq = Sequence {
-            cues: vec![],
-            tempo_map: None,
-            length: None,
-        };
-        assert_eq!(seq.duration(), Duration::ZERO);
+    fn cue(time: u64, effects: Vec<Effect>) -> Cue {
+        Cue {
+            time: Duration::from_secs(time),
+            effects,
+            layer_commands: vec![],
+            stop_sequences: vec![],
+            start_sequences: vec![],
+        }
     }
 
     #[test]
-    fn sequence_single_timed_cue() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(2),
-                effects: vec![static_effect(Duration::from_secs(3))],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            tempo_map: None,
-            length: None,
-        };
-        // cue_time(2) + effect_duration(3) = 5
-        assert_eq!(seq.duration(), Duration::from_secs(5));
+    fn pass_length_empty() {
+        assert_eq!(pass_length(&[]), Duration::ZERO);
     }
 
     #[test]
-    fn sequence_max_completion_across_cues() {
+    fn pass_length_runs_from_the_earliest_cue_to_the_last_effect_end() {
+        let cues = [
+            cue(5, vec![static_effect(Duration::from_secs(10))]),
+            cue(2, vec![static_effect(Duration::from_secs(3))]),
+            cue(20, vec![]),
+        ];
+        // From 2 to max(5+10, 2+3) = 15; the effectless cue at 20 does not count.
+        assert_eq!(pass_length(&cues), Duration::from_secs(13));
         let seq = Sequence {
-            cues: vec![
-                Cue {
-                    time: Duration::from_secs(0),
-                    effects: vec![static_effect(Duration::from_secs(3))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
-                Cue {
-                    time: Duration::from_secs(5),
-                    effects: vec![static_effect(Duration::from_secs(10))],
-                    layer_commands: vec![],
-                    stop_sequences: vec![],
-                    start_sequences: vec![],
-                },
+            cues: cues.to_vec(),
+            tempo_map: None,
+            length: None,
+        };
+        assert_eq!(seq.pass_length(), Duration::from_secs(13));
+    }
+
+    #[test]
+    fn pass_length_without_effects_runs_to_the_last_cue() {
+        assert_eq!(
+            pass_length(&[cue(2, vec![]), cue(7, vec![])]),
+            Duration::from_secs(5)
+        );
+        assert_eq!(pass_length(&[cue(2, vec![])]), Duration::ZERO);
+    }
+
+    #[test]
+    fn pass_length_mixed_short_and_long() {
+        let cues = [cue(
+            1,
+            vec![
+                static_effect(Duration::from_secs(1)), // short: 1+1=2
+                static_effect(Duration::from_secs(4)), // long: 1+4=5
             ],
-            tempo_map: None,
-            length: None,
-        };
-        // max(0+3, 5+10) = 15
-        assert_eq!(seq.duration(), Duration::from_secs(15));
-    }
-
-    #[test]
-    fn sequence_mixed_short_and_long() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::from_secs(1),
-                effects: vec![
-                    static_effect(Duration::from_secs(1)), // short: 1+1=2
-                    static_effect(Duration::from_secs(4)), // long: 1+4=5
-                ],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            tempo_map: None,
-            length: None,
-        };
-        assert_eq!(seq.duration(), Duration::from_secs(5));
+        )];
+        assert_eq!(pass_length(&cues), Duration::from_secs(4));
     }
 
     // ── LayerCommandType ───────────────────────────────────────────

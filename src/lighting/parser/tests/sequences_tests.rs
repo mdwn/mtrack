@@ -1563,3 +1563,98 @@ show "Test" {
         vec!["i1".to_string(), "i2".to_string(), "outer".to_string()]
     );
 }
+
+// ── One pass length for sequences and inline loops ──
+
+#[test]
+fn test_sequence_without_effects_passes_last_cue_to_last_cue() {
+    // A pass with no effect in it lasts until its last cue, as an inline
+    // loop's always has; a sequence's used to last no time, stacking every
+    // pass on the first.
+    let content = r#"
+sequence "clears" {
+    @0.000
+    clear(layer: foreground)
+
+    @2.000
+    clear(layer: background)
+}
+
+show "Test" {
+    @1.000
+    sequence "clears", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}
+
+#[test]
+fn test_sequence_pass_starts_at_its_earliest_cue() {
+    // Written out of time order, a sequence still starts at its earliest
+    // cue, as an inline loop body does; it used to start at the first one
+    // written, dropping the earlier cue onto it.
+    let content = r#"
+sequence "backwards" {
+    @1.000
+    a: static, color: "red", duration: 1s
+
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+show "Test" {
+    @5.000
+    sequence "backwards"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let placed: Vec<(Duration, &str)> = show
+        .cues
+        .iter()
+        .map(|c| (c.time, c.effects[0].groups[0].as_str()))
+        .collect();
+    assert_eq!(
+        placed,
+        vec![(Duration::from_secs(5), "b"), (Duration::from_secs(6), "a")]
+    );
+}
+
+#[test]
+fn test_inline_loop_without_effects_passes_last_cue_to_last_cue() {
+    let content = r#"
+show "Test" {
+    @1.000
+    loop {
+        @0.000
+        clear(layer: foreground)
+
+        @2.000
+        clear(layer: background)
+    }, repeats: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+            Duration::from_secs(5)
+        ]
+    );
+}

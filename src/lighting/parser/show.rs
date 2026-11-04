@@ -26,8 +26,8 @@ use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
-    Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
-    SequenceCall, SequenceLoop,
+    pass_length, pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows,
+    ParseContext, SequenceCall, SequenceLoop,
 };
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
 use crate::tempo::{snap_beats, steady_beats, DEFAULT_BPM};
@@ -244,7 +244,7 @@ impl SequenceDefinition {
         let Some(written) = &self.length else {
             return Ok(None);
         };
-        let start = self.cues.iter().map(|c| c.time).min().unwrap_or_default();
+        let start = pass_start(&self.cues);
         let length = parse_duration_string(written, &tempo_map.cloned(), Some(start), 0.0)
             .map_err(|e| {
                 format!(
@@ -357,15 +357,6 @@ fn parse_cue_block<'i>(
     }
     Ok((cues, tempo_map))
 }
-/// Get sequence base time (first cue time, or ZERO if empty)
-fn get_sequence_base_time(sequence: &Sequence) -> Duration {
-    sequence
-        .cues
-        .first()
-        .map(|cue| cue.time)
-        .unwrap_or(Duration::ZERO)
-}
-
 /// Calculate relative time from an absolute time and base time
 #[inline]
 fn relative_time(absolute_time: Duration, base_time: Duration) -> Duration {
@@ -388,18 +379,6 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 #[inline]
 fn iteration_offset(base_time: Duration, duration: Duration, iteration: usize) -> Duration {
     base_time + (duration * iteration as u32)
-}
-
-/// How long one pass of a sequence lasts: its declared `length:`, or else
-/// until its last effect ends.
-fn calculate_sequence_duration(sequence: &Sequence) -> Duration {
-    if let Some(length) = sequence.length {
-        return length;
-    }
-    let sequence_base_time = get_sequence_base_time(sequence);
-    let completion_time = sequence.duration();
-    // duration() returns absolute completion time, convert to relative
-    completion_time.saturating_sub(sequence_base_time)
 }
 
 /// Determine loop count from a SequenceLoop parameter
@@ -577,9 +556,9 @@ fn place_sequence(
 ) -> Result<(), Box<dyn Error>> {
     let sequence = library.instance(call)?;
     let name = &call.name;
-    let pass = calculate_sequence_duration(&sequence);
+    let pass = sequence.pass_length();
     let loop_count = determine_loop_count(call.loop_param)?;
-    let base_time = get_sequence_base_time(&sequence);
+    let base_time = pass_start(&sequence.cues);
     // Snapped: a time is whole nanoseconds, and its rounding error
     // multiplied by the iteration count crept the loop later every pass (#534).
     let beats_in = |time: Duration| match &sequence.tempo_map {
@@ -656,58 +635,8 @@ fn parse_and_expand_inline_loop(
         return Ok(Vec::new());
     }
 
-    // Calculate loop duration
-    // Find the base time (earliest cue time) and the last completion time
-    let loop_base_time = loop_cues
-        .iter()
-        .map(|c| c.time)
-        .min()
-        .unwrap_or(Duration::ZERO);
-
-    // Calculate loop duration based on effect completion times
-    let mut max_completion_time = Duration::ZERO;
-    let mut has_any_duration = false;
-    for cue in &loop_cues {
-        for effect in &cue.effects {
-            let effect_duration = effect.total_duration();
-            let rel_cue_time = relative_time(cue.time, loop_base_time);
-            let completion_time = rel_cue_time + effect_duration;
-            if completion_time > max_completion_time {
-                max_completion_time = completion_time;
-            }
-            has_any_duration = true;
-        }
-    }
-
-    // Also consider the last cue time if no effects have duration
-    // This ensures we capture the full loop even if effects are perpetual
-    if !has_any_duration && loop_cues.len() > 1 {
-        let max_cue_time = loop_cues
-            .iter()
-            .map(|c| c.time)
-            .max()
-            .unwrap_or(loop_base_time);
-        let rel_last_time = relative_time(max_cue_time, loop_base_time);
-        if rel_last_time > max_completion_time {
-            max_completion_time = rel_last_time;
-        }
-    }
-
-    let loop_duration = if has_any_duration {
-        max_completion_time
-    } else {
-        // All effects are perpetual - use relative time from first to last cue
-        if loop_cues.len() > 1 {
-            let max_time = loop_cues
-                .iter()
-                .map(|c| c.time)
-                .max()
-                .unwrap_or(loop_base_time);
-            relative_time(max_time, loop_base_time)
-        } else {
-            Duration::ZERO
-        }
-    };
+    let loop_base_time = pass_start(&loop_cues);
+    let loop_duration = pass_length(&loop_cues);
 
     // Expand the loop by repeating it N times
     let mut expanded_cues = Vec::new();
@@ -1097,59 +1026,6 @@ mod tests {
     fn iteration_offset_third() {
         let result = iteration_offset(Duration::from_secs(10), Duration::from_secs(5), 2);
         assert_eq!(result, Duration::from_secs(20));
-    }
-
-    // ── get_sequence_base_time ───────────────────────────────────
-
-    fn make_cue(time: Duration) -> Cue {
-        Cue {
-            time,
-            effects: vec![],
-            layer_commands: vec![],
-            stop_sequences: vec![],
-            start_sequences: vec![],
-        }
-    }
-
-    fn make_sequence(cues: Vec<Cue>) -> Sequence {
-        Sequence {
-            cues,
-            tempo_map: None,
-            length: None,
-        }
-    }
-
-    #[test]
-    fn sequence_base_time_empty() {
-        let seq = make_sequence(vec![]);
-        assert_eq!(get_sequence_base_time(&seq), Duration::ZERO);
-    }
-
-    #[test]
-    fn sequence_base_time_from_first_cue() {
-        let seq = make_sequence(vec![
-            make_cue(Duration::from_secs(5)),
-            make_cue(Duration::from_secs(10)),
-        ]);
-        assert_eq!(get_sequence_base_time(&seq), Duration::from_secs(5));
-    }
-
-    // ── calculate_sequence_duration ──────────────────────────────
-
-    #[test]
-    fn sequence_duration_empty() {
-        let seq = make_sequence(vec![]);
-        assert_eq!(calculate_sequence_duration(&seq), Duration::ZERO);
-    }
-
-    #[test]
-    fn sequence_duration_empty_effects() {
-        // Cues with no effects: duration is 0 (no effects to complete)
-        let seq = make_sequence(vec![
-            make_cue(Duration::from_secs(2)),
-            make_cue(Duration::from_secs(7)),
-        ]);
-        assert_eq!(calculate_sequence_duration(&seq), Duration::ZERO);
     }
 
     // ── determine_loop_count ─────────────────────────────────────
