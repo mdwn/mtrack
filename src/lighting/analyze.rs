@@ -249,10 +249,7 @@ fn boundaries(timeline: &LightingTimeline) -> Vec<Duration> {
 }
 
 fn window(from: Duration, to: Duration, tempo_map: &Option<TempoMap>) -> DarkWindow {
-    let position = tempo_map.as_ref().map(|map| {
-        let (measure, beat) = map.time_to_measure_beat(from);
-        format!("@{measure}/{beat:.2}")
-    });
+    let position = tempo_map.as_ref().map(|map| map.position_label(from));
     DarkWindow { from, to, position }
 }
 

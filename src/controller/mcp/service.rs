@@ -654,10 +654,7 @@ impl McpServer {
                         "index": index,
                         "time": format_duration(time),
                         "seconds": time.as_secs_f64(),
-                        "position": tempo.as_ref().map(|m| {
-                            let (measure, beat) = m.time_to_measure_beat(time);
-                            format!("@{measure}/{beat:.2}")
-                        }),
+                        "position": tempo.as_ref().map(|m| m.position_label(time)),
                         "effects": effects,
                     })
                 })
@@ -3307,10 +3304,7 @@ fn cue_timeline(show: &crate::lighting::parser::LightShow) -> Vec<Value> {
         .iter()
         .enumerate()
         .map(|(index, cue)| {
-            let position = show.tempo_map.as_ref().map(|map| {
-                let (measure, beat) = map.time_to_measure_beat(cue.time);
-                format!("@{measure}/{beat:.2}")
-            });
+            let position = show.tempo_map.as_ref().map(|map| map.position_label(cue.time));
             json!({
                 "index": index,
                 "time": cue.time.as_secs_f64(),

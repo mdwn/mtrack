@@ -205,10 +205,7 @@ fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCom
             for cmd in &cue.layer_commands {
                 out.push(LayerCommandEntry {
                     time: cue.time,
-                    position: map.map(|m| {
-                        let (measure, beat) = m.time_to_measure_beat(cue.time);
-                        format!("@{measure}/{beat:.2}")
-                    }),
+                    position: map.map(|m| m.position_label(cue.time)),
                     command: format!("{:?}", cmd.command_type).to_lowercase(),
                     layer: cmd
                         .layer
@@ -267,10 +264,7 @@ fn entries(
                     .or_default()
                     .push(DiffEntry {
                         time: cue.time,
-                        position: map.map(|m| {
-                            let (measure, beat) = m.time_to_measure_beat(cue.time);
-                            format!("@{measure}/{beat:.2}")
-                        }),
+                        position: map.map(|m| m.position_label(cue.time)),
                         groups,
                         effect_type,
                         layer: effect.layer.unwrap_or(DEFAULT_LAYER),
