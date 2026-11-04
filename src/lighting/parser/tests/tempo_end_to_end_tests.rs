@@ -1741,10 +1741,12 @@ show "T" {
 fn test_every_duration_reads_the_tempo_at_the_cues_score_time() {
     // Under an offset, past a tempo change: `duration`, `up_time`,
     // `hold_time`, `down_time` and a dimmer's own duration are all read at
-    // the cue's place in the score (@3/1, 60 BPM), by one rule. The
-    // dimmer's used to pass the shifted time and the offset separately;
-    // up_time and hold_time the unshifted measure time: the same place,
-    // reached three ways.
+    // the cue's place in the score (@3/1, 60 BPM), by one rule. They were
+    // reached three ways -- the dimmer's passing the shifted time and the
+    // offset separately, up_time and hold_time the unshifted measure time
+    // -- that all landed on this same place (`span` takes the offset off
+    // itself), so this pins what the one rule must keep giving, not a
+    // change.
     let content = r#"
 tempo {
     bpm: 120
