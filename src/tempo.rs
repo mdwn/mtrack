@@ -429,6 +429,14 @@ impl SegmentState {
         let secs = time.saturating_sub(self.time).as_secs_f64();
         self.beats + segment_beats_in_secs(self.ramp.as_ref(), self.bpm, secs)
     }
+
+    /// The tempo at a time at or past this state's, before the next.
+    fn bpm_at(&self, time: Duration) -> f64 {
+        match self.ramp.as_ref() {
+            Some(ramp) => ramp.bpm_after_secs(time.saturating_sub(self.time).as_secs_f64()),
+            None => self.bpm,
+        }
+    }
 }
 
 /// Bar order: by measure, then by beat.
@@ -830,64 +838,15 @@ impl TempoMap {
 
     /// Get BPM at a given time (accounting for tempo changes)
     /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
+    ///
+    /// The tempo the beat walk has there: inside a gradual transition, the
+    /// curve at that point, started from the tempo in force when the change
+    /// was reached (mid-ramp, if a ramp was still running).
     pub fn bpm_at_time(&self, time: Duration, offset_secs: f64) -> f64 {
-        let offset_duration = Duration::from_secs_f64(offset_secs);
-        let mut bpm = self.initial_bpm;
-
-        for change in &self.changes {
-            let change_time = change
-                .position
-                .absolute_time()
-                .unwrap_or(Duration::ZERO)
-                .saturating_add(offset_duration);
-            if change_time <= time {
-                match change.transition {
-                    TempoTransition::Snap => {
-                        if let Some(new_bpm) = change.bpm {
-                            bpm = new_bpm;
-                        }
-                    }
-                    TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
-                        // For gradual transitions, calculate current BPM
-                        if let Some(new_bpm) = change.bpm {
-                            // Get BPM before this change
-                            let old_bpm = if change_time
-                                > self.start_offset.saturating_add(offset_duration)
-                            {
-                                self.bpm_at_time(change_time - Duration::from_nanos(1), offset_secs)
-                            } else {
-                                self.initial_bpm
-                            };
-
-                            // Calculate transition duration
-                            let beats = match change.transition {
-                                TempoTransition::Beats(beats, _) => beats,
-                                TempoTransition::Measures(measures, _) => {
-                                    measures
-                                        * self.time_signature_through(change).beats_per_measure()
-                                }
-                                TempoTransition::Snap => 0.0, // Shouldn't happen here
-                            };
-                            let transition_duration = duration_from_secs(
-                                curve.duration_for_beats(old_bpm, new_bpm, beats),
-                            );
-
-                            if time < change_time.saturating_add(transition_duration) {
-                                // During transition - use curve interpolation
-                                let elapsed = (time - change_time).as_secs_f64();
-                                let total = transition_duration.as_secs_f64();
-                                let t = (elapsed / total).clamp(0.0, 1.0);
-                                bpm = curve.bpm_at(t, old_bpm, new_bpm);
-                            } else {
-                                bpm = new_bpm;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        bpm
+        let Some(score_time) = time.checked_sub(Duration::from_secs_f64(offset_secs)) else {
+            return self.initial_bpm;
+        };
+        self.segments().state_at(score_time).bpm_at(score_time)
     }
 
     /// Get time signature at a given time
@@ -2048,6 +2007,55 @@ mod tests {
             "{bar2:?}"
         );
         assert!(!map.beat_clock_ticks(Duration::from_secs(10)).is_empty());
+    }
+
+    /// `bpm_at_time` reads the tempo the beat walk has: a ramp that starts
+    /// inside another starts from the tempo the walk reached it at (it used
+    /// to be read a nanosecond before the change), and a ramp change before
+    /// bar 1 runs from bar 1, where the walk starts it (it used to run from
+    /// the change's own time, and be over by bar 1).
+    #[test]
+    fn bpm_at_time_reads_the_walk() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![
+                ramp_change(
+                    TempoChangePosition::MeasureBeat(2, 1.0),
+                    180.0,
+                    TempoTransition::Beats(8.0, TransitionCurve::Linear),
+                ),
+                ramp_change(
+                    TempoChangePosition::MeasureBeat(3, 1.0),
+                    60.0,
+                    TempoTransition::Beats(4.0, TransitionCurve::Linear),
+                ),
+            ],
+        );
+        let bar3 = map.changes[1].position.absolute_time().unwrap();
+        let second = map.segments().states[2].ramp.unwrap();
+        assert_eq!(map.bpm_at_time(bar3, 0.0), second.old_bpm);
+        assert!(second.old_bpm > 120.0 && second.old_bpm < 180.0);
+        let mid = bar3 + Duration::from_secs_f64(second.total_secs / 2.0);
+        assert!((map.bpm_at_time(mid, 0.0) - (second.old_bpm + 60.0) / 2.0).abs() < 1e-6);
+
+        // A 4-beat ramp from 120 to 60 at 2 s, with bar 1 at 5 s: it runs
+        // from 5 s, over 8/3 s.
+        let early = TempoMap::new(
+            Duration::from_secs(5),
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![ramp_change(
+                TempoChangePosition::Time(Duration::from_secs(2)),
+                60.0,
+                TempoTransition::Beats(4.0, TransitionCurve::Linear),
+            )],
+        );
+        assert_eq!(early.bpm_at_time(Duration::from_secs(1), 0.0), 120.0);
+        assert_eq!(early.bpm_at_time(Duration::from_secs(5), 0.0), 120.0);
+        assert!((early.bpm_at_time(Duration::from_millis(6_333), 0.0) - 90.0).abs() < 0.1);
+        assert_eq!(early.bpm_at_time(Duration::from_secs(8), 0.0), 60.0);
     }
 
     /// A time's beat position is read by the one walk lengths and cue
