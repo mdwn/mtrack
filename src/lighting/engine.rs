@@ -181,9 +181,8 @@ impl FixtureRegistry {
         #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
-                let dmx_channel = fixture.address + offset - 1;
                 self.dmx_to_fixture_map.insert(
-                    (fixture.universe, dmx_channel),
+                    (fixture.universe, fixture.dmx_channel(offset)),
                     (fixture.name.clone(), channel_name.clone()),
                 );
             }
@@ -541,7 +540,7 @@ impl EffectEngine {
         for fixture in self.fixtures.as_map().values() {
             for (name, &offset) in &fixture.channels {
                 kinds.insert(
-                    (fixture.universe, fixture.address + offset - 1),
+                    (fixture.universe, fixture.dmx_channel(offset)),
                     CrossKind::of(name),
                 );
             }
@@ -596,7 +595,7 @@ impl EffectEngine {
     fn channels_where(&self, keep: impl Fn(&str) -> bool) -> HashSet<(u16, u16)> {
         let mut out = HashSet::new();
         for fixture in self.fixtures.as_map().values() {
-            let at = |offset: u16| (fixture.universe, fixture.address + offset - 1);
+            let at = |offset: u16| (fixture.universe, fixture.dmx_channel(offset));
             for (name, def) in &fixture.channel_defs {
                 if !keep(name) {
                     continue;
@@ -1066,11 +1065,10 @@ impl EffectEngine {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
                         if let Some(&offset) = fixture_info.channels.get(channel_name) {
-                            let dmx_channel = fixture_info.address + offset - 1;
                             let dmx_value = (normalized_value * 255.0) as u8;
                             commands.push(DmxCommand {
                                 universe: fixture_info.universe,
-                                channel: dmx_channel,
+                                channel: fixture_info.dmx_channel(offset),
                                 value: dmx_value,
                             });
                             // Update merged state for simulator visibility.

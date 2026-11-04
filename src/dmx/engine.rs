@@ -881,7 +881,7 @@ impl Engine {
                 .flat_map(|f| {
                     f.channels
                         .values()
-                        .map(move |&offset| (f.universe, f.address + offset - 1))
+                        .map(move |&offset| (f.universe, f.dmx_channel(offset)))
                 })
                 .collect();
             midi_dmx_store
@@ -890,10 +890,9 @@ impl Engine {
             for fixture_info in &fixture_infos {
                 // Register slots in the MIDI DMX store for each fixture channel
                 for (channel_name, &offset) in &fixture_info.channels {
-                    let dmx_channel = fixture_info.address + offset - 1;
                     midi_dmx_store.register_slot(
                         fixture_info.universe,
-                        dmx_channel,
+                        fixture_info.dmx_channel(offset),
                         &fixture_info.name,
                         channel_name,
                     );

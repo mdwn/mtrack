@@ -665,6 +665,13 @@ impl FixtureInfo {
             || (CMY_OF_RGB.iter().any(|(rgb, _)| *rgb == name) && has_cmy(&self.channels))
     }
 
+    /// The DMX channel (1-based, on the fixture's universe) a channel at
+    /// `offset` (1-based from the fixture's address) is patched to.
+    #[inline]
+    pub fn dmx_channel(&self, offset: u16) -> u16 {
+        self.address + offset - 1
+    }
+
     /// Get cached capabilities
     #[inline]
     pub fn capabilities(&self) -> FixtureCapabilities {
