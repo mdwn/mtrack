@@ -16,7 +16,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        Arc,
     },
     thread,
 };
@@ -60,69 +60,25 @@ impl crate::audio::Device for Device {
         _: &HashMap<String, Vec<u16>>,
         sync: crate::playsync::PlaybackSync,
     ) -> Result<(), crate::audio::AudioError> {
-        let crate::playsync::PlaybackSync {
-            cancel_handle,
-            ready_tx,
-            clock,
-            start_time,
-            ..
-        } = sync;
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
-        let remaining_duration = song.duration().saturating_sub(start_time);
+        let remaining_duration = song.duration().saturating_sub(sync.start_time);
         info!(
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
-            start_time = format!("{:?}", start_time),
+            start_time = format!("{:?}", sync.start_time),
             "Playing song."
         );
 
-        let (sleep_tx, sleep_rx) = mpsc::channel::<()>();
-
         self.is_playing.store(true, Ordering::Relaxed);
-        let finished = Arc::new(AtomicBool::new(false));
-        let join_handle = {
-            let cancel_handle = cancel_handle.clone();
-            let finished = finished.clone();
-            thread::spawn(move || {
-                let mut ready_tx = ready_tx;
-                ready_tx.send();
-
-                clock.wait_for_start_or_cancel(&cancel_handle);
-                if cancel_handle.is_cancelled() {
-                    finished.store(true, Ordering::Relaxed);
-                    cancel_handle.notify();
-                    return;
-                }
-
-                let _ = sleep_rx.recv_timeout(remaining_duration);
-
-                // Expire at the end of playback.
-                finished.store(true, Ordering::Relaxed);
-                cancel_handle.notify();
-            })
-        };
-
-        cancel_handle.wait(finished);
-
         // Set is_playing to false as soon as we know playback is stopping
         // This ensures tests can check is_playing immediately after stop() without races
-        self.is_playing.store(false, Ordering::Relaxed);
-
-        // Wakes a playback cut short; one that ran to its end has already
-        // dropped the receiver, and is no error.
-        let _ = sleep_tx.send(());
-        let join_result = join_handle.join();
-
-        if join_result.is_err() {
-            return Err(crate::audio::AudioError::Playback(
-                "Error while joining thread!".to_string(),
-            ));
-        }
-
-        Ok(())
+        crate::playsync::mock_play(sync, remaining_duration, || {
+            self.is_playing.store(false, Ordering::Relaxed)
+        })
+        .map_err(crate::audio::AudioError::Playback)
     }
 
     #[cfg(test)]

@@ -59,6 +59,49 @@ pub struct PlaybackSync {
     pub loop_control: LoopControl,
 }
 
+/// Plays a song as a mock device does: ready at once, the clock's start
+/// waited for, then `remaining` slept through on a thread, cut short by a
+/// cancel. `stopping` runs as soon as playback is known to be over, before
+/// the thread is joined, so a caller's "playing" flag is down by the time
+/// a stop returns.
+pub(crate) fn mock_play(
+    sync: PlaybackSync,
+    remaining: Duration,
+    stopping: impl FnOnce(),
+) -> Result<(), String> {
+    let PlaybackSync {
+        cancel_handle,
+        ready_tx,
+        clock,
+        ..
+    } = sync;
+    let (sleep_tx, sleep_rx) = std::sync::mpsc::channel::<()>();
+    let finished = Arc::new(AtomicBool::new(false));
+    let join_handle = {
+        let cancel_handle = cancel_handle.clone();
+        let finished = finished.clone();
+        std::thread::spawn(move || {
+            let mut ready_tx = ready_tx;
+            ready_tx.send();
+            clock.wait_for_start_or_cancel(&cancel_handle);
+            if !cancel_handle.is_cancelled() {
+                let _ = sleep_rx.recv_timeout(remaining);
+            }
+            // Expire at the end of playback, or at once on a cancel.
+            finished.store(true, Ordering::Relaxed);
+            cancel_handle.notify();
+        })
+    };
+    cancel_handle.wait(finished);
+    stopping();
+    // Wakes a playback cut short; one that ran to its end has already
+    // dropped the receiver, and is no error.
+    let _ = sleep_tx.send(());
+    join_handle
+        .join()
+        .map_err(|_| "Error while joining thread!".to_string())
+}
+
 /// How the song a loop break moves to fades in under the one fading out.
 #[derive(Clone, Debug)]
 pub struct StartFade {
