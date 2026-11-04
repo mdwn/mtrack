@@ -913,6 +913,16 @@ pub fn resolved_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// Whether a path a config or a client names could leave the directory it is
+/// joined to: absolute, or with a `..` component. The one rule for a path that
+/// must stay inside the project; a `..` inside a name (`v1..2`) is no escape.
+pub fn escapes_project(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
 /// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
@@ -1294,7 +1304,17 @@ mod test {
 
     use std::time::Duration;
 
-    use crate::util::duration_minutes_seconds;
+    use crate::util::{duration_minutes_seconds, escapes_project};
+
+    #[test]
+    fn a_path_escapes_the_project_as_absolute_or_by_a_parent_component() {
+        for escapes in ["/etc/passwd", "../x", "a/../../x", "a/.."] {
+            assert!(escapes_project(std::path::Path::new(escapes)), "{escapes}");
+        }
+        for inside in ["x", "a/b", "v1..2", "..a/b", "./a"] {
+            assert!(!escapes_project(std::path::Path::new(inside)), "{inside}");
+        }
+    }
 
     #[test]
     fn test_duration_minutes_strings() {

@@ -150,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One rule for a path that must stay inside the project**: the web UI's lighting file paths,
+  new song folders and file names are held to the rule a playlist's ambient show path is held
+  to -- absolute, or with a `..` component, is refused -- so a name with `..` inside it
+  (`v1..2`) is now taken, where the web UI refused any two dots; `.` is refused as a folder to
+  create, as it is as a name.
 - **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
   a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
   at that time, its own effect first, as a show cue always has; it used to make two, with its

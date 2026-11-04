@@ -523,12 +523,7 @@ pub fn validate_for_write(
         .chain(entries.iter().filter_map(|a| own_show(a.as_ref())));
     for show in shows {
         let show = show.as_str();
-        let path = std::path::Path::new(show);
-        let escapes = path.is_absolute()
-            || path
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir));
-        if escapes {
+        if crate::util::escapes_project(std::path::Path::new(show)) {
             return Err(PlaylistError::InvalidAmbient(format!(
                 "ambient show {show:?}: must be a path inside the project, relative to it \
                  and without \"..\""
