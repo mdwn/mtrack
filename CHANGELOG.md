@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A light show's `tempo {}` refuses a zero time signature**: `time_signature: 0/4` or `3/0`
+  parsed (and made a bar of no length, or of infinite length); the one signature parser now
+  refuses them with a clear error, as a song's `tempo:` always has.
 - **The lint judges an effect by when it really ends**: `past-end-of-song` and `replace-overlap`
   now take each effect's end as the show plays it, the same end the show's end and `analyze_show`
   use. A freeze or a slowed layer carries an effect past its written end (now reported if that

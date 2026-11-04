@@ -39,6 +39,56 @@ impl TimeSignature {
     }
 }
 
+/// What a time signature may be: what a song's `tempo:` block takes, or
+/// what a light show's `tempo {}` block takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureRange {
+    /// A numerator from 1 to 64 over a power of two up to 32.
+    Song,
+    /// Any numerator over any denominator, neither zero.
+    Light,
+}
+
+/// Parses a "numerator/denominator" time signature string, in `range`.
+pub fn parse_signature_in(raw: &str, range: SignatureRange) -> Result<TimeSignature, String> {
+    let mut parts = raw.split('/');
+    let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(n), Some(d), None) => (
+            n.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid time signature numerator in {raw:?}"))?,
+            d.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
+        ),
+        _ => {
+            return Err(format!(
+                "time signature {raw:?} must be numerator/denominator"
+            ))
+        }
+    };
+    match range {
+        SignatureRange::Song => {
+            if numerator == 0 || numerator > 64 {
+                return Err(format!("time signature numerator {numerator} out of range"));
+            }
+            if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
+                return Err(format!(
+                    "time signature denominator {denominator} must be a power of two up to 32"
+                ));
+            }
+        }
+        SignatureRange::Light => {
+            if numerator == 0 || denominator == 0 {
+                return Err(format!(
+                    "time signature {raw:?} must not have a zero numerator or denominator"
+                ));
+            }
+        }
+    }
+    Ok(TimeSignature::new(numerator, denominator))
+}
+
 /// Tempo transition curve type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransitionCurve {
@@ -1294,6 +1344,62 @@ mod tests {
         // 2/2 = 2 * 4/2 = 4 quarter-note beats
         let ts = TimeSignature::new(2, 2);
         assert!((ts.beats_per_measure() - 4.0).abs() < f64::EPSILON);
+    }
+
+    // ── parse_signature_in ──────────────────────────────────────────
+
+    #[test]
+    fn a_signature_parses_in_either_range() {
+        for range in [SignatureRange::Song, SignatureRange::Light] {
+            for (raw, (n, d)) in [
+                ("4/4", (4, 4)),
+                ("7/8", (7, 8)),
+                (" 6 / 8 ", (6, 8)),
+                ("  4/4  ", (4, 4)),
+                ("5/4", (5, 4)),
+            ] {
+                assert_eq!(
+                    parse_signature_in(raw, range),
+                    Ok(TimeSignature::new(n, d)),
+                    "{raw:?} in {range:?}"
+                );
+            }
+            for raw in ["44", "4/4/4", "abc/4", "", "/", "0/4", "3/0"] {
+                assert!(
+                    parse_signature_in(raw, range).is_err(),
+                    "{raw:?} in {range:?}"
+                );
+            }
+        }
+    }
+
+    /// A song's range is a numerator up to 64 over a power of two up to
+    /// 32, with the errors its config has always given; a light show's
+    /// takes the rest, bar a zero.
+    #[test]
+    fn a_songs_signature_range_is_narrower_than_a_light_shows() {
+        for raw in ["4/3", "65/4", "4/64"] {
+            assert!(
+                parse_signature_in(raw, SignatureRange::Song).is_err(),
+                "{raw:?}"
+            );
+            assert!(
+                parse_signature_in(raw, SignatureRange::Light).is_ok(),
+                "{raw:?}"
+            );
+        }
+        let song = |raw| parse_signature_in(raw, SignatureRange::Song).unwrap_err();
+        assert_eq!(song("0/4"), "time signature numerator 0 out of range");
+        assert_eq!(
+            song("4/3"),
+            "time signature denominator 3 must be a power of two up to 32"
+        );
+        assert_eq!(
+            song("44"),
+            "time signature \"44\" must be numerator/denominator"
+        );
+        assert_eq!(song("x/4"), "invalid time signature numerator in \"x/4\"");
+        assert_eq!(song("4/x"), "invalid time signature denominator in \"4/x\"");
     }
 
     // ── TransitionCurve::bpm_at ────────────────────────────────────

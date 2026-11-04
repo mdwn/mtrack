@@ -16,7 +16,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::tempo::{
-    TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
+    TempoTransition, TimeSignature, TransitionCurve,
 };
 
 /// A YAML representation of a song's tempo map. This is the canonical
@@ -75,33 +76,10 @@ fn default_time_signature() -> String {
     "4/4".to_string()
 }
 
-/// Parses a "numerator/denominator" time signature string.
+/// Parses a "numerator/denominator" time signature string, in the range a
+/// song's `tempo:` block takes.
 pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
-    let mut parts = raw.split('/');
-    let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(n), Some(d), None) => (
-            n.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature numerator in {raw:?}"))?,
-            d.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
-        ),
-        _ => {
-            return Err(format!(
-                "time signature {raw:?} must be numerator/denominator"
-            ))
-        }
-    };
-    if numerator == 0 || numerator > 64 {
-        return Err(format!("time signature numerator {numerator} out of range"));
-    }
-    if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
-        return Err(format!(
-            "time signature denominator {denominator} must be a power of two up to 32"
-        ));
-    }
-    Ok(TimeSignature::new(numerator, denominator))
+    parse_signature_in(raw, SignatureRange::Song)
 }
 
 impl TempoConfig {
@@ -226,26 +204,6 @@ mod tests {
             .unwrap()
             .try_deserialize()
             .unwrap()
-    }
-
-    #[test]
-    fn parse_time_signatures() {
-        assert_eq!(
-            parse_time_signature("4/4").unwrap(),
-            TimeSignature::new(4, 4)
-        );
-        assert_eq!(
-            parse_time_signature("7/8").unwrap(),
-            TimeSignature::new(7, 8)
-        );
-        assert_eq!(
-            parse_time_signature(" 6 / 8 ").unwrap(),
-            TimeSignature::new(6, 8)
-        );
-        assert!(parse_time_signature("44").is_err());
-        assert!(parse_time_signature("4/3").is_err());
-        assert!(parse_time_signature("0/4").is_err());
-        assert!(parse_time_signature("4/4/4").is_err());
     }
 
     #[test]
