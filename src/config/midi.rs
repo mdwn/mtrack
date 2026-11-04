@@ -13,7 +13,6 @@
 //
 use std::{error::Error, time::Duration};
 
-use duration_string::DurationString;
 use midly::{
     live::LiveEvent,
     num::{u14, u4, u7},
@@ -107,7 +106,7 @@ impl Midi {
             errors.push("midi device must not be empty".to_string());
         }
         if let Some(ref delay) = self.playback_delay {
-            if DurationString::from_string(delay.clone()).is_err() {
+            if super::parse_duration_string(delay).is_err() {
                 errors.push(format!(
                     "midi playback_delay '{}' is not a valid duration",
                     delay
