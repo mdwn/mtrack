@@ -639,7 +639,9 @@ fn render_scene(
 
 /// Whether a type has a pose to aim: a pan or a tilt channel.
 fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
-    channels.contains_key("pan") || channels.contains_key("tilt")
+    channels
+        .keys()
+        .any(|channel| super::engine::is_position_channel(channel))
 }
 
 /// How far, in degrees, a fixed fixture's beam may pass from a focus point
