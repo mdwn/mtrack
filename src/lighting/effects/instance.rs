@@ -76,23 +76,7 @@ impl EffectInstance {
         hold_time: Option<Duration>,
         down_time: Option<Duration>,
     ) -> Self {
-        // Extract duration from effect_type (None for Dimmer, which uses its own timing model)
-        let duration = if matches!(&effect_type, EffectType::Dimmer { .. }) {
-            None
-        } else {
-            Some(effect_type.duration())
-        };
-
-        // Use the effect type's duration as hold_time if hold_time wasn't explicitly provided.
-        // Dimmer is special: it doesn't use the up/hold/down timing model.
-        let default_hold_time = if matches!(&effect_type, EffectType::Dimmer { .. }) {
-            None
-        } else {
-            duration
-        };
-
-        let final_hold_time = hold_time.or(default_hold_time);
-
+        let hold_time = hold_time.or_else(|| effect_type.default_hold());
         Self {
             id,
             effect_type,
@@ -103,7 +87,7 @@ impl EffectInstance {
             start_time: None,
             cue_time: None,
             up_time,
-            hold_time: final_hold_time,
+            hold_time,
             down_time,
             enabled: true,
             per_cell: false,
@@ -187,17 +171,10 @@ impl EffectInstance {
         }
     }
 
-    /// Get the total duration of this effect (up_time + hold_time + down_time).
-    /// All effects have a finite duration.
+    /// How long the effect lasts (see [`EffectType::total_duration`]).
     pub fn total_duration(&self) -> Duration {
-        // For dimmers, use the effect's own duration field (timing params not used)
-        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
-            return *duration;
-        }
-
-        self.up_time.unwrap_or(Duration::ZERO)
-            + self.hold_time.unwrap_or(Duration::ZERO)
-            + self.down_time.unwrap_or(Duration::ZERO)
+        self.effect_type
+            .total_duration(self.up_time, self.hold_time, self.down_time)
     }
 
     /// Whether the effect has run its course at `elapsed` of its own time:

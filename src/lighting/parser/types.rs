@@ -263,22 +263,10 @@ impl Effect {
         }
     }
 
-    /// Calculate the total duration of this effect.
-    /// All effects have a finite duration.
+    /// How long the effect lasts (see [`EffectType::total_duration`]).
     pub fn total_duration(&self) -> Duration {
-        // For dimmers, use the effect's own duration field (timing params not used)
-        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
-            return *duration;
-        }
-
-        // Extract the effect type's duration field
-        let effect_duration = self.effect_type.duration();
-
-        // If hold_time is explicitly set, use up + hold + down.
-        // Otherwise use up + effect_duration + down.
-        let hold = self.hold_time.unwrap_or(effect_duration);
-
-        self.up_time.unwrap_or(Duration::ZERO) + hold + self.down_time.unwrap_or(Duration::ZERO)
+        self.effect_type
+            .total_duration(self.up_time, self.hold_time, self.down_time)
     }
 }
 
