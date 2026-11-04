@@ -1121,29 +1121,6 @@ impl Device {
 /// Every call site in `play_from` follows the same pattern: allocate a source ID,
 /// create an `is_finished` flag, build the struct, and hand back the flag for
 /// monitoring. This helper captures that boilerplate.
-/// Finds the section the playhead currently sits inside, if any, resolved to
-/// absolute time bounds via the song's beat grid.
-///
-/// This is the loop-back candidate: whichever section the performer is hearing
-/// could be armed at any moment, and arming loops back to its `start_time`. The
-/// audio monitor uses this to prewarm the loop-back sources speculatively, so
-/// they are ready the instant the loop is armed — even on the last beat of the
-/// section — rather than incurring a file-open/seek/warmup stall at the first
-/// boundary.
-fn current_playhead_section(
-    song: &Song,
-    elapsed: Duration,
-) -> Option<crate::player::SectionBounds> {
-    song.sections().iter().find_map(|s| {
-        let (start_time, end_time) = song.resolve_section(&s.name)?;
-        (elapsed >= start_time && elapsed < end_time).then(|| crate::player::SectionBounds {
-            name: s.name.clone(),
-            start_time,
-            end_time,
-        })
-    })
-}
-
 use crate::audio::song_loop::PassGroup;
 
 type GroupedSources = Vec<(
@@ -2155,7 +2132,7 @@ mod test {
         }
     }
 
-    mod current_playhead_section_tests {
+    mod section_at_tests {
         use super::*;
 
         // Two 4-beat measures at 120 BPM: beats every 0.5s.
@@ -2193,11 +2170,12 @@ mod test {
         fn finds_section_containing_playhead() {
             let song = song_with_sections();
             assert_eq!(
-                current_playhead_section(&song, Duration::from_millis(500)).map(|s| s.name),
+                crate::player::SectionBounds::at(&song, Duration::from_millis(500)).map(|s| s.name),
                 Some("verse".to_string())
             );
             assert_eq!(
-                current_playhead_section(&song, Duration::from_millis(2500)).map(|s| s.name),
+                crate::player::SectionBounds::at(&song, Duration::from_millis(2500))
+                    .map(|s| s.name),
                 Some("chorus".to_string())
             );
         }
@@ -2208,7 +2186,8 @@ mod test {
             // Exactly at the verse/chorus boundary belongs to chorus: a
             // section owns [start, end), so the measure boundary is the start
             // of the next section, not the tail of the previous one.
-            let at_boundary = current_playhead_section(&song, Duration::from_secs(2)).unwrap();
+            let at_boundary =
+                crate::player::SectionBounds::at(&song, Duration::from_secs(2)).unwrap();
             assert_eq!(at_boundary.name, "chorus");
             assert_eq!(at_boundary.start_time, Duration::from_secs(2));
         }
@@ -2216,14 +2195,14 @@ mod test {
         #[test]
         fn none_when_past_all_sections() {
             let song = song_with_sections();
-            assert!(current_playhead_section(&song, Duration::from_secs(10)).is_none());
+            assert!(crate::player::SectionBounds::at(&song, Duration::from_secs(10)).is_none());
         }
 
         #[test]
         fn none_without_beat_grid() {
             // A plain test song has no beat grid, so nothing resolves.
             let song = Song::new_for_test("test", &["click"]);
-            assert!(current_playhead_section(&song, Duration::from_secs(1)).is_none());
+            assert!(crate::player::SectionBounds::at(&song, Duration::from_secs(1)).is_none());
         }
     }
 

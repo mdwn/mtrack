@@ -1329,16 +1329,7 @@ impl Player {
         // the crossfade is only ever heard that way). Taken up, it loops the
         // next time playback reaches it, the song's pass held off for it.
         let crossing_out = self.section_jumps.lock().crossing_out();
-        let section_at = |at: Duration| {
-            sections.iter().find_map(|s| {
-                let (start, end) = song.resolve_section(&s.name)?;
-                (at >= start && at < end).then(|| super::SectionBounds {
-                    name: s.name.clone(),
-                    start_time: start,
-                    end_time: end,
-                })
-            })
-        };
+        let section_at = |at: Duration| super::SectionBounds::at(&song, at);
         let current_section = section_at(elapsed).or_else(|| crossing_out.and_then(section_at));
 
         let mut state = self.section_loop.reactive.write();
