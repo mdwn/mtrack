@@ -175,6 +175,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other; it was an error, milliseconds being read as a whole number. Every time is read through
   one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
   allowed it.
+- **An effect is refused at load, and reported by lint, by one rule**: a `strobe` needs a
+  strobe channel, a dimmer or colour channels (the engine strobes a dimmer or colour in
+  software; lint used to report a strobe on a group with no strobe channel), a `static`
+  naming a colour, a `cycle` and a `rainbow` need colour channels (RGB or CMY), a `dimmer` and
+  a `pulse` a dimmer or colour channels, a `move` pan or tilt, and a `chase` nothing in
+  particular (it used to need colour channels or a dimmer). A `static` naming a colour, a
+  `dimmer` and a `pulse` on a fixture without what they ask used to load; a `chase` on one
+  with neither colour nor a dimmer used to be refused. The warning printed at registration for a fixture
+  type named `RGB`, `Strobe` or `MovingHead` without the channels its name suggests is gone;
+  what a fixture can do is read from its channels alone.
 - **A fade to dark counts its ticks as a MIDI dim does**: what MIDI DMX holds fades to dark
   over the ticks `dim_ticks` gives the fade -- one for none, as before, so the bytes sent are
   the same; there is one rule for it now.

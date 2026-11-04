@@ -2023,9 +2023,12 @@ metronome: {}
 
         assert_eq!(
             value["fixtures"]["head"]["capabilities"],
-            json!(["color", "pan_tilt"])
+            json!(["color", "pan_tilt", "strobe"])
         );
-        assert_eq!(value["fixtures"]["dim"]["capabilities"], json!(["dimmer"]));
+        assert_eq!(
+            value["fixtures"]["dim"]["capabilities"],
+            json!(["strobe", "dimmer"])
+        );
     }
 
     #[test]

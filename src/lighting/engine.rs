@@ -448,14 +448,6 @@ impl EffectEngine {
 
     /// Register a fixture with the engine
     pub fn register_fixture(&mut self, fixture: FixtureInfo) {
-        // Validate fixture capabilities based on special cases
-        if let Err(e) = validation::validate_fixture_capabilities(&fixture) {
-            eprintln!(
-                "Warning: Fixture '{}' has capability issues: {}",
-                fixture.name, e
-            );
-        }
-
         self.fixtures.register(fixture);
     }
 

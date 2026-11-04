@@ -636,6 +636,8 @@ fn cued_green_static() -> EffectEngine {
     let mut engine = EffectEngine::new();
     let mut channels = HashMap::new();
     channels.insert("green".to_string(), 1);
+    channels.insert("red".to_string(), 2);
+    channels.insert("blue".to_string(), 3);
     engine.register_fixture(FixtureInfo::new(
         "brick".to_string(),
         1,

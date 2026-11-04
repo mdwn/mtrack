@@ -15,56 +15,10 @@
 use std::collections::HashMap;
 
 use super::super::effects::{
-    EffectError, EffectInstance, EffectType, FixtureCapabilities, FixtureInfo, TempoAwareFrequency,
+    EffectError, EffectInstance, EffectType, FixtureInfo, TempoAwareFrequency,
 };
-
-/// Validate fixture capabilities based on its type and channels
-pub(crate) fn validate_fixture_capabilities(fixture: &FixtureInfo) -> Result<(), EffectError> {
-    // Check for common capability mismatches
-    if fixture.fixture_type.contains("RGB") && !fixture.channels.contains_key("red") {
-        return Err(EffectError::Parameter(format!(
-            "RGB fixture '{}' missing red channel",
-            fixture.name
-        )));
-    }
-
-    if fixture.fixture_type.contains("RGB") && !fixture.channels.contains_key("green") {
-        return Err(EffectError::Parameter(format!(
-            "RGB fixture '{}' missing green channel",
-            fixture.name
-        )));
-    }
-
-    if fixture.fixture_type.contains("RGB") && !fixture.channels.contains_key("blue") {
-        return Err(EffectError::Parameter(format!(
-            "RGB fixture '{}' missing blue channel",
-            fixture.name
-        )));
-    }
-
-    if fixture.fixture_type.contains("Strobe") && !fixture.channels.contains_key("strobe") {
-        return Err(EffectError::Parameter(format!(
-            "Strobe fixture '{}' missing strobe channel",
-            fixture.name
-        )));
-    }
-
-    if fixture.fixture_type.contains("MovingHead") && !fixture.channels.contains_key("pan") {
-        return Err(EffectError::Parameter(format!(
-            "Moving head fixture '{}' missing pan channel",
-            fixture.name
-        )));
-    }
-
-    if fixture.fixture_type.contains("MovingHead") && !fixture.channels.contains_key("tilt") {
-        return Err(EffectError::Parameter(format!(
-            "Moving head fixture '{}' missing tilt channel",
-            fixture.name
-        )));
-    }
-
-    Ok(())
-}
+use super::super::lint::Want;
+use super::super::parser::effect_keyword;
 
 /// Validate an effect before starting it
 pub(crate) fn validate_effect(
@@ -145,66 +99,27 @@ fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> F
     FixtureInfo::new(name.to_string(), 1, 1, fixture_type.to_string(), ch, None)
 }
 
-/// Validate that the effect is compatible with fixture special cases
+/// Refuses an effect that asks of a fixture what it has not got, by the
+/// rule lint reports it by ([`Want::of`], [`Want::met_by`]): a strobe
+/// needs a strobe channel, a dimmer or colour channels, a colour cue
+/// colour channels, a dimmer or pulse a dimmer or colour channels, a
+/// move pan or tilt.
 pub(crate) fn validate_effect_compatibility(
     fixture_registry: &HashMap<String, FixtureInfo>,
     effect: &EffectInstance,
 ) -> Result<(), EffectError> {
+    let Some(want) = Want::of(&effect.effect_type) else {
+        return Ok(());
+    };
     for fixture_name in &effect.target_fixtures {
         if let Some(fixture_info) = fixture_registry.get(fixture_name) {
-            // Check if the effect type is compatible with the fixture's special cases
-            match &effect.effect_type {
-                EffectType::ColorCycle { .. } => {
-                    if !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR) {
-                        return Err(EffectError::Parameter(format!(
-                            "Color cycle effect not compatible with fixture '{}' (no RGB capability)",
-                            fixture_name
-                        )));
-                    }
-                }
-                EffectType::Strobe { .. } => {
-                    // Strobe effects work with any fixture that has strobe, dimmer, or RGB capability
-                    if !fixture_info.has_capability(FixtureCapabilities::STROBING)
-                        && !fixture_info.has_capability(FixtureCapabilities::DIMMING)
-                        && !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR)
-                    {
-                        return Err(EffectError::Parameter(format!(
-                            "Strobe effect not compatible with fixture '{}' (no strobe, dimmer, or RGB capability)",
-                            fixture_name
-                        )));
-                    }
-                }
-                EffectType::Chase { .. } => {
-                    // Chase effects work with any fixture that has RGB or dimmer capability
-                    if !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR)
-                        && !fixture_info.has_capability(FixtureCapabilities::DIMMING)
-                    {
-                        return Err(EffectError::Parameter(format!(
-                            "Chase effect not compatible with fixture '{}' (no RGB or dimmer capability)",
-                            fixture_name
-                        )));
-                    }
-                }
-                EffectType::Move { .. } => {
-                    if !fixture_info.has_capability(FixtureCapabilities::PANNING)
-                        && !fixture_info.has_capability(FixtureCapabilities::TILTING)
-                    {
-                        return Err(EffectError::Parameter(format!(
-                            "Move effect not compatible with fixture '{}' (no pan or tilt channel)",
-                            fixture_name
-                        )));
-                    }
-                }
-                EffectType::Rainbow { .. } => {
-                    // Rainbow effects require RGB channels
-                    if !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR) {
-                        return Err(EffectError::Parameter(format!(
-                            "Rainbow effect not compatible with fixture '{}' (no RGB capability)",
-                            fixture_name
-                        )));
-                    }
-                }
-                _ => {} // Other effects are generally compatible
+            if !want.met_by(fixture_info) {
+                return Err(EffectError::Parameter(format!(
+                    "{} effect not compatible with fixture '{}': it needs {}",
+                    effect_keyword(&effect.effect_type),
+                    fixture_name,
+                    want.what()
+                )));
             }
         }
     }
@@ -246,56 +161,6 @@ mod tests {
 
     fn registry_with(fixtures: Vec<FixtureInfo>) -> HashMap<String, FixtureInfo> {
         fixtures.into_iter().map(|f| (f.name.clone(), f)).collect()
-    }
-
-    // ── validate_fixture_capabilities ──────────────────────────────
-
-    #[test]
-    fn valid_rgb_fixture() {
-        let f = rgb_fixture("par1");
-        assert!(validate_fixture_capabilities(&f).is_ok());
-    }
-
-    #[test]
-    fn rgb_fixture_missing_red() {
-        let f = make_fixture("par1", "RGB Par", vec![("green", 2), ("blue", 3)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn rgb_fixture_missing_green() {
-        let f = make_fixture("par1", "RGB Par", vec![("red", 1), ("blue", 3)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn rgb_fixture_missing_blue() {
-        let f = make_fixture("par1", "RGB Par", vec![("red", 1), ("green", 2)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn strobe_fixture_missing_strobe_channel() {
-        let f = make_fixture("s1", "Strobe Unit", vec![("dimmer", 1)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn moving_head_missing_pan() {
-        let f = make_fixture("mh1", "MovingHead", vec![("tilt", 2)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn moving_head_missing_tilt() {
-        let f = make_fixture("mh1", "MovingHead", vec![("pan", 1)]);
-        assert!(validate_fixture_capabilities(&f).is_err());
-    }
-
-    #[test]
-    fn non_special_type_always_valid() {
-        let f = make_fixture("generic", "Generic", vec![("intensity", 1)]);
-        assert!(validate_fixture_capabilities(&f).is_ok());
     }
 
     // ── validate_effect — fixture existence ────────────────────────
@@ -467,17 +332,66 @@ mod tests {
         assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
 
+    /// A strobe needs a strobe channel, a dimmer or colour channels -- the
+    /// engine strobes a dimmer or colour in software -- as lint has it.
     #[test]
-    fn strobe_ok_with_dimmer() {
-        let registry = registry_with(vec![dimmer_fixture("d1")]);
-        let effect = make_effect_instance(
-            EffectType::Strobe {
-                frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Duration::from_secs(1),
+    fn strobe_ok_with_a_dimmer_or_colour() {
+        let registry = registry_with(vec![dimmer_fixture("d1"), rgb_fixture("par1")]);
+        for fixture in ["d1", "par1"] {
+            let effect = make_effect_instance(
+                EffectType::Strobe {
+                    frequency: TempoAwareFrequency::Fixed(10.0),
+                    duration: Duration::from_secs(1),
+                },
+                vec![fixture],
+            );
+            assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+        }
+    }
+
+    /// A static naming a colour needs colour channels; one naming none
+    /// asks nothing. A dimmer and a pulse need a dimmer or colour channels.
+    #[test]
+    fn a_colour_needs_colour_channels_and_a_level_a_dimmer_or_colour() {
+        let registry = registry_with(vec![dimmer_fixture("d1"), strobe_fixture("s1")]);
+        let red = make_effect_instance(
+            EffectType::Static {
+                parameters: [("red".to_string(), 1.0)].into_iter().collect(),
+                duration: Duration::from_secs(5),
             },
             vec!["d1"],
         );
-        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+        let error = validate_effect_compatibility(&registry, &red)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("it needs colour channels (RGB or CMY)"),
+            "{error}"
+        );
+        let level = make_effect_instance(
+            EffectType::Static {
+                parameters: [("dimmer".to_string(), 1.0)].into_iter().collect(),
+                duration: Duration::from_secs(5),
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &level).is_ok());
+        let pulse = make_effect_instance(
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.5,
+                frequency: TempoAwareFrequency::Fixed(1.0),
+                duration: Duration::from_secs(5),
+            },
+            vec!["s1"],
+        );
+        let error = validate_effect_compatibility(&registry, &pulse)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("pulse effect not compatible with fixture 's1': it needs a dimmer or colour channels"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -493,11 +407,10 @@ mod tests {
         assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
 
-    // ── Strobe with no strobe/dimmer/RGB capability ─────────────────
+    // ── Strobe with no strobe channel at all ────────────────────────
 
     #[test]
     fn strobe_incompatible_with_no_capability() {
-        // A fixture with no strobe, dimmer, or RGB capability should fail for strobe effects
         let f = make_fixture("generic", "Generic", vec![("pan", 1), ("tilt", 2)]);
         let registry = registry_with(vec![f]);
         let effect = make_effect_instance(
@@ -507,30 +420,13 @@ mod tests {
             },
             vec!["generic"],
         );
-        let result = validate_effect_compatibility(&registry, &effect);
+        let err = validate_effect_compatibility(&registry, &effect).unwrap_err();
         assert!(
-            result.is_err(),
-            "Strobe should be incompatible with fixture lacking strobe/dimmer/RGB"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Strobe effect not compatible"),
+            err.to_string()
+                .contains("strobe effect not compatible with fixture 'generic': it needs a strobe channel, a dimmer or colour channels"),
             "Error should mention strobe incompatibility: {}",
             err
         );
-    }
-
-    #[test]
-    fn strobe_ok_with_rgb() {
-        let registry = registry_with(vec![rgb_fixture("par1")]);
-        let effect = make_effect_instance(
-            EffectType::Strobe {
-                frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Duration::from_secs(5),
-            },
-            vec!["par1"],
-        );
-        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
 
     #[test]
@@ -546,11 +442,11 @@ mod tests {
         assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
 
-    // ── Chase with no RGB/dimmer capability ──────────────────────────
+    // ── Chase asks nothing in particular ─────────────────────────────
 
+    /// As lint has it: a chase steps whatever its fixtures have.
     #[test]
-    fn chase_incompatible_with_no_rgb_or_dimmer() {
-        // A fixture with no RGB or dimmer capability should fail for chase effects
+    fn chase_ok_with_no_rgb_or_dimmer() {
         let f = make_fixture("generic", "Generic", vec![("pan", 1), ("tilt", 2)]);
         let registry = registry_with(vec![f]);
         let effect = make_effect_instance(
@@ -563,17 +459,7 @@ mod tests {
             },
             vec!["generic"],
         );
-        let result = validate_effect_compatibility(&registry, &effect);
-        assert!(
-            result.is_err(),
-            "Chase should be incompatible with fixture lacking RGB/dimmer"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Chase effect not compatible"),
-            "Error should mention chase incompatibility: {}",
-            err
-        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
 
     // ── Rainbow with non-RGB fixture ─────────────────────────────────

@@ -2671,6 +2671,8 @@ mod tests {
                 std::collections::HashMap::from([
                     ("red".to_string(), 1),
                     ("dimmer".to_string(), 2),
+                    ("green".to_string(), 5),
+                    ("blue".to_string(), 6),
                 ]),
                 None,
             )

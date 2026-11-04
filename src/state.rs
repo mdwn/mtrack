@@ -1041,7 +1041,7 @@ mod tests {
         use crate::lighting::effects::{EffectInstance, EffectType, FixtureInfo};
         let engine = Arc::new(Mutex::new(EffectEngine::new()));
         {
-            let channels: HashMap<String, u16> = [("red", 1u16)]
+            let channels: HashMap<String, u16> = [("red", 1u16), ("green", 2), ("blue", 3)]
                 .into_iter()
                 .map(|(n, o)| (n.to_string(), o))
                 .collect();

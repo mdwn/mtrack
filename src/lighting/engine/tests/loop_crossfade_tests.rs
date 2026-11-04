@@ -18,7 +18,7 @@ use crate::lighting::EffectEngine;
 use std::collections::HashMap;
 
 /// A mover at universe 1, address 1: dimmer 1, red 2, pan 3, strobe 4,
-/// gobo 5.
+/// gobo 5, green 6, blue 7.
 fn engine() -> EffectEngine {
     let mut channels = HashMap::new();
     for (name, offset) in [
@@ -27,6 +27,8 @@ fn engine() -> EffectEngine {
         ("pan", 3),
         ("strobe", 4),
         ("gobo", 5),
+        ("green", 6),
+        ("blue", 7),
     ] {
         channels.insert(name.to_string(), offset);
     }

@@ -77,7 +77,8 @@ pub enum Want {
     Move,
     /// A colour cue (static colour, cycle, rainbow): colour channels.
     Color,
-    /// A `strobe`: a strobe channel.
+    /// A `strobe`: a strobe channel, or a dimmer or colour channels, which
+    /// the engine strobes in software.
     Strobe,
     /// `per: cell`: a pixel fixture.
     Cells,
@@ -118,12 +119,26 @@ impl Want {
         }
     }
 
+    /// Whether `fixture` has what this asks for. The one rule, for lint's
+    /// findings and for refusing an effect at load.
+    pub fn met_by(self, fixture: &crate::lighting::effects::FixtureInfo) -> bool {
+        use crate::lighting::effects::FixtureCapabilities as Cap;
+        let has = |cap| fixture.has_capability(cap);
+        match self {
+            Want::Move => has(Cap::PANNING) || has(Cap::TILTING),
+            Want::Color => has(Cap::RGB_COLOR),
+            Want::Strobe => has(Cap::STROBING) || has(Cap::DIMMING) || has(Cap::RGB_COLOR),
+            Want::Cells => !fixture.cells.is_empty(),
+            Want::Dimmer => has(Cap::DIMMING) || has(Cap::RGB_COLOR),
+        }
+    }
+
     /// What a fixture has it with, for a finding.
-    fn what(self) -> &'static str {
+    pub(crate) fn what(self) -> &'static str {
         match self {
             Want::Move => "pan or tilt channels",
             Want::Color => "colour channels (RGB or CMY)",
-            Want::Strobe => "a strobe channel",
+            Want::Strobe => "a strobe channel, a dimmer or colour channels",
             Want::Cells => "cells",
             Want::Dimmer => "a dimmer or colour channels",
         }
@@ -168,7 +183,7 @@ impl GroupCapabilities {
         match want {
             Want::Move => self.pan_tilt,
             Want::Color => self.rgb,
-            Want::Strobe => self.strobe,
+            Want::Strobe => self.strobe + self.dimmer + self.rgb,
             Want::Cells => self.cells,
             Want::Dimmer => self.dimmer + self.rgb,
         }
@@ -178,26 +193,22 @@ impl GroupCapabilities {
     pub fn from_fixtures<'f>(
         fixtures: impl IntoIterator<Item = &'f crate::lighting::effects::FixtureInfo>,
     ) -> GroupCapabilities {
-        use crate::lighting::effects::FixtureCapabilities;
         let mut out = GroupCapabilities::default();
         for fixture in fixtures {
-            let capabilities = fixture.capabilities();
             out.fixtures += 1;
-            if !fixture.cells.is_empty() {
+            if Want::Cells.met_by(fixture) {
                 out.cells += 1;
             }
-            if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+            if Want::Color.met_by(fixture) {
                 out.rgb += 1;
             }
-            if capabilities.contains(FixtureCapabilities::DIMMING) {
+            if fixture.has_dimmer() {
                 out.dimmer += 1;
             }
-            if capabilities.contains(FixtureCapabilities::STROBING) {
+            if fixture.has_capability(crate::lighting::effects::FixtureCapabilities::STROBING) {
                 out.strobe += 1;
             }
-            let moves = capabilities.contains(FixtureCapabilities::PANNING)
-                || capabilities.contains(FixtureCapabilities::TILTING);
-            if moves {
+            if Want::Move.met_by(fixture) {
                 out.pan_tilt += 1;
                 if fixture.position.is_some() {
                     out.positioned += 1;
@@ -887,7 +898,7 @@ show "s" {
     spots: strobe frequency: 10, duration: 1s
 
     @00:02.000
-    wash: rainbow speed: 1, duration: 1s
+    spots: rainbow speed: 1, duration: 1s
 }
 "#,
         );
@@ -896,19 +907,17 @@ show "s" {
             "wash".to_string(),
             GroupCapabilities {
                 fixtures: 4,
-                rgb: 4,
-                dimmer: 0,
-                strobe: 0,
+                pan_tilt: 4,
                 ..GroupCapabilities::default()
             },
         );
+        // A strobe channel, a dimmer or colour will do: the engine strobes
+        // a dimmer or colour in software.
         group_capabilities.insert(
             "spots".to_string(),
             GroupCapabilities {
                 fixtures: 2,
                 rgb: 2,
-                dimmer: 2,
-                strobe: 2,
                 ..GroupCapabilities::default()
             },
         );
