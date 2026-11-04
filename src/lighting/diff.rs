@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::lighting::analyze::{analyze_show, DarkWindow};
-use crate::lighting::effects::{BlendMode, EffectLayer};
+use crate::lighting::effects::{BlendMode, EffectLayer, DEFAULT_BLEND, DEFAULT_LAYER};
 use crate::lighting::parser::LightShow;
 use crate::tempo::TempoMap;
 
@@ -273,12 +273,12 @@ fn entries(
                         }),
                         groups,
                         effect_type,
-                        layer: effect.layer.unwrap_or(EffectLayer::Background),
+                        layer: effect.layer.unwrap_or(DEFAULT_LAYER),
                         duration: effect.total_duration(),
                         // Both default to what the engine applies when the DSL
                         // omits them, so an unannotated effect compares as it
                         // will actually run.
-                        blend_mode: effect.blend_mode.unwrap_or(BlendMode::Replace),
+                        blend_mode: effect.blend_mode.unwrap_or(DEFAULT_BLEND),
                         parameters: effect.effect_type.parameters(),
                     });
             }
