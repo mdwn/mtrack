@@ -28,40 +28,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
-use crate::lighting::effects::{EffectType, FixtureCapabilities, FixtureInfo, MoveTarget};
+use crate::lighting::effects::{FixtureCapabilities, FixtureInfo};
+use crate::lighting::lint::{focus_targets, GroupCapabilities};
 use crate::lighting::parser::LightShow;
 
-/// Something a show asks of a group, judged by the same rules as lint's
-/// `capability-gap` (and its `cells-absent`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Want {
-    /// A `move`: pan or tilt channels.
-    Move,
-    /// A colour cue (static colour, cycle, rainbow): colour channels.
-    Color,
-    /// A `strobe`: a strobe channel.
-    Strobe,
-    /// `per: cell`: a pixel fixture.
-    Cells,
-    /// A `dimmer` or `pulse`: a dimmer channel or colour channels.
-    Dimmer,
-}
+pub use crate::lighting::lint::Want;
 
-impl Want {
-    /// The name used in the API.
-    pub fn name(self) -> &'static str {
-        match self {
-            Want::Move => "move",
-            Want::Color => "color",
-            Want::Strobe => "strobe",
-            Want::Cells => "cells",
-            Want::Dimmer => "dimmer",
-        }
-    }
-}
-
-/// What the shows ask of each group they target.
+/// What the shows ask of each group they target, by lint's rules.
 pub fn wants_by_group(shows: &[LightShow]) -> BTreeMap<String, BTreeSet<Want>> {
     let mut out: BTreeMap<String, BTreeSet<Want>> = BTreeMap::new();
     for effect in shows
@@ -70,29 +43,7 @@ pub fn wants_by_group(shows: &[LightShow]) -> BTreeMap<String, BTreeSet<Want>> {
         .flat_map(|c| c.effects.iter())
     {
         let mut wants = BTreeSet::new();
-        match &effect.effect_type {
-            EffectType::Strobe { .. } => {
-                wants.insert(Want::Strobe);
-            }
-            EffectType::Move { .. } => {
-                wants.insert(Want::Move);
-            }
-            EffectType::Dimmer { .. } | EffectType::Pulse { .. } => {
-                wants.insert(Want::Dimmer);
-            }
-            EffectType::ColorCycle { .. } | EffectType::Rainbow { .. } => {
-                wants.insert(Want::Color);
-            }
-            // A static's colour arrives as red, green and blue.
-            EffectType::Static { parameters, .. }
-                if ["red", "green", "blue"]
-                    .iter()
-                    .any(|c| parameters.contains_key(*c)) =>
-            {
-                wants.insert(Want::Color);
-            }
-            _ => {}
-        }
+        wants.extend(Want::of(&effect.effect_type));
         if effect.per_cell {
             wants.insert(Want::Cells);
         }
@@ -112,13 +63,7 @@ pub fn focus_names(shows: &[LightShow]) -> BTreeSet<String> {
         .flat_map(|s| s.cues.iter())
         .flat_map(|c| c.effects.iter())
     {
-        if let EffectType::Move { to, from, .. } = &effect.effect_type {
-            for target in [Some(to), from.as_ref()].into_iter().flatten() {
-                if let MoveTarget::Focus(name) = target {
-                    out.insert(name.clone());
-                }
-            }
-        }
+        out.extend(focus_targets(&effect.effect_type).map(str::to_string));
     }
     out
 }
@@ -226,7 +171,8 @@ pub struct FitFixture {
     pub tags: Vec<String>,
     pub position: Option<[f64; 3]>,
     pub capabilities: FixtureCapabilities,
-    pub cells: bool,
+    /// The fixture tallied as a group of one, for what a show can ask of it.
+    pub tally: GroupCapabilities,
     /// Colour comes from a wheel (`color1`, `color2`, ...) rather than a
     /// mix: the engine models no wheel, so it is not `color`.
     pub color_wheel: bool,
@@ -241,7 +187,7 @@ impl FitFixture {
             tags: tags.to_vec(),
             position: info.position,
             capabilities: info.capabilities(),
-            cells: !info.cells.is_empty(),
+            tally: GroupCapabilities::from_fixtures([info]),
             color_wheel: !info.capabilities().contains(FixtureCapabilities::RGB_COLOR)
                 && info.channels.keys().any(|name| is_wheel_channel(name)),
         }
@@ -249,19 +195,7 @@ impl FitFixture {
 
     /// Whether the fixture can do what `want` asks, by lint's rules.
     pub fn can(&self, want: Want) -> bool {
-        match want {
-            Want::Move => {
-                self.capabilities.contains(FixtureCapabilities::PANNING)
-                    || self.capabilities.contains(FixtureCapabilities::TILTING)
-            }
-            Want::Color => self.capabilities.contains(FixtureCapabilities::RGB_COLOR),
-            Want::Strobe => self.capabilities.contains(FixtureCapabilities::STROBING),
-            Want::Cells => self.cells,
-            Want::Dimmer => {
-                self.capabilities.contains(FixtureCapabilities::DIMMING)
-                    || self.capabilities.contains(FixtureCapabilities::RGB_COLOR)
-            }
-        }
+        self.tally.have(want) > 0
     }
 
     /// The capability names the pages show: the four shows can ask for
@@ -666,26 +600,29 @@ impl FitReport {
 mod test {
     use super::*;
 
-    fn caps(list: &[FixtureCapabilities]) -> FixtureCapabilities {
-        list.iter()
-            .fold(FixtureCapabilities::NONE, |acc, c| acc.with(*c))
-    }
-
+    /// A fixture with the channels that give it `capabilities`.
     fn fixture(
         name: &str,
         fixture_type: &str,
         position: Option<[f64; 3]>,
         capabilities: &[FixtureCapabilities],
     ) -> FitFixture {
-        FitFixture {
-            name: name.into(),
-            fixture_type: fixture_type.into(),
-            tags: vec![],
-            position,
-            capabilities: caps(capabilities),
-            cells: false,
-            color_wheel: false,
-        }
+        let channels = capabilities
+            .iter()
+            .flat_map(|c| match *c {
+                FixtureCapabilities::RGB_COLOR => vec!["red", "green", "blue"],
+                FixtureCapabilities::DIMMING => vec!["dimmer"],
+                FixtureCapabilities::STROBING => vec!["strobe"],
+                FixtureCapabilities::PANNING => vec!["pan"],
+                FixtureCapabilities::TILTING => vec!["tilt"],
+                _ => vec![],
+            })
+            .enumerate()
+            .map(|(offset, name)| (name.to_string(), offset as u16 + 1))
+            .collect();
+        let mut info = FixtureInfo::new(name.into(), 1, 1, fixture_type.into(), channels, None);
+        info.position = position;
+        FitFixture::from_info(&info, &[])
     }
 
     const MOVER: &[FixtureCapabilities] = &[
@@ -712,24 +649,6 @@ mod test {
             .unwrap()
             .into_values()
             .collect()
-    }
-
-    #[test]
-    fn wants_follow_lints_capability_rules() {
-        let shows = shows(
-            "show \"S\" {\n    @00:00.000\n    movers: move focus: \"drummer\", duration: 1s\n    \
-             movers: static color: \"red\", duration: 1s\n    \
-             flash: strobe frequency: 8, duration: 1s\n    \
-             bars: rainbow duration: 2s, per: cell\n    \
-             dim: static dimmer: 0.5, duration: 1s\n}\n",
-        );
-        let wants = wants_by_group(&shows);
-        assert_eq!(wants["movers"], self::wants(&[Want::Move, Want::Color]));
-        assert_eq!(wants["flash"], self::wants(&[Want::Strobe]));
-        assert_eq!(wants["bars"], self::wants(&[Want::Color, Want::Cells]));
-        assert!(!wants.contains_key("nobody"));
-        // A dimmer asks for nothing worth tagging on.
-        assert!(wants["dim"].is_empty());
     }
 
     #[test]
@@ -934,7 +853,7 @@ mod test {
     #[test]
     fn cells_want_needs_a_pixel_fixture() {
         let mut bar = fixture("bar", "Bar", None, WASH);
-        bar.cells = true;
+        bar.tally.cells = 1;
         let fixtures = vec![bar, fixture("par", "Par", None, WASH)];
         let s = suggest(
             &needs(&["bars"], &[]),
