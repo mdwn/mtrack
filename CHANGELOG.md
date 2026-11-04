@@ -231,6 +231,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A light show added in the song editor lands in the song's folder, and the song keeps
+  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
+  was written beside the song folders, and named an added file with the folder, which
+  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
+  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
+  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
+  removal takes the entry out. The files are saved before the config now, so the reload the
+  config save starts finds them.
 - **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
   `offset N measures` is its score position's time plus the offset, with every tempo change,
   positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups

@@ -493,8 +493,20 @@
     editedYaml = buildYaml();
   }
 
-  function setLightingFile(filename: string) {
+  /** A lighting file's song.yaml entry: its path relative to the song's
+   * folder. The editor hands over paths under the songs root (`Song/x.light`),
+   * which is how the lighting API addresses them; song.yaml resolves `file`
+   * from the song's own folder, so the folder comes off here. */
+  function songRelative(path: string): string {
+    const dir = song?.base_dir;
+    return dir && path.startsWith(`${dir}/`)
+      ? path.slice(dir.length + 1)
+      : path;
+  }
+
+  function setLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
     if (!existing.some((l) => l.file === filename)) {
@@ -506,8 +518,9 @@
     }
   }
 
-  function removeLightingFile(filename: string) {
+  function removeLightingFile(path: string) {
     if (!parsedConfig) return;
+    const filename = songRelative(path);
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
     const filtered = existing.filter((l) => l.file !== filename);
@@ -582,6 +595,13 @@
     saveMsg = "";
     saveOk = false;
     try {
+      // Lighting files first: saving them registers any new file in the
+      // config, and the reload the config save triggers wants the file
+      // there already.
+      if (lightingDirty && lightingEditorRef) {
+        await lightingEditorRef.saveLightingFiles();
+      }
+
       // Save song config if dirty.
       if (configDirty) {
         const res = await updateSong(songName, editedYaml);
@@ -592,11 +612,6 @@
           return;
         }
         rawYaml = editedYaml;
-      }
-
-      // Save lighting files if dirty.
-      if (lightingDirty && lightingEditorRef) {
-        await lightingEditorRef.saveLightingFiles();
       }
 
       saveMsg = get(t)("common.saved");

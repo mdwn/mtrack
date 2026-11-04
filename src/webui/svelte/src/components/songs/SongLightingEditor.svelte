@@ -217,6 +217,37 @@
     }
   }
 
+  /** Where `file`, a name inside the song's folder, is under the songs
+   * root. Every `path` in [[lightFiles]] is one of these: the lighting API
+   * takes them, and the server lists the song's files that way. The
+   * song.yaml entry is the bare `file`; the parent strips the folder. */
+  function rootPath(file: string): string {
+    return song.base_dir ? `${song.base_dir}/${file}` : file;
+  }
+
+  /** The file a song without lighting gets, named after the song. */
+  function defaultLightFilePath(): string {
+    const stem = song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show";
+    return rootPath(`${stem}.light`);
+  }
+
+  /** What a song without lighting opens with: one empty show, so the
+   * timeline has a lane. It is not a file until something is put in it. */
+  function placeholderLightFile(): LightFile {
+    return { sequences: [], shows: [{ name: "Main", cues: [] }] };
+  }
+
+  /** Whether `lf` is still the placeholder a lighting-less song opened
+   * with: not the song's yet, and with nothing in it. Saving writes it
+   * nowhere; a song that was only ever opened gets no file. */
+  function isUntouchedPlaceholder(lf: LoadedLightFile): boolean {
+    return (
+      !song.lighting_files.includes(lf.path) &&
+      serializeLightFile(lf.parsed) ===
+        serializeLightFile(placeholderLightFile())
+    );
+  }
+
   async function loadLighting() {
     try {
       error = "";
@@ -247,15 +278,12 @@
       // If no lighting files exist, create an implicit one so the editor
       // is immediately usable. It only gets written to disk on save.
       if (lightFiles.length === 0) {
-        const implicitPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        const implicitPath = defaultLightFilePath();
         lightFiles = [
           {
             path: implicitPath,
             raw: "",
-            parsed: {
-              sequences: [],
-              shows: [{ name: "Main", cues: [] }],
-            },
+            parsed: placeholderLightFile(),
           },
         ];
       }
@@ -322,7 +350,7 @@
 
     if (hasOverflow || hasTempoOnly) {
       if (lightFiles.length === 0) {
-        const newPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        const newPath = defaultLightFilePath();
         const shows = lf.shows.slice(showOffset);
         // When auto-creating for tempo-only, add a default show so lanes appear
         if (shows.length === 0) {
@@ -373,7 +401,7 @@
 
     // Save all current lighting files
     for (const lf of lightFiles) {
-      if (lf.parseError) continue;
+      if (lf.parseError || isUntouchedPlaceholder(lf)) continue;
       // Register newly created files with song.yaml
       if (!song.lighting_files.includes(lf.path)) {
         onaddlightfile?.(lf.path);
@@ -451,8 +479,7 @@
     const showName = fileName.replace(/\.light$/, "");
     const defaultContent = `show "${showName}" {\n    @00:00.000\n}\n`;
 
-    const baseDir = song.base_dir;
-    const fullPath = baseDir ? `${baseDir}/${fileName}` : fileName;
+    const fullPath = rootPath(fileName);
 
     try {
       const parsed = parseLightFile(defaultContent);
