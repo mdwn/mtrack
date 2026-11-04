@@ -175,6 +175,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other; it was an error, milliseconds being read as a whole number. Every time is read through
   one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
   allowed it.
+- **A fade to dark counts its ticks as a MIDI dim does**: what MIDI DMX holds fades to dark
+  over the ticks `dim_ticks` gives the fade -- one for none, as before, so the bytes sent are
+  the same; there is one rule for it now.
 - **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
   a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
   at that time, its own effect first, as a show cue always has; it used to make two, with its

@@ -694,7 +694,7 @@ impl Engine {
             .collect();
         self.midi_dmx_store
             .read()
-            .fade_out(fade.as_secs_f64() * crate::dmx::universe::TARGET_HZ);
+            .fade_out(crate::dmx::universe::dim_ticks(fade));
         floor
     }
 
