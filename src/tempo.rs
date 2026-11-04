@@ -1002,6 +1002,14 @@ impl TempoMap {
         self.span(Span::Measures(measures), at_time, offset_secs, true)
     }
 
+    /// The beats from `from` to `to` (score times), as the position walk
+    /// counts them: through every tempo change and ramp between. What
+    /// [`Self::beats_to_duration`] lays from `from` back to `to`.
+    pub(crate) fn beats_between(&self, from: Duration, to: Duration) -> f64 {
+        let segments = self.segments();
+        snap_beats(segments.beats_at(to) - segments.beats_at(from))
+    }
+
     /// How long the `beats` before `end` last: the same position walk as
     /// [`Self::beats_to_duration`], run backwards from `end`.
     pub fn beats_before(&self, beats: f64, end: Duration) -> Duration {

@@ -27,25 +27,14 @@ use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
     Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
+    SequenceCall, SequenceLoop,
 };
-use super::types::{SequenceCall, SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_duration_string, parse_measure_time, parse_time_string};
-use crate::tempo::{snap_beats, steady_beats};
+use crate::tempo::{snap_beats, steady_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
 use pest::Parser;
 
-/// Return type for `parse_sequence_cue_structure`: (cues, new_offset_secs, new_measure_offset, new_abs_time)
-type ParseSequenceCueResult = Result<
-    (
-        Vec<UnexpandedSequenceCue>,
-        Option<f64>,
-        Option<u32>,
-        Option<Duration>,
-    ),
-    Box<dyn Error>,
->;
-
-/// Return type for `parse_cue_definition`: (cues, new_offset_secs, new_measure_offset, new_abs_time)
+/// Return type for `parse_cue`: (cues, new_offset_secs, new_measure_offset, new_abs_time)
 type ParseCueResult =
     Result<(Vec<Cue>, Option<f64>, Option<u32>, Option<Duration>), Box<dyn Error>>;
 
@@ -222,63 +211,8 @@ fn parse_light_show_definition(
                 name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::show_content => {
-                // Parse the show content which contains cues and potentially tempo
-                // First pass: collect tempo and cue pairs
-                let mut tempo_pairs = Vec::new();
-                let mut cue_pairs = Vec::new();
-
-                for content_pair in inner_pair.into_inner() {
-                    match content_pair.as_rule() {
-                        Rule::tempo => {
-                            tempo_pairs.push(content_pair);
-                        }
-                        Rule::cue => {
-                            cue_pairs.push(content_pair);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Parse tempo first (if any)
-                for tempo_pair in tempo_pairs {
-                    tempo_map = Some(parse_tempo_definition(tempo_pair)?);
-                }
-
-                // If no show-specific tempo, use global tempo for cue parsing
-                let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
-
-                // Track cumulative offset in seconds (applies to all subsequent cues)
-                let mut offset_secs: f64 = 0.0;
-                // Track cumulative measure offset (applies to all subsequent cues)
-                let mut cumulative_measure_offset: u32 = 0;
-                // Track last absolute cue time to anchor standalone offsets
-                let mut last_abs_time: Option<Duration> = None;
-
-                // Then parse cues (now we have tempo_map and sequences)
-                for cue_pair in cue_pairs {
-                    let (parsed_cues, offset_change, measure_offset_change, last_time_change) =
-                        parse_cue_definition(
-                            cue_pair,
-                            &effective_tempo.cloned(),
-                            library,
-                            offset_secs,
-                            cumulative_measure_offset,
-                            last_abs_time,
-                        )?;
-                    cues.extend(parsed_cues);
-                    // Update offset for subsequent cues
-                    if let Some(change) = offset_change {
-                        offset_secs = change;
-                    }
-                    // Update cumulative measure offset for subsequent cues
-                    if let Some(change) = measure_offset_change {
-                        cumulative_measure_offset = change;
-                    }
-                    // Update last absolute time
-                    if let Some(last_time) = last_time_change {
-                        last_abs_time = Some(last_time);
-                    }
-                }
+                (cues, tempo_map) =
+                    parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
             }
             _ => {}
         }
@@ -290,14 +224,13 @@ fn parse_light_show_definition(
         tempo_map,
     })
 }
-
-/// A sequence definition as written, before nested references are expanded.
+/// A sequence definition as written, its cues expanded.
 pub(super) struct SequenceDefinition {
     name: String,
     pub(super) tempo_map: Option<TempoMap>,
     /// The `length:` value as written, e.g. `1measure`.
     length: Option<String>,
-    pub(super) cues: Vec<UnexpandedSequenceCue>,
+    pub(super) cues: Vec<Cue>,
 }
 
 impl SequenceDefinition {
@@ -341,11 +274,12 @@ impl SequenceDefinition {
 pub(super) fn parse_sequence_structure(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
+    library: &SequenceLibrary,
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
     let mut tempo_map: Option<TempoMap> = None;
     let mut length = None;
-    let mut unexpanded_cues = Vec::new();
+    let mut cues = Vec::new();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -359,61 +293,8 @@ pub(super) fn parse_sequence_structure(
                     .map(|p| p.as_str().trim().to_string());
             }
             Rule::sequence_content => {
-                // Parse the sequence content which contains cues and potentially tempo
-                let mut tempo_pairs = Vec::new();
-                let mut cue_pairs = Vec::new();
-
-                for content_pair in inner_pair.into_inner() {
-                    match content_pair.as_rule() {
-                        Rule::tempo => {
-                            tempo_pairs.push(content_pair);
-                        }
-                        Rule::sequence_cue => {
-                            cue_pairs.push(content_pair);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Parse tempo first (if any)
-                for tempo_pair in tempo_pairs {
-                    tempo_map = Some(parse_tempo_definition(tempo_pair)?);
-                }
-
-                // Parse cues but don't expand sequence references yet
-                let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
-
-                // Track accumulated offset seconds, measure offset, and last absolute time
-                let mut offset_secs: f64 = 0.0;
-                let mut cumulative_measure_offset: u32 = 0;
-                let mut last_abs_time: Option<Duration> = None;
-
-                for cue_pair in cue_pairs {
-                    let (
-                        unexpanded_cues_for_pair,
-                        offset_change,
-                        measure_offset_change,
-                        last_time_change,
-                    ) = parse_sequence_cue_structure(
-                        cue_pair,
-                        &effective_tempo.cloned(),
-                        offset_secs,
-                        cumulative_measure_offset,
-                        last_abs_time,
-                    )?;
-                    unexpanded_cues.extend(unexpanded_cues_for_pair);
-                    // Update offset for subsequent cues
-                    if let Some(change) = offset_change {
-                        offset_secs = change;
-                    }
-                    // Update cumulative measure offset for subsequent cues
-                    if let Some(change) = measure_offset_change {
-                        cumulative_measure_offset = change;
-                    }
-                    if let Some(change) = last_time_change {
-                        last_abs_time = Some(change);
-                    }
-                }
+                (cues, tempo_map) =
+                    parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
             }
             _ => {}
         }
@@ -423,242 +304,59 @@ pub(super) fn parse_sequence_structure(
         name,
         tempo_map,
         length,
-        cues: unexpanded_cues,
+        cues,
     })
 }
 
-/// Parse a sequence cue structure without expanding nested sequence references
-/// Returns (cue, new_offset) where new_offset is Some(new_value) if offset changed, None otherwise
-fn parse_sequence_cue_structure(
-    pair: Pair<Rule>,
-    tempo_map: &Option<TempoMap>,
-    offset_secs: f64,
-    cumulative_measure_offset: u32,
-    last_abs_time: Option<Duration>,
-) -> ParseSequenceCueResult {
-    let mut score_time = Duration::ZERO; // score-space time
-    let mut effects = Vec::new();
-    let mut layer_commands = Vec::new();
-    let mut stop_sequences = Vec::new();
-    let mut sequence_references = Vec::new();
-    let mut effect_pairs = Vec::new();
-    let mut layer_command_pairs = Vec::new();
-    let mut sequence_ref_pairs = Vec::new();
-    let mut stop_sequence_pairs = Vec::new();
-    let mut offset_commands = Vec::new();
-    let mut reset_commands = Vec::new();
-    let mut inline_loop_pairs = Vec::new();
-    let mut measure_time_pair: Option<Pair<Rule>> = None;
-    let mut new_offset: Option<f64> = None;
-
-    // First pass: collect all pairs (don't parse measure_time yet, as we need to process offsets first)
-    for inner_pair in pair.into_inner() {
-        match inner_pair.as_rule() {
-            Rule::time_string => {
-                score_time = parse_time_string(inner_pair.as_str())?;
-            }
-            Rule::measure_time => {
-                // Store the measure_time pair to parse after we know the effective offset
-                measure_time_pair = Some(inner_pair);
-            }
-            Rule::offset_command => {
-                offset_commands.push(inner_pair);
-            }
-            Rule::reset_measures_command => {
-                reset_commands.push(inner_pair);
-            }
-            Rule::effect => {
-                effect_pairs.push(inner_pair);
-            }
-            Rule::layer_command => {
-                layer_command_pairs.push(inner_pair);
-            }
-            Rule::sequence_reference => {
-                sequence_ref_pairs.push(inner_pair);
-            }
-            Rule::stop_sequence_command => {
-                stop_sequence_pairs.push(inner_pair);
-            }
-            Rule::inline_loop => {
-                inline_loop_pairs.push(inner_pair);
-            }
+/// The cues of a show, a sequence or an inline loop body, in file order,
+/// each placed after the `offset` and `reset` commands of the cues before
+/// it. A `tempo` block among them governs all of them (the last one, if
+/// there are several), else `global_tempo`; the block's own map is returned
+/// with the cues.
+fn parse_cue_block<'i>(
+    pairs: impl Iterator<Item = Pair<'i, Rule>>,
+    global_tempo: &Option<TempoMap>,
+    library: &SequenceLibrary,
+) -> Result<(Vec<Cue>, Option<TempoMap>), Box<dyn Error>> {
+    let mut tempo_map: Option<TempoMap> = None;
+    let mut cue_pairs = Vec::new();
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::tempo => tempo_map = Some(parse_tempo_definition(pair)?),
+            Rule::cue | Rule::sequence_cue | Rule::inline_loop_cue => cue_pairs.push(pair),
             _ => {}
         }
     }
+    let effective_tempo = tempo_map.clone().or_else(|| global_tempo.clone());
 
-    // Resolve measure_time to score-space time: the position on the
-    // unshifted map, kept as score_anchor too. The offset is applied to the
-    // absolute time below.
-    let mut unshifted_score_time = Duration::ZERO;
-    if let Some(measure_pair) = measure_time_pair {
-        let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        let Some(tm) = tempo_map else {
-            return Err("Measure-based timing requires a tempo section".into());
-        };
-        score_time = tm
-            .measure_to_time_with_offset(measure, beat, 0, 0.0)
-            .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        unshifted_score_time = score_time;
-    }
-
-    // Resolve anchor for offset conversion in SCORE time (not shifted by previous offsets)
-    // score_anchor should be the unshifted score time of the CURRENT cue (where the offset is issued),
-    // not the last cue, so that the offset uses the tempo that applies at the point where it's issued
-    let applied_offset_secs = offset_secs;
-    let score_anchor = if unshifted_score_time != Duration::ZERO {
-        // Use current cue's unshifted time so offset uses the tempo at the point where it's issued
-        unshifted_score_time
-    } else if score_time != Duration::ZERO {
-        score_time
-    } else {
-        // Fallback to last cue's time if current cue has no measure_time
-        // Convert absolute time to score time (from start_offset)
-        last_abs_time
-            .map(|t| {
-                let abs_time = remove_time_offset(t, applied_offset_secs);
-                if let Some(tm) = tempo_map {
-                    // Convert absolute time to score time by subtracting start_offset
-                    abs_time.saturating_sub(tm.start_offset)
-                } else {
-                    abs_time
-                }
-            })
-            .unwrap_or(Duration::ZERO)
-    };
-
-    // Track cumulative measure offset for playback measure calculations
-    // Start with the passed-in cumulative offset from previous cues
-    let mut cumulative_measure_offset = cumulative_measure_offset;
-
-    // Compute next offset (applies to subsequent cues only)
-    if !offset_commands.is_empty() || !reset_commands.is_empty() {
-        let mut total_offset = if !reset_commands.is_empty() {
-            cumulative_measure_offset = 0; // Reset measure offset on reset
-            0.0
-        } else {
-            offset_secs
-        };
-        for offset_pair in &offset_commands {
-            let offset_measures = parse_offset_command(offset_pair.clone())?;
-            cumulative_measure_offset += offset_measures; // Track cumulative measure offset
-            if let Some(tm) = tempo_map {
-                total_offset += tm.offset_duration(offset_measures, score_anchor);
-            } else {
-                return Err("Offset command requires a tempo section".into());
-            }
+    let mut cues = Vec::new();
+    // What the cues so far leave in force: the offset in seconds, the
+    // measure offset, and the last cue time standalone offsets anchor to.
+    let mut offset_secs: f64 = 0.0;
+    let mut cumulative_measure_offset: u32 = 0;
+    let mut last_abs_time: Option<Duration> = None;
+    for cue_pair in cue_pairs {
+        let (parsed_cues, offset_change, measure_offset_change, last_time_change) = parse_cue(
+            cue_pair,
+            &effective_tempo,
+            library,
+            offset_secs,
+            cumulative_measure_offset,
+            last_abs_time,
+        )?;
+        cues.extend(parsed_cues);
+        if let Some(change) = offset_change {
+            offset_secs = change;
         }
-        new_offset = Some(total_offset);
-    }
-
-    // Absolute time uses the currently applied offset (not the newly computed one)
-    let abs_time = apply_time_offset(score_time, applied_offset_secs);
-
-    // Parse effects and layer commands
-    let unshifted_for_effects = if unshifted_score_time != Duration::ZERO {
-        Some(unshifted_score_time)
-    } else {
-        None
-    };
-    for effect_pair in effect_pairs {
-        let effect_ctx = ParseContext {
-            tempo_map: tempo_map.clone(),
-            cue_time: abs_time,
-            offset_secs: applied_offset_secs,
-            unshifted_score_time: unshifted_for_effects,
-        };
-        let effect = parse_effect_definition(effect_pair, &effect_ctx)?;
-        effects.push(effect);
-    }
-
-    for layer_command_pair in layer_command_pairs {
-        let layer_command = parse_layer_command(layer_command_pair)?;
-        layer_commands.push(layer_command);
-    }
-
-    // Parse stop sequence commands
-    for stop_pair in stop_sequence_pairs {
-        let seq_name = stop_pair
-            .into_inner()
-            .find(|p| p.as_rule() == Rule::sequence_name)
-            .ok_or("Stop sequence command missing sequence name")?
-            .as_str()
-            .trim_matches('"')
-            .trim()
-            .to_string();
-        stop_sequences.push(seq_name);
-    }
-
-    // Parse sequence references (store as metadata for later expansion)
-    for seq_ref_pair in sequence_ref_pairs {
-        sequence_references.push(parse_sequence_reference_pair(seq_ref_pair)?);
-    }
-
-    let mut produced_cues = Vec::new();
-    let mut last_time = abs_time;
-    let has_inline_loops = !inline_loop_pairs.is_empty();
-    let has_base_content = !effects.is_empty()
-        || !layer_commands.is_empty()
-        || !stop_sequences.is_empty()
-        || !sequence_references.is_empty();
-
-    // Base cue (the cue we are currently parsing)
-    let mut base_cue_index: Option<usize> = None;
-    if has_base_content || !has_inline_loops {
-        produced_cues.push(UnexpandedSequenceCue {
-            time: abs_time,
-            effects,
-            layer_commands,
-            stop_sequences,
-            sequence_references,
-        });
-        base_cue_index = Some(produced_cues.len() - 1);
-    }
-
-    // Inline loops become additional cues with their own absolute times
-    // Merge with base cue if they're at the same time (consistent with parse_cue_definition)
-    for inline_loop_pair in inline_loop_pairs {
-        let expanded_loop_cues =
-            parse_and_expand_inline_loop(inline_loop_pair, tempo_map, abs_time)?;
-        for loop_cue in expanded_loop_cues {
-            if loop_cue.time > last_time {
-                last_time = loop_cue.time;
-            }
-            // Only merge with the base cue if it exists and is at the same time
-            if let Some(base_idx) = base_cue_index {
-                if produced_cues[base_idx].time == loop_cue.time {
-                    produced_cues[base_idx].effects.extend(loop_cue.effects);
-                    produced_cues[base_idx]
-                        .layer_commands
-                        .extend(loop_cue.layer_commands);
-                    produced_cues[base_idx]
-                        .stop_sequences
-                        .extend(loop_cue.stop_sequences);
-                    continue;
-                }
-            }
-            produced_cues.push(UnexpandedSequenceCue {
-                time: loop_cue.time,
-                effects: loop_cue.effects,
-                layer_commands: loop_cue.layer_commands,
-                stop_sequences: loop_cue.stop_sequences,
-                sequence_references: Vec::new(),
-            });
+        if let Some(change) = measure_offset_change {
+            cumulative_measure_offset = change;
+        }
+        if let Some(change) = last_time_change {
+            last_abs_time = Some(change);
         }
     }
-
-    // Sort produced cues by time to ensure chronological order
-    // This is important because inline loop cues may be added in source order
-    // rather than time order (e.g., @0.5 before @0.0 in source)
-    produced_cues.sort_by_key(|c| c.time);
-
-    Ok((
-        produced_cues,
-        new_offset,
-        Some(cumulative_measure_offset),
-        Some(last_time),
-    ))
+    Ok((cues, tempo_map))
 }
-
 /// Get sequence base time (first cue time, or ZERO if empty)
 fn get_sequence_base_time(sequence: &Sequence) -> Duration {
     sequence
@@ -841,127 +539,91 @@ fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
     Ok(offset)
 }
 
-/// Expand an unexpanded sequence cue, resolving all nested sequence references
-pub(super) fn expand_unexpanded_sequence_cue(
-    unexpanded: UnexpandedSequenceCue,
-    tempo_map: &Option<TempoMap>,
+/// Adds a cue generated from a cue -- a pass of a sequence it references,
+/// or of an inline loop it holds -- to that cue's expansion `cues`: into the
+/// written cue itself, at `base`, when it falls at the same time, else as a
+/// cue of its own.
+fn merge_into(cues: &mut Vec<Cue>, base: Option<usize>, cue: Cue) {
+    match base.filter(|&i| cues[i].time == cue.time) {
+        Some(i) => {
+            cues[i].effects.extend(cue.effects);
+            cues[i].layer_commands.extend(cue.layer_commands);
+            cues[i].stop_sequences.extend(cue.stop_sequences);
+            cues[i].start_sequences.extend(cue.start_sequences);
+        }
+        None => cues.push(cue),
+    }
+}
+
+/// Places each pass of the sequence `call` references from `at`, the time
+/// of the cue it is written in, under a show `offset` of `offset_secs`. A
+/// sequence is so many beats long with each cue so many beats in, counted
+/// on the map it was written against; the passes are laid on `tempo_map`
+/// from `at` by the same count, so they follow every tempo change they run
+/// through, inside a sequence as in a show. Each pass after the first stops
+/// the one before it, so its effects do not pile up; the first starts the
+/// sequence afresh after any earlier `stop sequence`. An effect belongs to
+/// the innermost sequence it is written in, and its tempo-aware rates and
+/// its durations in beats or measures are read at the tempo where it plays
+/// (#525, #529).
+fn place_sequence(
+    call: &SequenceCall,
     library: &SequenceLibrary,
-) -> Result<Vec<Cue>, Box<dyn Error>> {
-    // If there are sequence references, expand them
-    if !unexpanded.sequence_references.is_empty() {
-        let mut expanded_cues = Vec::new();
-
-        // Get the outer sequence's BPM from the tempo context for rescaling
-        let outer_bpm = tempo_map.as_ref().map(|tm| tm.initial_bpm);
-
-        // Expand each sequence reference
-        for call in unexpanded.sequence_references {
-            let sequence = library.instance(&call)?;
-            let seq_name = call.name;
-            let loop_param = call.loop_param;
-
-            // Calculate sequence duration at the sequence's internal BPM
-            let sequence_duration_internal = calculate_sequence_duration(&sequence);
-
-            // Rescale sequence duration from the inner sequence's BPM to the outer
-            // sequence's BPM. Convert to beats at the inner BPM, then back to seconds
-            // at the outer BPM.
-            let seq_bpm = sequence.bpm;
-            // Snapped: the duration is whole nanoseconds, and its rounding error
-            // multiplied by the iteration count crept the loop later every pass (#534).
-            let duration_beats = snap_beats(steady_beats(
-                seq_bpm,
-                sequence_duration_internal.as_secs_f64(),
-            ));
-            let sequence_duration = if let Some(o_bpm) = outer_bpm {
-                Duration::from_secs_f64(duration_beats * 60.0 / o_bpm)
-            } else {
-                sequence_duration_internal
-            };
-
-            // Determine how many times to loop
-            let loop_count = determine_loop_count(loop_param)?;
-
-            // Expand the sequence the specified number of times
-            let sequence_base_time = get_sequence_base_time(&sequence);
-            for iteration in 0..loop_count {
-                let iter_offset = iteration_offset(unexpanded.time, sequence_duration, iteration);
-
-                for (cue_index, seq_cue) in sequence.cues.iter().enumerate() {
-                    let mut expanded_cue = seq_cue.clone();
-                    // Convert absolute sequence cue time to relative (at inner BPM),
-                    // then rescale to the outer BPM.
-                    let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    let rescaled_rel_time = if let Some(o_bpm) = outer_bpm {
-                        let rel_beats = snap_beats(steady_beats(seq_bpm, rel_time.as_secs_f64()));
-                        Duration::from_secs_f64(rel_beats * 60.0 / o_bpm)
-                    } else {
-                        rel_time
-                    };
-                    expanded_cue.time = iter_offset + rescaled_rel_time;
-
-                    // For loop iterations > 0, stop the previous iteration's effects
-                    // at the start of each new iteration. This prevents effects from
-                    // accumulating across iterations (e.g., multiply chases compounding).
-                    if iteration > 0 && cue_index == 0 {
-                        expanded_cue.stop_sequences.push(seq_name.clone());
-                    }
-
-                    // Mark the first cue of the first iteration as a sequence start.
-                    // This tells the timeline to clear any prior "stopped" status for
-                    // this sequence, allowing new invocations to fire after a previous
-                    // invocation was explicitly stopped.
-                    if iteration == 0 && cue_index == 0 {
-                        expanded_cue.start_sequences.push(seq_name.clone());
-                    }
-
-                    // Mark all effects in this cue as belonging to the referenced sequence
-                    for effect in &mut expanded_cue.effects {
-                        if effect.sequence_name.is_none() {
-                            effect.sequence_name = Some(seq_name.clone());
-                        }
-                    }
-                    expanded_cues.push(expanded_cue);
+    tempo_map: &Option<TempoMap>,
+    at: Duration,
+    offset_secs: f64,
+    cues: &mut Vec<Cue>,
+    base: Option<usize>,
+) -> Result<(), Box<dyn Error>> {
+    let sequence = library.instance(call)?;
+    let name = &call.name;
+    let pass = calculate_sequence_duration(&sequence);
+    let loop_count = determine_loop_count(call.loop_param)?;
+    let base_time = get_sequence_base_time(&sequence);
+    // Snapped: a time is whole nanoseconds, and its rounding error
+    // multiplied by the iteration count crept the loop later every pass (#534).
+    let beats_in = |time: Duration| match &sequence.tempo_map {
+        Some(tm) => tm.beats_between(base_time, time),
+        None => snap_beats(steady_beats(
+            DEFAULT_BPM,
+            relative_time(time, base_time).as_secs_f64(),
+        )),
+    };
+    let pass_beats = beats_in(base_time + pass);
+    for iteration in 0..loop_count {
+        for (index, seq_cue) in sequence.cues.iter().enumerate() {
+            let mut cue = seq_cue.clone();
+            let rel = relative_time(seq_cue.time, base_time);
+            cue.time = at
+                + match tempo_map {
+                    Some(tm) => tm.beats_to_duration(
+                        pass_beats * iteration as f64 + beats_in(seq_cue.time),
+                        at,
+                        offset_secs,
+                    ),
+                    None => Duration::from_secs_f64(
+                        iteration as f64 * pass.as_secs_f64() + rel.as_secs_f64(),
+                    ),
+                };
+            if iteration > 0 && index == 0 {
+                cue.stop_sequences.push(name.clone());
+            }
+            if iteration == 0 && index == 0 {
+                cue.start_sequences.push(name.clone());
+            }
+            for effect in &mut cue.effects {
+                if effect.sequence_name.is_none() {
+                    effect.sequence_name = Some(name.clone());
+                }
+                effect.tempo_offset_secs = offset_secs;
+                if let Some(tm) = tempo_map {
+                    effect.resolve_musical_durations(tm, cue.time, offset_secs);
                 }
             }
+            merge_into(cues, base, cue);
         }
-
-        // Add effects and layer commands to the first expanded cue
-        if !unexpanded.effects.is_empty() || !unexpanded.layer_commands.is_empty() {
-            if expanded_cues.is_empty() {
-                expanded_cues.push(Cue {
-                    time: unexpanded.time,
-                    effects: unexpanded.effects,
-                    layer_commands: unexpanded.layer_commands,
-                    stop_sequences: unexpanded.stop_sequences,
-                    start_sequences: vec![],
-                });
-            } else {
-                expanded_cues[0].effects.extend(unexpanded.effects);
-                expanded_cues[0]
-                    .layer_commands
-                    .extend(unexpanded.layer_commands);
-                expanded_cues[0]
-                    .stop_sequences
-                    .extend(unexpanded.stop_sequences);
-            }
-        } else if !unexpanded.stop_sequences.is_empty() && !expanded_cues.is_empty() {
-            expanded_cues[0]
-                .stop_sequences
-                .extend(unexpanded.stop_sequences);
-        }
-
-        return Ok(expanded_cues);
     }
-
-    // No sequence references - return a single cue
-    Ok(vec![Cue {
-        time: unexpanded.time,
-        effects: unexpanded.effects,
-        layer_commands: unexpanded.layer_commands,
-        stop_sequences: unexpanded.stop_sequences,
-        start_sequences: vec![],
-    }])
+    Ok(())
 }
 
 /// Parse and expand an inline loop into multiple cues
@@ -971,64 +633,25 @@ fn parse_and_expand_inline_loop(
     tempo_map: &Option<TempoMap>,
     base_cue_time: Duration,
 ) -> Result<Vec<Cue>, Box<dyn Error>> {
-    let mut loop_cue_pairs = Vec::new();
     let mut repeats = 1;
-
-    // Parse the inline loop structure
-    for inner_pair in pair.into_inner() {
-        match inner_pair.as_rule() {
-            Rule::inline_loop_cue => {
-                loop_cue_pairs.push(inner_pair);
-            }
-            Rule::number_value => {
-                // This should be the repeats count
-                repeats = inner_pair
-                    .as_str()
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|e| format!("Invalid repeats count: {}", e))?;
-                if repeats == 0 {
-                    return Err("Loop repeats must be at least 1".into());
-                }
-            }
-            _ => {}
+    if let Some(count) = pair
+        .clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::number_value)
+    {
+        repeats = count
+            .as_str()
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| format!("Invalid repeats count: {}", e))?;
+        if repeats == 0 {
+            return Err("Loop repeats must be at least 1".into());
         }
     }
 
-    if loop_cue_pairs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Parse all cues in the loop body (with relative timing)
-    // We'll parse them as if they're at time 0, then calculate relative times
-    // Note: For inline loops, timing starts at 0 (relative to loop start)
-    let mut loop_cues = Vec::new();
-    let mut loop_offset_secs = 0.0;
-    let mut loop_cumulative_measure_offset = 0u32;
-    let mut loop_last_abs_time = Some(Duration::ZERO);
-
-    for loop_cue_pair in loop_cue_pairs {
-        let (parsed_cues, offset_change, measure_offset_change, last_time_change) =
-            parse_cue_definition(
-                loop_cue_pair,
-                tempo_map,
-                &SequenceLibrary::empty(), // No sequences available in inline loops
-                loop_offset_secs,
-                loop_cumulative_measure_offset,
-                loop_last_abs_time,
-            )?;
-        loop_cues.extend(parsed_cues);
-        if let Some(change) = offset_change {
-            loop_offset_secs = change;
-        }
-        if let Some(change) = measure_offset_change {
-            loop_cumulative_measure_offset = change;
-        }
-        if let Some(change) = last_time_change {
-            loop_last_abs_time = Some(change);
-        }
-    }
-
+    // The body's cues are timed from 0, relative to the loop's start; no
+    // sequences are available in an inline loop.
+    let (loop_cues, _) = parse_cue_block(pair.into_inner(), tempo_map, &SequenceLibrary::empty())?;
     if loop_cues.is_empty() {
         return Ok(Vec::new());
     }
@@ -1103,7 +726,13 @@ fn parse_and_expand_inline_loop(
     Ok(expanded_cues)
 }
 
-fn parse_cue_definition(
+/// One cue of a show, a sequence or an inline loop body, as the cues it
+/// puts on the timeline: itself, with each pass of the sequences it
+/// references and the inline loops it holds placed from its time, in time
+/// order. Also returns what it leaves in force for the cues after it: the
+/// offset in seconds and in measures, if its `offset` or `reset` commands
+/// changed them, and the latest cue time it produced.
+fn parse_cue(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
     library: &SequenceLibrary,
@@ -1112,12 +741,9 @@ fn parse_cue_definition(
     last_abs_time: Option<Duration>,
 ) -> ParseCueResult {
     let mut score_time = Duration::ZERO;
-    let mut effects = Vec::new();
-    let mut layer_commands = Vec::new();
-    let mut stop_sequences = Vec::new();
     let mut effect_pairs = Vec::new();
     let mut layer_command_pairs = Vec::new();
-    let mut sequence_references = Vec::new();
+    let mut sequence_ref_pairs = Vec::new();
     let mut stop_sequence_pairs = Vec::new();
     let mut offset_commands = Vec::new();
     let mut reset_commands = Vec::new();
@@ -1148,7 +774,7 @@ fn parse_cue_definition(
                 layer_command_pairs.push(inner_pair);
             }
             Rule::sequence_reference => {
-                sequence_references.push(inner_pair);
+                sequence_ref_pairs.push(inner_pair);
             }
             Rule::stop_sequence_command => {
                 stop_sequence_pairs.push(inner_pair);
@@ -1156,16 +782,14 @@ fn parse_cue_definition(
             Rule::inline_loop => {
                 inline_loop_pairs.push(inner_pair);
             }
-            _ => {
-                // Skip unexpected rules
-            }
+            _ => {}
         }
     }
 
-    // Resolve measure_time to score_time: the position on the unshifted
-    // map, kept as score_anchor too. The offset is applied to the absolute
-    // time below.
-    let mut unshifted_score_time_seq = Duration::ZERO;
+    // Resolve measure_time to score-space time: the position on the
+    // unshifted map, kept as score_anchor too. The offset is applied to the
+    // absolute time below.
+    let mut unshifted_score_time = Duration::ZERO;
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
         let Some(tm) = tempo_map else {
@@ -1174,15 +798,16 @@ fn parse_cue_definition(
         score_time = tm
             .measure_to_time_with_offset(measure, beat, 0, 0.0)
             .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        unshifted_score_time_seq = score_time;
+        unshifted_score_time = score_time;
     }
 
-    // Anchor for offset conversion in SCORE time (not shifted by previous offsets)
+    // Resolve anchor for offset conversion in SCORE time (not shifted by previous offsets)
     // score_anchor should be the unshifted score time of the CURRENT cue (where the offset is issued),
-    // so that the offset uses the tempo that applies at the point where it's issued
+    // not the last cue, so that the offset uses the tempo that applies at the point where it's issued
     let applied_offset_secs = offset_secs;
-    let score_anchor = if unshifted_score_time_seq != Duration::ZERO {
-        unshifted_score_time_seq
+    let score_anchor = if unshifted_score_time != Duration::ZERO {
+        // Use current cue's unshifted time so offset uses the tempo at the point where it's issued
+        unshifted_score_time
     } else if score_time != Duration::ZERO {
         score_time
     } else {
@@ -1203,19 +828,19 @@ fn parse_cue_definition(
 
     // Track cumulative measure offset for playback measure calculations
     // Start with the passed-in cumulative offset from previous cues
-    let mut cumulative_measure_offset_seq = cumulative_measure_offset;
+    let mut cumulative_measure_offset = cumulative_measure_offset;
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
         let mut total_offset = if !reset_commands.is_empty() {
-            cumulative_measure_offset_seq = 0; // Reset measure offset on reset
+            cumulative_measure_offset = 0; // Reset measure offset on reset
             0.0
         } else {
             offset_secs
         };
         for offset_pair in &offset_commands {
             let offset_measures = parse_offset_command(offset_pair.clone())?;
-            cumulative_measure_offset_seq += offset_measures; // Track cumulative measure offset
+            cumulative_measure_offset += offset_measures; // Track cumulative measure offset
             if let Some(tm) = tempo_map {
                 total_offset += tm.offset_duration(offset_measures, score_anchor);
             } else {
@@ -1225,11 +850,17 @@ fn parse_cue_definition(
         new_offset = Some(total_offset);
     }
 
-    // Absolute time is from start_offset (not absolute start), matching how score_time is calculated
+    // Absolute time uses the currently applied offset (not the newly computed one)
     let abs_time = apply_time_offset(score_time, applied_offset_secs);
-    let mut last_time = Some(abs_time);
 
-    // Parse stop sequence commands
+    // The cue as written: its own effects, layer commands and stops.
+    let mut base = Cue {
+        time: abs_time,
+        effects: Vec::new(),
+        layer_commands: Vec::new(),
+        stop_sequences: Vec::new(),
+        start_sequences: Vec::new(),
+    };
     for stop_pair in stop_sequence_pairs {
         let seq_name = stop_pair
             .into_inner()
@@ -1239,245 +870,67 @@ fn parse_cue_definition(
             .trim_matches('"')
             .trim()
             .to_string();
-        stop_sequences.push(seq_name);
+        base.stop_sequences.push(seq_name);
     }
-
-    // If there are inline loops or sequence references, expand them into multiple cues
-    if !inline_loop_pairs.is_empty() || !sequence_references.is_empty() {
-        let mut expanded_cues = Vec::new();
-
-        // Parse effects and layer commands for the base cue
-        let seq_effect_ctx = ParseContext {
-            tempo_map: tempo_map.clone(),
-            cue_time: abs_time,
-            offset_secs: applied_offset_secs,
-            unshifted_score_time: if unshifted_score_time_seq != Duration::ZERO {
-                Some(unshifted_score_time_seq)
-            } else {
-                None
-            },
-        };
-        for effect_pair in effect_pairs {
-            let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;
-            effects.push(effect);
-        }
-
-        for layer_command_pair in layer_command_pairs {
-            let layer_command = parse_layer_command(layer_command_pair)?;
-            layer_commands.push(layer_command);
-        }
-
-        // Create the base cue at abs_time first (if there are base effects/layer commands)
-        // This ensures base effects are scheduled at the correct time even if inline loop
-        // cues are out of order
-        let has_base_content =
-            !effects.is_empty() || !layer_commands.is_empty() || !stop_sequences.is_empty();
-        let has_inline_loops = !inline_loop_pairs.is_empty();
-        let has_sequence_refs = !sequence_references.is_empty();
-
-        let mut base_cue_index: Option<usize> = None;
-        if has_base_content || (!has_inline_loops && !has_sequence_refs) {
-            expanded_cues.push(Cue {
-                time: abs_time,
-                effects: effects.clone(),
-                layer_commands: layer_commands.clone(),
-                stop_sequences: stop_sequences.clone(),
-                start_sequences: vec![],
-            });
-            base_cue_index = Some(expanded_cues.len() - 1);
-        }
-
-        // Expand each inline loop
-        for inline_loop_pair in inline_loop_pairs {
-            let expanded_loop_cues =
-                parse_and_expand_inline_loop(inline_loop_pair, tempo_map, abs_time)?;
-            for loop_cue in expanded_loop_cues {
-                // Only merge with the base cue if it exists and is at the same time
-                if let Some(base_idx) = base_cue_index {
-                    if expanded_cues[base_idx].time == loop_cue.time {
-                        expanded_cues[base_idx].effects.extend(loop_cue.effects);
-                        expanded_cues[base_idx]
-                            .layer_commands
-                            .extend(loop_cue.layer_commands);
-                        expanded_cues[base_idx]
-                            .stop_sequences
-                            .extend(loop_cue.stop_sequences);
-                        expanded_cues[base_idx]
-                            .start_sequences
-                            .extend(loop_cue.start_sequences);
-                        continue;
-                    }
-                }
-                expanded_cues.push(loop_cue);
-            }
-        }
-
-        // Expand each sequence reference
-        for seq_ref_pair in sequence_references {
-            let call = parse_sequence_reference_pair(seq_ref_pair)?;
-            let sequence = library.instance(&call)?;
-            let seq_name = call.name;
-            let loop_param = call.loop_param;
-
-            // Calculate sequence duration at the sequence's internal BPM
-            let sequence_duration_internal = calculate_sequence_duration(&sequence);
-
-            // Rescale sequence duration from the sequence's BPM to the expansion-point tempo.
-            // Convert duration to beats at the sequence's BPM, then convert beats to
-            // duration at the expansion point's tempo using the tempo map.
-            let seq_bpm = sequence.bpm;
-            // Snapped: the duration is whole nanoseconds, and its rounding error
-            // multiplied by the iteration count crept the loop later every pass (#534).
-            let duration_beats = snap_beats(steady_beats(
-                seq_bpm,
-                sequence_duration_internal.as_secs_f64(),
-            ));
-            let sequence_duration = if let Some(ref tm) = tempo_map {
-                tm.beats_to_duration(duration_beats, abs_time, applied_offset_secs)
-            } else {
-                sequence_duration_internal
-            };
-
-            // Determine how many times to loop
-            let loop_count = determine_loop_count(loop_param)?;
-
-            // Expand the sequence the specified number of times
-            let sequence_base_time = get_sequence_base_time(&sequence);
-            for iteration in 0..loop_count {
-                // Total beats elapsed at the start of this iteration
-                let iter_total_beats = duration_beats * iteration as f64;
-
-                for (cue_index, seq_cue) in sequence.cues.iter().enumerate() {
-                    let mut expanded_cue = seq_cue.clone();
-                    // Convert absolute sequence cue time to relative (in seconds at seq BPM),
-                    // then rescale to beats and convert to duration at expansion tempo.
-                    let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    let rel_beats = snap_beats(steady_beats(seq_bpm, rel_time.as_secs_f64()));
-                    let rescaled_rel_time = if let Some(ref tm) = tempo_map {
-                        tm.beats_to_duration(
-                            iter_total_beats + rel_beats,
-                            abs_time,
-                            applied_offset_secs,
-                        )
-                    } else {
-                        Duration::from_secs_f64(
-                            iteration as f64 * sequence_duration.as_secs_f64()
-                                + rel_time.as_secs_f64(),
-                        )
-                    };
-                    expanded_cue.time = abs_time + rescaled_rel_time;
-
-                    // For loop iterations > 0, stop the previous iteration's effects
-                    // at the start of each new iteration. This prevents effects from
-                    // accumulating across iterations (e.g., multiply chases compounding).
-                    if iteration > 0 && cue_index == 0 {
-                        expanded_cue.stop_sequences.push(seq_name.clone());
-                    }
-
-                    // Mark the first cue of the first iteration as a sequence start.
-                    // This tells the timeline to clear any prior "stopped" status for
-                    // this sequence, allowing new invocations to fire after a previous
-                    // invocation was explicitly stopped.
-                    if iteration == 0 && cue_index == 0 {
-                        expanded_cue.start_sequences.push(seq_name.clone());
-                    }
-
-                    // Mark all effects in this cue as belonging to this sequence,
-                    // and read their tempo-aware rates against the show's tempo
-                    // map as shifted where the sequence is expanded.
-                    for effect in &mut expanded_cue.effects {
-                        effect.sequence_name = Some(seq_name.clone());
-                        effect.tempo_offset_secs = applied_offset_secs;
-                        // Durations in beats or measures were resolved at the
-                        // sequence's tempo; resolve them at the tempo where the
-                        // effect actually plays, as its cue time was (#529).
-                        if let Some(ref tm) = tempo_map {
-                            effect.resolve_musical_durations(
-                                tm,
-                                expanded_cue.time,
-                                applied_offset_secs,
-                            );
-                        }
-                    }
-                    // Only merge with the base cue if it exists and is at the same time
-                    if let Some(base_idx) = base_cue_index {
-                        if expanded_cues[base_idx].time == expanded_cue.time {
-                            expanded_cues[base_idx].effects.extend(expanded_cue.effects);
-                            expanded_cues[base_idx]
-                                .layer_commands
-                                .extend(expanded_cue.layer_commands);
-                            expanded_cues[base_idx]
-                                .stop_sequences
-                                .extend(expanded_cue.stop_sequences);
-                            expanded_cues[base_idx]
-                                .start_sequences
-                                .extend(expanded_cue.start_sequences);
-                            continue;
-                        }
-                    }
-                    expanded_cues.push(expanded_cue);
-                }
-            }
-        }
-
-        // Sort expanded cues by time to ensure chronological order
-        // This is important because inline loop cues may be added in source order
-        // rather than time order (e.g., @0.5 before @0.0 in source)
-        expanded_cues.sort_by_key(|c| c.time);
-
-        // Update last_time to reflect the furthest expanded cue time
-        if !expanded_cues.is_empty() {
-            let mut max_time = abs_time;
-            for cue in &expanded_cues {
-                if cue.time > max_time {
-                    max_time = cue.time;
-                }
-            }
-            last_time = Some(max_time);
-        }
-
-        return Ok((
-            expanded_cues,
-            new_offset,
-            Some(cumulative_measure_offset_seq),
-            last_time,
-        ));
-    }
-
-    // No sequence references - return a single cue
-    // Second pass: parse effects now that we know the cue time
-    let seq_effect_ctx = ParseContext {
+    let effect_ctx = ParseContext {
         tempo_map: tempo_map.clone(),
         cue_time: abs_time,
         offset_secs: applied_offset_secs,
-        unshifted_score_time: if unshifted_score_time_seq != Duration::ZERO {
-            Some(unshifted_score_time_seq)
+        unshifted_score_time: if unshifted_score_time != Duration::ZERO {
+            Some(unshifted_score_time)
         } else {
             None
         },
     };
     for effect_pair in effect_pairs {
-        let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;
-        effects.push(effect);
+        base.effects
+            .push(parse_effect_definition(effect_pair, &effect_ctx)?);
+    }
+    for layer_command_pair in layer_command_pairs {
+        base.layer_commands
+            .push(parse_layer_command(layer_command_pair)?);
     }
 
-    // Parse layer commands
-    for layer_command_pair in layer_command_pairs {
-        let layer_command = parse_layer_command(layer_command_pair)?;
-        layer_commands.push(layer_command);
+    // The written cue comes first, so what it holds is scheduled at its own
+    // time whatever order the generated cues come in; a cue holding only
+    // loops or references is nothing in itself.
+    let has_base_content = !base.effects.is_empty()
+        || !base.layer_commands.is_empty()
+        || !base.stop_sequences.is_empty();
+    let mut cues = Vec::new();
+    let mut base_index = None;
+    if has_base_content || (inline_loop_pairs.is_empty() && sequence_ref_pairs.is_empty()) {
+        cues.push(base);
+        base_index = Some(0);
     }
+    for inline_loop_pair in inline_loop_pairs {
+        for cue in parse_and_expand_inline_loop(inline_loop_pair, tempo_map, abs_time)? {
+            merge_into(&mut cues, base_index, cue);
+        }
+    }
+    for seq_ref_pair in sequence_ref_pairs {
+        let call = parse_sequence_reference_pair(seq_ref_pair)?;
+        place_sequence(
+            &call,
+            library,
+            tempo_map,
+            abs_time,
+            applied_offset_secs,
+            &mut cues,
+            base_index,
+        )?;
+    }
+
+    // Generated cues come in source order, not time order (an inline loop
+    // may write @0.5 before @0.0).
+    cues.sort_by_key(|c| c.time);
+    let last_time = cues.iter().map(|c| c.time).max().unwrap_or(abs_time);
 
     Ok((
-        vec![Cue {
-            time: abs_time,
-            effects,
-            layer_commands,
-            stop_sequences,
-            start_sequences: vec![],
-        }],
+        cues,
         new_offset,
-        Some(cumulative_measure_offset_seq),
-        last_time,
+        Some(cumulative_measure_offset),
+        Some(last_time.max(abs_time)),
     ))
 }
 
@@ -1661,7 +1114,7 @@ mod tests {
     fn make_sequence(cues: Vec<Cue>) -> Sequence {
         Sequence {
             cues,
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         }
     }

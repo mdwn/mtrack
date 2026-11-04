@@ -45,9 +45,9 @@ pub struct LightShow {
 #[derive(Debug, Clone)]
 pub struct Sequence {
     pub cues: Vec<Cue>,
-    /// The effective BPM used when parsing this sequence's internal cue timing.
-    /// Used to rescale cue times when the sequence is expanded at a different tempo.
-    pub bpm: f64,
+    /// The tempo map its cue times were resolved on: where it is used, a
+    /// cue is placed the same number of beats in, counted on this map.
+    pub tempo_map: Option<TempoMap>,
     /// How long one pass lasts, from the first cue, when the sequence declares
     /// a `length:`. Otherwise a pass lasts until its last effect ends.
     pub length: Option<Duration>,
@@ -85,16 +85,6 @@ pub(crate) enum SequenceLoop {
     PingPong,
     Random,
     Count(usize), // Loop N times
-}
-
-/// Unexpanded sequence cue information for two-pass parsing
-#[derive(Debug, Clone)]
-pub(crate) struct UnexpandedSequenceCue {
-    pub time: Duration,
-    pub effects: Vec<Effect>,
-    pub layer_commands: Vec<LayerCommand>,
-    pub stop_sequences: Vec<String>,
-    pub sequence_references: Vec<SequenceCall>,
 }
 
 /// A `sequence "name"(…), loop: …` reference, as written in a cue.
@@ -486,7 +476,7 @@ mod tests {
     fn sequence_empty() {
         let seq = Sequence {
             cues: vec![],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         assert_eq!(seq.duration(), Duration::ZERO);
@@ -502,7 +492,7 @@ mod tests {
                 stop_sequences: vec![],
                 start_sequences: vec![],
             }],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         // cue_time(2) + effect_duration(3) = 5
@@ -528,7 +518,7 @@ mod tests {
                     start_sequences: vec![],
                 },
             ],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         // max(0+3, 5+10) = 15
@@ -548,7 +538,7 @@ mod tests {
                 stop_sequences: vec![],
                 start_sequences: vec![],
             }],
-            bpm: 120.0,
+            tempo_map: None,
             length: None,
         };
         assert_eq!(seq.duration(), Duration::from_secs(5));

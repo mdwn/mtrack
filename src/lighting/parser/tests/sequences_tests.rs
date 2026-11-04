@@ -993,14 +993,17 @@ show "Test Show" {
     // The sequence was parsed at 110 BPM. Its internal cue relative times:
     //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
     //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
-    //   In beats at 110 BPM: 5.5454 * (110/60) = ~10.167 beats
+    //   In beats, counted on the map the sequence was written against, which
+    //   changes to 160 BPM at measure 3 (8 beats, 4.3636s): 8 beats to there,
+    //   then (5.5454 - 4.3636) * 160/60 = 3.1515 beats, ~11.152 beats in all.
     //
     // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
-    // Iteration spacing = 10.167 beats * 0.375s/beat = ~3.8125s
+    // Iteration spacing = 11.152 beats * 0.375s/beat = ~4.1818s
     // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
     let beat_at_160 = 60.0 / 160.0; // 0.375s
-    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time at 110 BPM)
-    let duration_beats = duration_internal * (110.0 / 60.0); // convert to beats
+    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time)
+    let change_at = 8.0 * 60.0 / 110.0; // measure 3 on the sequence's map
+    let duration_beats = 8.0 + (duration_internal - change_at) * (160.0 / 60.0);
     let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
 
     // Check iteration spacing: first cue of each iteration
@@ -1366,4 +1369,197 @@ show "Test" {
     let musical = past.replace("length: 1s", "length: 1measure");
     let err = parse_light_shows(&musical).expect_err("musical length needs a tempo");
     assert!(err.to_string().contains("tempo"), "{err}");
+}
+
+// ── One placement for a sequence reference, in a show or inside a sequence ──
+
+/// A sequence written past a tempo change on its own map, counted in beats
+/// through that change.
+const SEQUENCE_PAST_A_CHANGE: &str = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+sequence "inner" {
+    @3/1
+    a: static, color: "red", duration: 1s
+
+    @4/1
+    b: static, color: "blue", duration: 1s
+}
+"#;
+
+#[test]
+fn test_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // The sequence runs from @3/1 to @4/1 on its map: one bar, four beats at
+    // 60 BPM. Placed at @1/1, its second cue lands a bar later, at @2/1 = 2s.
+    // The bar used to be counted at the map's starting tempo (4s = 8 beats
+    // at 120), landing the cue at @3/1 = 4s.
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+show \"Test\" {{
+    @1/1
+    sequence \"inner\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::ZERO, Duration::from_secs(2)]);
+}
+
+#[test]
+fn test_nested_sequence_written_past_a_tempo_change_is_placed_by_its_beats() {
+    // The same bar, referenced from an outer sequence placed at @1/1: the
+    // outer's reference cue is at @3/1 on its map, so the inner's cues fall
+    // at @3/1 and @4/1, with the outer's own effect at @1/1.
+    let content = format!(
+        "{SEQUENCE_PAST_A_CHANGE}
+sequence \"outer\" {{
+    @1/1
+    c: static, color: \"green\", duration: 1s
+
+    @3/1
+    sequence \"inner\"
+}}
+
+show \"Test\" {{
+    @1/1
+    sequence \"outer\"
+}}"
+    );
+    let shows = parse_light_shows(&content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(
+        times,
+        vec![
+            Duration::ZERO,
+            Duration::from_secs(4),
+            Duration::from_secs(8)
+        ]
+    );
+}
+
+#[test]
+fn test_stop_sequence_stops_an_inner_sequence_inside_an_outer() {
+    // An effect belongs to the innermost sequence it is written in, so
+    // `stop sequence "inner"` names it. Expanding the outer used to rename
+    // every effect to the outer's, leaving nothing for the inner's stop.
+    let content = r#"
+sequence "inner" {
+    @0.000
+    a: static, color: "red", duration: 10s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "inner"
+    b: static, color: "blue", duration: 10s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+
+    @5.000
+    stop sequence "inner"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let owners: Vec<(&str, Option<&str>)> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| (e.groups[0].as_str(), e.sequence_name.as_deref()))
+        .collect();
+    assert_eq!(owners, vec![("b", Some("outer")), ("a", Some("inner"))]);
+    assert_eq!(show.cues[1].stop_sequences, vec!["inner".to_string()]);
+}
+
+#[test]
+fn test_nested_musical_duration_resolves_where_its_pass_plays() {
+    // The inner's 2 beats are 1s where it is written (120 BPM) and 2s where
+    // the outer places it (@3/1, 60 BPM); the outer's pass ends with it, so
+    // its second pass starts 2 beats on, at @3/3 = 6s.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 60 }
+    ]
+}
+
+sequence "inner" {
+    @1/1
+    a: static, color: "red", duration: 2beats
+}
+
+sequence "outer" {
+    @3/1
+    sequence "inner"
+}
+
+show "Test" {
+    @3/1
+    sequence "outer", loop: 2
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    let times: Vec<Duration> = show.cues.iter().map(|c| c.time).collect();
+    assert_eq!(times, vec![Duration::from_secs(4), Duration::from_secs(6)]);
+    for cue in &show.cues {
+        assert_eq!(cue.effects[0].total_duration(), Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn test_nested_cue_merges_the_sequences_it_references_into_itself() {
+    // A cue holding effects of its own and references merges each
+    // reference's same-time cue into itself, inside a sequence as in a show:
+    // one cue, the cue's own effects first. The nested expansion used to
+    // append the cue's effects to the first reference's first cue and keep
+    // the second reference's apart.
+    let content = r#"
+sequence "i1" {
+    @0.000
+    a: static, color: "red", duration: 1s
+}
+
+sequence "i2" {
+    @0.000
+    b: static, color: "blue", duration: 1s
+}
+
+sequence "outer" {
+    @0.000
+    sequence "i1"
+    sequence "i2"
+    c: static, color: "green", duration: 1s
+}
+
+show "Test" {
+    @0.000
+    sequence "outer"
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Test").unwrap();
+    assert_eq!(show.cues.len(), 1);
+    let groups: Vec<&str> = show.cues[0]
+        .effects
+        .iter()
+        .map(|e| e.groups[0].as_str())
+        .collect();
+    assert_eq!(groups, vec!["c", "a", "b"]);
+    assert_eq!(
+        show.cues[0].start_sequences,
+        vec!["i1".to_string(), "i2".to_string(), "outer".to_string()]
+    );
 }
