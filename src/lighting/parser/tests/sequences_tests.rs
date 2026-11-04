@@ -1920,3 +1920,43 @@ show "Show" {
         "{err}"
     );
 }
+
+#[test]
+fn test_a_standalone_offset_anchors_past_the_referenced_passes() {
+    // "long" placed at @1/1 reaches @6/1 = 12s, past the change to 60 BPM
+    // at @5/1; the `offset 1 measures` in the zero-time cue after it is a
+    // bar there, 4s, and @7/1 (16s) lands at 20s with it.
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @5/1 { bpm: 60 }
+    ]
+}
+
+sequence "long" {
+    @1/1
+    x: static, color: "red", duration: 1s
+
+    @6/1
+    x: static, color: "blue", duration: 1s
+}
+
+show "Show" {
+    @1/1
+    sequence "long"
+
+    @0.0
+    offset 1 measures
+
+    @7/1
+    front_wash: static, color: "white", duration: 1s
+}
+"#;
+    let shows = parse_light_shows(content).expect("show parses");
+    let show = shows.get("Show").unwrap();
+    let last = show.cues.last().unwrap();
+    assert_eq!(last.time, Duration::from_secs(20));
+    assert_eq!(last.effects[0].tempo_offset_secs, 4.0);
+}

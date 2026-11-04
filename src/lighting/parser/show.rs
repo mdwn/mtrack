@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use super::super::effects::EffectLayer;
@@ -27,7 +28,7 @@ use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
     pass_length, pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows,
-    ParseContext, SequenceCall, SequenceLoop,
+    ParseContext, Sequence, SequenceCall, SequenceLoop,
 };
 use super::utils::{
     parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
@@ -58,7 +59,8 @@ struct ParsedCue {
     new_offset: Option<f64>,
     /// The measure offset the cues after it start from.
     measure_offset: u32,
-    /// The latest cue time it produced of itself.
+    /// The latest cue time it produces, the passes it references included:
+    /// what a standalone `offset` in a zero-time cue after it anchors to.
     last_time: Duration,
 }
 
@@ -275,7 +277,7 @@ fn parse_light_show_definition(
                 name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::show_content => {
-                let block = parse_cue_block(inner_pair.into_inner(), global_tempo)?;
+                let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
                 tempo_map = block.tempo_map.clone();
                 cues = block.place(library)?;
             }
@@ -343,6 +345,7 @@ impl SequenceDefinition {
 pub(super) fn parse_sequence_structure(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
+    library: &SequenceLibrary,
 ) -> Result<SequenceDefinition, Box<dyn Error>> {
     let mut name = String::new();
     let mut length = None;
@@ -360,7 +363,11 @@ pub(super) fn parse_sequence_structure(
                     .map(|p| p.as_str().trim().to_string());
             }
             Rule::sequence_content => {
-                block = Some(parse_cue_block(inner_pair.into_inner(), global_tempo)?);
+                block = Some(parse_cue_block(
+                    inner_pair.into_inner(),
+                    global_tempo,
+                    library,
+                )?);
             }
             _ => {}
         }
@@ -387,6 +394,7 @@ pub(super) fn parse_sequence_structure(
 fn parse_cue_block<'i>(
     pairs: impl Iterator<Item = Pair<'i, Rule>>,
     global_tempo: &Option<TempoMap>,
+    library: &SequenceLibrary,
 ) -> Result<CueBlock, Box<dyn Error>> {
     let mut tempo_map: Option<TempoMap> = None;
     let mut cue_pairs = Vec::new();
@@ -409,6 +417,7 @@ fn parse_cue_block<'i>(
         let parsed = parse_cue(
             cue_pair,
             &effective_tempo,
+            library,
             offset_secs,
             cumulative_measure_offset,
             last_abs_time,
@@ -603,12 +612,94 @@ fn merge_into(cues: &mut Vec<Cue>, base: Option<usize>, cue: Cue) {
     }
 }
 
+/// The passes of the sequence `call` references, placed from `at`, the
+/// time of the cue it is written in, under a show `offset` of
+/// `offset_secs`: where each cue of each pass lands. A sequence is so many
+/// beats long with each cue so many beats in, counted on the map it was
+/// written against; the passes are laid on `tempo_map` from `at` by the
+/// same count, so they follow every tempo change they run through, inside
+/// a sequence as in a show.
+struct Passes<'a> {
+    sequence: Rc<Sequence>,
+    tempo_map: &'a Option<TempoMap>,
+    at: Duration,
+    offset_secs: f64,
+    count: usize,
+    /// When the sequence's first pass starts, on its own timeline.
+    base_time: Duration,
+    /// How long one pass is, on its own timeline, and in beats.
+    pass: Duration,
+    pass_beats: f64,
+}
+
+impl<'a> Passes<'a> {
+    fn new(
+        call: &SequenceCall,
+        library: &SequenceLibrary,
+        tempo_map: &'a Option<TempoMap>,
+        at: Duration,
+        offset_secs: f64,
+    ) -> Result<Self, Box<dyn Error>> {
+        let sequence = library.instance(call)?;
+        let count = determine_loop_count(call.loop_param)?;
+        let base_time = pass_start(&sequence.cues);
+        let pass = sequence.pass_length();
+        let mut passes = Passes {
+            sequence,
+            tempo_map,
+            at,
+            offset_secs,
+            count,
+            base_time,
+            pass,
+            pass_beats: 0.0,
+        };
+        passes.pass_beats = passes.beats_in(base_time + pass);
+        Ok(passes)
+    }
+
+    /// How many beats into the sequence a time on its own timeline is.
+    /// Snapped: a time is whole nanoseconds, and its rounding error
+    /// multiplied by the iteration count crept the loop later every pass
+    /// (#534).
+    fn beats_in(&self, time: Duration) -> f64 {
+        match &self.sequence.tempo_map {
+            Some(tm) => tm.beats_between(self.base_time, time),
+            // In this order of operations, as it always was: a position
+            // must come out bit for bit the same.
+            None => {
+                snap_beats(relative_time(time, self.base_time).as_secs_f64() * (DEFAULT_BPM / 60.0))
+            }
+        }
+    }
+
+    /// Where a cue at `time` on the sequence's own timeline lands in pass
+    /// `iteration`.
+    fn time_of(&self, iteration: usize, time: Duration) -> Duration {
+        self.at
+            + match self.tempo_map {
+                Some(tm) => tm.beats_to_duration(
+                    self.pass_beats * iteration as f64 + self.beats_in(time),
+                    self.at,
+                    self.offset_secs,
+                ),
+                None => Duration::from_secs_f64(
+                    iteration as f64 * self.pass.as_secs_f64()
+                        + relative_time(time, self.base_time).as_secs_f64(),
+                ),
+            }
+    }
+
+    /// Where the last cue of the last pass lands, if there is one.
+    fn furthest(&self) -> Option<Duration> {
+        let last = self.sequence.cues.iter().map(|c| c.time).max()?;
+        Some(self.time_of(self.count.checked_sub(1)?, last))
+    }
+}
+
 /// Places each pass of the sequence `call` references from `at`, the time
-/// of the cue it is written in, under a show `offset` of `offset_secs`. A
-/// sequence is so many beats long with each cue so many beats in, counted
-/// on the map it was written against; the passes are laid on `tempo_map`
-/// from `at` by the same count, so they follow every tempo change they run
-/// through, inside a sequence as in a show. Each pass after the first stops
+/// of the cue it is written in, under a show `offset` of `offset_secs`
+/// (see [`Passes`]). Each pass after the first stops
 /// the one before it, so its effects do not pile up; the first starts the
 /// sequence afresh after any earlier `stop sequence`. An effect belongs to
 /// every sequence it is started through, this one after the ones inside
@@ -623,35 +714,12 @@ fn place_sequence(
     cues: &mut Vec<Cue>,
     base: Option<usize>,
 ) -> Result<(), Box<dyn Error>> {
-    let sequence = library.instance(call)?;
+    let passes = Passes::new(call, library, tempo_map, at, offset_secs)?;
     let name = &call.name;
-    let pass = sequence.pass_length();
-    let loop_count = determine_loop_count(call.loop_param)?;
-    let base_time = pass_start(&sequence.cues);
-    // Snapped: a time is whole nanoseconds, and its rounding error
-    // multiplied by the iteration count crept the loop later every pass (#534).
-    let beats_in = |time: Duration| match &sequence.tempo_map {
-        Some(tm) => tm.beats_between(base_time, time),
-        // In this order of operations, as it always was: a position must
-        // come out bit for bit the same.
-        None => snap_beats(relative_time(time, base_time).as_secs_f64() * (DEFAULT_BPM / 60.0)),
-    };
-    let pass_beats = beats_in(base_time + pass);
-    for iteration in 0..loop_count {
-        for (index, seq_cue) in sequence.cues.iter().enumerate() {
+    for iteration in 0..passes.count {
+        for (index, seq_cue) in passes.sequence.cues.iter().enumerate() {
             let mut cue = seq_cue.clone();
-            let rel = relative_time(seq_cue.time, base_time);
-            cue.time = at
-                + match tempo_map {
-                    Some(tm) => tm.beats_to_duration(
-                        pass_beats * iteration as f64 + beats_in(seq_cue.time),
-                        at,
-                        offset_secs,
-                    ),
-                    None => Duration::from_secs_f64(
-                        iteration as f64 * pass.as_secs_f64() + rel.as_secs_f64(),
-                    ),
-                };
+            cue.time = passes.time_of(iteration, seq_cue.time);
             if iteration > 0 && index == 0 {
                 cue.stop_sequences.push(name.clone());
             }
@@ -692,8 +760,8 @@ fn parse_and_expand_inline_loop(
 
     // The body's cues are timed from 0, relative to the loop's start; no
     // sequences are available in an inline loop.
-    let loop_cues =
-        parse_cue_block(pair.into_inner(), tempo_map)?.place(&SequenceLibrary::empty())?;
+    let library = SequenceLibrary::empty();
+    let loop_cues = parse_cue_block(pair.into_inner(), tempo_map, &library)?.place(&library)?;
     if loop_cues.is_empty() {
         return Ok(Vec::new());
     }
@@ -727,6 +795,7 @@ fn parse_and_expand_inline_loop(
 fn parse_cue(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
+    library: &SequenceLibrary,
     offset_secs: f64,
     cumulative_measure_offset: u32,
     last_abs_time: Option<Duration>,
@@ -898,7 +967,22 @@ fn parse_cue(
         .into_iter()
         .map(parse_sequence_reference_pair)
         .collect::<Result<Vec<_>, _>>()?;
-    let last_time = cues.iter().map(|c| c.time).max().unwrap_or(abs_time);
+    // Reaching to where the referenced passes will land, though they are
+    // placed later; a reference that fails is reported when it is.
+    let furthest_pass = references
+        .iter()
+        .filter_map(|call| {
+            Passes::new(call, library, tempo_map, abs_time, applied_offset_secs)
+                .ok()?
+                .furthest()
+        })
+        .max();
+    let last_time = cues
+        .iter()
+        .map(|c| c.time)
+        .chain(furthest_pass)
+        .max()
+        .unwrap_or(abs_time);
 
     Ok(ParsedCue {
         time: abs_time,
