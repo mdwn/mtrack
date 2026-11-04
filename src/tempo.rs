@@ -58,24 +58,6 @@ impl TransitionCurve {
         }
     }
 
-    /// Calculate how many beats occur during a transition from elapsed=0 to elapsed=dt
-    /// Returns the integral of bpm(t)/60 dt from 0 to dt
-    pub fn beats_in_duration(
-        &self,
-        old_bpm: f64,
-        new_bpm: f64,
-        total_duration: f64,
-        dt: f64,
-    ) -> f64 {
-        match self {
-            TransitionCurve::Linear => {
-                // beats = integral(bpm(t)/60 dt) from 0 to dt
-                // = (1/60) * [old_bpm * dt + (new_bpm - old_bpm) * dt^2 / (2*T)]
-                (old_bpm * dt + (new_bpm - old_bpm) * dt * dt / (2.0 * total_duration)) / 60.0
-            }
-        }
-    }
-
     /// Calculate how many beats occur in the remaining portion of a transition
     /// from elapsed to total_duration
     pub fn beats_in_remaining_transition(
@@ -98,7 +80,10 @@ impl TransitionCurve {
     }
 
     /// Solve for duration dt given a number of beats, starting from elapsed time into the transition
-    /// Returns the time duration needed for the given number of beats
+    /// Returns the time duration needed for the given number of beats, or
+    /// `None` where the curve has no answer: a tempo of zero, or more beats
+    /// than the curve reaches (a ramp down ends before them; the caller
+    /// settles at the new tempo from there).
     pub fn solve_duration_for_beats(
         &self,
         old_bpm: f64,
@@ -125,13 +110,7 @@ impl TransitionCurve {
                     }
                 } else {
                     let discriminant = b * b - 4.0 * a * c;
-                    if discriminant >= 0.0 {
-                        Some((-b + discriminant.sqrt()) / (2.0 * a))
-                    } else {
-                        // Fallback to average BPM
-                        let current_bpm = old_bpm + (new_bpm - old_bpm) * elapsed / total_duration;
-                        Some(beats * 60.0 / ((current_bpm + new_bpm) / 2.0))
-                    }
+                    (discriminant >= 0.0).then(|| (-b + discriminant.sqrt()) / (2.0 * a))
                 }
             }
         }
@@ -148,25 +127,23 @@ impl TransitionCurve {
                 // transition, so N beats take N * 60 / that.
                 let mean_bpm = (old_bpm + new_bpm) / 2.0;
                 if mean_bpm > 0.0 {
-                    beats * 60.0 / mean_bpm
+                    steady_secs(mean_bpm, beats)
                 } else {
-                    beats * 60.0 / old_bpm
+                    steady_secs(old_bpm, beats)
                 }
             }
         }
     }
+}
 
-    /// Solve for duration dt given a number of beats, starting from the beginning of the transition
-    /// This is a convenience method for the common case
-    pub fn solve_duration_for_beats_from_start(
-        &self,
-        old_bpm: f64,
-        new_bpm: f64,
-        total_duration: f64,
-        beats: f64,
-    ) -> Option<f64> {
-        self.solve_duration_for_beats(old_bpm, new_bpm, total_duration, 0.0, beats)
-    }
+/// Seconds that `beats` beats take at a steady `bpm`.
+pub(crate) fn steady_secs(bpm: f64, beats: f64) -> f64 {
+    beats * 60.0 / bpm
+}
+
+/// Beats covered in `secs` at a steady `bpm`. The inverse of [`steady_secs`].
+pub(crate) fn steady_beats(bpm: f64, secs: f64) -> f64 {
+    secs * bpm / 60.0
 }
 
 /// State of an in-progress gradual tempo transition while walking a tempo map
@@ -182,6 +159,31 @@ struct SegmentRamp {
 }
 
 impl SegmentRamp {
+    /// The ramp a tempo change to `new_bpm` starts, given the BPM actually in
+    /// effect when it is reached; `None` for a snap. A transition in measures
+    /// counts its length in the metre `metre` gives, asked for only then.
+    fn started_by(
+        transition: TempoTransition,
+        bpm_at_change: f64,
+        new_bpm: f64,
+        metre: impl FnOnce() -> TimeSignature,
+    ) -> Option<SegmentRamp> {
+        let (beats, curve) = match transition {
+            TempoTransition::Snap => return None,
+            TempoTransition::Beats(beats, curve) => (beats, curve),
+            TempoTransition::Measures(measures, curve) => {
+                (measures * metre().beats_per_measure(), curve)
+            }
+        };
+        Some(SegmentRamp {
+            old_bpm: bpm_at_change,
+            new_bpm,
+            total_secs: curve.duration_for_beats(bpm_at_change, new_bpm, beats),
+            elapsed_secs: 0.0,
+            curve,
+        })
+    }
+
     /// Beats left between the current position and the end of the ramp.
     fn beats_remaining(&self) -> f64 {
         self.curve.beats_in_remaining_transition(
@@ -206,9 +208,9 @@ impl SegmentRamp {
                     self.elapsed_secs,
                     beats,
                 )
-                .unwrap_or_else(|| beats * 60.0 / ((self.old_bpm + self.new_bpm) / 2.0))
+                .unwrap_or_else(|| steady_secs((self.old_bpm + self.new_bpm) / 2.0, beats))
         } else {
-            (self.total_secs - self.elapsed_secs) + (beats - remaining) * 60.0 / settled_bpm
+            (self.total_secs - self.elapsed_secs) + steady_secs(settled_bpm, beats - remaining)
         }
     }
 
@@ -219,7 +221,7 @@ impl SegmentRamp {
         let secs_left = self.total_secs - self.elapsed_secs;
         let remaining = self.beats_remaining();
         if secs >= secs_left {
-            remaining + (secs - secs_left) * settled_bpm / 60.0
+            remaining + steady_beats(settled_bpm, secs - secs_left)
         } else {
             remaining
                 - self.curve.beats_in_remaining_transition(
@@ -256,7 +258,7 @@ impl SegmentRamp {
 fn segment_secs_for_beats(ramp: Option<&SegmentRamp>, bpm: f64, beats: f64) -> f64 {
     match ramp {
         Some(ramp) => ramp.secs_for_beats(beats, bpm),
-        None => beats * 60.0 / bpm,
+        None => steady_secs(bpm, beats),
     }
 }
 
@@ -266,7 +268,7 @@ fn segment_secs_for_beats(ramp: Option<&SegmentRamp>, bpm: f64, beats: f64) -> f
 fn segment_beats_in_secs(ramp: Option<&SegmentRamp>, bpm: f64, secs: f64) -> f64 {
     match ramp {
         Some(ramp) => ramp.beats_in_secs(secs, bpm),
-        None => secs * bpm / 60.0,
+        None => steady_beats(bpm, secs),
     }
 }
 
@@ -501,55 +503,39 @@ impl TempoMap {
                 });
             }
             if let Some(new_bpm) = change.bpm {
-                match change.transition {
-                    TempoTransition::Snap => current_ramp = None,
-                    TempoTransition::Beats(beats, curve) => {
-                        current_ramp = Some(SegmentRamp {
-                            old_bpm: bpm_at_change,
-                            new_bpm,
-                            total_secs: curve.duration_for_beats(bpm_at_change, new_bpm, beats),
-                            elapsed_secs: 0.0,
-                            curve,
-                        });
-                    }
-                    TempoTransition::Measures(measures, curve) => {
-                        // Matches bpm_at_time: the duration is computed with
-                        // the time signature in effect after this change and
-                        // any other at the same position, whichever order
-                        // they are listed in.
-                        let mut sizing_time_sig = current_time_sig;
-                        for pending in timed.iter() {
-                            if pending.position.absolute_time() != Some(absolute_time) {
-                                break;
-                            }
-                            if let Some(new_ts) = pending.time_signature {
-                                sizing_time_sig = new_ts;
-                            }
+                // A ramp in measures matches bpm_at_time: its length is
+                // counted in the time signature in effect after this change
+                // and any other at the same position, whichever order they
+                // are listed in (`time_signature_through`, before the
+                // pending ones are resolved).
+                let sizing_time_sig = || {
+                    let mut sizing_time_sig = current_time_sig;
+                    for pending in timed.iter() {
+                        if pending.position.absolute_time() != Some(absolute_time) {
+                            break;
                         }
-                        for (m, b, pending) in barred.iter() {
-                            let beats = Self::compute_target_beats(
-                                initial_time_signature,
-                                &ts_changes,
-                                *m,
-                                *b,
-                            );
-                            if beats > change_beats + 1e-9 {
-                                break;
-                            }
-                            if let Some(new_ts) = pending.time_signature {
-                                sizing_time_sig = new_ts;
-                            }
+                        if let Some(new_ts) = pending.time_signature {
+                            sizing_time_sig = new_ts;
                         }
-                        let beats = measures * sizing_time_sig.beats_per_measure();
-                        current_ramp = Some(SegmentRamp {
-                            old_bpm: bpm_at_change,
-                            new_bpm,
-                            total_secs: curve.duration_for_beats(bpm_at_change, new_bpm, beats),
-                            elapsed_secs: 0.0,
-                            curve,
-                        });
                     }
-                }
+                    for (m, b, pending) in barred.iter() {
+                        let beats =
+                            Self::compute_target_beats(initial_time_signature, &ts_changes, *m, *b);
+                        if beats > change_beats + 1e-9 {
+                            break;
+                        }
+                        if let Some(new_ts) = pending.time_signature {
+                            sizing_time_sig = new_ts;
+                        }
+                    }
+                    sizing_time_sig
+                };
+                current_ramp = SegmentRamp::started_by(
+                    change.transition,
+                    bpm_at_change,
+                    new_bpm,
+                    sizing_time_sig,
+                );
                 current_bpm = new_bpm;
             }
 
@@ -894,29 +880,17 @@ impl TempoMap {
     }
 
     /// The ramp a tempo change to `new_bpm` starts, given the BPM actually in
-    /// effect when it is reached; `None` for a snap.
+    /// effect when it is reached; `None` for a snap. A ramp in measures is
+    /// sized as `TempoMap::new` sized it, in the time signature the change
+    /// leaves set.
     fn ramp_started_by(
         &self,
         change: &TempoChange,
         new_bpm: f64,
         bpm_at_change: f64,
     ) -> Option<SegmentRamp> {
-        let (beats, curve) = match change.transition {
-            TempoTransition::Snap => return None,
-            TempoTransition::Beats(beats, curve) => (beats, curve),
-            TempoTransition::Measures(measures, curve) => {
-                // Matches bpm_at_time and `TempoMap::new`: the duration is
-                // computed with the time signature this change leaves set.
-                let ts = self.time_signature_through(change);
-                (measures * ts.beats_per_measure(), curve)
-            }
-        };
-        Some(SegmentRamp {
-            old_bpm: bpm_at_change,
-            new_bpm,
-            total_secs: curve.duration_for_beats(bpm_at_change, new_bpm, beats),
-            elapsed_secs: 0.0,
-            curve,
+        SegmentRamp::started_by(change.transition, bpm_at_change, new_bpm, || {
+            self.time_signature_through(change)
         })
     }
 
@@ -931,7 +905,10 @@ impl TempoMap {
         ts_changes: &[(u32, f64, TimeSignature)],
     ) -> f64 {
         if score_time < self.start_offset {
-            return -(self.start_offset - score_time).as_secs_f64() * self.initial_bpm / 60.0;
+            return -steady_beats(
+                self.initial_bpm,
+                (self.start_offset - score_time).as_secs_f64(),
+            );
         }
         let mut current_bpm = self.initial_bpm;
         let mut accumulated_time = self.start_offset;
@@ -968,11 +945,7 @@ impl TempoMap {
         }
 
         let secs = score_time.saturating_sub(accumulated_time).as_secs_f64();
-        accumulated_beats
-            + match current_ramp.as_ref() {
-                Some(ramp) => ramp.beats_in_secs(secs, current_bpm),
-                None => secs * current_bpm / 60.0,
-            }
+        accumulated_beats + segment_beats_in_secs(current_ramp.as_ref(), current_bpm, secs)
     }
 
     /// The score time of a quarter-note beat position (0 at bar 1 beat 1).
@@ -984,7 +957,7 @@ impl TempoMap {
         if beats < 0.0 {
             return self
                 .start_offset
-                .saturating_sub(duration_from_secs(-beats * 60.0 / self.initial_bpm));
+                .saturating_sub(duration_from_secs(steady_secs(self.initial_bpm, -beats)));
         }
         self.integrate_through_segments(beats, ts_changes, Duration::ZERO)
             .unwrap_or(self.start_offset)
@@ -1573,31 +1546,42 @@ mod tests {
         assert!((TransitionCurve::Linear.bpm_at(0.5, 200.0, 100.0) - 150.0).abs() < f64::EPSILON);
     }
 
-    // ── TransitionCurve::beats_in_duration ──────────────────────────
+    // ── SegmentRamp::beats_in_secs ──────────────────────────────────
+
+    /// A ramp from `old` to `new` BPM over `total` seconds, `elapsed` in.
+    fn ramp(old: f64, new: f64, total: f64, elapsed: f64) -> SegmentRamp {
+        SegmentRamp {
+            old_bpm: old,
+            new_bpm: new,
+            total_secs: total,
+            elapsed_secs: elapsed,
+            curve: TransitionCurve::Linear,
+        }
+    }
 
     #[test]
-    fn beats_in_duration_constant_bpm() {
+    fn beats_in_secs_constant_bpm() {
         // When old_bpm == new_bpm, this reduces to bpm * dt / 60
-        let beats = TransitionCurve::Linear.beats_in_duration(120.0, 120.0, 4.0, 2.0);
+        let beats = ramp(120.0, 120.0, 4.0, 0.0).beats_in_secs(2.0, 120.0);
         // 120 bpm for 2 seconds = 4 beats
         assert!((beats - 4.0).abs() < 1e-9);
     }
 
     #[test]
-    fn beats_in_duration_full_transition() {
+    fn beats_in_secs_full_transition() {
         // Full transition from 60 to 120 bpm over 4 seconds
         // integral of (60 + 60*t/4)/60 from 0 to 4 = integral of (1 + t/4) from 0 to 4
         // = [t + t^2/8] from 0 to 4 = 4 + 16/8 = 4 + 2 = 6
-        let beats = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 4.0);
+        let beats = ramp(60.0, 120.0, 4.0, 0.0).beats_in_secs(4.0, 120.0);
         assert!((beats - 6.0).abs() < 1e-9);
     }
 
     #[test]
-    fn beats_in_duration_half_transition() {
+    fn beats_in_secs_half_transition() {
         // First 2 seconds of a 4-second transition from 60 to 120 bpm
         // integral of (60 + 60*t/4)/60 from 0 to 2 = integral of (1 + t/4) from 0 to 2
         // = [t + t^2/8] from 0 to 2 = 2 + 4/8 = 2 + 0.5 = 2.5
-        let beats = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 2.0);
+        let beats = ramp(60.0, 120.0, 4.0, 0.0).beats_in_secs(2.0, 120.0);
         assert!((beats - 2.5).abs() < 1e-9);
     }
 
@@ -1605,8 +1589,8 @@ mod tests {
 
     #[test]
     fn beats_in_remaining_from_start() {
-        // From start to end should equal beats_in_duration for full duration
-        let full = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 4.0);
+        // From start to end should equal beats_in_secs for the full duration
+        let full = ramp(60.0, 120.0, 4.0, 0.0).beats_in_secs(4.0, 120.0);
         let remaining =
             TransitionCurve::Linear.beats_in_remaining_transition(60.0, 120.0, 4.0, 0.0);
         assert!((full - remaining).abs() < 1e-9);
@@ -1635,16 +1619,14 @@ mod tests {
 
     #[test]
     fn solve_duration_round_trip() {
-        // beats_in_duration -> solve_duration_for_beats should round-trip
-        let old_bpm = 80.0;
-        let new_bpm = 160.0;
-        let total = 8.0;
-        let dt_input = 3.0;
-        let beats = TransitionCurve::Linear.beats_in_duration(old_bpm, new_bpm, total, dt_input);
-        let dt_output = TransitionCurve::Linear
-            .solve_duration_for_beats(old_bpm, new_bpm, total, 0.0, beats)
-            .unwrap();
-        assert!((dt_input - dt_output).abs() < 1e-6);
+        // beats_in_secs -> secs_for_beats should round-trip, from the start
+        // of a ramp and from part way in.
+        for elapsed in [0.0, 2.5] {
+            let ramp = ramp(80.0, 160.0, 8.0, elapsed);
+            let beats = ramp.beats_in_secs(3.0, 160.0);
+            let dt_output = ramp.secs_for_beats(beats, 160.0);
+            assert!((3.0 - dt_output).abs() < 1e-6, "{elapsed} in: {dt_output}");
+        }
     }
 
     #[test]
@@ -1654,15 +1636,17 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Beats a ramp down never reaches have no time on its curve: the
+    /// curve says so, rather than guessing from an average tempo, and the
+    /// ramp settles at the new tempo for the beats past its end.
     #[test]
-    fn solve_duration_from_start_convenience() {
-        let a = TransitionCurve::Linear
-            .solve_duration_for_beats(120.0, 180.0, 4.0, 0.0, 2.0)
-            .unwrap();
-        let b = TransitionCurve::Linear
-            .solve_duration_for_beats_from_start(120.0, 180.0, 4.0, 2.0)
-            .unwrap();
-        assert!((a - b).abs() < 1e-12);
+    fn beats_past_a_ramps_reach_are_timed_at_the_settled_tempo() {
+        // 120 to 60 BPM over 4 s covers 6 beats; 100 beats are past it.
+        assert!(TransitionCurve::Linear
+            .solve_duration_for_beats(120.0, 60.0, 4.0, 0.0, 100.0)
+            .is_none());
+        let secs = ramp(120.0, 60.0, 4.0, 0.0).secs_for_beats(100.0, 60.0);
+        assert!((secs - (4.0 + 94.0)).abs() < 1e-9, "{secs}");
     }
 
     // ── TempoChangePosition ─────────────────────────────────────────
@@ -2532,7 +2516,8 @@ mod tests {
                     let length = curve.duration_for_beats(from, to, beats);
                     // The curve covers exactly N beats in that time.
                     assert!(
-                        (curve.beats_in_duration(from, to, length, length) - beats).abs() < 1e-9,
+                        (curve.beats_in_remaining_transition(from, to, length, 0.0) - beats).abs()
+                            < 1e-9,
                         "{what}"
                     );
                     let end = secs(start) + length;
