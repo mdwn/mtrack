@@ -163,7 +163,7 @@
     // Auto-save if dirty
     if (dirty) {
       try {
-        await saveLightingFiles();
+        await saveLightingFiles("files");
       } catch (e) {
         error = `Auto-save failed: ${e instanceof Error ? e.message : e}`;
         return;
@@ -217,6 +217,51 @@
     }
   }
 
+  /** Where `file`, a name inside the song's folder, is under the songs
+   * root. Every `path` in [[lightFiles]] is one of these: the lighting API
+   * takes them, and the server lists the song's files that way. The
+   * song.yaml entry is the bare `file`; the parent strips the folder. */
+  function rootPath(file: string): string {
+    return song.base_dir ? `${song.base_dir}/${file}` : file;
+  }
+
+  /** The file a song without lighting gets, named after the song. */
+  function defaultLightFilePath(): string {
+    const stem = song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show";
+    return rootPath(`${stem}.light`);
+  }
+
+  /** What a song without lighting opens with: one empty show, so the
+   * timeline has a lane. It is not a file until something is put in it. */
+  function placeholderLightFile(): LightFile {
+    return { sequences: [], shows: [{ name: "Main", cues: [] }] };
+  }
+
+  /** Whether a file has a cue or a sequence in it. */
+  function hasContent(lf: LoadedLightFile): boolean {
+    return (
+      lf.parsed.sequences.length > 0 ||
+      lf.parsed.shows.some((s) => s.cues.length > 0)
+    );
+  }
+
+  /** Whether `lf` is still the placeholder a lighting-less song opened
+   * with: not the song's yet, with no cue and no sequence. A tempo alone
+   * does not make it a file while another file of the song can carry it
+   * (an edit puts the tempo on every file); with no other file it does,
+   * as the tempo has to live somewhere. Saving writes an untouched
+   * placeholder nowhere, so a song that was only ever opened gets no file. */
+  function isUntouchedPlaceholder(lf: LoadedLightFile): boolean {
+    if (song.lighting_files.includes(lf.path) || hasContent(lf)) return false;
+    if (lf.parsed.tempo == null) return true;
+    return lightFiles.some(
+      (other) =>
+        other !== lf &&
+        !other.parseError &&
+        (song.lighting_files.includes(other.path) || hasContent(other)),
+    );
+  }
+
   async function loadLighting() {
     try {
       error = "";
@@ -247,15 +292,12 @@
       // If no lighting files exist, create an implicit one so the editor
       // is immediately usable. It only gets written to disk on save.
       if (lightFiles.length === 0) {
-        const implicitPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        const implicitPath = defaultLightFilePath();
         lightFiles = [
           {
             path: implicitPath,
             raw: "",
-            parsed: {
-              sequences: [],
-              shows: [{ name: "Main", cues: [] }],
-            },
+            parsed: placeholderLightFile(),
           },
         ];
       }
@@ -322,7 +364,7 @@
 
     if (hasOverflow || hasTempoOnly) {
       if (lightFiles.length === 0) {
-        const newPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        const newPath = defaultLightFilePath();
         const shows = lf.shows.slice(showOffset);
         // When auto-creating for tempo-only, add a default show so lanes appear
         if (shows.length === 0) {
@@ -359,30 +401,63 @@
     }
   }
 
-  /** Save all modified lighting files. Called by parent's unified Save button. */
-  export async function saveLightingFiles() {
-    // Process pending deletions
-    for (const path of pendingDeletes) {
-      try {
-        await deleteLightingFile(path);
-      } catch {
-        // File may already be gone
-      }
+  /** Folds what is typed in the Raw tab into its file, so a save writes
+   * it. Text that does not parse fails the save, by name, rather than
+   * being left out of it. */
+  function flushRaw() {
+    if (tab !== "raw") return;
+    const lf = lightFiles[rawFileIndex];
+    if (!lf || rawContent === lf.raw) return;
+    try {
+      lf.parsed = parseLightFile(rawContent);
+    } catch (e: any) {
+      throw new Error(`${lf.path.replace(/^.*\//, "")}: ${e.message}`, {
+        cause: e,
+      });
     }
-    pendingDeletes = [];
+    lf.raw = rawContent;
+    lf.parseError = undefined;
+    rebuildMergedLightFile();
+  }
 
-    // Save all current lighting files
-    for (const lf of lightFiles) {
-      if (lf.parseError) continue;
-      // Register newly created files with song.yaml
-      if (!song.lighting_files.includes(lf.path)) {
+  async function writeLightFile(lf: LoadedLightFile) {
+    const content = serializeLightFile(lf.parsed);
+    await saveLightingFile(lf.path, content);
+    lf.raw = content;
+  }
+
+  /** Saves the song's lighting files around the song.yaml save, in two
+   * calls by the parent's Save button. "before" the config save: files
+   * not yet the song's are written and registered, so the reload that
+   * save starts finds them on disk. "after" it: files the song already
+   * had are written, checked against the tempo the saved config loads
+   * them with, and removed files are deleted, their entries gone from
+   * the config by then. A failure in either leaves the rest for a retry.
+   * "files", for the auto-save before a play-from, writes every file
+   * and deletes nothing: the config still names the removed ones. */
+  export async function saveLightingFiles(phase: "before" | "after" | "files") {
+    if (phase !== "after") {
+      flushRaw();
+      for (const lf of lightFiles) {
+        if (lf.parseError || isUntouchedPlaceholder(lf)) continue;
+        if (song.lighting_files.includes(lf.path)) continue;
         onaddlightfile?.(lf.path);
+        await writeLightFile(lf);
       }
-      const content = serializeLightFile(lf.parsed);
-      lf.raw = content;
-      await saveLightingFile(lf.path, content);
     }
-    dirty = false;
+    if (phase !== "before") {
+      for (const lf of lightFiles) {
+        if (lf.parseError || !song.lighting_files.includes(lf.path)) continue;
+        await writeLightFile(lf);
+      }
+    }
+    if (phase === "after") {
+      while (pendingDeletes.length > 0) {
+        await deleteLightingFile(pendingDeletes[0]);
+        pendingDeletes = pendingDeletes.slice(1);
+      }
+    }
+    if (phase !== "before") dirty = pendingDeletes.length > 0;
   }
 
   function switchToRaw() {
@@ -447,12 +522,23 @@
     }
     const name = await showPrompt($t("songLighting.addDslPrompt"));
     if (!name) return;
+    // A name, in the song's folder: no path in it.
+    if (/[\\/]/.test(name) || name === "..") {
+      error = $t("songLighting.badFileName");
+      return;
+    }
     const fileName = name.endsWith(".light") ? name : `${name}.light`;
     const showName = fileName.replace(/\.light$/, "");
     const defaultContent = `show "${showName}" {\n    @00:00.000\n}\n`;
 
-    const baseDir = song.base_dir;
-    const fullPath = baseDir ? `${baseDir}/${fileName}` : fileName;
+    const fullPath = rootPath(fileName);
+    // The song's own name is the placeholder's; naming the first file so
+    // fills the placeholder in. Any other file already there stays.
+    const existing = lightFiles.findIndex((lf) => lf.path === fullPath);
+    if (existing >= 0 && !isUntouchedPlaceholder(lightFiles[existing])) {
+      error = $t("songLighting.fileExists", { values: { name: fileName } });
+      return;
+    }
 
     try {
       const parsed = parseLightFile(defaultContent);
@@ -460,10 +546,11 @@
       if (mergedLightFile.tempo && !parsed.tempo) {
         parsed.tempo = mergedLightFile.tempo;
       }
-      lightFiles = [
-        ...lightFiles,
-        { path: fullPath, raw: defaultContent, parsed },
-      ];
+      const entry = { path: fullPath, raw: defaultContent, parsed };
+      lightFiles =
+        existing >= 0
+          ? lightFiles.map((lf, i) => (i === existing ? entry : lf))
+          : [...lightFiles, entry];
       rebuildMergedLightFile();
       onaddlightfile?.(fullPath);
       dirty = true;
