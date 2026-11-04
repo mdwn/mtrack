@@ -109,58 +109,8 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                 }
             }
             Rule::effect_type => {
-                effect_type = match inner_pair.as_str() {
-                    "static" => EffectType::Static {
-                        parameters: HashMap::new(),
-                        duration: Duration::ZERO,
-                    },
-                    "cycle" => EffectType::ColorCycle {
-                        colors: Vec::new(),
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        direction: CycleDirection::Forward,
-                        transition: CycleTransition::Snap,
-                        duration: Duration::ZERO,
-                    },
-                    "strobe" => EffectType::Strobe {
-                        frequency: TempoAwareFrequency::Fixed(8.0),
-                        duration: Duration::ZERO,
-                    },
-                    "pulse" => EffectType::Pulse {
-                        base_level: 0.5,
-                        pulse_amplitude: 0.5,
-                        frequency: TempoAwareFrequency::Fixed(1.0),
-                        duration: Duration::ZERO,
-                    },
-                    "chase" => EffectType::Chase {
-                        pattern: ChasePattern::Linear,
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        direction: ChaseDirection::LeftToRight,
-                        transition: CycleTransition::Snap,
-                        duration: Duration::ZERO,
-                    },
-                    "dimmer" => EffectType::Dimmer {
-                        start_level: 0.0,
-                        end_level: 1.0,
-                        duration: Duration::from_secs(1),
-                        curve: DimmerCurve::Linear,
-                    },
-                    "rainbow" => EffectType::Rainbow {
-                        speed: TempoAwareSpeed::Fixed(1.0),
-                        saturation: 1.0,
-                        brightness: 1.0,
-                        duration: Duration::ZERO,
-                    },
-                    "move" => EffectType::Move {
-                        to: MoveTarget::Angles {
-                            pan: None,
-                            tilt: None,
-                        },
-                        from: None,
-                        easing: Easing::default(),
-                        duration: Duration::ZERO,
-                    },
-                    _ => return Err(format!("Unknown effect type: {}", inner_pair.as_str()).into()),
-                };
+                effect_type = effect_with_defaults(inner_pair.as_str())
+                    .ok_or_else(|| format!("Unknown effect type: {}", inner_pair.as_str()))?;
             }
             Rule::parameters => {
                 for param_pair in inner_pair.into_inner() {
@@ -240,20 +190,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
     if !matches!(&final_effect_type, EffectType::Dimmer { .. }) {
         let effect_duration = final_effect_type.duration();
         if effect_duration.is_zero() && hold_time.is_none() {
-            let effect_name = match &final_effect_type {
-                EffectType::Static { .. } => "static",
-                EffectType::ColorCycle { .. } => "cycle",
-                EffectType::Strobe { .. } => "strobe",
-                EffectType::Pulse { .. } => "pulse",
-                EffectType::Chase { .. } => "chase",
-                EffectType::Rainbow { .. } => "rainbow",
-                EffectType::Move { .. } => "move",
-                EffectType::Dimmer { .. } => unreachable!(),
-            };
             return Err(format!(
                 "Effect '{}' requires a 'duration' or 'hold_time' parameter. \
                  All effects must have an explicit, finite duration.",
-                effect_name
+                effect_keyword(&final_effect_type)
             )
             .into());
         }
@@ -274,6 +214,79 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
         tempo_offset_secs: ctx.offset_secs,
         musical,
     })
+}
+
+/// The effect an author's keyword names, with every parameter at its
+/// default, or `None` for a word that names none.
+fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
+    Some(match keyword {
+        "static" => EffectType::Static {
+            parameters: HashMap::new(),
+            duration: Duration::ZERO,
+        },
+        "cycle" => EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        },
+        "strobe" => EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(8.0),
+            duration: Duration::ZERO,
+        },
+        "pulse" => EffectType::Pulse {
+            base_level: 0.5,
+            pulse_amplitude: 0.5,
+            frequency: TempoAwareFrequency::Fixed(1.0),
+            duration: Duration::ZERO,
+        },
+        "chase" => EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
+        },
+        "dimmer" => EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(1),
+            curve: DimmerCurve::Linear,
+        },
+        "rainbow" => EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(1.0),
+            saturation: 1.0,
+            brightness: 1.0,
+            duration: Duration::ZERO,
+        },
+        "move" => EffectType::Move {
+            to: MoveTarget::Angles {
+                pan: None,
+                tilt: None,
+            },
+            from: None,
+            easing: Easing::default(),
+            duration: Duration::ZERO,
+        },
+        _ => return None,
+    })
+}
+
+/// The keyword an author writes for an effect type: what
+/// [`effect_with_defaults`] reads. (`EffectType::name` is the type's own
+/// spelling, `ColorCycle` for `cycle`.)
+pub(crate) fn effect_keyword(effect_type: &EffectType) -> &'static str {
+    match effect_type {
+        EffectType::Static { .. } => "static",
+        EffectType::ColorCycle { .. } => "cycle",
+        EffectType::Strobe { .. } => "strobe",
+        EffectType::Pulse { .. } => "pulse",
+        EffectType::Chase { .. } => "chase",
+        EffectType::Dimmer { .. } => "dimmer",
+        EffectType::Rainbow { .. } => "rainbow",
+        EffectType::Move { .. } => "move",
+    }
 }
 
 /// Parses an angle written with its unit: `45deg`, `-20.5deg`.
@@ -680,6 +693,19 @@ mod tests {
         assert!((r - 128.0 / 255.0).abs() < 1e-9);
         assert!((g - 64.0 / 255.0).abs() < 1e-9);
         assert!((b - 0.0).abs() < 1e-9);
+    }
+
+    // ── effect_with_defaults / effect_keyword ──────────────────────
+
+    #[test]
+    fn every_effect_keyword_round_trips() {
+        for keyword in [
+            "static", "cycle", "strobe", "pulse", "chase", "dimmer", "rainbow", "move",
+        ] {
+            let effect = effect_with_defaults(keyword).expect(keyword);
+            assert_eq!(effect_keyword(&effect), keyword);
+        }
+        assert!(effect_with_defaults("flicker").is_none());
     }
 
     // ── clean_string_value ─────────────────────────────────────────

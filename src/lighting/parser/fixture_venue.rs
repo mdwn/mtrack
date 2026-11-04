@@ -19,7 +19,7 @@ use super::super::types::{
     ganged_from_cells, Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1,
     GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
 };
-use super::error::get_error_context;
+use super::error::describe_pest_error_in;
 use super::grammar::{items, LightingParser, Rule};
 use super::utils::split_unit;
 use pest::iterators::Pair;
@@ -28,22 +28,8 @@ use pest::Parser;
 pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
     let mut fixture_types = HashMap::new();
 
-    let pairs = match LightingParser::parse(Rule::file, content) {
-        Ok(pairs) => pairs,
-        Err(e) => {
-            let (line, col) = match e.line_col {
-                pest::error::LineColLocation::Pos((line, col)) => (line, col),
-                pest::error::LineColLocation::Span((line, col), _) => (line, col),
-            };
-            return Err(format!(
-                "Fixture types DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
-                line,
-                col,
-                e.variant.message(),
-                get_error_context(content, line, col)
-            ).into());
-        }
-    };
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| describe_pest_error_in("Fixture types DSL", &e, content))?;
 
     for pair in items(pairs) {
         if pair.as_rule() == Rule::fixture_type {
@@ -59,23 +45,8 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
 pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
     let mut venues = HashMap::new();
 
-    let pairs = match LightingParser::parse(Rule::file, content) {
-        Ok(pairs) => pairs,
-        Err(e) => {
-            let (line, col) = match e.line_col {
-                pest::error::LineColLocation::Pos((line, col)) => (line, col),
-                pest::error::LineColLocation::Span((line, col), _) => (line, col),
-            };
-            return Err(format!(
-                "Venues DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
-                line,
-                col,
-                e.variant.message(),
-                get_error_context(content, line, col)
-            )
-            .into());
-        }
-    };
+    let pairs = LightingParser::parse(Rule::file, content)
+        .map_err(|e| describe_pest_error_in("Venues DSL", &e, content))?;
 
     for pair in items(pairs) {
         if pair.as_rule() == Rule::venue {
