@@ -959,6 +959,8 @@
   "songLighting.importFromFs": "Import from Filesystem",
   "songLighting.browseServer": "Browse Server Filesystem...",
   "songLighting.addDslPrompt": "Light show filename (e.g. verse_lights):",
+  "songLighting.badFileName": "A light show file name cannot contain a path",
+  "songLighting.fileExists": "\"{name}\" is already one of this song's light show files",
   "songLighting.confirmRemove": "Remove \"{name}\" from this song and delete the file?",
   "songLighting.parseError": "parse error",
   "songLighting.removeFile": "Remove light file",

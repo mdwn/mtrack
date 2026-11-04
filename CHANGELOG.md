@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A light show added in the song editor lands in the song's folder, and the song keeps
+  loading (#639)**: the editor named a song's first show file without the song's folder, so the file
+  was written beside the song folders, and named an added file with the folder, which
+  `song.yaml` then looked for inside the folder again. Either way the song failed to load with
+  "DSL lighting show file does not exist". Removing a show left its entry in `song.yaml` for the
+  same reason. The file goes in the song's folder, `song.yaml` names it from there, and a
+  removal takes the entry out. New files are saved before the config, so the reload the
+  config save starts finds them; the song's other files after it, so a tempo saved with them
+  is the one they are checked against; removed files are deleted last, once the config no
+  longer names them. What is typed in the Raw DSL tab is saved as typed, and a file name with a
+  path in it, or one the song already has, is refused. A song already broken this way loads
+  again once its `song.yaml` names the file by its bare name (`file: show.light`) and the file
+  is in the song's folder.
+
 ## [0.17.4] - 2026-10-26
 
 ### Fixed
