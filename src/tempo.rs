@@ -1163,7 +1163,7 @@ impl TempoMap {
         // number of bars of pulses in, and of quarters. What is left over before the first
         // whole bar has no pulses. Snapped first, so a count-in of exactly
         // whole bars that floating point puts a hair short keeps its first.
-        let interval = 60.0 / self.initial_bpm / PULSES_PER_QUARTER;
+        let interval = steady_secs(self.initial_bpm, 1.0) / PULSES_PER_QUARTER;
         let bar_pulses = ((self.initial_time_signature.beats_per_measure() * PULSES_PER_QUARTER)
             .round() as usize)
             .max(1);
