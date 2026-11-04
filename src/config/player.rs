@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::error::ConfigError;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 fn default_active_playlist() -> String {
     "playlist".to_string()
@@ -382,18 +382,6 @@ impl Player {
         Ok(())
     }
 
-    /// Gets the profiles directory, resolved relative to the given config path.
-    pub fn profiles_dir_resolved(&self, config_path: &Path) -> Option<PathBuf> {
-        let dir_str = self.profiles_dir.as_ref()?;
-        let dir_path = PathBuf::from(dir_str);
-        if dir_path.is_absolute() {
-            Some(dir_path)
-        } else {
-            let config_dir = config_path.parent().unwrap_or(Path::new("."));
-            Some(config_dir.join(dir_path))
-        }
-    }
-
     /// Normalizes legacy configuration fields into profiles.
     /// After normalization, `profiles` is the source of truth.
     fn normalize(&mut self) {
@@ -545,12 +533,7 @@ impl Player {
     /// location, if `profiles_dir` is set.
     pub fn resolved_profiles_dir(&self, config_path: &Path) -> Option<PathBuf> {
         let dir = self.profiles_dir.as_ref()?;
-        Some(if Path::new(dir).is_absolute() {
-            PathBuf::from(dir)
-        } else {
-            let config_dir = config_path.parent().unwrap_or(Path::new("."));
-            config_dir.join(dir)
-        })
+        Some(crate::util::project_dir_of(config_path).join(dir))
     }
 
     /// Returns a mutable reference to the active profile for the given
@@ -617,14 +600,8 @@ impl Player {
 
     /// Gets the playlists directory, resolved relative to the given config path.
     pub fn playlists_dir(&self, config_path: &Path) -> Option<PathBuf> {
-        let dir_str = self.playlists_dir.as_ref()?;
-        let dir_path = PathBuf::from(dir_str);
-        if dir_path.is_absolute() {
-            Some(dir_path)
-        } else {
-            let config_dir = config_path.parent().unwrap_or(Path::new("."));
-            Some(config_dir.join(dir_path))
-        }
+        let dir = self.playlists_dir.as_ref()?;
+        Some(crate::util::project_dir_of(config_path).join(dir))
     }
 
     /// Gets the active playlist name.
@@ -644,18 +621,7 @@ impl Player {
 
     /// Gets the path to the song definitions.
     pub fn songs(&self, player_path: &Path) -> PathBuf {
-        let songs_path_config = PathBuf::from(&self.songs);
-        if songs_path_config.is_absolute() {
-            return songs_path_config;
-        }
-        let player_path_directory = match player_path.parent() {
-            Some(path) => path,
-            None => {
-                error!("Could not find parent of player path {player_path:?}");
-                return songs_path_config;
-            }
-        };
-        player_path_directory.join(&self.songs)
+        crate::util::project_dir_of(player_path).join(&self.songs)
     }
 
     /// Gets the samples configuration, merging inline definitions with any external file.
@@ -669,12 +635,7 @@ impl Player {
 
         // Load external samples file if specified
         if let Some(samples_file) = &self.samples_file {
-            let samples_path = if Path::new(samples_file).is_absolute() {
-                PathBuf::from(samples_file)
-            } else {
-                let player_dir = player_path.parent().unwrap_or(Path::new("."));
-                player_dir.join(samples_file)
-            };
+            let samples_path = crate::util::project_dir_of(player_path).join(samples_file);
 
             info!(path = ?samples_path, "Loading external samples configuration");
 
@@ -2047,17 +2008,18 @@ sample_triggers:
 
     #[test]
     fn test_songs_relative_path_no_parent() {
-        // When player_path has no parent (e.g. a bare filename), the songs
-        // path falls back to the raw config value.
+        // A bare config filename names the current directory as the project,
+        // as `util::project_dir_of` has it for every path a config resolves.
         let player = player_from_yaml(
             r#"
 songs: my_songs
 "#,
         );
-        // A path like "" has no parent
-        let result = player.songs(Path::new(""));
-        // With no parent, should return the raw songs path
-        assert_eq!(result, PathBuf::from("my_songs"));
+        assert_eq!(
+            player.songs(Path::new("mtrack.yaml")),
+            PathBuf::from("./my_songs")
+        );
+        assert_eq!(player.songs(Path::new("")), PathBuf::from("./my_songs"));
     }
 
     #[test]

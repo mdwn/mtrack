@@ -501,11 +501,7 @@ impl Song {
             let (start_secs, end_secs, file) = match &hint.file {
                 None => (at_secs, at_secs, None),
                 Some(file) => {
-                    let path = if Path::new(file).is_absolute() {
-                        PathBuf::from(file)
-                    } else {
-                        start_path.join(file)
-                    };
+                    let path = start_path.join(file);
                     let source = crate::audio::sample_source::create_sample_source_from_file(
                         &path, None, 1024,
                     )

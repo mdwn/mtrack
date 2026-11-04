@@ -1514,13 +1514,7 @@ impl SongSources {
         let legacy_playlist = cli_playlist
             .map(Path::to_path_buf)
             .or_else(|| config.playlist())
-            .map(|path| {
-                if path.is_absolute() {
-                    path
-                } else {
-                    project_dir.join(path)
-                }
-            });
+            .map(|path| project_dir.join(path));
         SongSources {
             songs: crate::util::resolved_dir(&config.songs(config_path)),
             playlists_dir: Some(playlists_dir),

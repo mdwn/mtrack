@@ -3979,13 +3979,8 @@ impl McpServer {
             LightingDirKind::Venues => crate::config::lighting::venues_dir(lighting),
             LightingDirKind::FixtureTypes => crate::config::lighting::fixture_types_dir(lighting),
         };
-        let rel_path = std::path::PathBuf::from(rel);
-        let dir = if rel_path.is_absolute() {
-            rel_path
-        } else {
-            crate::util::project_dir_of(&config_path).join(rel_path)
-        };
         let project = crate::util::project_dir_of(&config_path);
+        let dir = project.join(rel);
         let created = crate::util::create_dir_within_async(dir.clone(), project)
             .await
             .map_err(create_within_err)?;

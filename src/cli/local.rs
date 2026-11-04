@@ -267,7 +267,7 @@ pub async fn start(
         // it to the DMX engine when it comes up.
         player.set_broadcast_tx(broadcast_tx.clone());
 
-        let profiles_dir = player_config.profiles_dir_resolved(player_path);
+        let profiles_dir = player_config.resolved_profiles_dir(player_path);
 
         let webui_state =
             crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
