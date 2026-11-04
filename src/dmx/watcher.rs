@@ -21,7 +21,6 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use super::engine::Engine;
-use crate::lighting::timeline::LightingTimeline;
 use crate::lighting::validation::validate_light_shows;
 use crate::util::FileStamp;
 
@@ -229,11 +228,10 @@ pub(super) fn reload_timeline(
         }
     }
 
-    if all_shows.is_empty() {
-        return Err("No shows found after re-parse".into());
-    }
-
-    let timeline = LightingTimeline::new(all_shows);
+    // No end cap of its own: `reload_show` carries the running timeline's
+    // over.
+    let timeline = super::engine::lighting_timeline(all_shows, Duration::ZERO)
+        .ok_or("No shows found after re-parse")?;
     let tempo_map = timeline.tempo_map_or(fallback_tempo_map);
     Ok(engine.reload_show(timeline, tempo_map, generation))
 }

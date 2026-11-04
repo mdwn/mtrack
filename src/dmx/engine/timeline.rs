@@ -144,20 +144,30 @@ pub(super) enum MidiDmxStart {
     Join,
 }
 
-/// The lighting timeline for a song's DSL shows, ready to start; `None` for a
-/// song without any. With audio, the audio ends the song as it always has;
-/// without, the last effect does rather than the last cue.
+/// The lighting timeline `shows` make, ready to start; `None` for none.
+/// With audio of `audio_length`, the audio ends the song as it always has;
+/// without (zero), the last effect does rather than the last cue.
+pub(crate) fn lighting_timeline(
+    shows: Vec<crate::lighting::parser::LightShow>,
+    audio_length: Duration,
+) -> Option<crate::lighting::timeline::LightingTimeline> {
+    if shows.is_empty() {
+        return None;
+    }
+    let mut timeline = crate::lighting::timeline::LightingTimeline::new(shows);
+    timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
+    Some(timeline)
+}
+
+/// The lighting timeline for a song's DSL shows (see [`lighting_timeline`]);
+/// `None` for a song without any.
 pub(crate) fn song_lighting_timeline(
     song: &Song,
 ) -> Option<crate::lighting::timeline::LightingTimeline> {
-    let all_shows = crate::lighting::evaluate::registered_shows(song);
-    if all_shows.is_empty() {
-        return None;
-    }
-    let mut timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
-    let audio_length = song.duration();
-    timeline.set_end_cap((!audio_length.is_zero()).then_some(audio_length));
-    Some(timeline)
+    lighting_timeline(
+        crate::lighting::evaluate::registered_shows(song),
+        song.duration(),
+    )
 }
 
 impl Engine {
