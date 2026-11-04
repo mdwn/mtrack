@@ -27,8 +27,8 @@ use super::include::{add_included, Include, IncludingFile};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
-    pass_length, pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows,
-    ParseContext, Sequence, SequenceCall, SequenceLoop,
+    pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
+    SequenceCall, SequenceLoop,
 };
 use super::utils::{
     parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
@@ -445,12 +445,6 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
     absolute_time.saturating_sub(Duration::from_secs_f64(offset_secs))
 }
 
-/// Calculate iteration offset for sequence/loop expansion
-#[inline]
-fn iteration_offset(base_time: Duration, duration: Duration, iteration: usize) -> Duration {
-    base_time + (duration * iteration as u32)
-}
-
 /// Determine loop count from a SequenceLoop parameter
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
@@ -604,13 +598,13 @@ fn merge_into(cues: &mut Vec<Cue>, base: Option<usize>, cue: Cue) {
     }
 }
 
-/// The passes of the sequence `call` references, placed from `at`, the
-/// time of the cue it is written in, under a show `offset` of
-/// `offset_secs`: where each cue of each pass lands. A sequence is so many
-/// beats long with each cue so many beats in, counted on the map it was
-/// written against; the passes are laid on `tempo_map` from `at` by the
-/// same count, so they follow every tempo change they run through, inside
-/// a sequence as in a show.
+/// The passes of a sequence -- one a `call` references, or an inline
+/// loop's body -- placed from `at`, the time of the cue it is written in,
+/// under a show `offset` of `offset_secs`: where each cue of each pass
+/// lands. A sequence is so many beats long with each cue so many beats
+/// in, counted on the map it was written against; the passes are laid on
+/// `tempo_map` from `at` by the same count, so they follow every tempo
+/// change they run through, inside a sequence as in a show.
 struct Passes<'a> {
     sequence: Rc<Sequence>,
     tempo_map: &'a Option<TempoMap>,
@@ -634,6 +628,17 @@ impl<'a> Passes<'a> {
     ) -> Result<Self, Box<dyn Error>> {
         let sequence = library.instance(call)?;
         let count = determine_loop_count(call.loop_param)?;
+        Ok(Passes::of(sequence, count, tempo_map, at, offset_secs))
+    }
+
+    /// `count` passes of `sequence` from `at`.
+    fn of(
+        sequence: Rc<Sequence>,
+        count: usize,
+        tempo_map: &'a Option<TempoMap>,
+        at: Duration,
+        offset_secs: f64,
+    ) -> Self {
         let base_time = pass_start(&sequence.cues);
         let pass = sequence.pass_length();
         let mut passes = Passes {
@@ -647,7 +652,7 @@ impl<'a> Passes<'a> {
             pass_beats: 0.0,
         };
         passes.pass_beats = passes.beats_in(base_time + pass);
-        Ok(passes)
+        passes
     }
 
     /// How many beats into the sequence a time on its own timeline is.
@@ -691,12 +696,7 @@ impl<'a> Passes<'a> {
 
 /// Places each pass of the sequence `call` references from `at`, the time
 /// of the cue it is written in, under a show `offset` of `offset_secs`
-/// (see [`Passes`]). Each pass after the first stops
-/// the one before it, so its effects do not pile up; the first starts the
-/// sequence afresh after any earlier `stop sequence`. An effect belongs to
-/// every sequence it is started through, this one after the ones inside
-/// it, and its tempo-aware rates and its durations in beats or measures
-/// are read at the tempo where it plays (#525, #529).
+/// (see [`Passes`] and [`place_passes`]).
 fn place_sequence(
     call: &SequenceCall,
     library: &SequenceLibrary,
@@ -707,37 +707,54 @@ fn place_sequence(
     base: Option<usize>,
 ) -> Result<(), Box<dyn Error>> {
     let passes = Passes::new(call, library, tempo_map, at, offset_secs)?;
-    let name = &call.name;
+    place_passes(&passes, Some(&call.name), cues, base);
+    Ok(())
+}
+
+/// Lays `passes` into `cues` (see [`merge_into`]), each effect's
+/// tempo-aware rates and durations in beats or measures read at the tempo
+/// where it plays (#525, #529). Under a sequence's `name`, each pass after
+/// the first stops the one before it, so its effects do not pile up; the
+/// first starts the sequence afresh after any earlier `stop sequence`; and
+/// an effect belongs to every sequence it is started through, this one
+/// after the ones inside it. An inline loop has no name: its passes are
+/// plain cues.
+fn place_passes(passes: &Passes, name: Option<&str>, cues: &mut Vec<Cue>, base: Option<usize>) {
     for iteration in 0..passes.count {
         for (index, seq_cue) in passes.sequence.cues.iter().enumerate() {
             let mut cue = seq_cue.clone();
             cue.time = passes.time_of(iteration, seq_cue.time);
-            if iteration > 0 && index == 0 {
-                cue.stop_sequences.push(name.clone());
-            }
-            if iteration == 0 && index == 0 {
-                cue.start_sequences.push(name.clone());
+            if let Some(name) = name.filter(|_| index == 0) {
+                if iteration > 0 {
+                    cue.stop_sequences.push(name.to_string());
+                } else {
+                    cue.start_sequences.push(name.to_string());
+                }
             }
             for effect in &mut cue.effects {
-                effect.sequences.push(name.clone());
-                effect.tempo_offset_secs = offset_secs;
-                if let Some(tm) = tempo_map {
-                    effect.resolve_musical_durations(tm, cue.time, offset_secs);
+                effect.sequences.extend(name.map(str::to_string));
+                effect.tempo_offset_secs = passes.offset_secs;
+                if let Some(tm) = passes.tempo_map {
+                    effect.resolve_musical_durations(tm, cue.time, passes.offset_secs);
                 }
             }
             merge_into(cues, base, cue);
         }
     }
-    Ok(())
 }
 
-/// Parse and expand an inline loop into multiple cues
-/// Returns a vector of cues representing all iterations of the loop
-fn parse_and_expand_inline_loop(
+/// Places each pass of an inline `loop { } repeats: n` from `at`, the time
+/// of the cue it is written in, under a show `offset` of `offset_secs`:
+/// its body is a sequence of its own, laid as a referenced one is (see
+/// [`Passes`] and [`place_passes`]).
+fn place_inline_loop(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
-    base_cue_time: Duration,
-) -> Result<Vec<Cue>, Box<dyn Error>> {
+    at: Duration,
+    offset_secs: f64,
+    cues: &mut Vec<Cue>,
+    base: Option<usize>,
+) -> Result<(), Box<dyn Error>> {
     let mut repeats = 1;
     if let Some(count) = pair
         .clone()
@@ -753,29 +770,14 @@ fn parse_and_expand_inline_loop(
     // The body's cues are timed from 0, relative to the loop's start; no
     // sequences are available in an inline loop.
     let library = SequenceLibrary::empty();
-    let loop_cues = parse_cue_block(pair.into_inner(), tempo_map, &library)?.place(&library)?;
-    if loop_cues.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let loop_base_time = pass_start(&loop_cues);
-    let loop_duration = pass_length(&loop_cues);
-
-    // Expand the loop by repeating it N times
-    let mut expanded_cues = Vec::new();
-    for iteration in 0..repeats {
-        let iter_offset = iteration_offset(base_cue_time, loop_duration, iteration);
-
-        for loop_cue in &loop_cues {
-            let mut expanded_cue = loop_cue.clone();
-            // Convert relative loop cue time to absolute time
-            let rel_time = relative_time(loop_cue.time, loop_base_time);
-            expanded_cue.time = iter_offset + rel_time;
-            expanded_cues.push(expanded_cue);
-        }
-    }
-
-    Ok(expanded_cues)
+    let body = Sequence {
+        cues: parse_cue_block(pair.into_inner(), tempo_map, &library)?.place(&library)?,
+        tempo_map: tempo_map.clone(),
+        length: None,
+    };
+    let passes = Passes::of(Rc::new(body), repeats, tempo_map, at, offset_secs);
+    place_passes(&passes, None, cues, base);
+    Ok(())
 }
 
 /// One cue of a show, a sequence or an inline loop body, as the cues it
@@ -951,9 +953,14 @@ fn parse_cue(
         base_index = Some(0);
     }
     for inline_loop_pair in inline_loop_pairs {
-        for cue in parse_and_expand_inline_loop(inline_loop_pair, tempo_map, abs_time)? {
-            merge_into(&mut cues, base_index, cue);
-        }
+        place_inline_loop(
+            inline_loop_pair,
+            tempo_map,
+            abs_time,
+            applied_offset_secs,
+            &mut cues,
+            base_index,
+        )?;
     }
     let references = sequence_ref_pairs
         .into_iter()
@@ -1122,20 +1129,6 @@ mod tests {
     fn remove_time_offset_saturates() {
         let result = remove_time_offset(Duration::from_secs(1), 5.0);
         assert_eq!(result, Duration::ZERO);
-    }
-
-    // ── iteration_offset ─────────────────────────────────────────
-
-    #[test]
-    fn iteration_offset_first() {
-        let result = iteration_offset(Duration::from_secs(10), Duration::from_secs(5), 0);
-        assert_eq!(result, Duration::from_secs(10));
-    }
-
-    #[test]
-    fn iteration_offset_third() {
-        let result = iteration_offset(Duration::from_secs(10), Duration::from_secs(5), 2);
-        assert_eq!(result, Duration::from_secs(20));
     }
 
     // ── determine_loop_count ─────────────────────────────────────

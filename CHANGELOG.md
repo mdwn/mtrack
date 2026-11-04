@@ -175,6 +175,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other; it was an error, milliseconds being read as a whole number. Every time is read through
   one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
   allowed it.
+- **An inline loop follows the tempo map**: a `loop { } repeats:` lays its passes in beats
+  through the tempo changes they run through, as a referenced sequence does, and reads each
+  pass's `beats` and `measures` durations at the tempo where it plays; its passes used to be
+  placed a fixed number of seconds apart, the first pass's length, their durations read at
+  the loop's own start. Its effects carry the show `offset` in force at the loop, as a
+  sequence's do. A loop under one tempo is placed as it was.
 - **An effect is refused at load, and reported by lint, by one rule**: a `strobe` needs a
   strobe channel, a dimmer or colour channels (the engine strobes a dimmer or colour in
   software; lint used to report a strobe on a group with no strobe channel), a `static`
