@@ -16,7 +16,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::tempo::{
-    TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
+    TempoTransition, TimeSignature, TransitionCurve,
 };
 use super::grammar::Rule;
 use super::utils::{parse_measure_time, parse_time_string};
@@ -66,8 +67,8 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                     Rule::tempo_time_signature => {
                         for value_pair in content_pair.into_inner() {
                             if value_pair.as_rule() == Rule::time_sig_value {
-                                let (num, den) = parse_time_signature(value_pair.as_str())?;
-                                time_signature = TimeSignature::new(num, den);
+                                time_signature =
+                                    parse_signature_in(value_pair.as_str(), SignatureRange::Light)?;
                             }
                         }
                     }
@@ -156,8 +157,10 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                             Rule::tempo_change_time_signature => {
                                 for value_pair in actual_param.into_inner() {
                                     if value_pair.as_rule() == Rule::time_sig_value {
-                                        let (num, den) = parse_time_signature(value_pair.as_str())?;
-                                        time_signature = Some(TimeSignature::new(num, den));
+                                        time_signature = Some(parse_signature_in(
+                                            value_pair.as_str(),
+                                            SignatureRange::Light,
+                                        )?);
                                     }
                                 }
                             }
@@ -259,17 +262,6 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
     })
 }
 
-pub(crate) fn parse_time_signature(value: &str) -> Result<(u32, u32), Box<dyn Error>> {
-    let value = value.trim();
-    let parts: Vec<&str> = value.split('/').collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid time signature format: {}", value).into());
-    }
-    let numerator: u32 = parts[0].trim().parse()?;
-    let denominator: u32 = parts[1].trim().parse()?;
-    Ok((numerator, denominator))
-}
-
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
     let trimmed = value.trim();
     if trimmed.ends_with("ms") {
@@ -298,70 +290,6 @@ mod tests {
     use super::*;
     use crate::lighting::parser::grammar::{LightingParser, Rule};
     use pest::Parser;
-
-    // ── parse_time_signature ─────────────────────────────────────
-
-    #[test]
-    fn time_signature_4_4() {
-        let (num, den) = parse_time_signature("4/4").unwrap();
-        assert_eq!((num, den), (4, 4));
-    }
-
-    #[test]
-    fn time_signature_3_4() {
-        let (num, den) = parse_time_signature("3/4").unwrap();
-        assert_eq!((num, den), (3, 4));
-    }
-
-    #[test]
-    fn time_signature_6_8() {
-        let (num, den) = parse_time_signature("6/8").unwrap();
-        assert_eq!((num, den), (6, 8));
-    }
-
-    #[test]
-    fn time_signature_5_4() {
-        let (num, den) = parse_time_signature("5/4").unwrap();
-        assert_eq!((num, den), (5, 4));
-    }
-
-    #[test]
-    fn time_signature_with_whitespace() {
-        let (num, den) = parse_time_signature("  4/4  ").unwrap();
-        assert_eq!((num, den), (4, 4));
-    }
-
-    #[test]
-    fn time_signature_missing_slash() {
-        assert!(parse_time_signature("44").is_err());
-    }
-
-    #[test]
-    fn time_signature_too_many_parts() {
-        assert!(parse_time_signature("4/4/4").is_err());
-    }
-
-    #[test]
-    fn time_signature_non_numeric() {
-        assert!(parse_time_signature("abc/4").is_err());
-    }
-
-    #[test]
-    fn time_signature_empty() {
-        assert!(parse_time_signature("").is_err());
-    }
-
-    #[test]
-    fn time_signature_slash_only() {
-        assert!(parse_time_signature("/").is_err());
-    }
-
-    #[test]
-    fn time_signature_zero_numerator() {
-        // Parses successfully — semantic validation is separate
-        let (num, den) = parse_time_signature("0/4").unwrap();
-        assert_eq!((num, den), (0, 4));
-    }
 
     // ── parse_time_parameter ─────────────────────────────────────
 

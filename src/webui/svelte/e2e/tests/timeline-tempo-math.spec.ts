@@ -367,12 +367,14 @@ test("a long show with many tempo changes lays out quickly", () => {
   expect(performance.now() - started).toBeLessThan(3000);
 });
 
-test("under an offset, a tempo change positioned in time moves with it", () => {
+test("under an offset, the whole tempo map moves with it", () => {
   // The values the server gives (show_edge_cases_tests.rs,
-  // test_offset_shifts_time_positioned_tempo_changes).
+  // test_offset_shifts_time_positioned_tempo_changes): a change positioned
+  // in time moves with the offset like one positioned by bar, so the cue
+  // is its score time plus the offset.
   for (const [transition, want] of [
-    [undefined, 11000],
-    ["4", 10014.201009],
+    [undefined, 12000],
+    ["4", 10666.666667],
   ] as [string | undefined, number][]) {
     const t = tempo(
       120,
@@ -382,10 +384,10 @@ test("under an offset, a tempo change positioned in time moves with it", () => {
     const cues = [cueAt(1, 1, { offset_measures: 1 }), cueAt(5, 1)];
     const positions = computeAdjustedCuePositions(cues, t);
     close(positions[1].adjustedMs, want, `${transition}`);
-    // Its own place in the map, for its durations, is unshifted.
+    // Its own place in the map, for its durations, is the same.
     close(positions[1].rawMs, transition ? bar(t, 5) : 10000);
   }
-  // A change positioned by bar stays on its bar.
+  // A change positioned by bar stays on its bar too.
   const barred = tempo(120, [4, 4], [at(4, 1, { bpm: 60 })]);
   const positions = computeAdjustedCuePositions(
     [cueAt(1, 1, { offset_measures: 1 }), cueAt(5, 1)],
@@ -395,9 +397,9 @@ test("under an offset, a tempo change positioned in time moves with it", () => {
 });
 
 test("placing a cue under an offset round-trips with its layout", () => {
-  // Offsets, a time-positioned ramp the offset moves, and a bar-positioned
-  // ramp that stays: a cue placed at the time it is drawn at comes back
-  // as the same bar and beat, and is drawn there again.
+  // Offsets, a time-positioned ramp and a bar-positioned ramp: a cue
+  // placed at the time it is drawn at comes back as the same bar and beat,
+  // and is drawn there again.
   const t = tempo(
     120,
     [4, 4],
@@ -417,23 +419,21 @@ test("placing a cue under an offset round-trips with its layout", () => {
       const offset = placed.cumulativeOffsetMs;
       const score = placed.adjustedMs - offset;
       const what = `@${m}/${b}`;
-      expect(msToTimestamp(score, "measure_beat", t, offset), what).toEqual(
+      expect(msToTimestamp(score, "measure_beat", t), what).toEqual(
         measureBeatTimestamp(m, b),
       );
       // Snapping a click near it lands back on it.
-      close(snapToNearestGrid(score + 15, t, "beat", offset), score, what);
-      close(timestampToMs(measureBeatTimestamp(m, b), t, offset), score, what);
+      close(snapToNearestGrid(score + 15, t, "beat"), score, what);
+      close(timestampToMs(measureBeatTimestamp(m, b), t), score, what);
     }
   }
-  // The offset does move the time-positioned ramp: under it, bar 5 is
-  // not where it is unshifted.
+  // The offset moves the whole map: under it, bar 5 is its unshifted
+  // place plus the offset.
   const offset = computeAdjustedCuePositions(
     [...offsetCues, cueAt(5, 1)],
     t,
   )[2];
-  expect(
-    Math.abs(offset.adjustedMs - offset.cumulativeOffsetMs - offset.rawMs),
-  ).toBeGreaterThan(1);
+  close(offset.adjustedMs - offset.cumulativeOffsetMs, offset.rawMs);
 });
 
 test("a snapped beat or bar reads back as one, wherever it starts", () => {

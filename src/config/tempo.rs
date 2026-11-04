@@ -16,7 +16,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::tempo::{
-    TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
+    TempoTransition, TimeSignature, TransitionCurve,
 };
 
 /// A YAML representation of a song's tempo map. This is the canonical
@@ -75,33 +76,10 @@ fn default_time_signature() -> String {
     "4/4".to_string()
 }
 
-/// Parses a "numerator/denominator" time signature string.
+/// Parses a "numerator/denominator" time signature string, in the range a
+/// song's `tempo:` block takes.
 pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
-    let mut parts = raw.split('/');
-    let (numerator, denominator) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(n), Some(d), None) => (
-            n.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature numerator in {raw:?}"))?,
-            d.trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
-        ),
-        _ => {
-            return Err(format!(
-                "time signature {raw:?} must be numerator/denominator"
-            ))
-        }
-    };
-    if numerator == 0 || numerator > 64 {
-        return Err(format!("time signature numerator {numerator} out of range"));
-    }
-    if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
-        return Err(format!(
-            "time signature denominator {denominator} must be a power of two up to 32"
-        ));
-    }
-    Ok(TimeSignature::new(numerator, denominator))
+    parse_signature_in(raw, SignatureRange::Song)
 }
 
 impl TempoConfig {
@@ -110,39 +88,17 @@ impl TempoConfig {
         self.to_tempo_map().map(|_| ())
     }
 
-    /// The time signature in effect at the start of a measure (1-indexed),
-    /// or `None` if any signature along the way fails to parse.
+    /// How many beats a measure (1-indexed) holds, as the beat grid counts
+    /// them: one per numerator unit, so 6/8 is six beats and not three.
+    /// This is the unit `start_beat` / `end_beat` are expressed in. `None`
+    /// if the configuration does not make a tempo map (`validate` says why).
     ///
     /// A change anchored mid-measure does not govern the measure it lands
     /// in — `BeatGrid::from_tempo_map` reads the signature at the measure's
     /// downbeat — so only changes at or before that downbeat count.
-    pub fn time_signature_at_measure(&self, measure: u32) -> Option<TimeSignature> {
-        let mut signature = parse_time_signature(&self.time_signature).ok()?;
-        let mut best: Option<(u32, f64)> = None;
-        for change in &self.changes {
-            let beat = change.beat.unwrap_or(1.0);
-            let governs = change.measure < measure || (change.measure == measure && beat <= 1.0);
-            if !governs {
-                continue;
-            }
-            let Some(raw) = &change.time_signature else {
-                continue;
-            };
-            if best.is_some_and(|(m, b)| (change.measure, beat) < (m, b)) {
-                continue;
-            }
-            signature = parse_time_signature(raw).ok()?;
-            best = Some((change.measure, beat));
-        }
-        Some(signature)
-    }
-
-    /// How many beats a measure (1-indexed) holds, as the beat grid counts
-    /// them: one per numerator unit, so 6/8 is six beats and not three.
-    /// This is the unit `start_beat` / `end_beat` are expressed in.
     pub fn beats_in_measure(&self, measure: u32) -> Option<u32> {
-        self.time_signature_at_measure(measure)
-            .map(|sig| sig.numerator)
+        let map = self.to_tempo_map().ok()?;
+        Some(map.time_signature_at_measure(measure).numerator)
     }
 
     /// Converts this configuration into a resolved tempo map.
@@ -248,26 +204,6 @@ mod tests {
             .unwrap()
             .try_deserialize()
             .unwrap()
-    }
-
-    #[test]
-    fn parse_time_signatures() {
-        assert_eq!(
-            parse_time_signature("4/4").unwrap(),
-            TimeSignature::new(4, 4)
-        );
-        assert_eq!(
-            parse_time_signature("7/8").unwrap(),
-            TimeSignature::new(7, 8)
-        );
-        assert_eq!(
-            parse_time_signature(" 6 / 8 ").unwrap(),
-            TimeSignature::new(6, 8)
-        );
-        assert!(parse_time_signature("44").is_err());
-        assert!(parse_time_signature("4/3").is_err());
-        assert!(parse_time_signature("0/4").is_err());
-        assert!(parse_time_signature("4/4/4").is_err());
     }
 
     #[test]

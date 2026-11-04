@@ -14,6 +14,8 @@
 
 use std::time::Duration;
 
+use crate::tempo::{steady_secs, DEFAULT_BPM};
+
 /// Helper to convert duration to frequency/cycles per second
 #[inline]
 fn duration_to_rate(duration_secs: f64) -> f64 {
@@ -43,11 +45,10 @@ fn measures_to_duration_secs(
         let beats_per_measure = tm
             .time_signature_at_time(at_time, offset_secs)
             .beats_per_measure();
-        measures * beats_per_measure * 60.0 / bpm
+        steady_secs(bpm, measures * beats_per_measure)
     } else {
         // Fallback: assume default BPM, 4/4 time
-        let beats = measures * 4.0;
-        beats * 60.0 / crate::lighting::tempo::DEFAULT_BPM
+        steady_secs(DEFAULT_BPM, measures * 4.0)
     }
 }
 
@@ -60,10 +61,10 @@ fn beats_to_duration_secs(
     offset_secs: f64,
 ) -> f64 {
     if let Some(tm) = tempo_map {
-        beats * 60.0 / tm.bpm_at_time(at_time, offset_secs)
+        steady_secs(tm.bpm_at_time(at_time, offset_secs), beats)
     } else {
         // Fallback: assume default BPM
-        beats * 60.0 / crate::lighting::tempo::DEFAULT_BPM
+        steady_secs(DEFAULT_BPM, beats)
     }
 }
 

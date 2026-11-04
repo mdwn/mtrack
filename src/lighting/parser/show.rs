@@ -485,30 +485,19 @@ fn parse_sequence_cue_structure(
         }
     }
 
-    // Calculate unshifted score_time first for use as score_anchor
+    // Resolve measure_time to score-space time: the position on the
+    // unshifted map, kept as score_anchor too. The offset is applied to the
+    // absolute time below.
     let mut unshifted_score_time = Duration::ZERO;
-    if let Some(measure_pair) = measure_time_pair.clone() {
-        let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        if let Some(tm) = tempo_map {
-            unshifted_score_time = tm
-                .measure_to_time_with_offset(measure, beat, 0, 0.0)
-                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        }
-    }
-
-    // Resolve measure_time to score-space time
-    // Note: We pass offset_secs here so that tempo changes are shifted by offsets
-    // This ensures that when offsets are applied, tempo changes happen at the correct shifted times
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        if let Some(tm) = tempo_map {
-            score_time = tm
-                // Pass offset_secs so tempo changes are shifted; measure_offset stays 0 for score-space
-                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
-                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        } else {
+        let Some(tm) = tempo_map else {
             return Err("Measure-based timing requires a tempo section".into());
-        }
+        };
+        score_time = tm
+            .measure_to_time_with_offset(measure, beat, 0, 0.0)
+            .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
+        unshifted_score_time = score_time;
     }
 
     // Resolve anchor for offset conversion in SCORE time (not shifted by previous offsets)
@@ -1180,31 +1169,19 @@ fn parse_cue_definition(
         }
     }
 
-    // Resolve measure_time to score_time
-    // Note: We pass offset_secs here so that tempo changes are shifted by offsets
-    // This ensures that when offsets are applied, tempo changes happen at the correct shifted times
-    // Also calculate unshifted_score_time for use as score_anchor (before consuming measure_time_pair)
+    // Resolve measure_time to score_time: the position on the unshifted
+    // map, kept as score_anchor too. The offset is applied to the absolute
+    // time below.
     let mut unshifted_score_time_seq = Duration::ZERO;
-    if let Some(measure_pair) = measure_time_pair.as_ref() {
-        let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        if let Some(tm) = tempo_map {
-            // Calculate unshifted time first for anchor
-            unshifted_score_time_seq = tm
-                .measure_to_time_with_offset(measure, beat, 0, 0.0)
-                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        }
-    }
-
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        if let Some(tm) = tempo_map {
-            score_time = tm
-                // Pass offset_secs so tempo changes are shifted; measure_offset stays 0 for score-space
-                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
-                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-        } else {
+        let Some(tm) = tempo_map else {
             return Err("Measure-based timing requires a tempo section".into());
-        }
+        };
+        score_time = tm
+            .measure_to_time_with_offset(measure, beat, 0, 0.0)
+            .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
+        unshifted_score_time_seq = score_time;
     }
 
     // Anchor for offset conversion in SCORE time (not shifted by previous offsets)

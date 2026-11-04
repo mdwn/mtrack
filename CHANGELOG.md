@@ -150,6 +150,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A tempo change positioned in time before `start:` is applied at the start**: the beat
+  grid, the clock and lengths already counted such a change from bar 1; the tempo lookup that
+  times tempo-aware effect rates ran it from its own time, so a ramp written before the start
+  was part way through (or over) by bar 1. It starts at bar 1 now, with the rest (start 2 s,
+  120 bpm, a 4-beat ramp to 60 at 0.5 s: 120 at 2 s, where it read 86.25; 75 at 4 s, where it
+  read 60).
+- **A ramp written at the same instant as a snap ramps from the snapped tempo**: tempo-aware
+  effect rates during such a ramp now ramp from the snapped tempo, as the beat grid already did
+  (the tempo lookup used to read the tempo a nanosecond before the change and ramp from there).
+- **A light show's `tempo {}` refuses a zero time signature**: `time_signature: 0/4` or `3/0`
+  parsed (and made a bar of no length, or of infinite length); the one signature parser now
+  refuses them with a clear error, as a song's `tempo:` always has.
 - **The lint judges an effect by when it really ends**: `past-end-of-song` and `replace-overlap`
   now take each effect's end as the show plays it, the same end the show's end and `analyze_show`
   use. A freeze or a slowed layer carries an effect past its written end (now reported if that
@@ -219,6 +231,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Under an `offset`, the whole tempo map moves with it**: a cue at `@bar/beat` after
+  `offset N measures` is its score position's time plus the offset, with every tempo change,
+  positioned by bar or in time, moved by the same offset -- the rule lengths and tempo lookups
+  already followed. The position walk moved only the time-positioned changes, by the offset's
+  worth of beats on the unshifted map (a cue at @5/1 after a change at 6 s under a one-bar offset
+  fired at 11 s; it fires at 12 s), and the lighting timeline placed, dragged and snapped cues the
+  same wrong way; it follows the one rule now.
+- **A length in measures at a tempo that is not a number no longer hangs**: the bar walk it
+  used looked for a beat position that is not finite for ever; the one bar walk now stops, as the
+  bar-and-beat lookup already did.
 - **A song without a show no longer brings the last song's back on an edit**: the last song's
   light show file watcher went on running under a song with no show of its own (MIDI DMX only,
   or no lights, and with ambient light fading in over the last song until it was all the way in),
