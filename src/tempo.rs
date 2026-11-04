@@ -618,6 +618,13 @@ impl Segments<'_> {
     }
 }
 
+/// A musical length, converted to time by [`TempoMap::span`].
+#[derive(Debug, Clone, Copy)]
+enum Span {
+    Beats(f64),
+    Measures(f64),
+}
+
 /// Tempo map that tracks tempo and time signature changes over time
 #[derive(Debug, Clone)]
 pub struct TempoMap {
@@ -904,11 +911,7 @@ impl TempoMap {
     /// and gradual transitions are integrated as cue positions integrate them.
     /// `offset_secs` shifts the tempo map the way it shifts cue times.
     pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
-        let segments = self.segments();
-        let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
-        let start_beats = snap_beats(segments.beats_at(score_at));
-        let end_beats = snap_beats(start_beats + beats);
-        segments.time_at(end_beats).saturating_sub(score_at)
+        self.span(Span::Beats(beats), at_time, offset_secs, true)
     }
 
     /// Convert a duration in measures to absolute Duration at a given time.
@@ -926,31 +929,43 @@ impl TempoMap {
         at_time: Duration,
         offset_secs: f64,
     ) -> Duration {
-        let segments = self.segments();
-        let score_at = at_time.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
-        let start_beats = snap_beats(segments.beats_at(score_at));
-        let end_measures = segments.metres.measures_at(start_beats) + measures;
-        let end_beats = snap_beats(segments.metres.beats_at_measures(end_measures));
-        segments.time_at(end_beats).saturating_sub(score_at)
+        self.span(Span::Measures(measures), at_time, offset_secs, true)
     }
 
     /// How long the `beats` before `end` last: the same position walk as
     /// [`Self::beats_to_duration`], run backwards from `end`.
     pub fn beats_before(&self, beats: f64, end: Duration) -> Duration {
-        let segments = self.segments();
-        let end_beats = snap_beats(segments.beats_at(end));
-        let start_beats = snap_beats(end_beats - beats);
-        end.saturating_sub(segments.time_at(start_beats))
+        self.span(Span::Beats(beats), end, 0.0, false)
     }
 
     /// How long the `measures` before `end` last: the same position walk as
     /// [`Self::measures_to_duration`], run backwards from `end`.
     pub fn measures_before(&self, measures: f64, end: Duration) -> Duration {
+        self.span(Span::Measures(measures), end, 0.0, false)
+    }
+
+    /// How long `length` lasts from `at` (`forward`) or up to it, as a
+    /// position problem: the beat position at `at`, moved by the length (in
+    /// beats, or in bars of the metres there), converted back to time through
+    /// the walk cue positions use. `offset_secs` shifts the tempo map the way
+    /// it shifts cue times: the conversion runs in score time.
+    fn span(&self, length: Span, at: Duration, offset_secs: f64, forward: bool) -> Duration {
         let segments = self.segments();
-        let end_beats = snap_beats(segments.beats_at(end));
-        let start_measures = segments.metres.measures_at(end_beats) - measures;
-        let start_beats = snap_beats(segments.metres.beats_at_measures(start_measures));
-        end.saturating_sub(segments.time_at(start_beats))
+        let score_at = at.saturating_sub(Duration::from_secs_f64(offset_secs.max(0.0)));
+        let from = snap_beats(segments.beats_at(score_at));
+        let sign = if forward { 1.0 } else { -1.0 };
+        let to = snap_beats(match length {
+            Span::Beats(beats) => from + sign * beats,
+            Span::Measures(measures) => segments
+                .metres
+                .beats_at_measures(segments.metres.measures_at(from) + sign * measures),
+        });
+        let at_to = segments.time_at(to);
+        if forward {
+            at_to.saturating_sub(score_at)
+        } else {
+            score_at.saturating_sub(at_to)
+        }
     }
 
     /// The times of a MIDI beat clock's pulses, 24 to the quarter note, from
