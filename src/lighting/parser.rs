@@ -19,11 +19,13 @@ use std::path::{Path, PathBuf};
 
 use pest::Parser;
 
+pub mod document;
 mod effect_parse;
 mod error;
 pub(crate) mod fixture_venue; // Make accessible for tests
 pub(crate) mod grammar;
 mod include;
+pub mod layout;
 mod sequences;
 mod show;
 mod tempo_parse;

@@ -31,7 +31,7 @@ use pest::Parser;
 use super::super::tempo::TempoMap;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
-use super::show::parse_sequence_structure;
+use super::show::{parse_sequence_structure, ParsedCue, SequenceDefinition};
 use super::types::{Sequence, SequenceCall};
 
 /// A sequence as written: its parameters and its source.
@@ -264,6 +264,25 @@ impl SequenceLibrary {
         template: &SequenceTemplate,
         bindings: &Bindings,
     ) -> Result<Sequence, Box<dyn Error>> {
+        let definition = self.definition(template, bindings)?;
+        let tempo = definition.block.effective_tempo.clone();
+        // Checked before any reference is placed: a cue past the length is
+        // an error whatever it would expand to, and a long expansion is
+        // spared.
+        let length = definition.declared_length(tempo.as_ref())?;
+        Ok(Sequence {
+            cues: definition.block.place(self)?,
+            tempo_map: tempo,
+            length,
+        })
+    }
+
+    /// The definition `template` makes with its parameters bound, parsed.
+    fn definition(
+        &self,
+        template: &SequenceTemplate,
+        bindings: &Bindings,
+    ) -> Result<SequenceDefinition, Box<dyn Error>> {
         let text = substitute(&template.source, bindings);
         let pair = LightingParser::parse(Rule::sequence_source, &text)
             .map_err(|e| {
@@ -275,19 +294,28 @@ impl SequenceLibrary {
             .next()
             .and_then(|source| source.into_inner().find(|p| p.as_rule() == Rule::sequence))
             .ok_or("Sequence definition did not parse (internal error)")?;
+        parse_sequence_structure(pair, &self.global_tempo, self)
+    }
 
-        let definition = parse_sequence_structure(pair, &self.global_tempo, self)?;
+    /// The sequence `name` with its parameters at their defaults, its
+    /// written cues kept apart with what each puts on the timeline, and the
+    /// map it plays to (its own `tempo` block, flagged, else the file's):
+    /// what the web UI's sequence editor lays out. One with a parameter
+    /// that has no default cannot be laid out alone.
+    pub(super) fn structure(
+        &self,
+        name: &str,
+    ) -> Result<(Vec<ParsedCue>, Option<TempoMap>, bool), Box<dyn Error>> {
+        let template = self
+            .templates
+            .get(name)
+            .ok_or_else(|| format!("Sequence '{name}' not found"))?;
+        let bindings = bind(name, template, &[])?;
+        let definition = self.definition(template, &bindings)?;
         let tempo = definition.block.effective_tempo.clone();
-
-        // Checked before any reference is placed: a cue past the length is
-        // an error whatever it would expand to, and a long expansion is
-        // spared.
-        let length = definition.declared_length(tempo.as_ref())?;
-        Ok(Sequence {
-            cues: definition.block.place(self)?,
-            tempo_map: tempo,
-            length,
-        })
+        definition.declared_length(tempo.as_ref())?;
+        let own_tempo = definition.block.own_tempo;
+        Ok((definition.block.place_each(self)?, tempo, own_tempo))
     }
 }
 

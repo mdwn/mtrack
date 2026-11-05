@@ -95,7 +95,7 @@ impl IncludeReader for Sources {
 
 /// A path with its `.` and `..` components folded away, as the file
 /// system would reach it: what stands for a file held in memory.
-fn normalize(path: &Path) -> PathBuf {
+pub(super) fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
