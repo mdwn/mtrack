@@ -30,8 +30,8 @@ pub struct StoreSnapshot {
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ConfigSaved {
-    pub yaml: String,
-    pub checksum: String,
+    #[serde(flatten)]
+    pub snapshot: StoreSnapshot,
     #[serde(flatten)]
     pub reload: ConfigReload,
 }

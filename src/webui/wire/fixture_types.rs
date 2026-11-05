@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lighting::findings::VenueError;
 use crate::lighting::fixture_data::{FixtureType, MovementLimits, StrobeCurve, Venue};
-use crate::lighting::geometry::Vec3;
+use crate::webui::wire::messages::{FixturePlacement, StageVenue};
 
 /// A file in a lighting directory that could not be parsed, reported
 /// beside the ones that could.
@@ -314,31 +314,14 @@ pub struct VenueDetail {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueScene {
     pub fixtures: BTreeMap<String, SceneFixture>,
-    pub venue: SceneVenue,
+    pub venue: StageVenue,
 }
 
 /// A fixture as the 3D view draws it from the files.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SceneFixture {
-    pub tags: Vec<String>,
-    #[serde(rename = "type")]
-    pub fixture_type: String,
+    #[serde(flatten)]
+    pub placement: FixturePlacement,
     pub mode: Option<String>,
-    pub position: Option<Vec3>,
-    pub rotation: Option<Vec3>,
-    pub beam_angle: Option<f64>,
-    /// The type's rig model under /api/lighting/assets/, when it has one.
-    pub rig: Option<String>,
-}
-
-/// The venue's points and scenery.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct SceneVenue {
-    pub name: String,
-    pub focus_points: BTreeMap<String, Vec3>,
-    pub scenery: Option<String>,
-    pub scenery_error: Option<String>,
 }

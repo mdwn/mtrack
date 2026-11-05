@@ -67,15 +67,13 @@ fn next_up_leaves_out_what_its_case_does_not_decide() {
 
 #[test]
 fn fixture_metadata_names_its_type_type() {
-    let fixture = json!(FixtureMetadata {
+    let fixture = json!(FixturePlacement {
         tags: vec![],
         fixture_type: "par".to_string(),
         position: None,
         rotation: None,
         beam_angle: None,
         rig: None,
-        capabilities: vec![],
-        cells: vec![],
     });
     assert_eq!(fixture["type"], "par");
 }

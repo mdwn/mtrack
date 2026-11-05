@@ -276,22 +276,8 @@ pub struct StageMetadata {
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureMetadata {
-    pub tags: Vec<String>,
-    #[serde(rename = "type")]
-    pub fixture_type: String,
-    /// Stage position in meters, when the venue places the fixture; the
-    /// stage view draws a plot from it and falls back to the tag layout
-    /// without.
-    pub position: Option<Vec3>,
-    /// Mounting rotation in degrees about X, Y, Z, when the venue states
-    /// it.
-    pub rotation: Option<Vec3>,
-    /// Degrees the venue says this unit really throws, or `null` for its
-    /// type's own; a drawing hint only.
-    pub beam_angle: Option<f64>,
-    /// The rig model's path under /api/lighting/assets/, when the type has
-    /// one; the 3D view draws a generic body without.
-    pub rig: Option<String>,
+    #[serde(flatten)]
+    pub placement: FixturePlacement,
     /// What the fixture can do (`color`, `pan_tilt`, `strobe`, `cells`),
     /// named as the fit endpoint names them: a fixture with `pan_tilt` is
     /// a mover, whatever its type's channels look like.
@@ -299,6 +285,27 @@ pub struct FixtureMetadata {
     /// The cells of a pixel fixture, in the manufacturer's order: the plot
     /// draws one segment each.
     pub cells: Vec<CellPlacement>,
+}
+
+/// Where and how a fixture hangs, as the venue says.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FixturePlacement {
+    pub tags: Vec<String>,
+    #[serde(rename = "type")]
+    pub fixture_type: String,
+    /// Stage position in meters, when the venue places the fixture; the
+    /// stage view draws a plot from it and falls back to the tag layout
+    /// without.
+    pub position: Option<Vec3>,
+    /// Mounting rotation in degrees about X, Y, Z.
+    pub rotation: Option<Vec3>,
+    /// Degrees the venue says this unit really throws, or `null` for its
+    /// type's own; a drawing hint only.
+    pub beam_angle: Option<f64>,
+    /// The rig model's path under /api/lighting/assets/, when the type has
+    /// one; the 3D view draws a generic body without.
+    pub rig: Option<String>,
 }
 
 /// A cell of a pixel fixture, with its offset in the fixture's frame
@@ -311,13 +318,21 @@ pub struct CellPlacement {
 }
 
 /// The current venue as the stage views need it.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct VenueMetadata {
+    #[serde(flatten)]
+    pub venue: StageVenue,
+    /// The configured venues directory, for saving edits back.
+    pub dir: Option<String>,
+}
+
+/// A venue's points and scenery.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct VenueMetadata {
+pub struct StageVenue {
     pub name: String,
-    /// The configured venues directory, for saving edits back.
-    pub dir: Option<String>,
     pub focus_points: BTreeMap<String, Vec3>,
     /// The scenery file under /api/lighting/assets/, when the venue came
     /// from an MVR; the 3D view draws it.

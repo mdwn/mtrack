@@ -14,9 +14,10 @@
 
 use crate::webui::wire::fixture_types::{
     BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
-    GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, SceneVenue,
-    StrobeRange, TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
+    GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, StrobeRange,
+    TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
 };
+use crate::webui::wire::messages::FixturePlacement;
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -2979,25 +2980,22 @@ fn venue_scene(
                 .ok()
                 .and_then(|t| t.rig().map(str::to_string));
             let scene = SceneFixture {
-                tags: fixture.tags().to_vec(),
-                fixture_type: fixture.fixture_type().to_string(),
+                placement: FixturePlacement {
+                    tags: fixture.tags().to_vec(),
+                    fixture_type: fixture.fixture_type().to_string(),
+                    position: fixture.position(),
+                    rotation: fixture.rotation(),
+                    beam_angle: fixture.beam_angle(),
+                    rig,
+                },
                 mode: fixture.mode().map(String::from),
-                position: fixture.position(),
-                rotation: fixture.rotation(),
-                beam_angle: fixture.beam_angle(),
-                rig,
             };
             (name.clone(), scene)
         })
         .collect();
     VenueScene {
         fixtures,
-        venue: SceneVenue {
-            name: venue.name().to_string(),
-            focus_points: venue.focus_points().clone(),
-            scenery: system.scenery(venue.name()).map(String::from),
-            scenery_error: system.scenery_error(venue.name()).map(String::from),
-        },
+        venue: super::super::state::stage_venue(system, venue),
     }
 }
 

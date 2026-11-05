@@ -356,12 +356,14 @@ mod messages {
     #[test]
     fn metadata() {
         let fixture = wire::FixtureMetadata {
-            tags: vec!["front".to_string()],
-            fixture_type: "par".to_string(),
-            position: Some([1.0, 2.0, 3.0]),
-            rotation: None,
-            beam_angle: Some(30.0),
-            rig: None,
+            placement: wire::FixturePlacement {
+                tags: vec!["front".to_string()],
+                fixture_type: "par".to_string(),
+                position: Some([1.0, 2.0, 3.0]),
+                rotation: None,
+                beam_angle: Some(30.0),
+                rig: None,
+            },
             capabilities: vec!["color".to_string()],
             cells: vec![wire::CellPlacement {
                 name: "c1".to_string(),
@@ -369,11 +371,16 @@ mod messages {
             }],
         };
         let venue = wire::VenueMetadata {
-            name: "club".to_string(),
+            venue: wire::StageVenue {
+                name: "club".to_string(),
+                focus_points: std::collections::BTreeMap::from([(
+                    "dsc".to_string(),
+                    [0.0, 1.0, 0.0],
+                )]),
+                scenery: Some("club/scene.glb".to_string()),
+                scenery_error: None,
+            },
             dir: None,
-            focus_points: std::collections::BTreeMap::from([("dsc".to_string(), [0.0, 1.0, 0.0])]),
-            scenery: Some("club/scene.glb".to_string()),
-            scenery_error: None,
         };
         let msg = wire::SocketMessage::Metadata(wire::StageMetadata {
             fixtures: std::collections::BTreeMap::from([("p1".to_string(), fixture)]),
@@ -1583,16 +1590,18 @@ mod fixture_types {
             fixtures: BTreeMap::from([(
                 "p1".to_string(),
                 SceneFixture {
-                    tags: vec!["front".to_string()],
-                    fixture_type: "par".to_string(),
+                    placement: crate::webui::wire::messages::FixturePlacement {
+                        tags: vec!["front".to_string()],
+                        fixture_type: "par".to_string(),
+                        position: Some([0.0, 1.0, 2.0]),
+                        rotation: None,
+                        beam_angle: Some(40.0),
+                        rig: None,
+                    },
                     mode: None,
-                    position: Some([0.0, 1.0, 2.0]),
-                    rotation: None,
-                    beam_angle: Some(40.0),
-                    rig: None,
                 },
             )]),
-            venue: SceneVenue {
+            venue: crate::webui::wire::messages::StageVenue {
                 name: "club".to_string(),
                 focus_points: BTreeMap::new(),
                 scenery: None,
@@ -1861,8 +1870,10 @@ mod config {
             body.as_object_mut().unwrap().extend(old(&reload));
             assert_eq!(
                 json!(ConfigSaved {
-                    yaml: "a: 1".to_string(),
-                    checksum: "c".to_string(),
+                    snapshot: StoreSnapshot {
+                        yaml: "a: 1".to_string(),
+                        checksum: "c".to_string(),
+                    },
                     reload: reload.clone(),
                 }),
                 body

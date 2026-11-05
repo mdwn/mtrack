@@ -194,11 +194,11 @@ fn config_snapshot_response(
     status: StatusCode,
     reload: ConfigReload,
 ) -> axum::response::Response {
-    let saved = ConfigSaved {
+    let snapshot = StoreSnapshot {
         yaml: snapshot.yaml,
         checksum: snapshot.checksum,
-        reload,
     };
+    let saved = ConfigSaved { snapshot, reload };
     (status, Json(saved)).into_response()
 }
 

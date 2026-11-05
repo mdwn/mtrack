@@ -923,12 +923,14 @@ pub fn build_metadata_json(
                     .map(String::from)
                     .collect();
                 let fixture = wire::FixtureMetadata {
-                    tags,
-                    fixture_type: fi.fixture_type.clone(),
-                    position: fi.position,
-                    rotation: fi.rotation,
-                    beam_angle: fi.beam_angle,
-                    rig: fi.rig.clone(),
+                    placement: wire::FixturePlacement {
+                        tags,
+                        fixture_type: fi.fixture_type.clone(),
+                        position: fi.position,
+                        rotation: fi.rotation,
+                        beam_angle: fi.beam_angle,
+                        rig: fi.rig.clone(),
+                    },
                     capabilities,
                     cells: fi
                         .cells
@@ -944,16 +946,26 @@ pub fn build_metadata_json(
         }
         if let Some(venue) = system.get_current_venue() {
             metadata.venue = Some(wire::VenueMetadata {
-                name: venue.name().to_string(),
+                venue: stage_venue(&system, venue),
                 dir: system.venues_dir().map(String::from),
-                focus_points: venue.focus_points().clone(),
-                scenery: system.scenery(venue.name()).map(String::from),
-                scenery_error: system.scenery_error(venue.name()).map(String::from),
             });
         }
     }
 
     to_json(&wire::SocketMessage::Metadata(metadata))
+}
+
+/// A venue's points and scenery, as the stage views draw it.
+pub fn stage_venue(
+    system: &crate::lighting::system::LightingSystem,
+    venue: &crate::lighting::types::Venue,
+) -> wire::StageVenue {
+    wire::StageVenue {
+        name: venue.name().to_string(),
+        focus_points: venue.focus_points().clone(),
+        scenery: system.scenery(venue.name()).map(String::from),
+        scenery_error: system.scenery_error(venue.name()).map(String::from),
+    }
 }
 
 /// Extracts fixture names -> tags from the lighting system's current venue.
