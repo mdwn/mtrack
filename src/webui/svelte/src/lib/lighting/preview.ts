@@ -31,7 +31,7 @@ import {
   type Obj,
 } from "./answer";
 import type { SongSummary } from "../api/songs";
-import { timeAtPosition } from "../util/beatGrid";
+import { rules } from "../rules";
 import { sectionColor } from "../sectionColors";
 import type {
   CellChannels,
@@ -142,7 +142,7 @@ export function sectionSegments(song: SongSummary): SectionSegment[] {
   const total = song.duration_ms / 1000;
   if (!grid || total <= 0) return [];
   const at = (measure: number, beat: number | null | undefined) =>
-    timeAtPosition(grid, measure, beat ?? 1) ?? total;
+    rules.grid_query(grid, { measure, beat: beat ?? 1 })?.secs ?? total;
   return song.sections.map((s, i) => {
     const from = Math.min(total, at(s.start_measure, s.start_beat));
     const to = Math.min(total, at(s.end_measure, s.end_beat));

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import type { BeatGrid } from "../../lib/ws/stores";
   import { playbackStore } from "../../lib/ws/stores";
 
   // Never extrapolate more than this past the last frame — if frames stop
@@ -96,10 +97,7 @@
     return beatIdx === measureStart ? 3 : 1;
   }
 
-  function countBeats(
-    grid: { beats: number[]; measure_starts: number[] },
-    measure: number,
-  ): number {
+  function countBeats(grid: BeatGrid, measure: number): number {
     const start = grid.measure_starts[measure];
     const end =
       measure + 1 < grid.measure_starts.length
