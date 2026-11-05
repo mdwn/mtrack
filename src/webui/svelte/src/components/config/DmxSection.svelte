@@ -50,7 +50,6 @@
 
   function removeUniverse(i: number) {
     dmx.universes.splice(i, 1);
-    if (dmx.universes.length === 0) delete dmx.universes;
     onchange();
   }
 
