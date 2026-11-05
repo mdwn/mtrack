@@ -100,7 +100,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
 }
 
 /// The tempo a `bpm: N` sets: a tempo block's, or a change's.
-fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
+pub(crate) fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
     let value = pair.into_inner().next().map_or("", |p| p.as_str().trim());
     Ok(value
         .parse()
@@ -108,7 +108,7 @@ fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
 }
 
 /// The metre a `time_signature: N/D` sets: a tempo block's, or a change's.
-fn signature_of(pair: Pair<Rule>) -> Result<TimeSignature, Box<dyn Error>> {
+pub(crate) fn signature_of(pair: Pair<Rule>) -> Result<TimeSignature, Box<dyn Error>> {
     let value = pair.into_inner().next().map_or("", |p| p.as_str());
     Ok(parse_signature_in(value, SignatureRange::Light)?)
 }

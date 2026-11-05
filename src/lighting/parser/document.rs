@@ -30,9 +30,9 @@ use pest::iterators::Pair;
 use pest::Parser;
 use serde::{Deserialize, Serialize};
 
-use super::super::tempo::{parse_signature_in, SignatureRange};
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
+use super::tempo_parse::{bpm_of, signature_of};
 pub use super::types::{EffectKind, LayerCommandParam, LayerCommandType};
 pub use super::utils::DurationUnit;
 use super::utils::{
@@ -1218,11 +1218,11 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                             &mut section.comment,
                         );
                     }
+                    section.bpm = bpm_of(item.clone())?;
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::number_value)
                     {
-                        section.bpm = value.as_str().trim().parse()?;
                         section.bpm_text = Some(value.as_str().trim().to_string());
                     }
                 }
@@ -1240,11 +1240,11 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                             &mut section.comment,
                         );
                     }
+                    section.time_signature = signature(item.clone())?;
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_sig_value)
                     {
-                        section.time_signature = signature(value.as_str())?;
                         section.time_signature_text = Some(value.as_str().trim().to_string());
                     }
                 }
@@ -1363,17 +1363,18 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
                     .flat_map(Pair::into_inner)
                 {
                     let rule = param.as_rule();
+                    let whole = param.clone();
                     let Some(value) = param.into_inner().next() else {
                         continue;
                     };
                     let text = value.as_str().trim().to_string();
                     let name = match rule {
                         Rule::tempo_bpm => {
-                            change.bpm = Some(text.parse()?);
+                            change.bpm = Some(bpm_of(whole)?);
                             TempoField::Bpm.keyword()
                         }
                         Rule::tempo_time_signature => {
-                            change.time_signature = Some(signature(&text)?);
+                            change.time_signature = Some(signature(whole)?);
                             TempoField::TimeSignature.keyword()
                         }
                         Rule::tempo_change_transition => {
@@ -1402,12 +1403,10 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
     Ok(change)
 }
 
-/// `4/4` as `(4, 4)`, as written: the player's own range check is in
-/// `parse_signature_in`, applied when the file loads.
-/// A `time_signature:` as the player reads it (`parse_signature_in`, a
-/// light show's range).
-fn signature(raw: &str) -> Result<(u32, u32), Box<dyn Error>> {
-    let sig = parse_signature_in(raw, SignatureRange::Light)?;
+/// A `time_signature:` (a block's or a change's) as the player reads it
+/// (`tempo_parse::signature_of`).
+fn signature(pair: Pair<Rule>) -> Result<(u32, u32), Box<dyn Error>> {
+    let sig = signature_of(pair)?;
     Ok((sig.numerator, sig.denominator))
 }
 
