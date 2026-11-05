@@ -78,7 +78,13 @@ impl MidiTiming {
                 if let Some(track) = tracks.first() {
                     (timing.tempo, timing.signatures) = extract_meta(track);
                 }
-                timing.total_ticks = tracks.iter().map(|t| track_ticks(t)).max().unwrap_or(0);
+                // A Format 0 file has one track, and is as long as it; a
+                // non-conformant one with more is not lengthened by them,
+                // as they are not played.
+                timing.total_ticks = match format {
+                    Format::SingleTrack => tracks.first().map_or(0, |t| track_ticks(t)),
+                    _ => tracks.iter().map(|t| track_ticks(t)).max().unwrap_or(0),
+                };
             }
             Format::Sequential => {
                 // Each track follows the one before, so its events are
@@ -672,6 +678,25 @@ mod tests {
     fn test_sequential_empty() {
         let midi = precomputed(&[], 480, Format::Sequential);
         assert!(midi.is_empty());
+    }
+
+    /// A Format 0 file with a second track (midly parses one) is as long
+    /// as its first track, the one played: the beat clock runs over it,
+    /// not over the stray track.
+    #[test]
+    fn a_format_0_file_is_as_long_as_its_only_played_track() {
+        let track0 = vec![note_on(0, 0, 60, 100), end_of_track(3991)];
+        let track1 = vec![note_on(0, 0, 60, 100), end_of_track(15962)];
+        let timing = MidiTiming::of(&[track0, track1], 480, Format::SingleTrack);
+        assert_eq!(timing.total_ticks, 3991);
+        let pulses = crate::midi::beat_clock::PrecomputedBeatClock::from_timing_until(
+            &timing,
+            Duration::ZERO,
+        )
+        .ticks_from(Duration::ZERO)
+        .len();
+        // 3991 ticks of 480 a beat: 199.55 pulses of 20 ticks, so 200 start inside the file.
+        assert_eq!(pulses, 200);
     }
 
     #[test]
