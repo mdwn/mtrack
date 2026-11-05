@@ -43,80 +43,55 @@ use super::tempo_parse::{TRANSITION_MEASURES, TRANSITION_SNAP};
 pub fn write(file: &Document) -> String {
     let mut parts: Vec<String> = Vec::new();
     let includes = file.includes.as_deref().unwrap_or_default();
-
-    // The items in the order the file wrote them, while the lists still
-    // match it (an edit that adds or removes an item writes them grouped).
     let counts = [
         (DocumentItem::Include, includes.len()),
         (DocumentItem::Tempo, usize::from(file.tempo.is_some())),
         (DocumentItem::Sequence, file.sequences.len()),
         (DocumentItem::Show, file.shows.len()),
     ];
-    let written = file.items.as_deref().unwrap_or_default();
-    let order: Vec<DocumentItem> = if as_written(written, &counts) {
-        written.to_vec()
-    } else {
-        grouped(&counts)
-    };
-    let mut next = [0usize; 4];
-    for (i, kind) in order.iter().enumerate() {
-        let slot = &mut next[*kind as usize];
-        let n = *slot;
-        *slot += 1;
+    let order = ordered(file.items.as_deref().unwrap_or_default(), &counts);
+    for (i, &(kind, n)) in order.iter().enumerate() {
         match kind {
             DocumentItem::Include => {
                 let inc = &includes[n];
                 parts.extend(own(&inc.comments_before, ""));
                 parts.push(line(format!("include \"{}\"", inc.written), &inc.comment));
                 // Includes sit together, one blank line after the run.
-                if order.get(i + 1) != Some(&DocumentItem::Include) {
+                if order.get(i + 1).map(|(k, _)| *k) != Some(DocumentItem::Include) {
                     parts.push(String::new());
                 }
             }
             DocumentItem::Tempo => {
-                if let Some(tempo) = &file.tempo {
-                    parts.push(write_tempo(tempo));
-                }
+                parts.extend(file.tempo.as_ref().map(write_tempo));
                 parts.push(String::new());
             }
             DocumentItem::Sequence => {
                 let seq = &file.sequences[n];
-                let params = seq
-                    .params
-                    .as_ref()
-                    .map(|p| arg_list(p, "    "))
-                    .unwrap_or_default();
+                let params = seq.params.as_ref().map(|p| arg_list(p, "    "));
                 let length = match seq.length.as_deref() {
                     Some(l) if !l.is_empty() => format!(", length: {l}"),
                     _ => String::new(),
                 };
-                parts.extend(own(&seq.comments_before, ""));
-                parts.push(line(
-                    format!("sequence \"{}\"{params}{length} {{", seq.name),
-                    &seq.comment,
-                ));
-                parts.push(cues(&seq.cues));
-                parts.extend(own(&seq.comments_after, "    "));
-                parts.push(line("}".to_string(), &seq.close_comment));
-                parts.push(String::new());
+                let head = format!(
+                    "sequence \"{}\"{}{length} {{",
+                    seq.name,
+                    params.unwrap_or_default()
+                );
+                let around = (&seq.comments_before, &seq.comment, &seq.comments_after);
+                block(&mut parts, head, &seq.cues, around, &seq.close_comment);
             }
             DocumentItem::Show => {
                 let show = &file.shows[n];
-                parts.extend(own(&show.comments_before, ""));
                 let head = if show.unnamed == Some(true) && show.name.is_empty() {
                     "show {".to_string()
                 } else {
                     format!("show \"{}\" {{", show.name)
                 };
-                parts.push(line(head, &show.comment));
-                parts.push(cues(&show.cues));
-                parts.extend(own(&show.comments_after, "    "));
-                parts.push(line("}".to_string(), &show.close_comment));
-                parts.push(String::new());
+                let around = (&show.comments_before, &show.comment, &show.comments_after);
+                block(&mut parts, head, &show.cues, around, &show.close_comment);
             }
         }
     }
-
     parts.extend(own(&file.comments_after, ""));
     if file.comments_after.as_ref().is_some_and(|c| !c.is_empty()) {
         parts.push(String::new());
@@ -124,18 +99,41 @@ pub fn write(file: &Document) -> String {
     parts.join("\n")
 }
 
-/// Whether `written` holds each kind as many times as `counts` says.
-fn as_written<K: PartialEq + Copy>(written: &[K], counts: &[(K, usize)]) -> bool {
-    counts
-        .iter()
-        .all(|(kind, n)| written.iter().filter(|k| *k == kind).count() == *n)
+/// A show or a sequence: its comment lines above, its head line, its cues,
+/// its comment lines after them and its closing brace, and a blank line.
+fn block(
+    parts: &mut Vec<String>,
+    head: String,
+    cue_list: &[Cue],
+    (before, comment, after): (&Option<Vec<String>>, &Option<String>, &Option<Vec<String>>),
+    close: &Option<String>,
+) {
+    parts.extend(own(before, ""));
+    parts.push(line(head, comment));
+    parts.push(cues(cue_list));
+    parts.extend(own(after, "    "));
+    parts.push(line("}".to_string(), close));
+    parts.push(String::new());
 }
 
-/// Each kind `counts` times, in `counts`' order.
-fn grouped<K: Copy>(counts: &[(K, usize)]) -> Vec<K> {
-    counts
+/// Each element of the kinds `counts` counts, with its index among its
+/// kind's: in the order `written` gives while it holds each kind as many
+/// times as `counts` says, else grouped by kind in `counts`' order (an
+/// edit that adds or removes one writes them grouped).
+fn ordered<K: PartialEq + Copy>(written: &[K], counts: &[(K, usize)]) -> Vec<(K, usize)> {
+    let as_written = counts
         .iter()
-        .flat_map(|(kind, n)| std::iter::repeat_n(*kind, *n))
+        .all(|(kind, n)| written.iter().filter(|k| *k == kind).count() == *n);
+    if !as_written {
+        return counts
+            .iter()
+            .flat_map(|&(kind, n)| (0..n).map(move |i| (kind, i)))
+            .collect();
+    }
+    written
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| (*kind, written[..i].iter().filter(|k| *k == kind).count()))
         .collect()
 }
 
@@ -163,30 +161,6 @@ fn own<'a>(
         .map(move |c| format!("{indent}{c}"))
 }
 
-/// What carries the comments written around it: an element of a list.
-pub(super) trait Remarked {
-    fn remarks(&self) -> &Remarks;
-    fn remarks_mut(&mut self) -> &mut Remarks;
-}
-
-impl Remarked for Param {
-    fn remarks(&self) -> &Remarks {
-        &self.remarks
-    }
-    fn remarks_mut(&mut self) -> &mut Remarks {
-        &mut self.remarks
-    }
-}
-
-impl Remarked for SequenceArg {
-    fn remarks(&self) -> &Remarks {
-        &self.remarks
-    }
-    fn remarks_mut(&mut self) -> &mut Remarks {
-        &mut self.remarks
-    }
-}
-
 /// An element of a list (a parameter, an argument, a group) as text, with
 /// the comments written around it.
 #[derive(Clone, Default)]
@@ -195,47 +169,37 @@ struct Listed {
     remarks: Remarks,
 }
 
-impl Remarked for Listed {
-    fn remarks(&self) -> &Remarks {
-        &self.remarks
-    }
-    fn remarks_mut(&mut self) -> &mut Remarks {
-        &mut self.remarks
-    }
-}
-
 /// `items` without those `drop` picks, the comments written around each
-/// one dropped kept as comment lines where it was: above the next item
-/// kept, else after the one before. The second list: those with no item
-/// left to go to.
-pub(super) fn dropped<T: Remarked>(
+/// one dropped (where `remarks` finds them) kept as comment lines where it
+/// was: above the next item kept, else after the one before. The second
+/// list: those with no item left to go to.
+pub(super) fn dropped<T>(
     items: Vec<T>,
+    remarks: impl Fn(&mut T) -> &mut Remarks,
     drop: impl Fn(&T, usize) -> bool,
 ) -> (Vec<T>, Vec<String>) {
     let mut kept: Vec<T> = Vec::new();
     let mut pending: Vec<String> = Vec::new();
     for (i, mut item) in items.into_iter().enumerate() {
-        if drop(&item, i) {
-            let r = item.remarks();
-            pending.extend(r.comments_before.iter().flatten().cloned());
-            pending.extend(some(&r.comment).map(str::to_string));
-            pending.extend(r.comments_after.iter().flatten().cloned());
-        } else if !pending.is_empty() {
-            let r = item.remarks_mut();
+        let gone = drop(&item, i);
+        let r = remarks(&mut item);
+        if gone {
+            pending.extend(r.comments_before.take().into_iter().flatten());
+            pending.extend(r.comment.take().filter(|c| !c.is_empty()));
+            pending.extend(r.comments_after.take().into_iter().flatten());
+            continue;
+        }
+        if !pending.is_empty() {
             pending.extend(r.comments_before.take().into_iter().flatten());
             r.comments_before = Some(std::mem::take(&mut pending));
-            kept.push(item);
-        } else {
-            kept.push(item);
         }
+        kept.push(item);
     }
-    if !pending.is_empty() {
-        if let Some(last) = kept.last_mut() {
-            let r = last.remarks_mut();
-            let mut after = r.comments_after.take().unwrap_or_default();
-            after.append(&mut pending);
-            r.comments_after = Some(after);
-        }
+    if let Some(last) = kept.last_mut().filter(|_| !pending.is_empty()) {
+        let r = remarks(last);
+        let mut after = r.comments_after.take().unwrap_or_default();
+        after.append(&mut pending);
+        r.comments_after = Some(after);
     }
     (kept, pending)
 }
@@ -500,7 +464,11 @@ fn edited(
             _ => p.clone(),
         })
         .collect();
-    let (kept, orphans) = dropped(replaced, |p, _| value(&p.name).is_none());
+    let (kept, orphans) = dropped(
+        replaced,
+        |p| &mut p.remarks,
+        |p, _| value(&p.name).is_none(),
+    );
     let mut params: Vec<Listed> = kept.iter().map(param).collect();
     for (name, _) in set {
         if let Some(v) = value(name) {
@@ -558,7 +526,6 @@ fn cue_lines(cue: &Cue, lines: &mut Vec<String>) {
         }
         None => Vec::new(),
     };
-    // Offset lines all removed leave their comments where they were.
     let removed: &[OffsetLine] = if cue.offset_measures.is_none() {
         read
     } else {
@@ -576,83 +543,81 @@ fn cue_lines(cue: &Cue, lines: &mut Vec<String>) {
         ),
         (CueLine::Loop, loops.len()),
     ];
-    let written = cue.lines.as_deref().unwrap_or_default();
-    let order: Vec<CueLine> = if as_written(written, &counts) {
-        written.to_vec()
-    } else {
-        grouped(&counts)
-    };
-    let mut next = [0usize; 7];
-    for kind in order {
-        let slot = &mut next[kind as usize];
-        let i = *slot;
-        *slot += 1;
+    let lines_of = |list: &Option<Vec<String>>| list.iter().flatten().cloned().collect::<Vec<_>>();
+    for (kind, i) in ordered(cue.lines.as_deref().unwrap_or_default(), &counts) {
         match kind {
             CueLine::Effect => {
                 let eff = &cue.effects[i];
-                let (text, open) = match effect(eff, "        ") {
-                    Ok(written) => written,
-                    // No group left to name: the line goes, its comments
-                    // stay where it was.
-                    Err(comments) => {
-                        lines.extend(comments.iter().map(|c| format!("    {c}")));
-                        continue;
-                    }
-                };
-                lines.extend(own(&eff.comments_before, "    "));
-                match some(&eff.comment) {
+                match effect(eff, "        ") {
                     // Its last parameter's comment ends the line: the
                     // effect's own comment is a line of its own after it,
                     // never merged into it.
-                    Some(c) if open => {
-                        lines.push(format!("    {text}"));
-                        lines.push(format!("    {c}"));
+                    Ok((text, true)) if some(&eff.comment).is_some() => {
+                        emit(lines, lines_of(&eff.comments_before), text, &None);
+                        lines.extend(some(&eff.comment).map(|c| format!("    {c}")));
                     }
-                    _ => lines.push(line(format!("    {text}"), &eff.comment)),
+                    Ok((text, _)) => {
+                        emit(lines, lines_of(&eff.comments_before), text, &eff.comment)
+                    }
+                    // No group left to name: the line goes, its comments
+                    // stay where it was.
+                    Err(comments) => lines.extend(comments.iter().map(|c| format!("    {c}"))),
                 }
                 lines.extend(own(&eff.comments_after, "    "));
             }
             CueLine::Command => {
                 let cmd = &cue.commands[i];
                 let (text, orphans) = layer_command(cmd, "        ");
-                lines.extend(own(&cmd.comments_before, "    "));
-                lines.extend(orphans.iter().map(|c| format!("    {c}")));
-                lines.push(line(format!("    {text}"), &cmd.comment));
+                let above = [lines_of(&cmd.comments_before), orphans].concat();
+                emit(lines, above, text, &cmd.comment);
             }
             CueLine::Reference => {
                 let r = &cue.sequences[i];
-                lines.extend(own(&r.comments_before, "    "));
-                lines.push(line(
-                    format!("    {}", sequence_ref(r, "        ")),
-                    &r.comment,
-                ));
+                let text = sequence_ref(r, "        ");
+                emit(lines, lines_of(&r.comments_before), text, &r.comment);
             }
-            CueLine::Offset => {
-                if let Some(gone) = removed.get(i) {
-                    lines.extend(own(&gone.comments_before, "    "));
-                    lines.extend(some(&gone.comment).map(|c| format!("    {c}")));
-                    continue;
+            // Offset lines all removed leave their comments where they were.
+            CueLine::Offset => match removed.get(i) {
+                Some(gone) => {
+                    let mut above = lines_of(&gone.comments_before);
+                    above.extend(some(&gone.comment).map(str::to_string));
+                    lines.extend(above.iter().map(|c| format!("    {c}")));
                 }
-                let offset = &offsets[i];
-                lines.extend(own(&offset.comments_before, "    "));
-                lines.push(line(
-                    format!("    offset {} measures", offset.measures),
-                    &offset.comment,
-                ));
-            }
+                None => {
+                    let o = &offsets[i];
+                    let text = format!("offset {} measures", o.measures);
+                    emit(lines, lines_of(&o.comments_before), text, &o.comment);
+                }
+            },
             CueLine::Reset => {
-                lines.extend(own(&cue.reset_comments_before, "    "));
-                lines.push(line("    reset_measures".to_string(), &cue.reset_comment));
+                let above = lines_of(&cue.reset_comments_before);
+                emit(
+                    lines,
+                    above,
+                    "reset_measures".to_string(),
+                    &cue.reset_comment,
+                );
             }
+            // Inline loops, kept as the text they were read from.
             CueLine::Loop => {
-                // Inline loops, kept as the text they were read from.
                 let l = &loops[i];
-                lines.extend(own(&l.comments_before, "    "));
-                lines.push(line(format!("    {}", l.text), &l.comment));
+                emit(
+                    lines,
+                    lines_of(&l.comments_before),
+                    l.text.clone(),
+                    &l.comment,
+                );
             }
             CueLine::Timestamp => {}
         }
     }
+}
+
+/// A cue's line, at the cue's indent: the comment lines above it, then it
+/// with the comment on it.
+fn emit(lines: &mut Vec<String>, before: Vec<String>, text: String, comment: &Option<String>) {
+    lines.extend(before.iter().map(|c| format!("    {c}")));
+    lines.push(line(format!("    {text}"), comment));
 }
 
 /// A timestamp as written: its text while it is the one read (`@1/1.5`),
@@ -695,9 +660,9 @@ fn effect(eff: &CueEffect, indent: &str) -> Result<(String, bool), Vec<String>> 
         text: String::new(),
         remarks: r.clone(),
     }));
-    let (named, orphans) = dropped(groups, |g, _| g.text.is_empty());
+    let (named, orphans) = dropped(groups, |g| &mut g.remarks, |g, _| g.text.is_empty());
     if named.is_empty() {
-        let (_, params) = dropped(eff.effect.params.clone(), |_, _| true);
+        let (_, params) = dropped(eff.effect.params.clone(), |p| &mut p.remarks, |_, _| true);
         let comments = [&eff.comments_before, &Some(orphans), &Some(params)]
             .into_iter()
             .flatten()

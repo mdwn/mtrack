@@ -26,11 +26,7 @@
     CHASE_PATTERNS,
   } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
-  import type {
-    EffectEdit,
-    MoveStart,
-    MoveTarget,
-  } from "../../gen/rules/mtrack_rules";
+  import type { EffectEdit, MoveParam } from "../../gen/rules/mtrack_rules";
   import { rules } from "../../lib/rules";
   import { venueStore } from "../../lib/ws/stores";
 
@@ -40,14 +36,11 @@
     onchange(rules.effect_edit(effect, change) ?? effect);
   }
 
-  /** A `move` aims at a focus point or at angles, never both: setting one
-   *  clears the other, so the form always shows what will be written. */
-  function updateMoveTarget(key: MoveTarget, value?: string) {
-    edit({ op: "move_target", key, value });
-  }
-
-  function updateMoveStart(key: MoveStart, value?: string) {
-    edit({ op: "move_start", key, value });
+  /** A `move` aims (and starts) at a focus point or at angles, never
+   *  both: setting one clears the other, so the form always shows what
+   *  will be written. */
+  function updateMove(key: MoveParam, value?: string) {
+    edit({ op: "move", key, value });
   }
 
   /** The current venue's focus points, offered as `move` targets. */
@@ -589,7 +582,7 @@
               placeholder="drummer"
               value={p.focus ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "focus",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -609,7 +602,7 @@
               placeholder="center-stage"
               value={p.from ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -622,7 +615,7 @@
               placeholder="45deg"
               value={p.pan ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "pan",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -635,7 +628,7 @@
               placeholder="-20deg"
               value={p.tilt ?? ""}
               onchange={(e) =>
-                updateMoveTarget(
+                updateMove(
                   "tilt",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -648,7 +641,7 @@
               placeholder="0deg"
               value={p.from_pan ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from_pan",
                   (e.target as HTMLInputElement).value || undefined,
                 )}
@@ -661,7 +654,7 @@
               placeholder="0deg"
               value={p.from_tilt ?? ""}
               onchange={(e) =>
-                updateMoveStart(
+                updateMove(
                   "from_tilt",
                   (e.target as HTMLInputElement).value || undefined,
                 )}

@@ -47,41 +47,40 @@ pub enum EffectEdit {
     Remove { names: Vec<String> },
     /// These `color:` values and no other, where the first colour was.
     Colors { colors: Vec<String> },
-    /// A `move`'s target: a focus point or an angle, setting one clearing
-    /// the other.
-    MoveTarget {
-        key: MoveTarget,
-        #[serde(default)]
-        #[cfg_attr(feature = "tsify", tsify(optional))]
-        value: Option<String>,
-    },
-    /// A `move`'s start: a focus point or angles, setting one clearing the
-    /// other.
-    MoveStart {
-        key: MoveStart,
+    /// A `move`'s target or start: a focus point or angles, setting one
+    /// clearing the other.
+    Move {
+        key: MoveParam,
         #[serde(default)]
         #[cfg_attr(feature = "tsify", tsify(optional))]
         value: Option<String>,
     },
 }
 
+/// A `move`'s target and start parameters.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum MoveTarget {
+pub enum MoveParam {
     Focus,
     Pan,
     Tilt,
-}
-
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum MoveStart {
     From,
     FromPan,
     FromTilt,
 }
+
+/// Each `move` parameter: its name, the parameters setting it clears (a
+/// point or angles, never both), and whether its value is a quoted focus
+/// point (else an angle).
+const MOVE_PARAMS: [(MoveParam, &str, &[&str], bool); 6] = [
+    (MoveParam::Focus, "focus", &["pan", "tilt", "to"], true),
+    (MoveParam::Pan, "pan", &["focus", "to"], false),
+    (MoveParam::Tilt, "tilt", &["focus", "to"], false),
+    (MoveParam::From, "from", &["from_pan", "from_tilt"], true),
+    (MoveParam::FromPan, "from_pan", &["from"], false),
+    (MoveParam::FromTilt, "from_tilt", &["from"], false),
+];
 
 /// An effect's parameters as a form shows them: the last value of each
 /// name as written (a `to:` read as `focus`, a focus point and a `from:`
@@ -104,51 +103,18 @@ impl CueEffect {
             EffectEdit::Set { name, value } => self.with_param(name, value.as_deref()),
             EffectEdit::Remove { names } => self.without_params(names),
             EffectEdit::Colors { colors } => self.with_colors(colors),
-            EffectEdit::MoveTarget { key, value } => {
+            EffectEdit::Move { key, value } => {
+                let (_, name, clears, point) = MOVE_PARAMS
+                    .iter()
+                    .find(|(k, ..)| k == key)
+                    .expect("every move parameter");
                 let value = value.as_deref().filter(|v| !v.is_empty());
-                let mut next = self.clone();
-                match key {
-                    MoveTarget::Focus => {
-                        if value.is_some() {
-                            next = next.without_params(&["pan", "tilt", "to"]);
-                        }
-                        next.with_param("focus", value.map(quoted).as_deref())
-                    }
-                    MoveTarget::Pan | MoveTarget::Tilt => {
-                        if value.is_some() {
-                            next = next.without_params(&["focus", "to"]);
-                        }
-                        let name = if *key == MoveTarget::Pan {
-                            "pan"
-                        } else {
-                            "tilt"
-                        };
-                        next.with_param(name, value.map(with_deg).as_deref())
-                    }
-                }
-            }
-            EffectEdit::MoveStart { key, value } => {
-                let value = value.as_deref().filter(|v| !v.is_empty());
-                let mut next = self.clone();
-                match key {
-                    MoveStart::From => {
-                        if value.is_some() {
-                            next = next.without_params(&["from_pan", "from_tilt"]);
-                        }
-                        next.with_param("from", value.map(quoted).as_deref())
-                    }
-                    MoveStart::FromPan | MoveStart::FromTilt => {
-                        if value.is_some() {
-                            next = next.without_params(&["from"]);
-                        }
-                        let name = if *key == MoveStart::FromPan {
-                            "from_pan"
-                        } else {
-                            "from_tilt"
-                        };
-                        next.with_param(name, value.map(with_deg).as_deref())
-                    }
-                }
+                let next = match value {
+                    Some(_) => self.without_params(clears),
+                    None => self.clone(),
+                };
+                let written = value.map(|v| if *point { quoted(v) } else { with_deg(v) });
+                next.with_param(name, written.as_deref())
             }
         }
     }
@@ -188,7 +154,7 @@ impl CueEffect {
     /// comments kept where they were (see `dropped`); with no parameter
     /// left, as comment lines after the effect's line.
     fn with_kept(&self, params: Vec<Param>, drop: impl Fn(&Param, usize) -> bool) -> CueEffect {
-        let (kept, orphans) = dropped(params, drop);
+        let (kept, orphans) = dropped(params, |p| &mut p.remarks, drop);
         let mut next = self.clone();
         next.effect.params = kept;
         if !orphans.is_empty() {
@@ -356,32 +322,32 @@ mod tests {
     #[test]
     fn a_move_aims_at_a_focus_point_or_at_angles_never_both() {
         let e = effect("m: move, pan: 10deg, tilt: 5deg, duration: 1s");
-        let focused = e.edited(&EffectEdit::MoveTarget {
-            key: MoveTarget::Focus,
+        let focused = e.edited(&EffectEdit::Move {
+            key: MoveParam::Focus,
             value: Some("stage".to_string()),
         });
         assert_eq!(
             values(&focused),
             pairs(&[("duration", "1s"), ("focus", "\"stage\"")])
         );
-        let panned = focused.edited(&EffectEdit::MoveTarget {
-            key: MoveTarget::Pan,
+        let panned = focused.edited(&EffectEdit::Move {
+            key: MoveParam::Pan,
             value: Some(" 45 ".to_string()),
         });
         assert_eq!(
             values(&panned),
             pairs(&[("duration", "1s"), ("pan", "45deg")])
         );
-        let param = panned.edited(&EffectEdit::MoveStart {
-            key: MoveStart::FromTilt,
+        let param = panned.edited(&EffectEdit::Move {
+            key: MoveParam::FromTilt,
             value: Some("$t".to_string()),
         });
         assert_eq!(
             values(&param),
             pairs(&[("duration", "1s"), ("pan", "45deg"), ("from_tilt", "$t")])
         );
-        let started = param.edited(&EffectEdit::MoveStart {
-            key: MoveStart::From,
+        let started = param.edited(&EffectEdit::Move {
+            key: MoveParam::From,
             value: Some("$spot".to_string()),
         });
         assert_eq!(
