@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use super::document::DurationUnit;
 use super::document::{CueEffect, EffectKind, EffectParams, Param, Remarks, SequenceRef};
 use super::grammar::{LightingParser, Rule};
+use super::utils::unquoted;
 use super::writer::{dropped, length_text};
 
 /// An edit of an effect line's parameters, as a form makes it.
@@ -309,18 +310,15 @@ pub fn quoted(value: &str) -> String {
     }
 }
 
-/// A quoted value without its quotes, for a control that shows it.
-pub fn unquoted(value: &str) -> &str {
-    match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-        Some(inner) if !inner.contains(['\n', '\r', '\u{2028}', '\u{2029}']) => inner,
-        _ => value,
-    }
-}
-
-/// An angle as the DSL wants it: `45deg`; a bare number gets the unit.
+/// An angle as the DSL wants it: as typed when the grammar reads it as
+/// one (`45deg`, a `$param`), else a bare number with the unit added.
 pub fn with_deg(value: &str) -> String {
     let v = value.trim();
-    if v.ends_with("deg") || param_ref(v) {
+    let degrees = LightingParser::parse(Rule::degrees_parameter, v)
+        .ok()
+        .and_then(|mut pairs| pairs.next())
+        .is_some_and(|pair| pair.as_span().end() == v.len());
+    if degrees || param_ref(v) {
         v.to_string()
     } else {
         format!("{v}deg")
@@ -415,7 +413,7 @@ mod tests {
         assert_eq!(view.values["focus"], "a");
         assert_eq!(view.values["from"], "");
         assert_eq!(view.values["dimmer"], "20%");
-        assert_eq!(unquoted("\"x"), "\"x");
+        assert_eq!(unquoted("\"x"), "x");
         assert_eq!(unquoted("\"\""), "");
     }
 

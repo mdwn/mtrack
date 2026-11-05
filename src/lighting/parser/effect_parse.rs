@@ -24,7 +24,7 @@ use super::grammar::Rule;
 use super::types::{Effect, EffectKind, ParseContext};
 use super::utils::{
     parse_blend_mode, parse_color_string, parse_frequency_string, parse_layer,
-    parse_percentage_to_f64, parse_speed_string, split_unit,
+    parse_percentage_to_f64, parse_speed_string, split_unit, unquoted,
 };
 use pest::iterators::Pair;
 
@@ -546,10 +546,10 @@ pub(crate) fn apply_parameters_to_effect_type(
             let mut from_tilt: Option<f64> = None;
             for (key, value) in parameters {
                 match key.as_str() {
-                    "focus" | "to" => to_focus = Some(value.trim_matches('"').to_string()),
+                    "focus" | "to" => to_focus = Some(unquoted(value).to_string()),
                     "pan" => to_pan = Some(parse_degrees(value)?),
                     "tilt" => to_tilt = Some(parse_degrees(value)?),
-                    "from" => from_focus = Some(value.trim_matches('"').to_string()),
+                    "from" => from_focus = Some(unquoted(value).to_string()),
                     "from_pan" => from_pan = Some(parse_degrees(value)?),
                     "from_tilt" => from_tilt = Some(parse_degrees(value)?),
                     "easing" => {

@@ -761,25 +761,20 @@ pub fn snapped_length(
     duration_ms: f64,
     step: Option<f64>,
 ) -> f64 {
-    use lighting::parser::document::DurationUnit;
-    use lighting::parser::writer::length_text;
     let Some(span) = TempoDistance::between(source, at_ms, at_ms + duration_ms) else {
         return duration_ms;
     };
-    let round = |n: f64| (n + 0.5).floor();
-    let length = match step {
-        None => length_text(round(span.measures).max(1.0), DurationUnit::Measures),
-        Some(step) => length_text(
-            (round(span.beats / step) * step).max(step),
-            DurationUnit::Beats,
-        ),
+    let Ok(map) = source.to_tempo_map() else {
+        return duration_ms;
     };
-    TempoQuery::Span {
-        from_ms: at_ms,
-        duration: length,
-    }
-    .answer(Some(source))
-    .map_or(0.0, |end| end.ms - at_ms)
+    let round = |n: f64| (n + 0.5).floor();
+    let from = Duration::from_secs_f64(at_ms / 1000.0);
+    // The player's own length of that many bars or beats from there.
+    let length = match step {
+        None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),
+        Some(step) => map.beats_to_duration((round(span.beats / step) * step).max(step), from, 0.0),
+    };
+    from.saturating_add(length).as_secs_f64() * 1000.0 - at_ms
 }
 
 /// [`snapped_length`], for the web UI.

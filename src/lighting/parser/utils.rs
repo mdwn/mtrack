@@ -118,10 +118,16 @@ pub(crate) fn parse_time_value(value: &str) -> Result<TimeValue, std::num::Parse
     })
 }
 
-/// A quoted name (`"intro"`: a show's, a sequence's, an include's path)
-/// without its quotes.
+/// A quoted value (`"intro"`, a focus point's `"stage"`) without its
+/// quotes: the one quote rule.
+pub(crate) fn unquoted(text: &str) -> &str {
+    text.trim_matches('"')
+}
+
+/// A quoted name (a show's, a sequence's, an include's path) without its
+/// quotes ([`unquoted`]).
 pub(crate) fn unquote(pair: &Pair<Rule>) -> String {
-    pair.as_str().trim_matches('"').to_string()
+    unquoted(pair.as_str()).to_string()
 }
 
 /// A value written as a number and its unit -- `2.5s`, `4beats`, `45deg`

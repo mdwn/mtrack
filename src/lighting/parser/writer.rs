@@ -22,7 +22,9 @@
 //! The editor never builds DSL text: it edits the document (see
 //! [`super::edit`]) and asks for it written here.
 
-use super::super::tempo::{TempoTransition, DEFAULT_BPM, DEFAULT_TIME_SIGNATURE};
+use super::super::tempo::{
+    parse_signature_in, SignatureRange, TempoTransition, DEFAULT_BPM, DEFAULT_TIME_SIGNATURE,
+};
 use super::document::{
     Cue, CueEffect, CueLine, Document, DocumentItem, DurationUnit, LayerCommand, OffsetLine, Param,
     Remarks, SequenceArg, SequenceRef, TempoChange, TempoField, TempoSection, Timestamp,
@@ -368,21 +370,15 @@ pub fn write_tempo(tempo: &TempoSection) -> String {
             }
             TempoField::Bpm => {
                 let text = match tempo.bpm_text.as_deref() {
-                    Some(t) if !t.is_empty() && parse_float(t) == Some(tempo.bpm) => t.to_string(),
+                    Some(t) if t.parse() == Ok(tempo.bpm) => t.to_string(),
                     _ => number(tempo.bpm),
                 };
                 field(&mut lines, name, format!("bpm: {text}"));
             }
             TempoField::TimeSignature => {
-                let (n, d) = tempo.time_signature;
-                let sig = format!("{n}/{d}");
                 let text = match tempo.time_signature_text.as_deref() {
-                    Some(t)
-                        if t.chars().filter(|c| !c.is_whitespace()).collect::<String>() == sig =>
-                    {
-                        t.to_string()
-                    }
-                    _ => sig,
+                    Some(t) if reads_as(t, tempo.time_signature) => t.to_string(),
+                    _ => signature(tempo.time_signature),
                 };
                 field(&mut lines, name, format!("time_signature: {text}"));
             }
@@ -399,7 +395,7 @@ pub fn write_tempo(tempo: &TempoSection) -> String {
                     let last = i + 1 == count;
                     lines.extend(own(&change.comments_before, "        "));
                     lines.extend(orphans.iter().map(|c| format!("        {c}")));
-                    let text = format!("        @{ts} {{{params}{}", if open { "}" } else { " }" });
+                    let text = format!("        {ts} {{{params}{}", if open { "}" } else { " }" });
                     if !last
                         && some(&change.comment).is_some()
                         && change.comment_before_comma == Some(true)
@@ -428,21 +424,33 @@ pub fn write_tempo(tempo: &TempoSection) -> String {
 /// their comments, an edited one's value replaced where it was (see
 /// [`edited`]).
 fn change_params(change: &TempoChange) -> (Vec<Listed>, Vec<String>) {
-    let sig = change.time_signature.map(|(n, d)| format!("{n}/{d}"));
     edited(
         change.written.as_deref().unwrap_or_default(),
         &[
             ("bpm", change.bpm.map(number)),
-            ("time_signature", sig.clone()),
+            ("time_signature", change.time_signature.map(signature)),
             ("transition", change.transition.clone()),
         ],
         |p| match p.name.as_str() {
-            "bpm" => change.bpm.is_some() && parse_float(&p.value) == change.bpm,
-            "time_signature" => sig.as_deref() == Some(p.value.as_str()),
+            "bpm" => change.bpm.is_some_and(|bpm| p.value.parse() == Ok(bpm)),
+            "time_signature" => change
+                .time_signature
+                .is_some_and(|sig| reads_as(&p.value, sig)),
             "transition" => change.transition.as_deref() == Some(p.value.as_str()),
             _ => false,
         },
     )
+}
+
+/// A metre in the grammar's form: `3/4`.
+fn signature((n, d): (u32, u32)) -> String {
+    format!("{n}/{d}")
+}
+
+/// Whether a metre as written reads, as the player reads it, as `sig`.
+fn reads_as(written: &str, sig: (u32, u32)) -> bool {
+    parse_signature_in(written, SignatureRange::Light)
+        .is_ok_and(|read| (read.numerator, read.denominator) == sig)
 }
 
 /// Written parameters with the values now `set`: each as written while
@@ -495,7 +503,7 @@ fn cues(cues: &[Cue]) -> String {
     for (i, cue) in cues.iter().enumerate() {
         lines.extend(own(&cue.comments_before, "    "));
         lines.push(line(
-            format!("    @{}", timestamp(&cue.timestamp)),
+            format!("    {}", timestamp(&cue.timestamp)),
             &cue.comment,
         ));
         cue_lines(cue, &mut lines);
@@ -623,20 +631,21 @@ fn cue_lines(cue: &Cue, lines: &mut Vec<String>) {
     }
 }
 
-/// A timestamp as written: as read while it is the one read, else in the
-/// grammar's own form (`3/1.5`, `MM:SS.mmm` in whole milliseconds -- the
-/// document holds whole ones; an edit's fraction is rounded away).
+/// A timestamp as written: its text while it is the one read (`@1/1.5`),
+/// else in the grammar's own form (`@3/1.5`, `@MM:SS.mmm` in whole
+/// milliseconds -- the document holds whole ones; an edit's fraction is
+/// rounded away).
 pub fn timestamp(ts: &Timestamp) -> String {
     if let Some(text) = ts.text.as_deref().filter(|t| !t.is_empty()) {
-        return text.strip_prefix('@').unwrap_or(text).to_string();
+        return text.to_string();
     }
     if ts.kind == TimestampKind::MeasureBeat {
         let beat = ts.beat.map(number).unwrap_or_else(|| "1".to_string());
-        return format!("{}/{beat}", ts.measure.unwrap_or(1));
+        return format!("@{}/{beat}", ts.measure.unwrap_or(1));
     }
     let total = round(ts.ms.unwrap_or(0.0)).max(0.0) as u64;
     format!(
-        "{:02}:{:02}.{:03}",
+        "@{:02}:{:02}.{:03}",
         total / 60000,
         (total % 60000) / 1000,
         total % 1000
@@ -810,53 +819,6 @@ fn round(n: f64) -> f64 {
     (n + 0.5).floor()
 }
 
-/// The number at the start of `text`, as JavaScript's `parseFloat` reads
-/// one (`120.0` and `120.0x` are 120): how a value written with a spelling
-/// of its own is known to still be the one set.
-fn parse_float(text: &str) -> Option<f64> {
-    let t = text.trim_start();
-    let b = t.as_bytes();
-    let mut end = 0;
-    if end < b.len() && (b[end] == b'+' || b[end] == b'-') {
-        end += 1;
-    }
-    if t[end..].starts_with("Infinity") {
-        return t[..end + 8].parse::<f64>().ok().or(Some(if b[0] == b'-' {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        }));
-    }
-    let digits = |end: &mut usize| {
-        let start = *end;
-        while *end < b.len() && b[*end].is_ascii_digit() {
-            *end += 1;
-        }
-        *end > start
-    };
-    let mut any = digits(&mut end);
-    if end < b.len() && b[end] == b'.' {
-        let mut frac = end + 1;
-        if digits(&mut frac) || any {
-            any = true;
-            end = frac;
-        }
-    }
-    if !any {
-        return None;
-    }
-    if end < b.len() && (b[end] == b'e' || b[end] == b'E') {
-        let mut exp = end + 1;
-        if exp < b.len() && (b[exp] == b'+' || b[exp] == b'-') {
-            exp += 1;
-        }
-        if digits(&mut exp) {
-            end = exp;
-        }
-    }
-    t[..end].parse().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -1024,19 +986,19 @@ mod tests {
         };
         assert_eq!(
             timestamp(&ts(TimestampKind::Absolute, Some(83_004.6), None, None)),
-            "01:23.005"
+            "@01:23.005"
         );
         assert_eq!(
             timestamp(&ts(TimestampKind::Absolute, Some(-5.0), None, None)),
-            "00:00.000"
+            "@00:00.000"
         );
         assert_eq!(
             timestamp(&ts(TimestampKind::MeasureBeat, None, Some(3), Some(2.5))),
-            "3/2.5"
+            "@3/2.5"
         );
         assert_eq!(
             timestamp(&ts(TimestampKind::MeasureBeat, None, None, None)),
-            "1/1"
+            "@1/1"
         );
     }
 
@@ -1317,9 +1279,5 @@ mod tests {
         ] {
             assert_eq!(number(n), text);
         }
-        assert_eq!(parse_float("120.0"), Some(120.0));
-        assert_eq!(parse_float(" 1.5e2x"), Some(150.0));
-        assert_eq!(parse_float(".5"), Some(0.5));
-        assert_eq!(parse_float("x"), None);
     }
 }
