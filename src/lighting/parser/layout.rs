@@ -210,6 +210,9 @@ pub struct PassLayout {
     /// How many passes: 10,000 for `loop`.
     pub count: u32,
     pub infinite: bool,
+    /// When each pass starts, those within the timeline: where the
+    /// passes are, under whatever tempo they run through.
+    pub pass_starts: Vec<f64>,
 }
 
 /// Lays out `source` as the player loads it: `path` is where the file is,
@@ -424,6 +427,12 @@ fn cue_layout(index: usize, cue: &ParsedCue, horizon: Duration) -> CueLayout {
             pass_ms: ms(pass.first_end.saturating_sub(pass.start)),
             count: u32::try_from(pass.count).unwrap_or(u32::MAX),
             infinite: pass.infinite,
+            pass_starts: pass
+                .starts
+                .iter()
+                .take_while(|&&start| start <= horizon)
+                .map(|&start| ms(start))
+                .collect(),
         })
         .collect();
     CueLayout {
@@ -572,6 +581,7 @@ mod tests {
         close(pass.pass_ms, 2000.0, "pass length");
         close(pass.end_ms, 8000.0, "passes end");
         assert_eq!(pass.count, 3);
+        assert_eq!(pass.pass_starts, vec![2000.0, 4000.0, 6000.0]);
         assert!(show.cues[1]
             .effects
             .iter()

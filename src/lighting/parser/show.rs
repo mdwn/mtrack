@@ -88,6 +88,8 @@ pub(super) struct PlacedPasses {
     /// When the first pass ends, and when the last does.
     pub(super) first_end: Duration,
     pub(super) end: Duration,
+    /// When each pass starts.
+    pub(super) starts: Vec<Duration>,
 }
 
 impl ParsedCue {
@@ -152,6 +154,9 @@ impl CueBlock {
                     start: passes.at,
                     first_end: passes.time_of(1, passes.base_time),
                     end: passes.time_of(passes.count, passes.base_time),
+                    starts: (0..passes.count)
+                        .map(|i| passes.time_of(i, passes.base_time))
+                        .collect(),
                 });
                 place_passes(&passes, Some(&call.name), &mut parsed.cues, parsed.base);
             }

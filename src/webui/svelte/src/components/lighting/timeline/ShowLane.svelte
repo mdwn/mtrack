@@ -28,7 +28,6 @@
   } from "../../../gen/rules/mtrack_rules";
   import {
     msToPixel,
-    timestampToMs,
     msToTimestamp,
     getGridLines,
     snapToNearestGrid,
@@ -124,9 +123,12 @@
       });
     };
     cues.forEach((cue, index) => {
+      // A cue the layout has not placed (the file does not lay out, and
+      // the last layout that did had no such cue) is not drawn.
       const laid = laidCues[index];
-      const ms = laid?.ms ?? timestampToMs(cue.timestamp, tempoSource);
-      const scoreMs = laid?.score_ms ?? ms;
+      if (!laid) return;
+      const ms = laid.ms;
+      const scoreMs = laid.score_ms;
       if (subLaneType === "commands") {
         if (cue.commands.length === 0) return;
         push({ index, ms, endMs: ms + DEFAULT_BLOCK_MS, scoreMs, effects: [] });
@@ -136,7 +138,7 @@
         if (cue.sequences.length === 0) return;
         const endMs = Math.max(
           ms + DEFAULT_BLOCK_MS,
-          ...(laid?.passes ?? []).map((p) => p.end_ms),
+          ...laid.passes.map((p) => p.end_ms),
         );
         push({ index, ms, endMs, scoreMs, effects: [] });
         return;
@@ -144,7 +146,7 @@
       // An effects lane (one layer, or every layer in the sequence editor):
       // the cue's own effects as the layout places them (their layer by the
       // player's default), shown with the document's colours.
-      const ownLaid = (laid?.effects ?? []).filter((e) => e.own);
+      const ownLaid = laid.effects.filter((e) => e.own);
       const own: BlockEffect[] = [];
       let ownEnd = ms + DEFAULT_BLOCK_MS;
       ownLaid.forEach((e, i) => {
@@ -163,7 +165,7 @@
       // What the cue's references and loops put on the timeline, a block
       // per pass.
       const generated: Record<string, Block> = {};
-      for (const e of laid?.effects ?? []) {
+      for (const e of laid.effects) {
         if (e.own) continue;
         if (laneLayer && e.layer !== laneLayer) continue;
         const key = `${e.sequence ?? ""}@${e.start_ms}`;
@@ -252,8 +254,8 @@
     // Move operates on score times (offset is structural, not per-cue
     // position; the tempo map moves with it as a whole), so the cue moves
     // by what was dragged.
-    const currentMs =
-      laidCues[index]?.score_ms ?? timestampToMs(cue.timestamp, tempoSource);
+    const currentMs = laidCues[index]?.score_ms;
+    if (currentMs === undefined) return;
     let newMs = Math.max(0, currentMs + deltaMs);
 
     if (snapEnabled && tempoSource) {

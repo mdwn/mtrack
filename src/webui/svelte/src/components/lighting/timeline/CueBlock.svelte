@@ -145,7 +145,9 @@
   });
 
   // For sequence lanes: the first reference's passes, as the player laid
-  // them: how long they run in all, and how long one pass is.
+  // them: how long they run in all, how long one pass is, whether they
+  // have an end (`loop:` runs to the timeline's horizon), and where each
+  // starts.
   let seqTotalMs = $derived(
     subLaneType === "sequences" && passes.length > 0
       ? passes[0].end_ms - passes[0].start_ms
@@ -154,16 +156,27 @@
   let seqIterMs = $derived(
     subLaneType === "sequences" && passes.length > 0 ? passes[0].pass_ms : 0,
   );
-
-  // For sequence lanes: the current loop count
-  let seqLoopCount = $derived.by(() => {
-    if (subLaneType !== "sequences" || seqIterMs <= 0) return 0;
-    return Math.round(seqTotalMs / seqIterMs);
-  });
+  let seqInfinite = $derived(
+    subLaneType === "sequences" && passes.length > 0 && passes[0].infinite,
+  );
+  /** Where the passes after the first begin, as a fraction of the block. */
+  let passDividers = $derived(
+    subLaneType === "sequences" && passes.length > 0 && seqTotalMs > 0
+      ? passes[0].pass_starts
+          .slice(1)
+          .map((start) => (start - passes[0].start_ms) / seqTotalMs)
+      : [],
+  );
 
   // During resize: the snapped preview loop count and width
   let resizePreviewLoopCount = $derived.by(() => {
-    if (!resizing || subLaneType !== "sequences" || seqIterMs <= 0) return 0;
+    if (
+      !resizing ||
+      subLaneType !== "sequences" ||
+      seqIterMs <= 0 ||
+      seqInfinite
+    )
+      return 0;
     const currentWidthMs = blockWidth / pixelsPerMs;
     const newTotalMs = Math.max(
       seqIterMs,
@@ -225,10 +238,11 @@
         );
         // Hold Ctrl/Cmd to bypass snap
         const bypassSnap = e.ctrlKey || e.metaKey;
-        if (subLaneType === "sequences" && seqIterMs > 0 && onloopchange) {
-          // Snap to nearest whole iteration
-          const newLoopCount = Math.max(1, Math.round(newTotalMs / seqIterMs));
-          onloopchange(newLoopCount);
+        if (subLaneType === "sequences") {
+          // Snap to nearest whole pass; a `loop:` has no count to write.
+          if (seqIterMs > 0 && !seqInfinite && onloopchange) {
+            onloopchange(Math.max(1, Math.round(newTotalMs / seqIterMs)));
+          }
         } else if (onresize) {
           const snappedMs =
             snapEnabled && tempoSource && !bypassSnap
@@ -326,17 +340,14 @@
       <span class="cue-label seq-label">{label}</span>
     {/if}
   </div>
-  {#if subLaneType === "sequences" && seqLoopCount > 1}
+  {#if passDividers.length > 0}
     <div class="seq-iter-markers">
-      {#each Array.from({ length: seqLoopCount - 1 }, (_, k) => k) as i (i)}
-        <div
-          class="seq-iter-divider"
-          style:left="{((i + 1) / seqLoopCount) * 100}%"
-        ></div>
+      {#each passDividers as at, i (i)}
+        <div class="seq-iter-divider" style:left="{at * 100}%"></div>
       {/each}
     </div>
   {/if}
-  {#if (isEffectLane && !isFromSequence) || subLaneType === "sequences"}
+  {#if (isEffectLane && !isFromSequence) || (subLaneType === "sequences" && !seqInfinite)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="resize-handle" onpointerdown={handleResizePointerDown}></div>
   {/if}
