@@ -20,6 +20,7 @@ use crate::playsync::PlaybackSync;
 use crate::songs::Song;
 use std::collections::HashMap;
 
+pub mod beat_grid;
 pub mod click_analysis;
 pub mod confirmation;
 pub mod context;
