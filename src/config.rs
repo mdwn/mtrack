@@ -13,45 +13,35 @@
 //
 pub mod ambient;
 mod audio;
-mod audio_data;
 mod controller;
-mod controller_data;
 mod dmx;
-mod dmx_data;
+mod duration;
 mod error;
 mod fade;
 mod hostname;
 mod kind_data;
 pub mod lighting;
-mod lighting_data;
 pub mod metronome;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
-mod midi_data;
 mod midi_event;
 pub mod notification;
-mod notification_data;
 pub mod pilot;
 mod player;
 mod playlist;
 mod playlist_settings;
 mod profile;
-mod profile_data;
 pub mod samples;
-mod samples_data;
 mod section;
 mod song;
 mod statusevents;
-mod statusevents_data;
 pub mod store;
 mod tempo;
 mod track;
 mod trackmappings;
-mod trackmappings_data;
 pub mod trigger;
-mod trigger_data;
 
 pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
 pub use self::controller::Controller;
@@ -86,6 +76,7 @@ pub use self::playlist::{
     FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
+pub(crate) use self::duration::{parse_duration_string, parse_playback_delay};
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};
 pub(crate) use self::player::list_profile_files;
@@ -104,27 +95,6 @@ pub use self::track::Track;
 
 mod kind;
 pub use self::kind::{peek_kind, ConfigKind};
-
-use std::time::Duration;
-
-/// A duration as a config string (`500ms`, `2s`): the one parse of one,
-/// for every field that takes one. The error is the parser's; a validator
-/// words its own.
-pub(crate) fn parse_duration_string(raw: &str) -> Result<Duration, duration_string::Error> {
-    duration_string::DurationString::from_string(raw.to_string()).map(Duration::from)
-}
-
-/// Parses an optional duration string (e.g. "500ms") into a `Duration`,
-/// returning `default` when `raw` is `None`.
-pub(crate) fn parse_playback_delay(
-    raw: &Option<String>,
-    default: Duration,
-) -> Result<Duration, Box<dyn std::error::Error>> {
-    match raw {
-        Some(s) => Ok(parse_duration_string(s)?),
-        None => Ok(default),
-    }
-}
 
 #[cfg(test)]
 mod duration_string_test {

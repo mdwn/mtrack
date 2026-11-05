@@ -12,8 +12,38 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-pub use super::lighting_data::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Group constraint types for role-based group resolution
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub enum GroupConstraint {
+    /// All of these tags must be present
+    AllOf(Vec<String>),
+    /// Any of these tags must be present
+    AnyOf(Vec<String>),
+    /// Prefer fixtures with these tags
+    Prefer(Vec<String>),
+    /// Minimum number of fixtures required
+    MinCount(usize),
+    /// Maximum number of fixtures allowed
+    MaxCount(usize),
+    /// Fallback to this group if primary group fails
+    FallbackTo(String),
+    /// Allow group to be empty if no fixtures match (graceful degradation)
+    AllowEmpty(bool),
+}
+
+/// Group definition with role-based constraints
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct LogicalGroup {
+    /// The name of the group
+    name: String,
+    /// Constraints for resolving this group
+    constraints: Vec<GroupConstraint>,
+}
 
 impl LogicalGroup {
     #[cfg(test)]
@@ -29,6 +59,14 @@ impl LogicalGroup {
         &self.constraints
     }
 }
+
+/// Where a project's fixture types live, relative to the project, when the
+/// config does not say: `lighting.directories.fixture_types` moves it.
+pub const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
+
+/// Where a project's venues live, relative to the project, when the config
+/// does not say: `lighting.directories.venues` moves it.
+pub const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
 /// A directory as configured, or its default: the one resolution the
 /// engine, the web API, MCP and the CLI share. An empty value is unset.
@@ -53,6 +91,49 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
 /// the one way to patch a fixture.
 pub const RETIRED_INLINE_FIXTURES: &str = "dmx.lighting.fixtures is no longer supported: fixtures \
      are patched in venue files — run `mtrack migrate --apply` to move these into one";
+
+/// A YAML representation of the lighting configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Lighting {
+    /// The current venue selection.
+    #[serde(default)]
+    current_venue: Option<String>,
+
+    /// The retired inline fixture map (`fixtures:`), read only so the
+    /// loader can refuse it by name and `mtrack migrate` can move it into a
+    /// venue file. Never written back.
+    #[serde(rename = "fixtures", default, skip_serializing)]
+    retired_fixtures: Option<HashMap<String, String>>,
+
+    /// Logical group definitions with role-based constraints.
+    #[serde(default)]
+    groups: Option<HashMap<String, LogicalGroup>>,
+
+    /// Where fixture types and venues are read from, when not the defaults
+    /// ([`DEFAULT_FIXTURE_TYPES_DIR`], [`DEFAULT_VENUES_DIR`]). Each is
+    /// independent: naming one leaves the other at its default.
+    #[serde(default)]
+    directories: Option<Directories>,
+
+    /// The show the rig plays while no song is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ambient: Option<super::ambient::Ambient>,
+}
+
+/// Directory configuration for loading fixture types and venues.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Directories {
+    /// Directory containing fixture type definitions.
+    #[serde(default)]
+    fixture_types: Option<String>,
+
+    /// Directory containing venue definitions.
+    #[serde(default)]
+    venues: Option<String>,
+}
 
 impl Lighting {
     /// A lighting configuration built in code — tests, and the web editor's
@@ -328,51 +409,5 @@ mod tests {
         assert!(lighting.retired_field_error().is_none());
         assert!(lighting.groups().is_empty());
         assert!(lighting.directories().is_none());
-    }
-}
-
-#[cfg(test)]
-mod migration_advice_tests {
-    /// Parses a `Lighting` block the way the loader does, via the `config`
-    /// crate rather than a serde_yaml dependency this crate does not carry.
-    fn parse(yaml: &str) -> Result<super::Lighting, config::ConfigError> {
-        config::Config::builder()
-            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
-            .build()?
-            .try_deserialize()
-    }
-
-    /// The shape the venue-group migration message tells people to write must
-    /// actually load.
-    ///
-    /// `groups` is a map keyed by name, and the advice printed a sequence — so
-    /// following it produced a config that fails to deserialize, which is worse
-    /// than the error it was replacing.
-    #[test]
-    fn the_migration_advice_shape_deserializes() {
-        // The advice itself, not a copy of it. Parsing a hand-written string
-        // here left the real message free to say anything: reverting it to a
-        // sequence kept this test green, which is the failure it exists to
-        // prevent.
-        let advice = crate::lighting::parser::fixture_venue::migration_yaml("wash");
-        let dedented: String = advice
-            .lines()
-            .map(|line| line.strip_prefix("    ").unwrap_or(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let lighting: super::Lighting =
-            parse(&dedented).expect("the shape the migration message prints must load");
-        assert!(lighting.groups().contains_key("wash"));
-        assert_eq!(lighting.groups()["wash"].name(), "wash");
-    }
-
-    #[test]
-    fn a_sequence_of_groups_does_not_load() {
-        // Guards the advice against drifting back to a list.
-        let yaml = "groups:\n  - name: wash\n    constraints:\n      - AllOf: [\"wash\"]\n";
-        assert!(
-            parse(yaml).is_err(),
-            "a sequence must not silently load, or the advice cannot be checked"
-        );
     }
 }

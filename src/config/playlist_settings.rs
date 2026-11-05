@@ -19,6 +19,7 @@
 //! `ambient`'s.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// A fade as written in a playlist: a length alone, or with its settings.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
@@ -240,5 +241,63 @@ impl<'de> Deserialize<'de> for PlaylistAmbient {
             }
         }
         deserializer.deserialize_any(AmbientVisitor)
+    }
+}
+
+impl Ambient {
+    /// Ambient light built in code.
+    pub fn new(
+        show: Option<String>,
+        delay: Option<String>,
+        fade_in: Option<String>,
+        fade_out: Option<String>,
+    ) -> Self {
+        Ambient {
+            show,
+            delay,
+            fade_in,
+            fade_out,
+        }
+    }
+
+    /// The `.light` file, as written.
+    pub fn show(&self) -> Option<&str> {
+        self.show.as_deref()
+    }
+
+    /// Checks the timings read, naming the first that does not.
+    pub fn validate(&self) -> Result<(), String> {
+        for (field, value) in [
+            ("delay", &self.delay),
+            ("fade_in", &self.fade_in),
+            ("fade_out", &self.fade_out),
+        ] {
+            if let Some(value) = value {
+                parse_duration(field, value)?;
+            }
+        }
+        if self
+            .show
+            .as_deref()
+            .is_some_and(|show| show.trim().is_empty())
+        {
+            return Err("ambient show: empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
+    super::parse_duration_string(value)
+        .map_err(|_| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
+}
+
+impl PlaylistAmbient {
+    /// Checks the timings read.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            PlaylistAmbient::Off => Ok(()),
+            PlaylistAmbient::On(ambient) => ambient.validate(),
+        }
     }
 }

@@ -11,13 +11,28 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-pub use super::trackmappings_data::*;
+use indexmap::IndexMap;
+
+use serde::{Deserialize, Serialize};
+
+/// The mappings of tracks to output channels.
+///
+/// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
+/// round-trips — important for the web UI config editor.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct TrackMappings {
+    // The individual track mappings.
+    #[serde(flatten)]
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number[]>"))]
+    pub track_mappings: IndexMap<String, Vec<u16>>,
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use config::{Config, File, FileFormat};
-    use indexmap::IndexMap;
 
     #[test]
     fn deserialize_basic() {

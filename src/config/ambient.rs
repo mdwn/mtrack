@@ -16,6 +16,7 @@
 
 use std::time::Duration;
 
+use super::playlist_settings::parse_duration;
 pub use super::playlist_settings::{Ambient, PlaylistAmbient};
 
 /// How long the last song's frame holds before ambient fades in.
@@ -33,54 +34,6 @@ pub struct ResolvedAmbient {
     pub delay: Duration,
     pub fade_in: Duration,
     pub fade_out: Duration,
-}
-
-impl Ambient {
-    /// Ambient light built in code.
-    pub fn new(
-        show: Option<String>,
-        delay: Option<String>,
-        fade_in: Option<String>,
-        fade_out: Option<String>,
-    ) -> Self {
-        Ambient {
-            show,
-            delay,
-            fade_in,
-            fade_out,
-        }
-    }
-
-    /// The `.light` file, as written.
-    pub fn show(&self) -> Option<&str> {
-        self.show.as_deref()
-    }
-
-    /// Checks the timings read, naming the first that does not.
-    pub fn validate(&self) -> Result<(), String> {
-        for (field, value) in [
-            ("delay", &self.delay),
-            ("fade_in", &self.fade_in),
-            ("fade_out", &self.fade_out),
-        ] {
-            if let Some(value) = value {
-                parse_duration(field, value)?;
-            }
-        }
-        if self
-            .show
-            .as_deref()
-            .is_some_and(|show| show.trim().is_empty())
-        {
-            return Err("ambient show: empty".to_string());
-        }
-        Ok(())
-    }
-}
-
-fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
-    super::parse_duration_string(value)
-        .map_err(|_| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
 }
 
 /// Resolves ambient light from the player's settings and the playlist's: a
@@ -141,16 +94,6 @@ pub fn layer(
                 fade_in: pick(|a| &a.fade_in),
                 fade_out: pick(|a| &a.fade_out),
             }))
-        }
-    }
-}
-
-impl PlaylistAmbient {
-    /// Checks the timings read.
-    pub fn validate(&self) -> Result<(), String> {
-        match self {
-            PlaylistAmbient::Off => Ok(()),
-            PlaylistAmbient::On(ambient) => ambient.validate(),
         }
     }
 }

@@ -12,8 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-pub use super::dmx_data::*;
 use std::{error::Error, time::Duration};
+
+use serde::{Deserialize, Serialize};
 
 use super::lighting::Lighting;
 
@@ -24,6 +25,40 @@ pub const DEFAULT_OLA_PORT: u16 = 9010;
 pub const DEFAULT_OLA_HTTP_PORT: u16 = 9090;
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
+
+/// A YAML representation of the DMX configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Dmx {
+    /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
+    #[serde(default)]
+    dim_speed_modifier: Option<f64>,
+
+    /// Controls how long to wait before playback of a DMX lighting file starts.
+    #[serde(default)]
+    playback_delay: Option<String>,
+
+    /// The OLA port. Defaults to the default OLA port.
+    #[serde(default)]
+    ola_port: Option<u16>,
+
+    /// The port of olad's web server, used only to check that the configured
+    /// universes have an output port patched to them. Defaults to olad's.
+    #[serde(default)]
+    ola_http_port: Option<u16>,
+
+    /// The configuration of devices to universes.
+    universes: Vec<Universe>,
+
+    /// The lighting configuration.
+    #[serde(default)]
+    lighting: Option<Lighting>,
+
+    /// When true, use a no-op OLA client if the OLA daemon is unavailable.
+    /// Allows the effects engine to run (e.g. for TUI display) without OLA.
+    #[serde(default)]
+    null_client: bool,
+}
 
 impl Dmx {
     /// Creates a new DMX configuration.
@@ -145,6 +180,17 @@ impl Dmx {
             Err(errors)
         }
     }
+}
+
+/// A YAML representation of a DMX universe configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Universe {
+    /// The OpenLighting universe.
+    universe: u16,
+
+    /// The name of this universe. Will be mapped to a universe by the player.
+    name: String,
 }
 
 impl Universe {

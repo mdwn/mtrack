@@ -79,6 +79,16 @@ pub mod lighting;
 #[allow(dead_code)]
 pub mod config;
 
+/// An audio sample format (`src/audio/format.rs`).
+#[path = "../../../src/audio/format.rs"]
+#[allow(dead_code)]
+pub mod audio_format;
+
+/// The range a track's gain may be set in (`src/audio/track_gains.rs`).
+#[path = "../../../src/audio/track_gains.rs"]
+#[allow(dead_code)]
+pub mod track_gains;
+
 /// What the audio output is doing (`src/audio/output_status.rs`).
 #[path = "../../../src/audio/output_status.rs"]
 pub mod output_status;
@@ -153,7 +163,9 @@ pub mod wire_venue;
 // (`crate::audio::beat_grid`, `crate::config::Section`, …), so each
 // compiles as it is.
 pub mod audio {
-    pub use crate::{beat_grid, guessed_tempo, output_status};
+    pub use crate::audio_format as format;
+    pub use crate::{beat_grid, guessed_tempo, output_status, track_gains};
+    pub use format::SampleFormat;
 }
 
 pub mod dmx {
