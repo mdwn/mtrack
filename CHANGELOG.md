@@ -152,6 +152,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The lighting timeline's beat lines are the click grid's beats**: one line per beat of the
+  time signature's denominator, so a 6/8 bar has six, where it had three quarter-note lines. The
+  timeline and the song's beat grid walk the bars once, the same way.
 - **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
   reads a `.light` file through the player's grammar (its document model, compiled to
   WebAssembly with the parser) and places every cue, effect and sequence pass where the player

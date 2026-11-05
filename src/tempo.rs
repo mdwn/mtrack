@@ -1069,6 +1069,24 @@ impl TempoMap {
         self.segments.metres.at_measure(measure)
     }
 
+    /// The beat grid's beats from bar 1 on, without end: each one's
+    /// measure, its beat in the bar (1-based, one per denominator note, so
+    /// a 6/8 bar has six) and its time. A bar holds the beats of its own
+    /// signature ([`Self::time_signature_at_measure`]), the one that placed
+    /// its beats. What the click track's grid and the light-show
+    /// timeline's bar and beat lines are.
+    pub(crate) fn grid_beats(&self) -> impl Iterator<Item = (u32, u32, Duration)> + '_ {
+        let metres = &self.segments.metres;
+        (1..=u32::MAX).flat_map(move |measure| {
+            let metre = metres.at_measure(measure);
+            let step = 4.0 / metre.denominator as f64;
+            (0..metre.grid_beats_per_measure()).map(move |k| {
+                let beats = metres.beats_at(measure, 1.0 + k as f64 * step);
+                (measure, k + 1, self.segments.time_at(beats))
+            })
+        })
+    }
+
     /// Convert a duration in beats to absolute Duration at a given time.
     ///
     /// Computed as a position problem, like [`TempoMap::measures_to_duration`]:

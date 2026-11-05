@@ -102,7 +102,8 @@ pub struct TempoSpan {
 pub struct GridLine {
     pub ms: f64,
     pub measure: u32,
-    /// The beat, 1-based, in the map's quarter-note units.
+    /// The beat, 1-based, as the beat grid counts it: one per denominator
+    /// note, so a 6/8 bar has six.
     pub beat: u32,
     pub kind: GridLineKind,
 }
@@ -479,45 +480,30 @@ impl TempoLayout {
     /// by the offset in force there (`steps`, see [`offset_steps`]).
     pub(crate) fn new(map: &TempoMap, horizon: Duration, steps: &[(Duration, Duration)]) -> Self {
         let at = |time: Duration| ms(shifted(steps, time));
-        let bar = |measure: u32| map.measure_to_time_with_offset(measure, 1.0, 0, 0.0);
-
         let mut grid = Vec::new();
         let mut signature_bars = Vec::new();
-        let mut measure = 1u32;
-        'bars: while grid.len() < MAX_GRID_LINES {
-            let Some(downbeat) = bar(measure) else { break };
-            if downbeat > horizon {
+        for (measure, beat, time) in map.grid_beats() {
+            if grid.len() >= MAX_GRID_LINES || time > horizon {
                 break;
             }
-            let sig = map.time_signature_at_measure(measure);
-            if measure > 1 && sig != map.time_signature_at_measure(measure - 1) {
-                signature_bars.push(downbeat);
+            let downbeat = beat == 1;
+            if downbeat
+                && measure > 1
+                && map.time_signature_at_measure(measure)
+                    != map.time_signature_at_measure(measure - 1)
+            {
+                signature_bars.push(time);
             }
             grid.push(GridLine {
-                ms: at(downbeat),
+                ms: at(time),
                 measure,
-                beat: 1,
-                kind: GridLineKind::Measure,
+                beat,
+                kind: if downbeat {
+                    GridLineKind::Measure
+                } else {
+                    GridLineKind::Beat
+                },
             });
-            let quarters = sig.beats_per_measure();
-            let mut beat = 2u32;
-            while f64::from(beat - 1) < quarters - 1e-9 {
-                let Some(time) = map.measure_to_time_with_offset(measure, f64::from(beat), 0, 0.0)
-                else {
-                    break 'bars;
-                };
-                if time > horizon {
-                    break 'bars;
-                }
-                grid.push(GridLine {
-                    ms: at(time),
-                    measure,
-                    beat,
-                    kind: GridLineKind::Beat,
-                });
-                beat += 1;
-            }
-            measure += 1;
         }
 
         // Where a stretch may begin: bar 1, each change, each ramp's end,
@@ -688,6 +674,23 @@ mod tests {
         // A 3/4 bar has three beat lines, a 2/4 bar two.
         assert_eq!(tempo.grid.iter().filter(|l| l.measure == 5).count(), 3);
         assert_eq!(tempo.grid.iter().filter(|l| l.measure == 8).count(), 2);
+    }
+
+    #[test]
+    fn the_beat_lines_are_the_click_grids_beats() {
+        // A 6/8 bar is six beats on the click grid, not three quarters.
+        let source = "tempo {\n    bpm: 120\n    time_signature: 6/8\n}\nshow \"S\" {\n    @1/1\n    all: static, color: \"red\", duration: 1s\n}\n";
+        let laid = layout(source, None, None, &Sources::none(), Duration::from_secs(3));
+        let bar: Vec<(u32, f64)> = laid
+            .tempo
+            .expect("tempo")
+            .grid
+            .iter()
+            .filter(|l| l.measure == 1)
+            .map(|l| (l.beat, l.ms))
+            .collect();
+        let eighths: Vec<(u32, f64)> = (1..=6).map(|b| (b, f64::from(b - 1) * 250.0)).collect();
+        assert_eq!(bar, eighths);
     }
 
     #[test]

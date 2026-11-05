@@ -278,32 +278,15 @@ impl BeatGrid {
         let mut beats = Vec::new();
         let mut measure_starts = Vec::new();
 
-        'measures: for measure in 1..=MAX_MEASURES {
-            let Some(start) = map.measure_to_time_with_offset(measure, 1.0, 0, 0.0) else {
-                break;
-            };
-            if start.as_secs_f64() >= total_secs {
+        for (measure, beat, time) in map.grid_beats() {
+            let secs = time.as_secs_f64();
+            if measure > MAX_MEASURES || secs >= total_secs {
                 break;
             }
-
-            let time_signature = map.time_signature_at_time(start, 0.0);
-            measure_starts.push(beats.len());
-
-            // Beat positions within the measure are expressed in the tempo
-            // map's quarter-note units; step one denominator note at a time.
-            let step = 4.0 / time_signature.denominator as f64;
-            for k in 0..time_signature.grid_beats_per_measure() {
-                let beat_position = 1.0 + k as f64 * step;
-                let Some(time) = map.measure_to_time_with_offset(measure, beat_position, 0, 0.0)
-                else {
-                    break 'measures;
-                };
-                let secs = time.as_secs_f64();
-                if secs >= total_secs {
-                    break 'measures;
-                }
-                beats.push(secs);
+            if beat == 1 {
+                measure_starts.push(beats.len());
             }
+            beats.push(secs);
         }
 
         BeatGrid {
