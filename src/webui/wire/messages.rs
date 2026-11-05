@@ -165,8 +165,8 @@ pub struct ResolvedPilotHint {
     pub has_audio: bool,
 }
 
-/// The tempo and metre at the playhead.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+/// A tempo and metre: at the playhead, or a tempo block's defaults.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PlaybackTempo {
     pub bpm: f64,

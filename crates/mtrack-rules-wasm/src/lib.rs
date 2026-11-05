@@ -957,18 +957,10 @@ pub fn passes_by(pass_ends: PassEndsJs, until_ms: f64) -> Option<u32> {
 /// player's default tempo and metre (`DEFAULT_BPM`,
 /// `DEFAULT_TIME_SIGNATURE`): what the editor's new tempo block starts
 /// at.
-#[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
-pub struct TempoDefaults {
-    pub bpm: f64,
-    pub time_signature: (u32, u32),
-}
-
-/// [`TempoDefaults`], for the web UI.
 #[wasm_bindgen]
-pub fn tempo_defaults() -> TempoDefaults {
+pub fn tempo_defaults() -> wire_messages::PlaybackTempo {
     let sig = tempo::DEFAULT_TIME_SIGNATURE;
-    TempoDefaults {
+    wire_messages::PlaybackTempo {
         bpm: tempo::DEFAULT_BPM,
         time_signature: (sig.numerator, sig.denominator),
     }
