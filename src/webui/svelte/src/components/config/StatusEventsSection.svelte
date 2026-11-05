@@ -14,10 +14,10 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { MidiEvent } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import MidiEventEditor from "./MidiEventEditor.svelte";
-  import type { MidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
     statusEvents: Record<string, any>;

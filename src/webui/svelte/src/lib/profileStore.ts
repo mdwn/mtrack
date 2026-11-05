@@ -23,6 +23,7 @@
  * write "a profile" and gets the same behaviour either way.
  */
 
+import type { ConfigReload, StoreSnapshot } from "../gen/rules/mtrack_rules";
 import YAML from "yaml";
 import {
   addProfile,
@@ -31,15 +32,10 @@ import {
   fetchProfileFiles,
   saveProfileFile,
   updateProfile,
-  type ConfigSnapshot,
   type ProfileFileInfo,
 } from "./api/config";
 import { get } from "./api/rest";
-import {
-  reloadNotice,
-  type ConfigReload,
-  type ReloadNotice,
-} from "./configReload";
+import { reloadNotice, type ReloadNotice } from "./configReload";
 
 /** Where one profile is stored. */
 export type ProfileRef =
@@ -161,9 +157,9 @@ export async function readProfile(
  *  a file profile (which the next save must present), and what became of
  *  the hardware reload either way. */
 export interface ProfileWrite {
-  snapshot: ConfigSnapshot | null;
+  snapshot: StoreSnapshot | null;
   version: string | null;
-  reload: ConfigReload;
+  reload: Partial<ConfigReload>;
 }
 
 /** Writes one profile. Inline profiles are saved against the config

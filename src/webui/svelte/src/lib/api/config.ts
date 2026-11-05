@@ -17,6 +17,8 @@ import type {
   AudioDeviceInfo,
   AudioProbe,
   ChannelCalibration,
+  ConfigReload,
+  ConfigSaved,
   FitReport,
   Fixture,
   FixtureSettingsData,
@@ -37,6 +39,7 @@ import type {
   PlaylistInfo,
   Readiness,
   SettingsSaved,
+  StoreSnapshot,
   Vec3,
   Venue,
   VenueError,
@@ -44,7 +47,6 @@ import type {
   VenueSaved,
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
-import type { ConfigReload } from "../configReload";
 import { readAnswer } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import {
@@ -67,13 +69,6 @@ export function channelsLabel(device: AudioDeviceInfo): string {
   return device.virtual_node ? "virtual" : `${device.max_channels}ch+`;
 }
 
-/** The config after a change, with what became of its hardware reload
- *  (`ConfigReload`) when the change was a save. */
-export interface ConfigSnapshot extends ConfigReload {
-  yaml: string;
-  checksum: string;
-}
-
 export async function setLocked(locked: boolean): Promise<void> {
   const res = await fetch("/api/lock", {
     method: "PUT",
@@ -83,7 +78,7 @@ export async function setLocked(locked: boolean): Promise<void> {
   if (!res.ok) throw new Error(`Failed to set lock state: ${res.status}`);
 }
 
-export async function fetchConfigStore(): Promise<ConfigSnapshot> {
+export async function fetchConfigStore(): Promise<StoreSnapshot> {
   const res = await get("/config/store");
   if (!res.ok) throw new Error(`Failed to fetch config store: ${res.status}`);
   return res.json();
@@ -129,7 +124,7 @@ export async function fetchMidiDevices(): Promise<MidiDeviceInfo[]> {
 export async function addProfile(
   profile: object,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await post(
     "/config/profiles",
     JSON.stringify({ expected_checksum: checksum, profile }),
@@ -142,7 +137,7 @@ export async function updateProfile(
   index: number,
   profile: object,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await put(
     `/config/profiles/${index}`,
     JSON.stringify({ expected_checksum: checksum, profile }),
@@ -154,7 +149,7 @@ export async function updateProfile(
 export async function deleteProfile(
   index: number,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await del(
     `/config/profiles/${index}?expected_checksum=${encodeURIComponent(checksum)}`,
   );
@@ -195,7 +190,7 @@ export async function saveProfileFile(
   filename: string,
   profile: object,
   version?: string,
-): Promise<{ version: string | null; reload: ConfigReload }> {
+): Promise<{ version: string | null; reload: Partial<ConfigReload> }> {
   const res = await put(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
@@ -209,7 +204,7 @@ export async function saveProfileFile(
 /** Deletes a profile file. Returns what became of the hardware reload. */
 export async function deleteProfileFile(
   filename: string,
-): Promise<ConfigReload> {
+): Promise<Partial<ConfigReload>> {
   const res = await del(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to delete profile");
   return res.json().catch(() => ({}));
@@ -221,7 +216,7 @@ export async function updateSamples(
   samples: Record<string, unknown>,
   checksum: string,
   maxSampleVoices?: number,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const body: Record<string, unknown> = {
     expected_checksum: checksum,
     samples,
@@ -239,7 +234,7 @@ export async function updateMetronomeDefaults(
   enabled: boolean,
   volume: number | null,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const hasSounds = sounds && Object.keys(sounds).length > 0;
   const hasVolume = volume !== null && volume !== 1;
   const body = {

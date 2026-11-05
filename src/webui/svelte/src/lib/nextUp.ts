@@ -14,12 +14,8 @@
 
 import type { FadeStatus, NextUp } from "../gen/rules/mtrack_rules";
 import type { PlaybackState } from "./ws/stores";
+import type { Translate } from "./i18n";
 import { formatFadeLength, formatGapMs, isZeroLength } from "./util/format";
-
-type Translate = (
-  key: string,
-  opts?: { values?: Record<string, string> },
-) => string;
 
 /** The dashboard's "next up" line: what comes after the current song and
  *  how it will arrive. Empty when there is nothing to say. */

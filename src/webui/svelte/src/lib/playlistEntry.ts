@@ -16,6 +16,7 @@
 // entry's transitions summary. No Svelte, no i18n store: the caller passes
 // its translator, so these can be checked as plain values.
 
+import type { Translate } from "./i18n";
 import type {
   Ambient,
   EntryFades,
@@ -25,13 +26,13 @@ import type { AutoPlay, PlaylistAmbient } from "./api/config";
 import { formatFadeLength, isZeroLength } from "./util/format";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
-export type AmbientMode = "inherit" | "off" | "custom";
+export type AmbientChoice = "inherit" | "off" | "custom";
 
-export function ambientModeOf(ambient: PlaylistAmbient): AmbientMode {
+export function ambientModeOf(ambient: PlaylistAmbient): AmbientChoice {
   return ambient === null ? "inherit" : ambient === false ? "off" : "custom";
 }
 
-export function ambientForMode(mode: AmbientMode): PlaylistAmbient {
+export function ambientForMode(mode: AmbientChoice): PlaylistAmbient {
   return mode === "inherit" ? null : mode === "off" ? false : {};
 }
 
@@ -53,11 +54,6 @@ export const ambientTimings: { key: keyof Ambient; label: string }[] = [
   { key: "fade_in", label: "lighting.ambientFadeIn" },
   { key: "fade_out", label: "lighting.ambientFadeOut" },
 ];
-
-export type Translate = (
-  key: string,
-  values?: Record<string, string>,
-) => string;
 
 function fadeLength(fade: FadeConfig | null | undefined): string | null {
   if (fade === null || fade === undefined) return null;
@@ -85,9 +81,9 @@ export function entrySummary(
       : null;
   const ambient = entry.ambient ?? null;
   return [
-    out && tr("playlists.fadeOutSummary", { length: out }),
-    fadeIn && tr("playlists.fadeInSummary", { length: fadeIn }),
-    gap && tr("playlists.autoPlayGapSummary", { gap }),
+    out && tr("playlists.fadeOutSummary", { values: { length: out } }),
+    fadeIn && tr("playlists.fadeInSummary", { values: { length: fadeIn } }),
+    gap && tr("playlists.autoPlayGapSummary", { values: { gap } }),
     ambient === false && tr("playlists.entryAmbientOffSummary"),
     ambient && tr("playlists.entryAmbientOwnSummary"),
   ]

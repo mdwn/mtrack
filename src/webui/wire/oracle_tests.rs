@@ -1814,3 +1814,72 @@ mod playlists {
         assert_eq!(json!(AutoPlayConfig::On(false)), json!(false));
     }
 }
+
+mod config {
+    use serde_json::json;
+
+    use crate::webui::wire::config::*;
+
+    #[test]
+    fn config_replies_match_the_old_json() {
+        // The old fields map, field by field as config_apply_fields built it.
+        let old = |r: &ConfigReload| {
+            let mut fields = serde_json::Map::new();
+            fields.insert("applied".into(), json!(r.applied));
+            fields.insert("reload".into(), json!(r.reload));
+            if let Some(message) = &r.message {
+                fields.insert("message".into(), json!(message));
+            }
+            if let Some(songs_error) = &r.songs_error {
+                fields.insert("songs_error".into(), json!(songs_error));
+            }
+            if let Some(awaits) = r.awaits_reload {
+                fields.insert("awaits_reload".into(), json!(awaits));
+                fields.insert("awaits_process".into(), json!(r.awaits_process));
+            }
+            fields
+        };
+        for reload in [
+            ConfigReload {
+                applied: true,
+                reload: "applied".to_string(),
+                message: None,
+                songs_error: None,
+                awaits_reload: None,
+                awaits_process: None,
+            },
+            ConfigReload {
+                applied: false,
+                reload: "deferred".to_string(),
+                message: Some("idle".to_string()),
+                songs_error: Some("bad".to_string()),
+                awaits_reload: Some(3),
+                awaits_process: Some("42".to_string()),
+            },
+        ] {
+            let mut body = json!({"yaml": "a: 1", "checksum": "c"});
+            body.as_object_mut().unwrap().extend(old(&reload));
+            assert_eq!(
+                json!(ConfigSaved {
+                    yaml: "a: 1".to_string(),
+                    checksum: "c".to_string(),
+                    reload: reload.clone(),
+                }),
+                body
+            );
+            let mut saved = json!({"status": "saved"});
+            saved.as_object_mut().unwrap().extend(old(&reload));
+            assert_eq!(
+                crate::webui::api::config_api::with_reload(json!({"status": "saved"}), reload),
+                saved
+            );
+        }
+        assert_eq!(
+            json!(StoreSnapshot {
+                yaml: "a: 1".to_string(),
+                checksum: "c".to_string(),
+            }),
+            json!({"yaml": "a: 1", "checksum": "c"})
+        );
+    }
+}

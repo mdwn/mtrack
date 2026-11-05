@@ -14,10 +14,12 @@
      * -->
 <script lang="ts">
   import type {
+    MidiEvent,
     PilotConfig,
     Section,
     SongFailure,
     SongInfo,
+    Track,
     TrackPeaks,
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
@@ -51,15 +53,8 @@
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
-  import type { MidiEvent } from "../config/MidiEventEditor.svelte";
   import NotificationsSection from "../config/NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
-
-  interface TrackEntry {
-    name: string;
-    file: string;
-    file_channel?: number;
-  }
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -85,7 +80,7 @@
   let rawYaml = $state("");
   let editedYaml = $state("");
   let parsedConfig = $state<Record<string, unknown> | null>(null);
-  let tracks = $state<TrackEntry[]>([]);
+  let tracks = $state<Track[]>([]);
   let loading = $state(true);
   let error = $state("");
   let failureError = $state<string | null>(null);
@@ -221,7 +216,11 @@
       } else {
         const newTracks = paths.map((p) => {
           const filename = p.split("/").pop() ?? p;
-          return { name: filename.replace(/\.[^.]+$/, ""), file: p };
+          return {
+            name: filename.replace(/\.[^.]+$/, ""),
+            file: p,
+            file_channel: null,
+          };
         });
         onTracksChange([...tracks, ...newTracks]);
       }
@@ -278,7 +277,7 @@
         tracks = (parsed.tracks ?? []).map((t: Record<string, unknown>) => ({
           name: (t.name as string) ?? "",
           file: (t.file as string) ?? "",
-          file_channel: t.file_channel as number | undefined,
+          file_channel: (t.file_channel as number | undefined) ?? null,
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
         loopPlayback = parsed.loop_playback === true;
@@ -343,7 +342,7 @@
       kind: "song",
       tracks: tracks.map((t) => {
         const entry: Record<string, unknown> = { name: t.name, file: t.file };
-        if (t.file_channel !== undefined) {
+        if (t.file_channel !== null) {
           entry.file_channel = t.file_channel;
         }
         return entry;
@@ -455,7 +454,7 @@
 
   load();
 
-  function onTracksChange(updated: TrackEntry[]) {
+  function onTracksChange(updated: Track[]) {
     tracks = updated;
     const yaml = buildYaml();
     editedYaml = yaml;

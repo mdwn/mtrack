@@ -16,6 +16,8 @@ import type { saveVenue } from "../../src/lib/api/config";
 import type {
   AimPoints,
   ChannelCalibration,
+  ConfigReload,
+  ConfigSaved,
   MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeEntry,
@@ -200,16 +202,31 @@ app.get("/api/devices/midi", (_req, res) => {
 
 // --- Profiles ---
 
+/** A save's hardware reload, run at once. */
+const APPLIED: ConfigReload = { applied: true, reload: "applied" };
+
 app.post("/api/config/profiles", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-1" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-1",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.put("/api/config/profiles/:index", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-2" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-2",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.delete("/api/config/profiles/:index", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-3" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-3",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.get("/api/profiles", (_req, res) => {
@@ -231,7 +248,11 @@ app.delete("/api/profiles/:filename", (_req, res) => {
 // --- Samples ---
 
 app.put("/api/config/samples", (_req, res) => {
-  res.json({ ...CONFIG_STORE, checksum: "new-checksum-4" });
+  res.json({
+    ...CONFIG_STORE,
+    checksum: "new-checksum-4",
+    ...APPLIED,
+  } satisfies ConfigSaved);
 });
 
 app.put("/api/samples/upload/:filename", (_req, res) => {

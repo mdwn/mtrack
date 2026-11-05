@@ -14,6 +14,11 @@
 use serde::{Deserialize, Serialize};
 
 /// A YAML representation of a track.
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
 #[derive(Deserialize, Clone, Serialize)]
 pub struct Track {
     /// The name of the track.

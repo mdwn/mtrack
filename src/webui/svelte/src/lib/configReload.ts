@@ -14,26 +14,7 @@
 
 import { get } from "svelte/store";
 import { t } from "svelte-i18n";
-import type { RefusedReload } from "../gen/rules/mtrack_rules";
-
-/** What a config or profile save's reply says of the hardware reload: it
- *  ran (`applied`), waits until playback stops (`deferred`), or could not
- *  run (`failed`), with the server's `message` when it was not applied. A
- *  save while a song plays is kept and its reload deferred, so "Saved"
- *  alone would read as a change already in effect. */
-export interface ConfigReload {
-  applied?: boolean;
-  reload?: "applied" | "deferred" | "failed";
-  message?: string;
-  /** A song reload beside it that failed: the player keeps its songs. */
-  songs_error?: string;
-  /** For a deferred reload, the deferred reload generation it waits for:
-   *  its wait is over once the playback updates' started reaches it. */
-  awaits_reload?: number;
-  /** The process whose generation that is: a restarted mtrack counts its
-   *  reloads from none, and has loaded the saved config. */
-  awaits_process?: string;
-}
+import type { ConfigReload, RefusedReload } from "../gen/rules/mtrack_rules";
 
 /** A save's notice beside "Saved": the reload waiting for playback to stop,
  *  or why it failed. */
@@ -52,7 +33,7 @@ export interface ReloadNotice {
 /** The notice a save's reply calls for, or null when its change is in
  *  effect (or the reply says nothing of a reload). */
 export function reloadNotice(
-  reply: ConfigReload | null | undefined,
+  reply: Partial<ConfigReload> | null | undefined,
 ): ReloadNotice | null {
   if (!reply || reply.applied !== false) return null;
   const songsError = reply.songs_error

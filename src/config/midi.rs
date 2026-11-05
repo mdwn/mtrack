@@ -13,6 +13,10 @@
 //
 use std::{error::Error, time::Duration};
 
+pub use super::midi_event::{
+    Aftertouch, ChannelAftertouch, ControlChange, MidiEvent as Event, NoteOff, NoteOn, PitchBend,
+    ProgramChange,
+};
 use midly::{
     live::LiveEvent,
     num::{u14, u4, u7},
@@ -128,19 +132,6 @@ pub trait ToMidiEvent {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
 }
 
-/// MIDI events that can be parsed from YAML.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    NoteOff(NoteOff),
-    NoteOn(NoteOn),
-    Aftertouch(Aftertouch),
-    ControlChange(ControlChange),
-    ProgramChange(ProgramChange),
-    ChannelAftertouch(ChannelAftertouch),
-    PitchBend(PitchBend),
-}
-
 /// Creates a note on MIDI event.
 #[cfg(test)]
 pub fn note_on(channel: u8, key: u8, velocity: u8) -> Event {
@@ -165,19 +156,6 @@ impl ToMidiEvent for Event {
     }
 }
 
-/// A NoteOff event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct NoteOff {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key for the note off event.
-    key: u8,
-    /// The velocity of the note off event.
-    /// Optional for trigger matching; defaults to 0.
-    #[serde(default)]
-    velocity: u8,
-}
-
 impl ToMidiEvent for NoteOff {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -188,19 +166,6 @@ impl ToMidiEvent for NoteOff {
             },
         })
     }
-}
-
-/// A NoteOn event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct NoteOn {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key of the note on event.
-    key: u8,
-    /// The velocity of the note on event.
-    /// Optional for trigger matching; defaults to 0.
-    #[serde(default)]
-    velocity: u8,
 }
 
 impl ToMidiEvent for NoteOn {
@@ -215,17 +180,6 @@ impl ToMidiEvent for NoteOn {
     }
 }
 
-/// An Aftertouch event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct Aftertouch {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The key value of the aftertouch event.
-    key: u8,
-    /// The velocity value of the aftertouch event.
-    velocity: u8,
-}
-
 impl ToMidiEvent for Aftertouch {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -236,17 +190,6 @@ impl ToMidiEvent for Aftertouch {
             },
         })
     }
-}
-
-/// A ControlChange event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ControlChange {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// Controller is the controller for a control_change event.
-    controller: u8,
-    /// Value is the control_change value.
-    value: u8,
 }
 
 impl ToMidiEvent for ControlChange {
@@ -261,15 +204,6 @@ impl ToMidiEvent for ControlChange {
     }
 }
 
-/// A ProgramChange event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ProgramChange {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// Program is the program value for program_change events.
-    program: u8,
-}
-
 impl ToMidiEvent for ProgramChange {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -281,15 +215,6 @@ impl ToMidiEvent for ProgramChange {
     }
 }
 
-/// A ChannelAftertouch event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct ChannelAftertouch {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The velocity of the channel aftertouch event.
-    velocity: u8,
-}
-
 impl ToMidiEvent for ChannelAftertouch {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -299,15 +224,6 @@ impl ToMidiEvent for ChannelAftertouch {
             },
         })
     }
-}
-
-/// A PitchBend event.
-#[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct PitchBend {
-    /// The channel the MIDI event belongs to.
-    channel: u8,
-    /// The pitchbend event.
-    bend: u16,
 }
 
 impl ToMidiEvent for PitchBend {

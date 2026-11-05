@@ -166,3 +166,29 @@ fn a_playlists_ambient_and_auto_play_are_what_their_ts_types_say() {
     assert_eq!(json!(Some(AutoPlayConfig::On(true))), json!(true));
     assert_eq!(json!(AutoPlayConfig::Gap("2s".to_string())), json!("2s"));
 }
+
+#[test]
+fn a_midi_event_is_tagged_by_type() {
+    let event: crate::config::midi::Event = serde_json::from_value(
+        json!({"type": "note_on", "channel": 1, "key": 60, "velocity": 100}),
+    )
+    .unwrap();
+    assert_eq!(
+        json!(event),
+        json!({"type": "note_on", "channel": 1, "key": 60, "velocity": 100})
+    );
+}
+
+#[test]
+fn a_config_reload_leaves_out_what_did_not_happen() {
+    use super::config::ConfigReload;
+    let reload = json!(ConfigReload {
+        applied: true,
+        reload: "applied".to_string(),
+        message: None,
+        songs_error: None,
+        awaits_reload: None,
+        awaits_process: None,
+    });
+    assert_eq!(reload, json!({"applied": true, "reload": "applied"}));
+}

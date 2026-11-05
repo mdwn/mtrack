@@ -24,6 +24,7 @@ pub mod metronome;
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
+mod midi_event;
 pub mod notification;
 pub mod pilot;
 mod player;

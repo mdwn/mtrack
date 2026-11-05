@@ -28,6 +28,7 @@ import type {
   SocketMessage,
   SongList,
   Status,
+  StoreSnapshot,
 } from "../../src/gen/rules/mtrack_rules";
 
 export const SONGS: SongList = {
@@ -196,7 +197,7 @@ profiles:
 samples: {}
 `;
 
-export const CONFIG_STORE = {
+export const CONFIG_STORE: StoreSnapshot = {
   yaml: CONFIG_YAML,
   checksum: "abc123def456",
 };

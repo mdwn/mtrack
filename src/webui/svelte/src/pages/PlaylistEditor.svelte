@@ -319,7 +319,7 @@
         autoPlay: editAutoPlay[i],
         ambient: editEntryAmbient[i],
       },
-      (key, values) => tr(key, values ? { values } : undefined),
+      tr,
     );
   }
 

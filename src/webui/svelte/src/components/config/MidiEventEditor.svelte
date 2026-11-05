@@ -13,18 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import type { MidiEvent } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-
-  export interface MidiEvent {
-    type: string;
-    channel?: number;
-    key?: number;
-    velocity?: number;
-    program?: number;
-    controller?: number;
-    value?: number;
-    bend?: number;
-  }
 
   interface Props {
     event: MidiEvent;
@@ -34,7 +24,7 @@
 
   let { event = $bindable(), onchange, idPrefix = "midi" }: Props = $props();
 
-  function setType(type: string) {
+  function setType(type: MidiEvent["type"]) {
     if (type === "note_on" || type === "note_off") {
       event = { type, channel: event.channel ?? 1, key: 60, velocity: 100 };
     } else if (type === "aftertouch") {
@@ -51,7 +41,7 @@
     onchange();
   }
 
-  function updateNum(field: keyof MidiEvent, value: string, fallback: number) {
+  function updateNum(field: string, value: string, fallback: number) {
     (event as unknown as Record<string, unknown>)[field] =
       parseInt(value) || fallback;
     onchange();
@@ -65,7 +55,8 @@
       id="{idPrefix}-type"
       class="input"
       value={event.type}
-      onchange={(e) => setType((e.target as HTMLSelectElement).value)}
+      onchange={(e) =>
+        setType((e.target as HTMLSelectElement).value as MidiEvent["type"])}
     >
       <option value="note_on">{$t("midiEvent.noteOn")}</option>
       <option value="note_off">{$t("midiEvent.noteOff")}</option>

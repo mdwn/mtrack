@@ -36,7 +36,9 @@
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
-  import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
+  import TempoMarkerDialog, {
+    type MarkerPosition,
+  } from "./TempoMarkerDialog.svelte";
   import PilotHintDialog from "./PilotHintDialog.svelte";
   import SectionEditDialog from "./SectionEditDialog.svelte";
 
@@ -403,11 +405,6 @@
   }
 
   // --- Tempo / pilot marker layers ---
-
-  interface MarkerPosition {
-    measure: number;
-    beat: number;
-  }
 
   let tempoDialogTarget = $state<"start" | MarkerPosition | null>(null);
   let pilotDialogIndex = $state<number | null>(null);

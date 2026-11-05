@@ -87,6 +87,16 @@ pub mod pilot_config;
 #[path = "../../../src/config/playlist_settings.rs"]
 mod config_playlist_settings;
 
+/// The MIDI events a config names (`src/config/midi_event.rs`).
+#[path = "../../../src/config/midi_event.rs"]
+#[allow(dead_code)]
+mod config_midi_event;
+
+/// A song's tracks (`src/config/track.rs`).
+#[path = "../../../src/config/track.rs"]
+#[allow(dead_code)]
+mod config_track;
+
 /// A song's sections (`src/config/section.rs`).
 #[path = "../../../src/config/section.rs"]
 mod config_section;
@@ -124,6 +134,9 @@ mod pose;
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
+/// The config API's payloads.
+#[path = "../../../src/webui/wire/config.rs"]
+pub mod wire_config;
 /// The devices API's payloads.
 #[path = "../../../src/webui/wire/devices.rs"]
 pub mod wire_devices;
