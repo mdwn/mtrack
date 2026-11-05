@@ -321,7 +321,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   millisecond.
 - **MIDI DMX writes a channel's fine byte and mirrors**: a 16-bit channel driven from MIDI got
   its coarse byte alone, and a ganged channel its first copy; both go out as a show's value
-  does, through the one byte resolution.
+  does, through the one byte resolution. On a 16-bit channel the value is rounded on the
+  16-bit scale, so mid-fade its coarse byte can be one above the truncated byte MIDI used to
+  send; an 8-bit channel's byte is as it was.
 - **`evaluate_show` reads an optic or a setting as dark**: `is_dark` counts only the levels
   going dark takes to 0 -- not zoom, focus, iris, frost, nor a snap channel such as a gobo --
   the rule the fade to dark goes by, so a zoom at its setting no longer makes a dark rig read
