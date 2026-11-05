@@ -539,3 +539,12 @@ fn a_file_is_read_as_written_and_laid_out_with_its_includes() {
         .unwrap()
         .contains("Measure-based timing requires a tempo section"));
 }
+
+#[test]
+fn a_parameter_reference_is_the_whole_value_and_nothing_after_it() {
+    assert!(mtrack_rules_wasm::param_ref("$x"));
+    assert!(mtrack_rules_wasm::param_ref(" $level "));
+    for text in ["$x # c", "$x // c", "$x\n# c", "$x y", "x", "$", "\"$x\""] {
+        assert!(!mtrack_rules_wasm::param_ref(text), "{text:?}");
+    }
+}

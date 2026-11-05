@@ -28,6 +28,7 @@
   import ColorInput from "./ColorInput.svelte";
   import {
     colorsOf,
+    isParam,
     quoted,
     unquoted,
     withColors,
@@ -69,7 +70,7 @@
    *  bare number gets the unit. */
   function withDeg(value: string): string {
     const v = value.trim();
-    return v.endsWith("deg") || v.startsWith("$") ? v : `${v}deg`;
+    return v.endsWith("deg") || isParam(v) ? v : `${v}deg`;
   }
 
   /** The current venue's focus points, offered as `move` targets. */
