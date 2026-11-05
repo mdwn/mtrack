@@ -11,27 +11,28 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! mtrack's beat grid, tempo map and metronome rules for the web UI, as a
-//! WebAssembly module.
+//! mtrack's beat grid, tempo map, metronome and DMX patch rules for the web
+//! UI, as a WebAssembly module.
 //!
 //! The module is the player's own `src/tempo.rs`, `src/config/tempo.rs`,
-//! `src/config/metronome.rs` and `src/audio/beat_grid.rs`, compiled as they
-//! are, so the UI places measures, beats, signatures and accents exactly
-//! where the player does. No rule lives here: each export carries values
-//! across the boundary to one of the player's functions. What little logic
-//! it holds is the boundary's own -- reading the page's values leniently,
-//! refusing magnitudes no song has (see [`bounds`]), milliseconds to and
-//! from seconds, which of the player's two signature lookups a tempo point
-//! reports (the bar's, by its time, and the one the changes have set), and
-//! the beats-in-measure of a count-in. The TypeScript types of the
-//! arguments and results are generated from the Rust structs (`tsify`), so
-//! the UI has no copy of them to drift.
+//! `src/config/metronome.rs`, `src/audio/beat_grid.rs` and
+//! `src/lighting/patch.rs`, compiled as they are, so the UI places measures,
+//! beats, signatures and accents exactly where the player does, and refuses
+//! the patch overlaps the player refuses. No rule lives here: each export
+//! carries values across the boundary to one of the player's functions.
+//! What little logic it holds is the boundary's own -- reading the page's
+//! values leniently, refusing magnitudes no song has (see [`bounds`]),
+//! milliseconds to and from seconds, which of the player's two signature
+//! lookups a tempo point reports (the bar's, by its time, and the one the
+//! changes have set), and the beats-in-measure of a count-in. The
+//! TypeScript types of the arguments and results are generated from the
+//! Rust structs (`tsify`), so the UI has no copy of them to drift.
 //!
 //! Every export is stateless and synchronous: the UI hands over the grid or
 //! config it holds and gets an answer, with nothing kept on this side. An
 //! unanswerable question (a position off the grid, a config that makes no
-//! tempo map, a value that is not what its type says -- a measure of 1.5)
-//! is `null`, never a trap.
+//! tempo map, a value that is not what its type says -- a measure of 1.5,
+//! a DMX address of -1) is `null`, never a trap.
 
 // Each included source is named by its own `#[path]` here, one per line:
 // the Makefile reads this list to know which player sources the web UI's
@@ -54,6 +55,12 @@ pub mod metronome_config;
 #[path = "../../../src/audio/beat_grid.rs"]
 #[allow(dead_code)]
 pub mod beat_grid;
+
+/// The player's DMX patch rules (`src/lighting/patch.rs`): which fixtures
+/// overlap, which gang, which run past the universe.
+#[path = "../../../src/lighting/patch.rs"]
+#[allow(dead_code)]
+pub mod patch;
 
 /// What the included modules' own unit tests reach for in the player
 /// (`crate::util::to_yaml_string`). Those tests are never run here (`[lib]
@@ -78,6 +85,7 @@ use wasm_bindgen::JsValue;
 
 pub use beat_grid::BeatGrid;
 pub use metronome_config::{MetronomeConfig, Subdivision};
+pub use patch::{PatchOverlap, PatchOverrun, PatchSpan};
 use tempo::TempoMap;
 pub use tempo_config::TempoConfig;
 
@@ -159,6 +167,8 @@ type TempoSourceJs = <TempoSource as Tsify>::JsType;
 type TempoQueryJs = <TempoQuery as Tsify>::JsType;
 type TempoConfigJs = <TempoConfig as Tsify>::JsType;
 type MetronomeConfigJs = <MetronomeConfig as Tsify>::JsType;
+type PatchSpanJs = <PatchSpan as Tsify>::JsType;
+type PatchSpansJs = <PatchSpans as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -487,4 +497,53 @@ pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Subd
     }
     let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
     Some(metronome.subdivision_at(measure).0.clone())
+}
+
+// ── DMX patch ───────────────────────────────────────────────────────────────
+
+/// The spans of a venue's fixtures, as the UI holds them.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct PatchSpans(pub Vec<PatchSpan>);
+
+/// The gangs a candidate patch would partially overlap.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct PatchOverlaps(pub Vec<PatchOverlap>);
+
+/// The spans that run past the end of their universe.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct PatchOverruns(pub Vec<PatchOverrun>);
+
+/// `patch::overlaps_with`, for the web UI: the gangs of `spans` a candidate
+/// address or mode would partially overlap, by address then name -- the
+/// rule the loader and the readiness report apply. A span with the
+/// candidate's name is the fixture being moved and is skipped; spans
+/// identical to the candidate's gang with it. `None` for a value that is
+/// not a list of spans (an address or footprint that is not a whole number
+/// in 0..=65535).
+#[wasm_bindgen]
+pub fn patch_overlaps(spans: PatchSpansJs, candidate: PatchSpanJs) -> Option<PatchOverlaps> {
+    let spans: PatchSpans = read(JsValue::from(spans))?;
+    let candidate: PatchSpan = read(JsValue::from(candidate))?;
+    Some(PatchOverlaps(patch::overlaps_with(&spans.0, &candidate)))
+}
+
+/// `PatchSpan::last`, for the web UI: the last address a span uses,
+/// inclusive; `None` for a zero footprint or a value that is not a span.
+#[wasm_bindgen]
+pub fn patch_last(span: PatchSpanJs) -> Option<u32> {
+    read::<PatchSpan>(JsValue::from(span))?.last()
+}
+
+/// `patch::venue_overruns`, for the web UI: every span that runs past
+/// address 512, by universe, address, name. `None` for a value that is not
+/// a list of spans.
+#[wasm_bindgen]
+pub fn patch_overruns(spans: PatchSpansJs) -> Option<PatchOverruns> {
+    let spans: PatchSpans = read(JsValue::from(spans))?;
+    Some(PatchOverruns(patch::venue_overruns(&spans.0)))
 }

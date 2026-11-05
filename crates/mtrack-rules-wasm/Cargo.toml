@@ -1,6 +1,6 @@
 [package]
 name = "mtrack-rules-wasm"
-description = "mtrack's beat grid, tempo map and metronome rules, compiled to WebAssembly for the web UI."
+description = "mtrack's beat grid, tempo map, metronome and DMX patch rules, compiled to WebAssembly for the web UI."
 license = "GPL-3.0"
 version = "0.1.0"
 edition = "2021"
