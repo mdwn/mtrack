@@ -16,14 +16,13 @@
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import {
-    type BeatGrid,
     formatSeconds,
     formatSecondsShort,
-    maxBeatIn,
+    highestBeat,
     parseSeconds,
-    positionAtTime,
-    timeAtPosition,
   } from "../../lib/util/beatGrid";
+  import type { BeatGrid } from "../../lib/api/songs";
+  import { rules } from "../../lib/rules";
   import UnitToggle from "./UnitToggle.svelte";
 
   export interface Position {
@@ -99,20 +98,29 @@
   /** Where the value is a time, nothing snaps: the cursor leaves the grid. */
   let decoupled = $derived(value.kind === "time");
 
+  /** The grid's time for a position, or null when it has none. */
+  function secondsAt(m: number, b: number): number | null {
+    return beatGrid
+      ? (rules.grid_query(beatGrid, { measure: m, beat: b })?.secs ?? null)
+      : null;
+  }
+  /** The beat nearest a time, as the player snaps a time to one; null
+   * without a grid. */
+  function beatAt(secs: number): Position | null {
+    return beatGrid ? (rules.grid_query(beatGrid, { secs }) ?? null) : null;
+  }
+
   /** The musical position, snapped, whatever the value's kind. */
   let position = $derived.by((): Position => {
     if (value.kind === "beat")
       return { measure: value.measure, beat: value.beat };
-    const at = positionAtTime(beatGrid, value.time);
-    return at ?? { measure: 1, beat: 1 };
+    return beatAt(value.time) ?? { measure: 1, beat: 1 };
   });
   let measure = $derived(position.measure);
   let beat = $derived(position.beat);
   /** Song time of the value, when the grid can say. */
   let seconds = $derived(
-    value.kind === "time"
-      ? value.time
-      : (timeAtPosition(beatGrid, value.measure, value.beat) ?? null),
+    value.kind === "time" ? value.time : secondsAt(value.measure, value.beat),
   );
   let beatStep = $derived(step === 1 || !halfSteps ? 1 : 0.5);
   let first = $state(1);
@@ -140,9 +148,7 @@
     else if (m > f + WINDOW - 1) first = m - WINDOW + 1;
   });
 
-  let ghost = $derived(
-    ghostTime === null ? null : positionAtTime(beatGrid, ghostTime),
-  );
+  let ghost = $derived(ghostTime === null ? null : beatAt(ghostTime));
 
   function fmtBeat(b: number): string {
     if (b % 1 === 0) return `${b}`;
@@ -183,31 +189,21 @@
     return out;
   });
 
-  /** Whole seconds inside a measure, placed where they fall in the music —
+  /** Whole seconds inside a measure, placed where they fall in its span —
    * under a tempo change they bunch up, which is the point. */
   function secondsIn(m: number): { time: number; pct: number }[] {
-    const from = timeAtPosition(beatGrid, m, 1);
-    const to = timeAtPosition(beatGrid, m + 1, 1);
+    const from = secondsAt(m, 1);
+    const to = secondsAt(m + 1, 1);
     if (from === null || to === null || to <= from) return [];
     const out: { time: number; pct: number }[] = [];
     for (let s = Math.ceil(from); s < to; s += 1) {
-      const at = positionAtTime(beatGrid, s);
-      if (!at || at.measure !== m) continue;
-      out.push({ time: s, pct: ((at.beat - 1) / beatsIn(m)) * 100 });
+      out.push({ time: s, pct: ((s - from) / (to - from)) * 100 });
     }
     return out;
   }
 
-  /** The highest beat that still resolves inside a measure. Beat 4½ of a 4/4
-   * measure is one of them — it sits between the last beat and the next
-   * downbeat — but in the measure the grid ends in there is no next beat to
-   * reach towards, so that one stops at its last whole beat. */
-  function highestBeat(m: number): number {
-    return maxBeatIn(beatGrid, m, beatsIn(m), step);
-  }
-
   function clampBeat(m: number, b: number): number {
-    const highest = highestBeat(m);
+    const highest = highestBeat(beatGrid, m, beatsIn(m), step);
     return Math.max(1, Math.min(highest, Math.round(b / step) * step));
   }
 
@@ -215,7 +211,7 @@
     const mm = Math.max(1, Math.min(lastMeasure, Math.round(m)));
     const bb = clampBeat(mm, b);
     if (decoupled) {
-      const t = timeAtPosition(beatGrid, mm, bb);
+      const t = secondsAt(mm, bb);
       if (t !== null) emitTime(t);
       return;
     }
@@ -242,7 +238,7 @@
     unit = next;
     if (stores === "beat") return;
     if (next === "time") {
-      const t = timeAtPosition(beatGrid, measure, beat);
+      const t = secondsAt(measure, beat);
       if (t !== null) onchange({ kind: "time", time: t });
     } else {
       onchange({ kind: "beat", measure, beat: clampBeat(measure, beat) });
@@ -270,7 +266,7 @@
 
   function stepMeasures(delta: number) {
     if (decoupled) {
-      const t = timeAtPosition(beatGrid, measure + delta, beat);
+      const t = secondsAt(measure + delta, beat);
       if (t !== null) emitTime(t);
       return;
     }
@@ -367,7 +363,7 @@
 
   function applyPointer(p: Position) {
     if (decoupled) {
-      const t = timeAtPosition(beatGrid, p.measure, p.beat);
+      const t = secondsAt(p.measure, p.beat);
       if (t !== null) emitTime(t);
     } else {
       emit(p.measure, p.beat);
@@ -445,7 +441,7 @@
       if (t !== null) {
         if (decoupled) emitTime(t);
         else {
-          const at = positionAtTime(beatGrid, t);
+          const at = beatAt(t);
           if (at) emit(at.measure, at.beat);
         }
         return;
