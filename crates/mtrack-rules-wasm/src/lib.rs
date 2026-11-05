@@ -134,6 +134,14 @@ pub mod bounds {
 
     /// Why a tempo config is beyond any song, or `None` when it is within
     /// bounds (which says nothing about whether it makes a map).
+    ///
+    /// Not the player's validity rule (`tempo::check_bpm` and the rest,
+    /// which `TempoConfig::to_tempo_map` walks the fields with), and
+    /// deliberately its own walk: it holds other fields (the start, a
+    /// change's measure and beat, which the player takes at any size) to
+    /// magnitudes, in its own words, and must refuse before
+    /// `to_tempo_map` is reached, as past these bounds the player's
+    /// functions would walk bar by bar for minutes.
     pub fn tempo_config(config: &crate::TempoConfig) -> Option<String> {
         if let Some(start) = config.start {
             if !secs(start) {
