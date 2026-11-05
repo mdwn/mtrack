@@ -95,20 +95,20 @@ impl CueBlock {
     }
 
     /// The block's cues, each with the passes of the sequences it
-    /// references placed from it, in time order within each.
+    /// references placed from it (see [`Passes`] and [`place_passes`]), in
+    /// time order within each.
     pub(super) fn place(self, library: &SequenceLibrary) -> Result<Vec<Cue>, Box<dyn Error>> {
         let mut cues = Vec::new();
         for mut parsed in self.cues {
             for call in &parsed.references {
-                place_sequence(
+                let passes = Passes::new(
                     call,
                     library,
                     &self.effective_tempo,
                     parsed.time,
                     parsed.offset_secs,
-                    &mut parsed.cues,
-                    parsed.base,
                 )?;
+                place_passes(&passes, Some(&call.name), &mut parsed.cues, parsed.base);
             }
             // Generated cues come in source order, not time order (an
             // inline loop may write @0.5 before @0.0).
@@ -692,23 +692,6 @@ impl<'a> Passes<'a> {
         let last = self.sequence.cues.iter().map(|c| c.time).max()?;
         Some(self.time_of(self.count.checked_sub(1)?, last))
     }
-}
-
-/// Places each pass of the sequence `call` references from `at`, the time
-/// of the cue it is written in, under a show `offset` of `offset_secs`
-/// (see [`Passes`] and [`place_passes`]).
-fn place_sequence(
-    call: &SequenceCall,
-    library: &SequenceLibrary,
-    tempo_map: &Option<TempoMap>,
-    at: Duration,
-    offset_secs: f64,
-    cues: &mut Vec<Cue>,
-    base: Option<usize>,
-) -> Result<(), Box<dyn Error>> {
-    let passes = Passes::new(call, library, tempo_map, at, offset_secs)?;
-    place_passes(&passes, Some(&call.name), cues, base);
-    Ok(())
 }
 
 /// Lays `passes` into `cues` (see [`merge_into`]), each effect's

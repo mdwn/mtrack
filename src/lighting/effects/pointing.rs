@@ -206,7 +206,11 @@ impl AimCalibration {
                 tilt: 0.0,
             }; 2];
         }
-        let mounting = into_frame(rotation, [d[0] / length, d[1] / length, d[2] / length]);
+        let mounting = frame(
+            rotation,
+            true,
+            [d[0] / length, d[1] / length, d[2] / length],
+        );
         let local = mat_t_vec(self.pre, mounting);
         joint_solutions(local).map(|pose| Pose {
             pan: wrap_pan(pose.pan - self.pan_offset),
@@ -317,13 +321,6 @@ fn mat_t_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
         m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
         m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
     ]
-}
-
-/// Rotates a stage-space vector into a mounting frame given by degrees
-/// about X, Y and Z applied in that order — the inverse (transpose) of
-/// `R = Rz·Ry·Rx`.
-fn into_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
-    frame(rotation_deg, true, v)
 }
 
 /// Rotates a mounting-frame vector out into stage space: `R = Rz·Ry·Rx` —
@@ -608,7 +605,7 @@ mod rotation_tests {
                     let rotation = [rx, ry, rz];
                     for &v in &vectors {
                         same_bits(
-                            into_frame(rotation, v),
+                            frame(rotation, true, v),
                             into_frame_written_out(rotation, v),
                             "into",
                         );

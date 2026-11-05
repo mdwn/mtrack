@@ -188,9 +188,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `pulse` a dimmer or colour channels, a `move` pan or tilt, and a `chase` nothing in
   particular (it used to need colour channels or a dimmer). A `static` naming a colour, a
   `dimmer` and a `pulse` on a fixture without what they ask used to load; a `chase` on one
-  with neither colour nor a dimmer used to be refused. The warning printed at registration for a fixture
-  type named `RGB`, `Strobe` or `MovingHead` without the channels its name suggests is gone;
-  what a fixture can do is read from its channels alone.
+  with neither colour nor a dimmer used to be refused. The warning printed to stderr at
+  registration for a fixture type named `RGB`, `Strobe` or `MovingHead` without the channels
+  its name suggests is gone; what a fixture can do is read from its channels alone, and lint
+  reports the same.
 - **A fade to dark counts its ticks as a MIDI dim does**: what MIDI DMX holds fades to dark
   over the ticks `dim_ticks` gives the fade -- one for none, as before, so the bytes sent are
   the same; there is one rule for it now.
