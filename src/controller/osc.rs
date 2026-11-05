@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing::{error, info, span, Level};
 
-use super::AbortOnDrop;
+use super::{AbortOnDrop, TransportAction};
 use crate::{config, player::Player, util};
 
 /// This is the all hosts multicast address.
@@ -45,25 +45,17 @@ const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 const STATUS_STOPPED: &str = "Stopped";
 const STATUS_PLAYING: &str = "Playing";
 
-/// Recognized OSC command actions.
+/// Recognized OSC command actions: the transport actions every controller
+/// has, and those with an argument or a meaning OSC alone carries.
 #[derive(Debug, PartialEq)]
 enum OscAction {
-    Play,
+    Transport(TransportAction),
     Pause,
-    Prev,
-    Next,
-    Stop,
-    AllSongs,
-    Playlist,
     StopSamples,
-    SectionAck,
-    StopSectionLoop,
     LoopSection,
     Seek,
     SeekToSection,
     SetTrackGain,
-    AmbientMode(crate::dmx::engine::AmbientMode),
-    CancelAutoPlay,
     Unrecognized,
 }
 
@@ -360,15 +352,14 @@ impl Driver {
         osc_events: &Arc<OscEvents>,
         tx_sender: &Sender<OscPacket>,
     ) -> Result<(), Box<dyn Error>> {
-        let playlist = player.get_playlist();
-        let song = match playlist.current() {
-            Some(song) => song,
-            None => return Ok(()),
+        // The player's one status, as every surface reads it.
+        let status = player.playback_status().await;
+        let Some(song) = status.current_song else {
+            return Ok(());
         };
-        let is_playing = player.is_playing().await;
-        let elapsed = player.elapsed().await?;
-        let elapsed_duration = elapsed.unwrap_or_default();
-        let status_string = if is_playing {
+        let summary = song.summary();
+        let elapsed_duration = status.elapsed?.unwrap_or_default();
+        let status_string = if status.playing {
             STATUS_PLAYING
         } else {
             STATUS_STOPPED
@@ -376,21 +367,14 @@ impl Driver {
         let duration_string = format!(
             "{}/{}",
             util::duration_minutes_seconds(elapsed_duration),
-            util::duration_minutes_seconds(song.duration())
+            util::duration_minutes_seconds(summary.duration)
         );
-        let playlist_songs: Vec<String> = playlist.songs().to_vec();
-
-        // The player's status says what the transport is doing; this says
-        // whether audio is actually leaving the machine. A surface wants both —
-        // "playing" next to "stalled" is the combination worth a red light.
-        let audio_health = player
-            .hardware_status()
-            .audio_output
-            .map(|h| h.status.as_str());
+        let playlist_songs: Vec<String> = status.playlist.songs().to_vec();
+        let audio_health = status.audio_health.as_ref().map(|h| h.status.as_str());
 
         let mut packets = build_broadcast_packets(
             osc_events,
-            song.name(),
+            &summary.name,
             status_string,
             &duration_string,
             &playlist_songs,
@@ -412,7 +396,7 @@ impl Driver {
         packets.push(build_timeline_packet(
             &osc_events.timeline,
             elapsed_duration.as_secs_f64(),
-            song.duration().as_secs_f64(),
+            summary.duration.as_secs_f64(),
             &section_timings,
         ));
 
@@ -471,45 +455,13 @@ impl Driver {
     ) -> Result<bool, Box<dyn Error>> {
         let action = classify_message(osc_events, &msg.addr)?;
         match action {
-            OscAction::Play => {
-                if let Err(e) = player.play().await {
-                    error!(err = e.as_ref(), "Failed to play song: {}", e);
-                }
-            }
+            OscAction::Transport(action) => action.run(player).await,
             OscAction::Pause => {
                 if let Err(e) = player.pause().await {
                     error!(err = e.as_ref(), "Failed to pause song: {}", e);
                 }
             }
-            OscAction::Prev => {
-                player.prev().await;
-            }
-            OscAction::Next => {
-                player.next().await;
-            }
-            OscAction::Stop => {
-                player.stop().await;
-            }
-            OscAction::AllSongs => {
-                if let Err(e) = player.switch_to_playlist("all_songs").await {
-                    error!("Failed to switch to all_songs: {}", e);
-                }
-            }
-            OscAction::Playlist => {
-                let name = player.persisted_playlist_name();
-                if let Err(e) = player.switch_to_playlist(&name).await {
-                    error!("Failed to switch to playlist {}: {}", name, e);
-                }
-            }
             OscAction::StopSamples => player.stop_samples(),
-            OscAction::SectionAck => {
-                if let Err(e) = player.section_ack().await {
-                    error!("Failed to ack section: {}", e);
-                }
-            }
-            OscAction::StopSectionLoop => {
-                player.stop_section_loop();
-            }
             OscAction::LoopSection => {
                 // Extract section name from OSC message string argument.
                 let section_name = msg
@@ -585,10 +537,6 @@ impl Driver {
                     }
                 }
             }
-            OscAction::AmbientMode(mode) => player.set_ambient_mode(mode),
-            OscAction::CancelAutoPlay => {
-                player.cancel_waiting_auto_play();
-            }
             OscAction::Unrecognized => return Ok(false),
         }
         Ok(true)
@@ -597,27 +545,29 @@ impl Driver {
 
 /// Classifies an OSC address against the configured event matchers.
 fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box<dyn Error>> {
+    use crate::dmx::engine::AmbientMode;
     let address = OscAddress::new(addr.to_string())?;
+    let transport = |action| Ok(OscAction::Transport(action));
     if osc_events.play.match_address(&address) {
-        Ok(OscAction::Play)
+        transport(TransportAction::Play)
     } else if osc_events.pause.match_address(&address) {
         Ok(OscAction::Pause)
     } else if osc_events.prev.match_address(&address) {
-        Ok(OscAction::Prev)
+        transport(TransportAction::Prev)
     } else if osc_events.next.match_address(&address) {
-        Ok(OscAction::Next)
+        transport(TransportAction::Next)
     } else if osc_events.stop.match_address(&address) {
-        Ok(OscAction::Stop)
+        transport(TransportAction::Stop)
     } else if osc_events.all_songs.match_address(&address) {
-        Ok(OscAction::AllSongs)
+        transport(TransportAction::AllSongs)
     } else if osc_events.playlist.match_address(&address) {
-        Ok(OscAction::Playlist)
+        transport(TransportAction::Playlist)
     } else if osc_events.stop_samples.match_address(&address) {
         Ok(OscAction::StopSamples)
     } else if osc_events.section_ack.match_address(&address) {
-        Ok(OscAction::SectionAck)
+        transport(TransportAction::SectionAck)
     } else if osc_events.stop_section_loop.match_address(&address) {
-        Ok(OscAction::StopSectionLoop)
+        transport(TransportAction::StopSectionLoop)
     } else if osc_events.loop_section.match_address(&address) {
         Ok(OscAction::LoopSection)
     } else if osc_events.seek.match_address(&address) {
@@ -625,15 +575,13 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
     } else if osc_events.seek_section.match_address(&address) {
         Ok(OscAction::SeekToSection)
     } else if osc_events.ambient_on.match_address(&address) {
-        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::On))
+        transport(TransportAction::AmbientMode(AmbientMode::On))
     } else if osc_events.ambient_off.match_address(&address) {
-        Ok(OscAction::AmbientMode(crate::dmx::engine::AmbientMode::Off))
+        transport(TransportAction::AmbientMode(AmbientMode::Off))
     } else if osc_events.ambient_auto.match_address(&address) {
-        Ok(OscAction::AmbientMode(
-            crate::dmx::engine::AmbientMode::Auto,
-        ))
+        transport(TransportAction::AmbientMode(AmbientMode::Auto))
     } else if osc_events.cancel_auto_play.match_address(&address) {
-        Ok(OscAction::CancelAutoPlay)
+        transport(TransportAction::CancelAutoPlay)
     } else if osc_events.track_gain.match_address(&address) {
         Ok(OscAction::SetTrackGain)
     } else {
@@ -1266,13 +1214,14 @@ mod test {
 
     mod classify_message_tests {
         use super::{classify_message, make_default_osc_events, OscAction};
+        use crate::controller::TransportAction;
 
         #[test]
         fn recognizes_play() {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/play").unwrap(),
-                OscAction::Play
+                OscAction::Transport(TransportAction::Play)
             );
         }
 
@@ -1308,7 +1257,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/prev").unwrap(),
-                OscAction::Prev
+                OscAction::Transport(TransportAction::Prev)
             );
         }
 
@@ -1317,7 +1266,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/next").unwrap(),
-                OscAction::Next
+                OscAction::Transport(TransportAction::Next)
             );
         }
 
@@ -1326,7 +1275,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/stop").unwrap(),
-                OscAction::Stop
+                OscAction::Transport(TransportAction::Stop)
             );
         }
 
@@ -1335,7 +1284,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/all_songs").unwrap(),
-                OscAction::AllSongs
+                OscAction::Transport(TransportAction::AllSongs)
             );
         }
 
@@ -1344,7 +1293,7 @@ mod test {
             let events = make_default_osc_events();
             assert_eq!(
                 classify_message(&events, "/mtrack/playlist").unwrap(),
-                OscAction::Playlist
+                OscAction::Transport(TransportAction::Playlist)
             );
         }
 
@@ -1364,17 +1313,20 @@ mod test {
             for (addr, action) in [
                 (
                     "/mtrack/ambient/on",
-                    OscAction::AmbientMode(AmbientMode::On),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::On)),
                 ),
                 (
                     "/mtrack/ambient/off",
-                    OscAction::AmbientMode(AmbientMode::Off),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::Off)),
                 ),
                 (
                     "/mtrack/ambient/auto",
-                    OscAction::AmbientMode(AmbientMode::Auto),
+                    OscAction::Transport(TransportAction::AmbientMode(AmbientMode::Auto)),
                 ),
-                ("/mtrack/auto_play/cancel", OscAction::CancelAutoPlay),
+                (
+                    "/mtrack/auto_play/cancel",
+                    OscAction::Transport(TransportAction::CancelAutoPlay),
+                ),
             ] {
                 assert_eq!(classify_message(&events, addr).unwrap(), action, "{addr}");
             }

@@ -98,7 +98,10 @@ impl TempoConfig {
     /// downbeat — so only changes at or before that downbeat count.
     pub fn beats_in_measure(&self, measure: u32) -> Option<u32> {
         let map = self.to_tempo_map().ok()?;
-        Some(map.time_signature_at_measure(measure).numerator)
+        Some(
+            map.time_signature_at_measure(measure)
+                .grid_beats_per_measure(),
+        )
     }
 
     /// Converts this configuration into a resolved tempo map.

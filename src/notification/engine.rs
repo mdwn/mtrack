@@ -75,11 +75,7 @@ impl NotificationEngine {
         // Load global section name overrides with "section:" prefix.
         for (section_name, path_str) in global_section_overrides {
             let key = format!("section:{}", section_name);
-            let path = if Path::new(path_str).is_absolute() {
-                path_str.into()
-            } else {
-                base_path.join(path_str)
-            };
+            let path = base_path.join(path_str);
             match super::audio::load_audio_file(&mut loader, &path) {
                 Ok(samples) => {
                     global_overrides.insert(key, samples);
@@ -135,11 +131,7 @@ impl NotificationEngine {
         // Load section name overrides with "section:" prefix.
         for (section_name, path_str) in section_overrides {
             let key = format!("section:{}", section_name);
-            let path = if Path::new(path_str).is_absolute() {
-                path_str.into()
-            } else {
-                base_path.join(path_str)
-            };
+            let path = base_path.join(path_str);
             match super::audio::load_audio_file(&mut loader, &path) {
                 Ok(samples) => {
                     loaded.insert(key, samples);

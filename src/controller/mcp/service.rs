@@ -62,6 +62,7 @@ use tokio::task::AbortHandle;
 
 use crate::lighting::readiness::{group_names, VenueFacts};
 use crate::player::Player;
+use crate::util::FaultKind;
 
 /// Resource URI exposing the live player status as JSON. Clients can read it
 /// directly or subscribe for `notifications/resources/updated` pushes on each
@@ -700,10 +701,27 @@ impl McpServer {
 
     #[tool(description = "Start playback of the current song in the active playlist.")]
     async fn play(&self) -> Result<CallToolResult, McpError> {
-        let song = self.player.play().await.map_err(internal_err)?;
+        let song = self.player.play().await.map_err(precondition_err)?;
+        let Some(song) = song else {
+            return Ok(ok_json(self.declined().await));
+        };
         Ok(ok_json(json!({
-            "now_playing": song.as_ref().map(|s| song_summary(s)),
+            "started": true,
+            "now_playing": song_summary(&song),
         })))
+    }
+
+    /// The reply for a play the player did not start: why, as the player
+    /// reads it (one already playing, an empty playlist), and what to do.
+    /// Echoing a requested time back here is what once read as success.
+    async fn declined(&self) -> Value {
+        json!({
+            "started": false,
+            "now_playing": Value::Null,
+            "reason": self.player.play_declined_reason().await,
+            "hint": "check `status`; call `stop` first, or use `seek` to \
+                     move within the current song",
+        })
     }
 
     #[tool(
@@ -715,18 +733,13 @@ impl McpServer {
         Parameters(args): Parameters<PlayFromArgs>,
     ) -> Result<CallToolResult, McpError> {
         let start = parse_duration(&args.start_time)?;
-        let song = self.player.play_from(start).await.map_err(internal_err)?;
-        // Same no-op as `play_song_from`: echoing the requested time back when
-        // nothing started is what made this misleading.
+        let song = self
+            .player
+            .play_from(start)
+            .await
+            .map_err(precondition_err)?;
         let Some(song) = song else {
-            return Ok(ok_json(json!({
-                "started": false,
-                // See `play_song_from`: `None` covers several cases.
-                "reason": "the player did not start the song; the most common \
-                           cause is that one is already playing",
-                "hint": "check `status`; call `stop` first, or use `seek` to \
-                         move within the current song",
-            })));
+            return Ok(ok_json(self.declined().await));
         };
         Ok(ok_json(json!({
             "started": true,
@@ -751,24 +764,10 @@ impl McpServer {
             .player
             .play_song_from(&args.song_name, start)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
 
-        // The player refuses to start a song while one is already playing, and
-        // returns nothing. Echoing the requested `start_time` back in that case
-        // reads as success and is how this silently answered the wrong
-        // question — the caller believes they are at 1:49 while playback
-        // continues from wherever it was.
         let Some(song) = song else {
-            return Ok(ok_json(json!({
-                "started": false,
-                // The player returns nothing for more than one reason — a song
-                // already playing, a loop break, an empty playlist — and does
-                // not say which. Report the fact, not a guess at the cause.
-                "reason": "the player did not start the song; the most common \
-                           cause is that one is already playing",
-                "hint": "check `status`; call `stop` first, or use `seek` to \
-                         move within the current song",
-            })));
+            return Ok(ok_json(self.declined().await));
         };
 
         Ok(ok_json(json!({
@@ -786,7 +785,10 @@ impl McpServer {
         Parameters(args): Parameters<SeekArgs>,
     ) -> Result<CallToolResult, McpError> {
         let position = parse_duration(&args.position)?;
-        self.player.seek_to(position).await.map_err(internal_err)?;
+        self.player
+            .seek_to(position)
+            .await
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({
             "position": format_duration(position),
         })))
@@ -800,7 +802,7 @@ impl McpServer {
         self.player
             .seek_to_section(&args.section_name)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({ "section": args.section_name })))
     }
 
@@ -849,7 +851,7 @@ impl McpServer {
         self.player
             .switch_to_playlist(&args.name)
             .await
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+            .map_err(|e| fault_err(e.kind(), e.to_string()))?;
         Ok(ok_json(json!({ "active_playlist": args.name })))
     }
 
@@ -907,7 +909,7 @@ impl McpServer {
         self.player
             .loop_section(&args.section_name)
             .await
-            .map_err(internal_err)?;
+            .map_err(precondition_err)?;
         Ok(ok_json(json!({ "looping": args.section_name })))
     }
 
@@ -925,7 +927,7 @@ impl McpServer {
         arming the loop so it engages at the section end."
     )]
     async fn section_ack(&self) -> Result<CallToolResult, McpError> {
-        self.player.section_ack().await.map_err(internal_err)?;
+        self.player.section_ack().await.map_err(precondition_err)?;
         Ok(ok_json(json!({ "ok": true })))
     }
 
@@ -1077,10 +1079,7 @@ impl McpServer {
             .songs()
             .get(&args.name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let path = song.config_path_or_default();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "name": song.name(),
@@ -1127,17 +1126,7 @@ impl McpServer {
             })
             .collect();
 
-        let sections: Vec<Value> = song
-            .sections()
-            .iter()
-            .map(|s| {
-                json!({
-                    "name": s.name,
-                    "start_measure": s.start_measure,
-                    "end_measure": s.end_measure,
-                })
-            })
-            .collect();
+        let summary = song.summary();
 
         // Summary-only beat grid: counts + measure starts (small, useful for
         // bar-boundary work) but without the per-beat times that dominate
@@ -1197,18 +1186,18 @@ impl McpServer {
             .collect();
 
         Ok(ok_json(json!({
-            "name": song.name(),
+            "name": summary.name,
             "base_path": song.base_path().display().to_string(),
             "config_path": song.config_path().map(|p| p.display().to_string()),
-            "duration": format_duration(song.length()),
-            "duration_seconds": song.length().as_secs_f64(),
+            "duration": format_duration(summary.duration),
+            "duration_seconds": summary.duration.as_secs_f64(),
             "num_channels": song.num_channels(),
             "loop_playback": song.loop_playback(),
             "loop_crossfade_seconds": song.loop_crossfade().map(|d| d.as_secs_f64()),
             "loop_crossfade_cut": song.loop_crossfade_cut(),
             "has_midi_playback": song.midi_playback().is_some(),
             "tracks": tracks,
-            "sections": sections,
+            "sections": summary.sections,
             "beat_grid": beat_grid,
             "bpm": bpm,
             "bpm_unit": bpm_unit,
@@ -1265,10 +1254,7 @@ impl McpServer {
                 // (`<root>/<name>/song.yaml`) both round-trip through their
                 // original file rather than writing to `<base>/song.yaml`,
                 // which is shared across all flat-layout songs.
-                let path = existing
-                    .config_path()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| existing.base_path().join("song.yaml"));
+                let path = existing.config_path_or_default();
                 crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
                     .map_err(safepath_err)?
                     .as_path()
@@ -2418,10 +2404,7 @@ impl McpServer {
             )
         })?;
 
-        let config_path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let config_path = song.config_path_or_default();
         let reference = path
             .strip_prefix(song.base_path())
             .unwrap_or(&path)
@@ -2629,10 +2612,7 @@ impl McpServer {
         song: &crate::songs::Song,
         path: &std::path::Path,
     ) -> Result<Registration, McpError> {
-        let config_path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let config_path = song.config_path_or_default();
 
         // The reference is stored relative to the song directory, matching how
         // a hand-written block spells it.
@@ -2681,10 +2661,7 @@ impl McpServer {
             .songs()
             .get(&args.name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = song
-            .config_path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| song.base_path().join("song.yaml"));
+        let path = song.config_path_or_default();
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,
@@ -3566,33 +3543,26 @@ fn compute_tempo_segments_from(beats: &[f64], intervals: &[f64], weights: &[f64]
         .collect()
 }
 
-/// Formats a [`std::time::Duration`] as `M:SS.mmm`.
+/// Formats a [`std::time::Duration`] as `M:SS.mmm`: the `M:SS` every
+/// surface shows ([`crate::util::duration_minutes_seconds`]) with the
+/// milliseconds a tool wants, whole ones.
 pub(crate) fn format_duration(d: std::time::Duration) -> String {
-    let total = d.as_secs_f64();
-    let minutes = (total / 60.0).floor() as u64;
-    let seconds = total - (minutes as f64) * 60.0;
-    format!("{}:{:06.3}", minutes, seconds)
+    format!(
+        "{}.{:03}",
+        crate::util::duration_minutes_seconds(d),
+        d.subsec_millis()
+    )
 }
 
 /// Builds a compact summary value for a song.
 pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
     let tracks: Vec<&str> = song.tracks().iter().map(|t| t.name()).collect();
-    let sections: Vec<Value> = song
-        .sections()
-        .iter()
-        .map(|s| {
-            json!({
-                "name": s.name,
-                "start_measure": s.start_measure,
-                "end_measure": s.end_measure,
-            })
-        })
-        .collect();
+    let summary = song.summary();
     json!({
-        "name": song.name(),
-        "duration": format_duration(song.length()),
+        "name": summary.name,
+        "duration": format_duration(summary.duration),
         "tracks": tracks,
-        "sections": sections,
+        "sections": summary.sections,
     })
 }
 
@@ -3608,13 +3578,29 @@ pub(crate) fn internal_err<E: std::fmt::Display>(e: E) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+/// A fault as an MCP error: the one table from [`FaultKind`] to a code.
+/// MCP has one code for what the caller got wrong, so every fault short of
+/// mtrack's own is `invalid_params`, never `internal_error`.
+fn fault_err(kind: FaultKind, message: String) -> McpError {
+    match kind {
+        FaultKind::Internal => McpError::internal_error(message, None),
+        FaultKind::NotFound | FaultKind::Precondition | FaultKind::Invalid => {
+            McpError::invalid_params(message, None)
+        }
+    }
+}
+
+/// A player refusal (not playing, no such section, already playing) as an
+/// MCP error: a precondition the caller can see to, not a fault of the
+/// server.
+fn precondition_err<E: std::fmt::Display>(e: E) -> McpError {
+    fault_err(FaultKind::Precondition, e.to_string())
+}
+
 /// A config store error as an MCP error: a change the config would not load
 /// with is the caller's to fix, not a fault of the server.
 fn config_err(e: crate::config::ConfigError) -> McpError {
-    match e {
-        crate::config::ConfigError::Validation(_) => McpError::invalid_params(e.to_string(), None),
-        e => internal_err(e),
-    }
+    fault_err(e.kind(), e.to_string())
 }
 
 /// Sends a `notifications/resources/updated` to a peer with a JSON payload
@@ -3979,13 +3965,8 @@ impl McpServer {
             LightingDirKind::Venues => crate::config::lighting::venues_dir(lighting),
             LightingDirKind::FixtureTypes => crate::config::lighting::fixture_types_dir(lighting),
         };
-        let rel_path = std::path::PathBuf::from(rel);
-        let dir = if rel_path.is_absolute() {
-            rel_path
-        } else {
-            crate::util::project_dir_of(&config_path).join(rel_path)
-        };
         let project = crate::util::project_dir_of(&config_path);
+        let dir = project.join(rel);
         let created = crate::util::create_dir_within_async(dir.clone(), project)
             .await
             .map_err(create_within_err)?;
@@ -4496,6 +4477,17 @@ mod snapshot_response_tests {
 
 #[cfg(test)]
 mod parse_duration_tests {
+    #[test]
+    fn a_position_formats_as_minutes_seconds_and_whole_milliseconds() {
+        let format = super::format_duration;
+        assert_eq!(format(std::time::Duration::from_millis(83_456)), "1:23.456");
+        assert_eq!(
+            format(std::time::Duration::from_micros(119_999_900)),
+            "1:59.999"
+        );
+        assert_eq!(format(std::time::Duration::ZERO), "0:00.000");
+    }
+
     #[test]
     fn a_duration_too_large_to_hold_is_turned_down() {
         assert_eq!(

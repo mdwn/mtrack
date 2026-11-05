@@ -17,23 +17,8 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, span, warn, Level};
 
+use super::TransportAction;
 use crate::{config, midi, midi::Device, player::Player};
-
-/// Recognized MIDI controller actions.
-#[derive(Debug, PartialEq)]
-enum MidiAction {
-    Play,
-    Prev,
-    Next,
-    Stop,
-    AllSongs,
-    Playlist,
-    SectionAck,
-    StopSectionLoop,
-    AmbientMode(crate::dmx::engine::AmbientMode),
-    CancelAutoPlay,
-    Unrecognized,
-}
 
 /// MIDI events that the controller recognizes.
 struct MidiEvents {
@@ -52,34 +37,38 @@ struct MidiEvents {
 }
 
 /// Classifies a parsed MIDI event against the known controller events.
-fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction {
-    if *event == events.play {
-        MidiAction::Play
+/// The transport action a MIDI event is configured as, `None` for one
+/// that is not.
+fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> Option<TransportAction> {
+    use crate::dmx::engine::AmbientMode;
+    let action = if *event == events.play {
+        TransportAction::Play
     } else if *event == events.prev {
-        MidiAction::Prev
+        TransportAction::Prev
     } else if *event == events.next {
-        MidiAction::Next
+        TransportAction::Next
     } else if *event == events.stop {
-        MidiAction::Stop
+        TransportAction::Stop
     } else if *event == events.all_songs {
-        MidiAction::AllSongs
+        TransportAction::AllSongs
     } else if *event == events.playlist {
-        MidiAction::Playlist
+        TransportAction::Playlist
     } else if events.section_ack.as_ref() == Some(event) {
-        MidiAction::SectionAck
+        TransportAction::SectionAck
     } else if events.stop_section_loop.as_ref() == Some(event) {
-        MidiAction::StopSectionLoop
+        TransportAction::StopSectionLoop
     } else if events.ambient_on.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::On)
+        TransportAction::AmbientMode(AmbientMode::On)
     } else if events.ambient_off.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Off)
+        TransportAction::AmbientMode(AmbientMode::Off)
     } else if events.ambient_auto.as_ref() == Some(event) {
-        MidiAction::AmbientMode(crate::dmx::engine::AmbientMode::Auto)
+        TransportAction::AmbientMode(AmbientMode::Auto)
     } else if events.cancel_auto_play.as_ref() == Some(event) {
-        MidiAction::CancelAutoPlay
+        TransportAction::CancelAutoPlay
     } else {
-        MidiAction::Unrecognized
-    }
+        return None;
+    };
+    Some(action)
 }
 
 /// Stops a device's event watch when dropped.
@@ -214,45 +203,8 @@ impl super::Driver for Driver {
                     }
                 };
 
-                match classify_midi_event(&events, &event) {
-                    MidiAction::Play => {
-                        if let Err(e) = player.play().await {
-                            error!(err = e.as_ref(), "Failed to play song: {}", e);
-                        }
-                    }
-                    MidiAction::Prev => {
-                        player.prev().await;
-                    }
-                    MidiAction::Next => {
-                        player.next().await;
-                    }
-                    MidiAction::Stop => {
-                        player.stop().await;
-                    }
-                    MidiAction::AllSongs => {
-                        if let Err(e) = player.switch_to_playlist("all_songs").await {
-                            error!("Failed to switch to all_songs: {}", e);
-                        }
-                    }
-                    MidiAction::Playlist => {
-                        let name = player.persisted_playlist_name();
-                        if let Err(e) = player.switch_to_playlist(&name).await {
-                            error!("Failed to switch to playlist {}: {}", name, e);
-                        }
-                    }
-                    MidiAction::SectionAck => {
-                        if let Err(e) = player.section_ack().await {
-                            error!("Failed to ack section: {}", e);
-                        }
-                    }
-                    MidiAction::StopSectionLoop => {
-                        player.stop_section_loop();
-                    }
-                    MidiAction::AmbientMode(mode) => player.set_ambient_mode(mode),
-                    MidiAction::CancelAutoPlay => {
-                        player.cancel_waiting_auto_play();
-                    }
-                    MidiAction::Unrecognized => {}
+                if let Some(action) = classify_midi_event(&events, &event) {
+                    action.run(&player).await;
                 }
             }
         })
@@ -612,7 +564,7 @@ mod test {
     }
 
     mod classify_midi_event_tests {
-        use super::super::{classify_midi_event, MidiAction, MidiEvents};
+        use super::super::{classify_midi_event, MidiEvents, TransportAction};
         use crate::config::midi::{note_on, ToMidiEvent};
         use midly::live::LiveEvent;
 
@@ -638,10 +590,10 @@ mod test {
             use crate::dmx::engine::AmbientMode;
             let events = make_test_events();
             for (key, action) in [
-                (8, MidiAction::AmbientMode(AmbientMode::On)),
-                (9, MidiAction::AmbientMode(AmbientMode::Off)),
-                (10, MidiAction::AmbientMode(AmbientMode::Auto)),
-                (11, MidiAction::CancelAutoPlay),
+                (8, Some(TransportAction::AmbientMode(AmbientMode::On))),
+                (9, Some(TransportAction::AmbientMode(AmbientMode::Off))),
+                (10, Some(TransportAction::AmbientMode(AmbientMode::Auto))),
+                (11, Some(TransportAction::CancelAutoPlay)),
             ] {
                 let event = note_on(16, key, 127).to_midi_event().unwrap();
                 assert_eq!(classify_midi_event(&events, &event), action, "key {key}");
@@ -652,52 +604,67 @@ mod test {
         fn recognizes_play() {
             let events = make_test_events();
             let event = note_on(16, 0, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Play);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Play)
+            );
         }
 
         #[test]
         fn recognizes_prev() {
             let events = make_test_events();
             let event = note_on(16, 1, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Prev);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Prev)
+            );
         }
 
         #[test]
         fn recognizes_next() {
             let events = make_test_events();
             let event = note_on(16, 2, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Next);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Next)
+            );
         }
 
         #[test]
         fn recognizes_stop() {
             let events = make_test_events();
             let event = note_on(16, 3, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Stop);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Stop)
+            );
         }
 
         #[test]
         fn recognizes_all_songs() {
             let events = make_test_events();
             let event = note_on(16, 4, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::AllSongs);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::AllSongs)
+            );
         }
 
         #[test]
         fn recognizes_playlist() {
             let events = make_test_events();
             let event = note_on(16, 5, 127).to_midi_event().unwrap();
-            assert_eq!(classify_midi_event(&events, &event), MidiAction::Playlist);
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                Some(TransportAction::Playlist)
+            );
         }
 
         #[test]
         fn unrecognized_note() {
             let events = make_test_events();
             let event = note_on(16, 99, 127).to_midi_event().unwrap();
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -705,10 +672,7 @@ mod test {
             let events = make_test_events();
             // Play is on channel 16, note 0 — try channel 1
             let event = note_on(1, 0, 127).to_midi_event().unwrap();
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -717,10 +681,7 @@ mod test {
             // Play is note_on(16, 0, 127) — try with velocity 64
             let event = note_on(16, 0, 64).to_midi_event().unwrap();
             // LiveEvent NoteOn equality checks velocity too, so different velocity won't match
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -730,10 +691,7 @@ mod test {
                 channel: 15.into(),
                 message: midly::MidiMessage::ProgramChange { program: 27.into() },
             };
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
 
         #[test]
@@ -747,10 +705,7 @@ mod test {
                     vel: 127.into(),
                 },
             };
-            assert_eq!(
-                classify_midi_event(&events, &event),
-                MidiAction::Unrecognized
-            );
+            assert_eq!(classify_midi_event(&events, &event), None);
         }
     }
 }

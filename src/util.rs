@@ -53,12 +53,14 @@ pub fn duration_from_secs(secs: f64) -> Option<Duration> {
 }
 
 /// A playback position a client sent as text: seconds (`90`, `90s`,
-/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`). The one parser for
-/// a position as text; a position sent as a number of seconds goes through
+/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`), with or without the
+/// `@` a cue position is written with (`@1:30`). The one parser for a
+/// position as text; a position sent as a number of seconds goes through
 /// [`duration_from_secs`], as this does. Errors are the reason, for the
 /// surface to answer with.
 pub fn parse_position(value: &str) -> Result<Duration, String> {
     let trimmed = value.trim();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim();
     let seconds = if let Some(stripped) = trimmed
         .strip_suffix('s')
         .or_else(|| trimmed.strip_suffix('S'))
@@ -913,6 +915,52 @@ pub fn resolved_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// What kind of fault an error a client caused or met is: classified once,
+/// by the error itself, for each transport to answer with its own code (a
+/// one-line table each in gRPC, the web API and MCP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaultKind {
+    /// What was named is not there.
+    NotFound,
+    /// The player or the config is not in the state the request needs.
+    Precondition,
+    /// The request itself is wrong.
+    Invalid,
+    /// mtrack's own fault.
+    Internal,
+}
+
+/// What tells a file has changed: its modified time and its length, for two
+/// saves within one tick of the clock -- a truncate, then the write. Compared
+/// for inequality, never ordered: a backup restored moves the time backwards,
+/// and that is a change too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub modified: std::time::SystemTime,
+    pub len: u64,
+}
+
+impl FileStamp {
+    /// The stamp of `path`, if it can be read.
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+        })
+    }
+}
+
+/// Whether a path a config or a client names could leave the directory it is
+/// joined to: absolute, or with a `..` component. The one rule for a path that
+/// must stay inside the project; a `..` inside a name (`v1..2`) is no escape.
+pub fn escapes_project(path: &Path) -> bool {
+    path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
 /// The project directory implied by a config file's path: the directory holding
 /// it, and the only place mtrack creates directories on a config's behalf.
 ///
@@ -1294,7 +1342,71 @@ mod test {
 
     use std::time::Duration;
 
-    use crate::util::duration_minutes_seconds;
+    use crate::util::{duration_minutes_seconds, escapes_project};
+
+    /// A save within the clock's tick of the last, and a backup restored
+    /// over the file, both read as changes.
+    #[test]
+    fn a_file_stamp_changes_with_the_length_and_with_time_moved_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("show.light");
+        std::fs::write(&path, "a").unwrap();
+        let first = crate::util::FileStamp::of(&path).unwrap();
+        std::fs::write(&path, "ab").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(first.modified)
+            .unwrap();
+        let same_tick = crate::util::FileStamp::of(&path).unwrap();
+        assert_eq!(same_tick.modified, first.modified);
+        assert_ne!(same_tick, first);
+
+        let earlier = first.modified - Duration::from_secs(60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        std::fs::write(&path, "a").unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        assert_ne!(crate::util::FileStamp::of(&path).unwrap(), first);
+        assert!(crate::util::FileStamp::of(&dir.path().join("none")).is_none());
+    }
+
+    /// Every spelling a surface takes, the CLI's `@` included.
+    #[test]
+    fn a_position_parses_in_every_spelling() {
+        use crate::util::parse_position;
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            (" 1:30 ", 90.0),
+            ("1:30.5s", 90.5),
+            ("@1:30", 90.0),
+            ("@ 45.25", 45.25),
+            ("1:23.456789", 83.456789),
+        ] {
+            assert_eq!(
+                parse_position(given),
+                Ok(Duration::from_secs_f64(secs)),
+                "{given}"
+            );
+        }
+        assert!(parse_position("chorus").is_err());
+        assert!(parse_position("@").is_err());
+    }
+
+    #[test]
+    fn a_path_escapes_the_project_as_absolute_or_by_a_parent_component() {
+        for escapes in ["/etc/passwd", "../x", "a/../../x", "a/.."] {
+            assert!(escapes_project(std::path::Path::new(escapes)), "{escapes}");
+        }
+        for inside in ["x", "a/b", "v1..2", "..a/b", "./a"] {
+            assert!(!escapes_project(std::path::Path::new(inside)), "{inside}");
+        }
+    }
 
     #[test]
     fn test_duration_minutes_strings() {

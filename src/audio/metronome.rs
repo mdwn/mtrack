@@ -314,11 +314,7 @@ fn render_click_sound(
     let volume = pick(|s| s.volume).unwrap_or(builtin_volume);
     match file {
         Some(file) => {
-            let path = if Path::new(file).is_absolute() {
-                Path::new(file).to_path_buf()
-            } else {
-                base_path.join(file)
-            };
+            let path = base_path.join(file);
             super::monoclip::load_mono_clip(&path, volume, sample_rate)
         }
         None => Ok(synthesize_click(freq, volume, sample_rate)),

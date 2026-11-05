@@ -106,7 +106,7 @@ pub struct LightingSystem {
     /// The MVR file each venue's scenery was distilled from, as (path,
     /// modified time, length): a reload whose archive is unchanged reuses
     /// the entry without reading or hashing the file again.
-    scenery_sources: HashMap<String, (PathBuf, Option<std::time::SystemTime>, u64)>,
+    scenery_sources: HashMap<String, (PathBuf, crate::util::FileStamp)>,
 
     /// The project directory the system loaded from, for the asset store.
     project_root: Option<PathBuf>,
@@ -328,9 +328,8 @@ impl LightingSystem {
             // store entry still there: nothing to read or hash again. A
             // venue edit that saves the file must not cost a pass over a
             // hundred-megabyte MVR.
-            let stamp = std::fs::metadata(&archive_path)
-                .ok()
-                .map(|m| (archive_path.clone(), m.modified().ok(), m.len()));
+            let stamp = crate::util::FileStamp::of(&archive_path)
+                .map(|stamp| (archive_path.clone(), stamp));
             if let (Some(stamp), Some(prev), Some(rel)) =
                 (&stamp, previous_sources.get(name), previous.get(name))
             {

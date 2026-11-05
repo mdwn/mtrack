@@ -13,7 +13,6 @@
 //
 use std::{error::Error, str::FromStr, time::Duration};
 
-use duration_string::DurationString;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::SampleFormat;
@@ -270,7 +269,7 @@ impl Audio {
             }
         }
         if let Some(ref delay) = self.playback_delay {
-            if DurationString::from_string(delay.clone()).is_err() {
+            if super::parse_duration_string(delay).is_err() {
                 errors.push(format!(
                     "audio playback_delay '{}' is not a valid duration",
                     delay

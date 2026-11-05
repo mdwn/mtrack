@@ -90,6 +90,13 @@ pub use self::kind::{peek_kind, ConfigKind};
 
 use std::time::Duration;
 
+/// A duration as a config string (`500ms`, `2s`): the one parse of one,
+/// for every field that takes one. The error is the parser's; a validator
+/// words its own.
+pub(crate) fn parse_duration_string(raw: &str) -> Result<Duration, duration_string::Error> {
+    duration_string::DurationString::from_string(raw.to_string()).map(Duration::from)
+}
+
 /// Parses an optional duration string (e.g. "500ms") into a `Duration`,
 /// returning `default` when `raw` is `None`.
 pub(crate) fn parse_playback_delay(
@@ -97,7 +104,24 @@ pub(crate) fn parse_playback_delay(
     default: Duration,
 ) -> Result<Duration, Box<dyn std::error::Error>> {
     match raw {
-        Some(s) => Ok(duration_string::DurationString::from_string(s.clone())?.into()),
+        Some(s) => Ok(parse_duration_string(s)?),
         None => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod duration_string_test {
+    use super::parse_duration_string;
+    use std::time::Duration;
+
+    #[test]
+    fn every_config_duration_parses_by_one_rule() {
+        assert_eq!(
+            parse_duration_string("500ms"),
+            Ok(Duration::from_millis(500))
+        );
+        assert_eq!(parse_duration_string("2s"), Ok(Duration::from_secs(2)));
+        assert!(parse_duration_string("soon").is_err());
+        assert!(parse_duration_string("").is_err());
     }
 }

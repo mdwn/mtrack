@@ -111,11 +111,7 @@ pub fn load_overrides(
     let mut loaded = HashMap::new();
 
     for (key, path_str) in overrides {
-        let path = if Path::new(path_str).is_absolute() {
-            path_str.into()
-        } else {
-            base_path.join(path_str)
-        };
+        let path = base_path.join(path_str);
         match load_audio_file(loader, &path) {
             Ok(samples) => {
                 loaded.insert(key.clone(), samples);

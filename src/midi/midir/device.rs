@@ -436,32 +436,14 @@ pub struct MidiDeviceInfo {
 
 /// Lists MIDI devices as simple info structs (no trait objects).
 pub fn list_device_info() -> Result<Vec<MidiDeviceInfo>, Box<dyn Error>> {
-    let input = MidiInput::new("mtrack input listing")?;
-    let output = MidiOutput::new("mtrack output listing")?;
-    let input_ports = input.ports();
-    let output_ports = output.ports();
-
-    let mut devices: HashMap<String, (bool, bool)> = HashMap::new();
-
-    for port in input_ports {
-        let name = input.port_name(&port)?;
-        devices.entry(name).or_insert((false, false)).0 = true;
-    }
-    for port in output_ports {
-        let name = output.port_name(&port)?;
-        devices.entry(name).or_insert((false, false)).1 = true;
-    }
-
-    let mut infos: Vec<MidiDeviceInfo> = devices
+    Ok(list_midir_devices()?
         .into_iter()
-        .map(|(name, (has_input, has_output))| MidiDeviceInfo {
-            name,
-            has_input,
-            has_output,
+        .map(|device| MidiDeviceInfo {
+            has_input: device.input_port.is_some(),
+            has_output: device.output_port.is_some(),
+            name: device.name.clone(),
         })
-        .collect();
-    infos.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(infos)
+        .collect())
 }
 
 /// Lists midir devices and produces the Device trait.

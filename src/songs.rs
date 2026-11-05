@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
-use crate::util::filename_display;
+use crate::util::{filename_display, FileStamp};
 
 /// Returns true if the extension is a supported audio (non-MIDI) format.
 pub fn is_supported_audio_extension(ext: &str) -> bool {
@@ -88,14 +88,16 @@ impl Clone for DslLightingShow {
     }
 }
 
-/// What tells a file has changed: its modified time, and its size, for two
-/// saves within one tick of the clock -- a truncate, then the write.
-type FileStamp = (std::time::SystemTime, u64);
-
-/// The [`FileStamp`] of `path`, if it can be read.
-fn modified_time(path: &Path) -> Option<FileStamp> {
-    let metadata = fs::metadata(path).ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
+/// The tempo map a song's `.light` files are parsed with: the song's
+/// explicit `tempo:` block if it has one, otherwise one derived from the
+/// click track's beat grid. See [`Song::lighting_tempo_map`].
+fn lighting_tempo(
+    tempo_map: Option<&crate::tempo::TempoMap>,
+    beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+) -> Option<crate::tempo::TempoMap> {
+    tempo_map
+        .cloned()
+        .or_else(|| beat_grid.and_then(|grid| grid.to_tempo_map()))
 }
 
 /// Reads and parses a DSL file.
@@ -153,7 +155,7 @@ impl DslLightingShow {
     ) -> Result<Self, Box<dyn Error>> {
         // Read before parsing: an edit landing in between is newer than the
         // time kept, and parsed again next time.
-        let modified = modified_time(&file_path);
+        let modified = FileStamp::of(&file_path);
         let shows = parse_dsl_file(&file_path, tempo_map)?;
         Ok(Self::with_shows(file_path, shows, tempo_map, modified))
     }
@@ -199,7 +201,7 @@ impl DslLightingShow {
     fn refresh(&self) -> (Arc<crate::lighting::parser::LightShows>, u64) {
         let mut parsed = self.parsed.lock();
         if parsed.modified.is_some() {
-            let modified = modified_time(&self.file_path);
+            let modified = FileStamp::of(&self.file_path);
             if modified.is_some() && modified != parsed.modified {
                 parsed.modified = modified;
                 match parse_dsl_file(&self.file_path, self.tempo_map.as_ref()) {
@@ -387,9 +389,7 @@ impl Song {
         // song's `tempo:` config, else the click-derived beat grid. Parsing has
         // to happen here rather than earlier: the grid is what makes the third
         // option possible, and the parser resolves `@bar/beat` up front.
-        let lighting_tempo = tempo_map
-            .clone()
-            .or_else(|| beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()));
+        let lighting_tempo = lighting_tempo(tempo_map.as_ref(), beat_grid.as_ref());
         let dsl_lighting_shows = match config.lighting() {
             Some(lighting_shows) => lighting_shows
                 .iter()
@@ -501,11 +501,7 @@ impl Song {
             let (start_secs, end_secs, file) = match &hint.file {
                 None => (at_secs, at_secs, None),
                 Some(file) => {
-                    let path = if Path::new(file).is_absolute() {
-                        PathBuf::from(file)
-                    } else {
-                        start_path.join(file)
-                    };
+                    let path = start_path.join(file);
                     let source = crate::audio::sample_source::create_sample_source_from_file(
                         &path, None, 1024,
                     )
@@ -650,7 +646,7 @@ impl Song {
         // parse them. Same precedence as `Song::new`: a show's own `tempo`
         // block wins, otherwise the click-derived grid.
         let beat_grid = Self::analyze_click_track(song_directory, &tracks);
-        let lighting_tempo = beat_grid.as_ref().and_then(|grid| grid.to_tempo_map());
+        let lighting_tempo = lighting_tempo(None, beat_grid.as_ref());
         for path in light_paths {
             dsl_lighting_shows.push(DslLightingShow::load(path, lighting_tempo.as_ref())?);
         }
@@ -737,6 +733,16 @@ impl Song {
     /// through [`get_all_songs`].
     pub fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
+    }
+
+    /// The YAML file this song is written to: the one it was loaded from, or
+    /// `song.yaml` in its folder for one with no such file yet. The one
+    /// answer for every surface that reads or edits a song's YAML; a flat
+    /// `<name>.yaml` song's is that file, not `song.yaml` beside it.
+    pub fn config_path_or_default(&self) -> PathBuf {
+        self.config_path
+            .clone()
+            .unwrap_or_else(|| self.base_path.join("song.yaml"))
     }
 
     /// Gets the per-song samples configuration.
@@ -834,7 +840,7 @@ impl Song {
         let end = self.length().max(midi_end);
         // A MIDI file's clock runs on past the file's end at its last tempo.
         if let Some(tempo) = sheet.and_then(|sheet| sheet.beat_clock.as_ref()) {
-            let ticks = tempo.ticks_until(end);
+            let ticks = tempo.beat_clock_until(end);
             if !ticks.is_empty() {
                 return Some(ticks);
             }
@@ -852,9 +858,7 @@ impl Song {
     /// construct outright without a tempo, so the difference is not a matter
     /// of accuracy but of whether the show parses at all.
     pub fn lighting_tempo_map(&self) -> Option<crate::tempo::TempoMap> {
-        self.tempo_map
-            .clone()
-            .or_else(|| self.beat_grid.as_ref().and_then(|grid| grid.to_tempo_map()))
+        lighting_tempo(self.tempo_map.as_ref(), self.beat_grid.as_ref())
     }
 
     /// Where a draft of this song's lighting is taken to live, for resolving
@@ -1227,10 +1231,9 @@ impl Song {
         })
     }
 
-    /// Returns the duration string in minutes and seconds.
+    /// The duration as `M:SS`, as every surface formats one.
     pub fn duration_string(&self) -> String {
-        let secs = self.duration.as_secs();
-        format!("{}:{:02}", secs / 60, secs % 60)
+        crate::util::duration_minutes_seconds(self.duration)
     }
 
     /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.
@@ -1405,9 +1408,30 @@ impl Song {
         Ok(sources)
     }
 
+    /// The song as every surface summarises it; see [`SongSummary`].
+    pub fn summary(&self) -> SongSummary {
+        SongSummary {
+            name: self.name.clone(),
+            duration: self.length(),
+            sections: self
+                .sections
+                .iter()
+                .map(|s| SectionSummary {
+                    name: s.name.clone(),
+                    start_measure: s.start_measure,
+                    end_measure: s.end_measure,
+                    start_beat: s.start_beat,
+                    end_beat: s.end_beat,
+                    color: s.color.clone(),
+                })
+                .collect(),
+        }
+    }
+
     /// Returns a proto version of the song.
     pub fn to_proto(&self) -> Result<player::v1::Song, std::io::Error> {
-        let duration = match prost_types::Duration::try_from(self.duration) {
+        let summary = self.summary();
+        let duration = match prost_types::Duration::try_from(summary.duration) {
             Ok(duration) => duration,
             Err(e) => return Err(std::io::Error::other(e.to_string())),
         };
@@ -1416,27 +1440,51 @@ impl Song {
             measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
         });
 
-        let sections = self
+        let sections = summary
             .sections
-            .iter()
+            .into_iter()
             .map(|s| player::v1::Section {
-                name: s.name.clone(),
+                name: s.name,
                 start_measure: s.start_measure as u32,
                 end_measure: s.end_measure as u32,
                 start_beat: s.start_beat,
                 end_beat: s.end_beat,
-                color: s.color.clone(),
+                color: s.color,
             })
             .collect();
 
         Ok(player::v1::Song {
-            name: self.name.to_string(),
+            name: summary.name,
             duration: Some(duration),
             tracks: self.output_track_names(),
             beat_grid,
             sections,
         })
     }
+}
+
+/// A song as every surface summarises it: gRPC's `Song`, MCP's song summary
+/// and details, the web UI's song list and playback status, and the OSC
+/// broadcast render this, so they agree. `duration` is [`Song::length`]:
+/// how long the song plays, its lighting included, which is what a progress
+/// bar and a seek bound want.
+#[derive(Clone, Debug)]
+pub struct SongSummary {
+    pub name: String,
+    pub duration: Duration,
+    pub sections: Vec<SectionSummary>,
+}
+
+/// A section as every surface reports it: its bounds in full, so a client
+/// that draws it agrees with where the player resolves it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SectionSummary {
+    pub name: String,
+    pub start_measure: usize,
+    pub end_measure: usize,
+    pub start_beat: Option<f64>,
+    pub end_beat: Option<f64>,
+    pub color: Option<String>,
 }
 
 impl fmt::Display for Song {
@@ -1642,24 +1690,17 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         midly::Timing::Metrical(tpb) => tpb.as_int(),
         _ => return Err("timecode-based MIDI timing not supported".into()),
     };
-    let (tempo_map, tpb, total_ticks) = crate::midi::playback::PrecomputedMidi::build_tempo_info(
-        &smf.tracks,
-        ticks_per_beat,
-        smf.header.format,
-    );
+    let timing =
+        crate::midi::playback::MidiTiming::of(&smf.tracks, ticks_per_beat, smf.header.format);
     let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
         &smf.tracks,
-        ticks_per_beat,
+        &timing,
         smf.header.format,
     );
     // Only a file with explicit tempo events has a tempo of its own to clock.
     // One without leaves the clock to the song's `tempo:` or click track, or,
     // with neither, to nobody (`Song::beat_clock`).
-    let beat_clock = (!tempo_map.is_empty()).then_some(MidiTempo {
-        entries: tempo_map,
-        ticks_per_beat: tpb,
-        total_ticks,
-    });
+    let beat_clock = (!timing.tempo.is_empty()).then_some(timing);
     Ok(MidiSheet {
         precomputed,
         beat_clock,
@@ -1915,30 +1956,8 @@ fn deduplicate_track_names(tracks: &mut [Track]) {
 /// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
     pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
-    /// The file's tempo, when it has tempo events to drive a beat clock.
-    pub(crate) beat_clock: Option<MidiTempo>,
-}
-
-/// A MIDI file's tempo events, from which its beat clock is laid out.
-pub(crate) struct MidiTempo {
-    entries: Vec<crate::midi::playback::TempoEntry>,
-    ticks_per_beat: u16,
-    total_ticks: u64,
-}
-
-impl MidiTempo {
-    /// The clock's pulse times over the file, and on past its end at its
-    /// last tempo until `until`.
-    pub(crate) fn ticks_until(&self, until: Duration) -> Vec<Duration> {
-        crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info_until(
-            &self.entries,
-            self.ticks_per_beat,
-            self.total_ticks,
-            until,
-        )
-        .ticks_from(Duration::ZERO)
-        .to_vec()
-    }
+    /// The file's timing, when it has tempo events to drive a beat clock.
+    pub(crate) beat_clock: Option<crate::midi::playback::MidiTiming>,
 }
 
 /// A song that failed to load from disk.
@@ -1946,6 +1965,8 @@ impl MidiTempo {
 pub struct SongLoadFailure {
     name: String,
     base_path: PathBuf,
+    /// The YAML file that did not load.
+    config_path: PathBuf,
     error: String,
 }
 
@@ -1958,6 +1979,12 @@ impl SongLoadFailure {
     /// Returns the base path of the failed song.
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// The YAML file that did not load, as [`Song::config_path_or_default`]
+    /// answers for a song that did.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Returns the error message describing the failure.
@@ -2145,6 +2172,9 @@ pub fn get_all_songs_with_defaults(
                                         failures.push(SongLoadFailure {
                                             name: song_config.name().to_string(),
                                             base_path: canonical_parent,
+                                            config_path: path
+                                                .canonicalize()
+                                                .unwrap_or_else(|_| path.to_path_buf()),
                                             error: format!("{}", e),
                                         });
                                     }
@@ -2180,6 +2210,9 @@ pub fn get_all_songs_with_defaults(
                                 failures.push(SongLoadFailure {
                                     name,
                                     base_path,
+                                    config_path: path
+                                        .canonicalize()
+                                        .unwrap_or_else(|_| path.to_path_buf()),
                                     error: format!("{}", e),
                                 });
                             }

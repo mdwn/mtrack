@@ -124,11 +124,9 @@ impl AutoPlayConfig {
         match self {
             AutoPlayConfig::On(false) => Ok(None),
             AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
-            AutoPlayConfig::Gap(gap) => duration_string::DurationString::from_string(gap.clone())
-                .map(|d| Some(d.into()))
-                .map_err(|_| {
-                    format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
-                }),
+            AutoPlayConfig::Gap(gap) => super::parse_duration_string(gap).map(Some).map_err(|_| {
+                format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
+            }),
         }
     }
 }

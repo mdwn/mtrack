@@ -17,6 +17,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use super::super::safe_path::VerifiedRoot;
+use crate::util::FaultKind;
 
 /// The project directory: where mtrack.yaml lives.
 ///
@@ -24,6 +25,18 @@ use super::super::safe_path::VerifiedRoot;
 /// configured path outside it belongs to the operator — creating it turns a
 /// typo into an empty directory, and writes outside the paths the generated
 /// systemd unit fences the service into.
+/// A fault as an HTTP response: the one table from [`FaultKind`] to a
+/// status, the error's text as the body.
+pub(crate) fn fault_response(kind: FaultKind, message: String) -> axum::response::Response {
+    let status = match kind {
+        FaultKind::NotFound => StatusCode::NOT_FOUND,
+        FaultKind::Precondition => StatusCode::CONFLICT,
+        FaultKind::Invalid => StatusCode::BAD_REQUEST,
+        FaultKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, Json(json!({"error": message}))).into_response()
+}
+
 pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
     crate::util::project_dir_of(&state.config_path)
 }

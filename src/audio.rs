@@ -35,7 +35,6 @@ pub mod monoclip;
 pub mod pilot;
 pub mod sample_source;
 pub(crate) mod song_loop;
-pub mod tempo_guess;
 pub mod track_gains;
 
 // Re-export the format types for backward compatibility

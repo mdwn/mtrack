@@ -17,6 +17,8 @@ use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
 use tracing::{info, span, Level};
 
+use crate::util::FaultKind;
+
 use crate::{
     config,
     player::Player,
@@ -29,7 +31,7 @@ use crate::{
         PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
         PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest,
         SeekResponse, SeekToSectionRequest, SetAmbientModeRequest, SetAmbientModeResponse,
-        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse,
+        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse, Song,
         StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
         StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
         SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
@@ -135,7 +137,9 @@ impl PlayerServer {
         let song = match result {
             Ok(Some(song)) => song,
             Ok(None) => {
-                return Err(Status::failed_precondition(self.declined_reason().await));
+                return Err(Status::failed_precondition(
+                    self.player.play_declined_reason().await,
+                ));
             }
             Err(e) => return Err(Status::failed_precondition(e)),
         };
@@ -166,20 +170,6 @@ impl PlayerServer {
         snapshot_to_update_response(snapshot, outcome)
     }
 
-    /// Why the player declined to start, determined from its current state
-    /// rather than assumed.
-    async fn declined_reason(&self) -> String {
-        if self.player.is_playing().await {
-            return "song already playing".to_string();
-        }
-        if self.player.get_playlist().songs().is_empty() {
-            return "the playlist is empty — no songs loaded, which usually \
-                    means none passed validation at startup (check the log)"
-                .to_string();
-        }
-        "the player did not start a song".to_string()
-    }
-
     /// Refuses a config write while the player is locked, the way the web
     /// UI's lock middleware does. Playback controls never call this.
     #[allow(clippy::result_large_err)]
@@ -196,6 +186,16 @@ impl PlayerServer {
             .as_deref()
             .ok_or_else(|| Status::unimplemented("config store not available"))
     }
+}
+
+/// The song a navigation landed on, as the player answers it: the one it
+/// moved to, or the one it stays on (playing, or at the list's end), as
+/// MCP answers too. Only an empty playlist is a failure.
+#[allow(clippy::result_large_err)]
+fn navigated(song: Option<Arc<crate::songs::Song>>) -> Result<Song, Status> {
+    song.ok_or_else(|| Status::failed_precondition("playlist is empty"))?
+        .to_proto()
+        .map_err(Status::from)
 }
 
 /// A playback position a request sent, the start of the song when it sent
@@ -225,14 +225,19 @@ fn ambient_to_proto(
     }
 }
 
+/// A fault as a gRPC status: the one table from [`FaultKind`] to a code.
+fn fault_status(kind: FaultKind, message: String) -> Status {
+    match kind {
+        FaultKind::NotFound => Status::not_found(message),
+        FaultKind::Precondition => Status::failed_precondition(message),
+        FaultKind::Invalid => Status::invalid_argument(message),
+        FaultKind::Internal => Status::internal(message),
+    }
+}
+
 /// Converts a ConfigError to a gRPC Status.
 fn config_error_to_status(e: config::ConfigError) -> Status {
-    match e {
-        config::ConfigError::StaleChecksum { .. } => Status::failed_precondition(e.to_string()),
-        config::ConfigError::InvalidProfileIndex { .. } => Status::out_of_range(e.to_string()),
-        config::ConfigError::Validation(_) => Status::invalid_argument(e.to_string()),
-        _ => Status::internal(e.to_string()),
-    }
+    fault_status(e.kind(), e.to_string())
 }
 
 /// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to
@@ -316,52 +321,14 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<PreviousRequest>,
     ) -> Result<Response<PreviousResponse>, Status> {
-        if self.player.is_playing().await && !self.player.is_current_song_looping() {
-            return Err(Status::failed_precondition("can't navigate while playing"));
-        }
-        let current_song = self
-            .player
-            .get_playlist()
-            .current()
-            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
-        let previous_song = self
-            .player
-            .prev()
-            .await
-            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
-
-        if current_song.name() == previous_song.name() {
-            return Err(Status::out_of_range(
-                "already at the beginning of the playlist",
-            ));
-        }
-
         Ok(Response::new(PreviousResponse {
-            song: Some(previous_song.to_proto()?),
+            song: Some(navigated(self.player.prev().await)?),
         }))
     }
 
     async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
-        if self.player.is_playing().await && !self.player.is_current_song_looping() {
-            return Err(Status::failed_precondition("can't navigate while playing"));
-        }
-        let current_song = self
-            .player
-            .get_playlist()
-            .current()
-            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
-        let next_song = self
-            .player
-            .next()
-            .await
-            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
-
-        if current_song.name() == next_song.name() {
-            return Err(Status::out_of_range("already at the end of the playlist"));
-        }
-
         Ok(Response::new(NextResponse {
-            song: Some(next_song.to_proto()?),
+            song: Some(navigated(self.player.next().await)?),
         }))
     }
 
@@ -382,12 +349,7 @@ impl PlayerService for PlayerServer {
         self.player
             .switch_to_playlist(&playlist_name)
             .await
-            .map_err(|e| match e {
-                crate::player::SwitchPlaylistError::NotFound(_) => Status::not_found(e.to_string()),
-                crate::player::SwitchPlaylistError::Playing => {
-                    Status::failed_precondition(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SwitchToPlaylistResponse {}))
     }
 
@@ -413,18 +375,14 @@ impl PlayerService for PlayerServer {
         // Hardware health travels with playback state so a remote monitor can
         // tell "silent because nothing is playing" from "silent and it should
         // not be" without a second call.
-        let audio_health = self
-            .player
-            .hardware_status()
-            .audio_output
-            .map(|h| AudioHealth {
-                status: h.status.as_str().to_string(),
-                callback_alive: h.callback_alive,
-                writing_signal: h.writing_signal,
-                recoveries: h.recoveries,
-                underruns: h.underruns,
-                last_error: h.last_error,
-            });
+        let audio_health = status.audio_health.map(|h| AudioHealth {
+            status: h.status.as_str().to_string(),
+            callback_alive: h.callback_alive,
+            writing_signal: h.writing_signal,
+            recoveries: h.recoveries,
+            underruns: h.underruns,
+            last_error: h.last_error,
+        });
 
         let auto_play = match status.auto_play {
             Some((song, starts_in)) => Some(AutoPlayStatus {
@@ -1279,17 +1237,19 @@ mod test {
         Ok(())
     }
 
+    /// While a song plays the player stays on it, and the reply says so:
+    /// the song answered is the one the player is on, as MCP answers.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc_next_while_playing() -> Result<(), Box<dyn Error>> {
-        let (_player, mut client, device) = setup_grpc().await?;
+        let (player, mut client, device) = setup_grpc().await?;
 
         client.play(PlayRequest {}).await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // next while playing should fail.
-        let result = client.next(NextRequest {}).await;
-        assert!(result.is_err(), "next() while playing should fail");
-        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+        let current = player.get_playlist().current().unwrap().name().to_string();
+        let result = client.next(NextRequest {}).await?.into_inner();
+        assert_eq!(result.song.unwrap().name, current);
+        assert_eq!(player.get_playlist().current().unwrap().name(), current);
 
         client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped");
@@ -1298,7 +1258,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc_previous_while_playing() -> Result<(), Box<dyn Error>> {
-        let (_player, mut client, device) = setup_grpc().await?;
+        let (player, mut client, device) = setup_grpc().await?;
 
         // Move to Song 3 first so previous has somewhere to go.
         client.next(NextRequest {}).await?;
@@ -1306,10 +1266,10 @@ mod test {
         client.play(PlayRequest {}).await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // previous while playing should fail.
-        let result = client.previous(PreviousRequest {}).await;
-        assert!(result.is_err(), "previous() while playing should fail");
-        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+        let current = player.get_playlist().current().unwrap().name().to_string();
+        let result = client.previous(PreviousRequest {}).await?.into_inner();
+        assert_eq!(result.song.unwrap().name, current);
+        assert_eq!(player.get_playlist().current().unwrap().name(), current);
 
         client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped");

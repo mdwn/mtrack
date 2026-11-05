@@ -38,6 +38,22 @@ impl TimeSignature {
     pub fn beats_per_measure(&self) -> f64 {
         self.numerator as f64 * 4.0 / self.denominator as f64
     }
+
+    /// How many beats the beat grid counts in a measure: one per
+    /// denominator note, the numerator, so 6/8 is six beats where
+    /// [`Self::beats_per_measure`] has three. The unit a section's
+    /// `start_beat`/`end_beat` and a click track's beats are in; the one
+    /// named conversion between the two.
+    pub fn grid_beats_per_measure(&self) -> u32 {
+        self.numerator
+    }
+
+    /// The signature a grid of `beats` clicks a measure is written as:
+    /// `beats/4`, the inverse of [`Self::grid_beats_per_measure`] for a
+    /// grid whose clicks are read as quarter notes.
+    pub fn from_grid_beats(beats: u32) -> Self {
+        TimeSignature::new(beats, 4)
+    }
 }
 
 /// What a time signature may be: what a song's `tempo:` block takes, or

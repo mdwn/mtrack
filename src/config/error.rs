@@ -57,9 +57,45 @@ pub enum ConfigError {
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl ConfigError {
+    /// What kind of fault this is: a stale checksum is a precondition the
+    /// caller must re-read for; a bad profile index or a config that would
+    /// not validate is the caller's to fix; the rest is mtrack's.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        use crate::util::FaultKind;
+        match self {
+            ConfigError::StaleChecksum { .. } => FaultKind::Precondition,
+            ConfigError::InvalidProfileIndex { .. } | ConfigError::Validation(_) => {
+                FaultKind::Invalid
+            }
+            _ => FaultKind::Internal,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_error_classifies_itself_once_for_every_transport() {
+        use crate::util::FaultKind;
+        let stale = ConfigError::StaleChecksum {
+            expected: "a".into(),
+            actual: "b".into(),
+        };
+        assert_eq!(stale.kind(), FaultKind::Precondition);
+        let index = ConfigError::InvalidProfileIndex { index: 3, len: 1 };
+        assert_eq!(index.kind(), FaultKind::Invalid);
+        assert_eq!(
+            ConfigError::Validation("x".into()).kind(),
+            FaultKind::Invalid
+        );
+        assert_eq!(
+            ConfigError::StoreIo("disk".into()).kind(),
+            FaultKind::Internal
+        );
+    }
 
     #[test]
     fn display_io_error() {

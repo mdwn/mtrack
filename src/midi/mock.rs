@@ -16,10 +16,8 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Barrier, Mutex,
+        Arc, Barrier, Mutex,
     },
-    thread,
-    time::Duration,
 };
 
 use midly::live::LiveEvent;
@@ -174,67 +172,19 @@ impl super::Device for Device {
         song: Arc<Song>,
         sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
-        let crate::playsync::PlaybackSync {
-            cancel_handle,
-            ready_tx,
-            clock,
-            start_time,
-            ..
-        } = sync;
-        // Guard moved into spawned thread; sends on drop if not explicit.
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
-        let remaining_duration = song.duration().saturating_sub(start_time);
+        let remaining_duration = song.duration().saturating_sub(sync.start_time);
         info!(
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
-            start_time = ?start_time,
+            start_time = ?sync.start_time,
             "Playing song."
         );
 
-        let (sleep_tx, sleep_rx) = mpsc::channel::<()>();
-
-        let finished = Arc::new(AtomicBool::new(false));
-        let join_handle = {
-            let cancel_handle = cancel_handle.clone();
-            let finished = finished.clone();
-            let clock = clock.clone();
-            thread::spawn(move || {
-                let mut ready_tx = ready_tx;
-                ready_tx.send();
-
-                while clock.elapsed() == Duration::ZERO {
-                    if cancel_handle.is_cancelled() {
-                        finished.store(true, Ordering::Relaxed);
-                        cancel_handle.notify();
-                        return;
-                    }
-                    std::hint::spin_loop();
-                }
-
-                if cancel_handle.is_cancelled() {
-                    finished.store(true, Ordering::Relaxed);
-                    cancel_handle.notify();
-                    return;
-                }
-
-                let _ = sleep_rx.recv_timeout(remaining_duration);
-
-                // Expire at the end of playback.
-                finished.store(true, Ordering::Relaxed);
-                cancel_handle.notify();
-            })
-        };
-
-        cancel_handle.wait(finished);
-        sleep_tx.send(())?;
-        if join_handle.join().is_err() {
-            return Err("Error while joining thread!".into());
-        }
-
-        Ok(())
+        Ok(crate::playsync::mock_play(sync, remaining_duration, || {})?)
     }
 
     /// Emits an event.

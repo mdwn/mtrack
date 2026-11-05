@@ -107,8 +107,7 @@ impl Ambient {
 }
 
 fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
-    duration_string::DurationString::from_string(value.to_string())
-        .map(Duration::from)
+    super::parse_duration_string(value)
         .map_err(|_| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
 }
 

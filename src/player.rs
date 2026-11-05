@@ -1514,13 +1514,7 @@ impl SongSources {
         let legacy_playlist = cli_playlist
             .map(Path::to_path_buf)
             .or_else(|| config.playlist())
-            .map(|path| {
-                if path.is_absolute() {
-                    path
-                } else {
-                    project_dir.join(path)
-                }
-            });
+            .map(|path| project_dir.join(path));
         SongSources {
             songs: crate::util::resolved_dir(&config.songs(config_path)),
             playlists_dir: Some(playlists_dir),
@@ -1537,6 +1531,16 @@ pub enum SwitchPlaylistError {
     Playing,
     #[error("Playlist '{0}' not found")]
     NotFound(String),
+}
+
+impl SwitchPlaylistError {
+    /// What kind of fault this is, for a transport's code.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SwitchPlaylistError::Playing => crate::util::FaultKind::Precondition,
+            SwitchPlaylistError::NotFound(_) => crate::util::FaultKind::NotFound,
+        }
+    }
 }
 
 /// Why [`Player::reload_songs`] left the songs as they were.

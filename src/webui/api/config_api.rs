@@ -183,21 +183,7 @@ pub(super) async fn validate_config(body: String) -> impl IntoResponse {
 
 /// Helper to convert a ConfigError into an HTTP response.
 fn config_store_error_response(e: config::ConfigError) -> axum::response::Response {
-    match e {
-        config::ConfigError::StaleChecksum { .. } => {
-            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
-        }
-        config::ConfigError::InvalidProfileIndex { .. } | config::ConfigError::Validation(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+    super::helpers::fault_response(e.kind(), e.to_string())
 }
 
 /// Helper to convert a ConfigSnapshot into a JSON response, with what became

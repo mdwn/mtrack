@@ -143,7 +143,7 @@ pub fn migrate(path: &str, apply: bool) -> Result<(), Box<dyn Error>> {
         return Err(format!("Config file not found: {}", config_path.display()).into());
     }
 
-    let config_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let config_dir = crate::util::project_dir_of(&config_path);
 
     // Deserialize raw (before normalize) to inspect inline fields.
     let raw_player = config::Player::deserialize_raw(&config_path)?;
@@ -268,12 +268,7 @@ fn migrate_playlist(
     };
 
     // Resolve the playlist file path.
-    let playlist_path = if Path::new(&playlist_value).is_absolute() {
-        PathBuf::from(&playlist_value)
-    } else {
-        let cfg_dir = config_path.parent().unwrap_or(Path::new("."));
-        cfg_dir.join(&playlist_value)
-    };
+    let playlist_path = crate::util::project_dir_of(config_path).join(&playlist_value);
 
     let playlists_dir = config_dir.join("playlists");
 
@@ -347,7 +342,7 @@ fn migrate_fixtures(
         }
     }
     // Profile files: each one that carries the field is rewritten without it.
-    if let Some(dir) = raw.profiles_dir_resolved(config_path) {
+    if let Some(dir) = raw.resolved_profiles_dir(config_path) {
         for path in config::list_profile_files(&dir).unwrap_or_default() {
             let Ok(profile) = crate::util::yaml_source(&path)
                 .and_then(|source| ::config::Config::builder().add_source(source).build())

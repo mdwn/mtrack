@@ -392,11 +392,7 @@ impl SampleEngine {
 
         let (file_path, volume) = match sample.definition.file_for_velocity(velocity) {
             Some((file, vol)) => {
-                let path = if Path::new(file).is_absolute() {
-                    PathBuf::from(file)
-                } else {
-                    sample.base_path.join(file)
-                };
+                let path = sample.base_path.join(file);
                 (path, vol)
             }
             None => {

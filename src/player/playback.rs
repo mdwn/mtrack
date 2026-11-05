@@ -44,6 +44,20 @@ impl Player {
         self.play_at(None).await
     }
 
+    /// Why a play returned no song, read from the player's state rather than
+    /// assumed: the one derivation every surface answers with.
+    pub async fn play_declined_reason(&self) -> String {
+        if self.is_playing().await {
+            return "song already playing".to_string();
+        }
+        if self.get_playlist().songs().is_empty() {
+            return "the playlist is empty — no songs loaded, which usually \
+                    means none passed validation at startup (check the log)"
+                .to_string();
+        }
+        "the player did not start a song".to_string()
+    }
+
     /// Plays the song starting from a specific time position.
     /// Returns the song if playback started successfully.
     /// Returns None if a song is already playing.
