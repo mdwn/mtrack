@@ -673,6 +673,14 @@ pub fn document(source: &str, path: Option<String>) -> DocumentResult {
     lighting::parser::document::document(source, path.as_deref().map(Path::new))
 }
 
+/// `value` in `from` (`s` or `ms`) written in `to` instead, the same time
+/// as the player reads it (`document::time_in`): what a tempo block's
+/// start becomes when its unit is switched.
+#[wasm_bindgen]
+pub fn time_in(value: f64, from: &str, to: &str) -> Option<f64> {
+    lighting::parser::document::time_in(value, from, to)
+}
+
 /// A sequence reference's `PassLayout::pass_ends`, as the page hands them
 /// back.
 #[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]

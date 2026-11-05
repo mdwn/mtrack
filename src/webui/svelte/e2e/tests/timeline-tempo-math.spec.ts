@@ -206,6 +206,29 @@ test("a loop's resize counts the passes the drag reaches, under a ramp", () => {
   }
 });
 
+test("a tempo start switched to another unit lays out where it was", () => {
+  const laidStart = (start: string) =>
+    rules.layout({
+      source: `tempo {\n    start: ${start}\n    bpm: 120\n}\nshow "S" {\n    @1/1\n    a: static, color: "red", duration: 1s\n}\n`,
+      includes: [],
+      until_ms: 10000,
+    }).tempo!.start_ms;
+  for (const [value, from, to] of [
+    [500, "ms", "s"],
+    [1.5, "s", "ms"],
+    [1.001, "s", "ms"],
+    [0.1, "ms", "s"],
+  ] as const) {
+    const converted = rules.time_in(value, from, to)!;
+    expect(laidStart(`${converted}${to}`), `${value}${from}`).toBe(
+      laidStart(`${value}${from}`),
+    );
+    expect(rules.time_in(converted, to, from)).toBe(value);
+  }
+  expect(rules.time_in(500, "ms", "s")).toBe(0.5);
+  expect(rules.time_in(1.5, "s", "ms")).toBe(1500);
+});
+
 test("the ruler labels and beat lines thin out as the bars narrow", () => {
   const source = tempo(120, [4, 4], []);
   const laid = rules.layout({

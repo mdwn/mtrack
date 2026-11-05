@@ -31,3 +31,40 @@ test.describe("Tempo Editor", () => {
     await expect(page.locator(".tempo-info")).not.toBeVisible();
   });
 });
+
+test.describe("Tempo start unit", () => {
+  test("switching the unit converts the start, which stays where it was", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
+    await expect(page.locator(".lighting-section")).toBeVisible();
+    const raw = page.locator(".tab-btn", { hasText: "Raw DSL" });
+    const timeline = page.locator(".tab-btn", { hasText: "Timeline" });
+    const textarea = page.locator(".raw-textarea");
+    const source =
+      'tempo {\n    start: 500ms\n    bpm: 120\n}\nshow "S" {\n    @1/1\n    a: static, color: "red", duration: 1s\n}\n';
+    await raw.click();
+    await textarea.fill(source);
+    await timeline.click();
+    await page.locator(".tempo-lane-clickable").click();
+    const unit = page.locator(".start-row select");
+    const value = page.locator(".start-row input");
+
+    // The file as the editor would save it.
+    const startOf = async () => {
+      await raw.click();
+      const text = await textarea.inputValue();
+      await timeline.click();
+      // The timeline comes back with its tempo editor closed.
+      await page.locator(".tempo-lane-clickable").click();
+      return text;
+    };
+    await unit.selectOption("s");
+    await expect(value).toHaveValue("0.5");
+    expect(await startOf()).toContain("start: 0.5s\n");
+    await unit.selectOption("ms");
+    await expect(value).toHaveValue("500");
+    // Back in the unit it was written in: the text as it was.
+    expect(await startOf()).toContain("start: 500ms\n");
+  });
+});

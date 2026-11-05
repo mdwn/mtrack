@@ -115,11 +115,15 @@
     onchange({ ...tempo, start: { ...tempo.start, value: v } });
   }
 
+  /** The start in another unit, converted so it stays the same time as
+   *  the player reads it (`500ms` is `0.5s`). */
   function updateStartUnit(unit: string) {
     if (!tempo) return;
+    const value = rules.time_in(tempo.start.value, tempo.start.unit, unit);
+    if (value === undefined) return;
     onchange({
       ...tempo,
-      start: { ...tempo.start, unit: unit as "ms" | "s" },
+      start: { ...tempo.start, value, unit: unit as "ms" | "s" },
     });
   }
 

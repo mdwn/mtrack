@@ -24,6 +24,7 @@
 
 use std::error::Error;
 use std::path::Path;
+use std::time::Duration;
 
 use pest::iterators::Pair;
 use pest::Parser;
@@ -31,7 +32,7 @@ use serde::Serialize;
 
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
-use super::utils::{parse_measure_time, parse_time_string};
+use super::utils::{parse_measure_time, parse_time_string, parse_time_value, TimeValue};
 
 /// A `.light` file as written.
 #[cfg_attr(
@@ -1404,6 +1405,28 @@ fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
     })
 }
 
+/// The time `value` written in `from` (`s` or `ms`, as a tempo block's
+/// `start:` is) written in `to` instead: the shortest decimal the player
+/// reads (`parse_time_value`) as the same nanoseconds, so switching the
+/// unit never moves the time. `None` for a unit or a value that is not
+/// a time.
+pub fn time_in(value: f64, from: &str, to: &str) -> Option<f64> {
+    let read = |v: f64, unit: &str| match parse_time_value(&format!("{v}{unit}")).ok()? {
+        TimeValue::Seconds(secs) => Duration::try_from_secs_f64(secs).ok(),
+        _ => None,
+    };
+    let time = read(value, from)?;
+    let raw = match to {
+        "s" => time.as_secs_f64(),
+        "ms" => time.as_secs_f64() * 1000.0,
+        _ => return None,
+    };
+    (0..=17)
+        .filter_map(|places| format!("{raw:.places$}").parse::<f64>().ok())
+        .chain([raw])
+        .find(|&v| read(v, to) == Some(time))
+}
+
 fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {
     Ok(match pair.as_rule() {
         Rule::measure_time => {
@@ -2331,6 +2354,31 @@ show "Song" {
         assert_eq!(refs[1].loop_comment.as_deref(), Some("# e"));
         assert_eq!(refs[1].loop_comma, None);
         assert_eq!(refs[1].comments_before, None);
+    }
+
+    #[test]
+    fn a_time_switched_to_another_unit_is_the_same_time() {
+        for (value, from, to, want) in [
+            (500.0, "ms", "s", 0.5),
+            (1.5, "s", "ms", 1500.0),
+            (1.001, "s", "ms", 1001.0),
+            (0.1, "ms", "s", 0.0001),
+            (2.0, "s", "s", 2.0),
+            (0.0, "s", "ms", 0.0),
+        ] {
+            assert_eq!(
+                time_in(value, from, to),
+                Some(want),
+                "{value}{from} in {to}"
+            );
+            assert_eq!(
+                time_in(want, to, from),
+                Some(value),
+                "{want}{to} back in {from}"
+            );
+        }
+        assert_eq!(time_in(1.0, "s", "beats"), None);
+        assert_eq!(time_in(-1.0, "s", "ms"), None);
     }
 
     #[test]

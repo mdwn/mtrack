@@ -312,6 +312,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tempo start keeps its time when its unit is switched**: in the web UI's tempo editor,
+  switching a light show's tempo `start:` between ms and s relabelled the number, so `500ms`
+  became `500s` and the tempo map moved by minutes. The switch now converts the value
+  (`500ms` is `0.5s`, `1.5s` is `1500ms`) to the same time as the player reads it.
 - **The stage views strobe at the rig's rate**: the plot, the timeline preview and the 3D view
   flashed a strobing fixture at a rate guessed from its strobe byte alone (2–20 Hz, the same
   for every fixture), ignoring the fixture's strobe range and curve, so a PixelBrick at 10 Hz
