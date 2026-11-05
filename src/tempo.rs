@@ -895,10 +895,23 @@ impl TempoMap {
                 (change, ChangeAt::Beats(beats))
             };
 
+            // Create resolved change, preserving original measure/beat if it was one
+            // Use the original_measure_beat from the change if it exists, otherwise extract from position
+            let original_measure_beat = change.original_measure_beat.or(match &change.position {
+                TempoChangePosition::MeasureBeat(m, b) => Some((*m, *b)),
+                TempoChangePosition::Time(_) => None,
+            });
+            // Its bar, when it has one, places it -- a time-positioned change
+            // that carries its measure and beat too -- else its time.
+            let placed = match original_measure_beat {
+                Some((m, b)) => ChangeAt::Beats(metres.beats_at(m, b)),
+                None => at,
+            };
+
             // The pending changes at the same position (before they are
             // resolved): time-positioned ones at the same time, bar-positioned
             // ones at the same beat.
-            let next = state.through(at, &change, |reached| {
+            let next = state.through(placed, &change, |reached| {
                 let absolute_time = match at {
                     ChangeAt::Time(t) => t,
                     ChangeAt::Beats(_) => reached.time,
@@ -922,12 +935,6 @@ impl TempoMap {
                 ChangeAt::Beats(_) => next.time,
             };
 
-            // Create resolved change, preserving original measure/beat if it was one
-            // Use the original_measure_beat from the change if it exists, otherwise extract from position
-            let original_measure_beat = change.original_measure_beat.or(match &change.position {
-                TempoChangePosition::MeasureBeat(m, b) => Some((*m, *b)),
-                TempoChangePosition::Time(_) => None,
-            });
             let resolved_change = TempoChange {
                 position: TempoChangePosition::Time(absolute_time),
                 original_measure_beat,
@@ -939,10 +946,8 @@ impl TempoMap {
             // A change's own metre does not move it: one at beat 1 governs
             // from its bar on, one mid-bar from the next.
             if let Some(new_ts) = change.time_signature {
-                let (m, b) = match &change.position {
-                    TempoChangePosition::MeasureBeat(m, b) => (*m, *b),
-                    TempoChangePosition::Time(_) => metres.measure_beat_at(next.beats),
-                };
+                let (m, b) =
+                    original_measure_beat.unwrap_or_else(|| metres.measure_beat_at(next.beats));
                 metres.add(m, b, new_ts);
             }
             resolved.push((resolved_change, next));
@@ -2418,6 +2423,28 @@ mod tests {
 
     /// A time-positioned change before bar 1 counts as at bar 1, and the
     /// beat walks do not panic on it.
+    #[test]
+    fn a_timed_change_with_its_bar_is_placed_at_the_bar() {
+        // Its measure and beat place it, not its time: bar 2 beat 3 is
+        // 3.75 s in, so 3.1 s, before it is reached, reads as its bar.
+        let map = TempoMap::new(
+            Duration::from_secs_f64(1.5),
+            160.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs_f64(3.1)),
+                original_measure_beat: Some((2, 3.0)),
+                bpm: Some(120.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        assert_eq!(
+            map.time_to_measure_beat(Duration::from_secs_f64(3.1)),
+            (2, 3.0)
+        );
+    }
+
     #[test]
     fn a_time_change_before_bar_one_counts_as_at_bar_one() {
         let map = TempoMap::new(
