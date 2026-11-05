@@ -19,11 +19,7 @@ use serde::Serialize;
 
 /// What an import did, for reporting: the fixture the user now has, in
 /// their terms, and the files behind it for the CLI and MVR import.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct GdtfImport {
     /// The fixture type's name — what venues and shows call it.
@@ -50,11 +46,7 @@ pub struct GdtfImport {
 }
 
 /// A mode of an archive that cannot be imported, and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize, PartialEq)]
 pub struct RefusedMode {
     pub mode: String,

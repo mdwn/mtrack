@@ -20,11 +20,7 @@ use serde::Serialize;
 use crate::webui::wire::messages::StageValues;
 
 /// What a song's shows do at each asked time.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Preview {
     pub song: String,
@@ -38,11 +34,7 @@ pub struct Preview {
 }
 
 /// The stage at one asked time.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PreviewEvaluation {
     /// Seconds.
@@ -53,11 +45,7 @@ pub struct PreviewEvaluation {
 }
 
 /// An effect running at the evaluated time.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PreviewEffect {
     pub id: String,

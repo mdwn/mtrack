@@ -19,11 +19,7 @@ use super::midi_event::MidiEvent;
 use serde::{Deserialize, Serialize};
 
 /// The configuration for emitting status events.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct StatusEvents {
     /// The events to emit to clear the status.

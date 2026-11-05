@@ -21,11 +21,7 @@ use crate::lighting::geometry::Vec3;
 
 /// Where a mover is pointing, for the stage plot's beam. Sent by fixture
 /// name, so the name itself is not.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PoseSnapshot {
     #[serde(skip)]

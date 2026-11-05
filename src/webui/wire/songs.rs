@@ -22,11 +22,7 @@ use crate::config::Section;
 
 /// `GET /api/songs`: the songs the player knows, and those that failed to
 /// load.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongList {
     pub songs: Vec<SongInfo>,
@@ -34,11 +30,7 @@ pub struct SongList {
 }
 
 /// A song as the songs list shows it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongInfo {
     pub name: String,
@@ -69,11 +61,7 @@ pub struct SongInfo {
 }
 
 /// A song that failed to load, and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongFailure {
     pub name: String,
@@ -85,11 +73,7 @@ pub struct SongFailure {
 
 /// `GET /api/songs/:name/tempo-guess`: a tempo map suggested for the song,
 /// and where it came from.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TempoGuess {
     pub source: TempoGuessSource,

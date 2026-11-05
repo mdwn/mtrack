@@ -27,11 +27,7 @@ use crate::playlist::AmbientSource;
 use crate::state::PoseSnapshot;
 
 /// A websocket message, by its `type`.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SocketMessage {
@@ -49,11 +45,7 @@ pub enum SocketMessage {
 }
 
 /// What the player is doing, about five times a second.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Playback {
     pub is_playing: bool,
@@ -109,11 +101,7 @@ pub struct Playback {
 }
 
 /// An output track, with its mixer settings.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TrackInfo {
     pub name: String,
@@ -125,11 +113,7 @@ pub struct TrackInfo {
 }
 
 /// A deferred hardware reload refused, and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RefusedReload {
     pub generation: u64,
@@ -137,11 +121,7 @@ pub struct RefusedReload {
 }
 
 /// The player's beat grid, with the accent levels the metronome plays.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PlaybackGrid {
     #[serde(flatten)]
@@ -154,11 +134,7 @@ pub struct PlaybackGrid {
 }
 
 /// The section loop in force, in song time.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActiveSection {
     pub name: String,
@@ -167,11 +143,7 @@ pub struct ActiveSection {
 }
 
 /// The reactive section loop's state, with the section it is about.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LoopState {
@@ -183,11 +155,7 @@ pub enum LoopState {
 }
 
 /// A pilot hint resolved to song times.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ResolvedPilotHint {
     pub label: String,
@@ -198,11 +166,7 @@ pub struct ResolvedPilotHint {
 }
 
 /// The tempo and metre at the playhead.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PlaybackTempo {
     pub bpm: f64,
@@ -211,11 +175,7 @@ pub struct PlaybackTempo {
 }
 
 /// A song about to start by itself.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AutoPlay {
     pub song: String,
@@ -223,11 +183,7 @@ pub struct AutoPlay {
 }
 
 /// A looping song fading out after a stop.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Ending {
     pub song: String,
@@ -235,11 +191,7 @@ pub struct Ending {
 }
 
 /// Ambient light: its mode, its show and what it is doing.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AmbientState {
     pub mode: AmbientMode,
@@ -257,11 +209,7 @@ pub struct AmbientState {
 /// only by a loop break, with the playlist's fades; otherwise the next song
 /// starts by itself after `auto_play_ms`, or (`null`) waits for Play. The
 /// fields a case does not decide are absent.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct NextUp {
     /// `null` at the end of the playlist.
@@ -284,11 +232,8 @@ pub struct NextUp {
 /// The stage at one instant, by fixture: what the live `state` message and
 /// a preview's evaluation both carry, so the stage views are fed the same
 /// shape either way.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct StageValues {
     /// Channel bytes by fixture.
@@ -306,11 +251,7 @@ pub struct StageValues {
 }
 
 /// The `state` message: the stage now.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StageState {
     #[serde(flatten)]
@@ -323,11 +264,8 @@ pub struct StageState {
 
 /// The `metadata` message: the venue's fixtures as the stage views need
 /// them, sent to each client on connect.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StageMetadata {
     pub fixtures: BTreeMap<String, FixtureMetadata>,
@@ -335,11 +273,7 @@ pub struct StageMetadata {
 }
 
 /// A fixture as the stage views draw it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureMetadata {
     pub tags: Vec<String>,
@@ -369,11 +303,7 @@ pub struct FixtureMetadata {
 
 /// A cell of a pixel fixture, with its offset in the fixture's frame
 /// (meters).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct CellPlacement {
     pub name: String,
@@ -381,11 +311,8 @@ pub struct CellPlacement {
 }
 
 /// The current venue as the stage views need it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueMetadata {
     pub name: String,
@@ -400,11 +327,7 @@ pub struct VenueMetadata {
 }
 
 /// A line of the player's log.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LogLine {
     pub level: String,
@@ -413,11 +336,7 @@ pub struct LogLine {
 }
 
 /// The current song's waveform peaks, by track.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Waveform {
     pub song_name: String,
@@ -425,11 +344,7 @@ pub struct Waveform {
 }
 
 /// A track's waveform peaks.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TrackPeaks {
     pub name: String,
@@ -437,11 +352,7 @@ pub struct TrackPeaks {
 }
 
 /// A light show reload's outcome.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ShowReload {

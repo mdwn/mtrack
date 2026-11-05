@@ -21,11 +21,7 @@ use serde::Serialize;
 use crate::audio::output_status::OutputStatus;
 
 /// Status of a single hardware subsystem.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SubsystemStatus {
     /// `connected`, `initializing`, `failed`, or `not_connected`.
@@ -53,11 +49,7 @@ pub struct SubsystemStatus {
 /// Not a meter. There is no level here on purpose: a level sampled by a status
 /// poller sees one callback in several hundred, which makes a poor meter and adds
 /// nothing to the health question that the two booleans don't already answer.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AudioOutputHealth {
     /// One-word verdict: `healthy`, `recovering`, `stalled`, or `never_started`.
@@ -92,11 +84,7 @@ pub struct AudioOutputHealth {
 }
 
 /// Snapshot of all hardware subsystem statuses.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HardwareStatusSnapshot {
     pub init_done: bool,
@@ -118,11 +106,7 @@ pub struct HardwareStatusSnapshot {
 }
 
 /// The current lighting venue's registration, for status surfaces.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LightingVenueStatus {
     /// The venue; `None` when there is none.
@@ -136,11 +120,7 @@ pub struct LightingVenueStatus {
 }
 
 /// What `/api/status` says about a running test.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TestOutputStatus {
     pub universe: u16,
@@ -152,11 +132,7 @@ pub struct TestOutputStatus {
 }
 
 /// Status of a single controller.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ControllerStatus {
     /// The kind of controller (grpc, osc, midi).

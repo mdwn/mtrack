@@ -25,11 +25,7 @@ use crate::lighting::geometry::Vec3;
 
 /// A file in a lighting directory that could not be parsed, reported
 /// beside the ones that could.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingFileError {
     pub file: String,
@@ -38,11 +34,8 @@ pub struct LightingFileError {
 
 /// `GET /api/lighting/fixture-types`: every fixture type, by name, and the
 /// files that did not read.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureTypeList {
     pub fixture_types: HashMap<String, FixtureTypeEntry>,
@@ -52,11 +45,7 @@ pub struct FixtureTypeList {
 /// A fixture type with the file it came from. The listing carries
 /// `footprint` (and, for a GDTF type, `gdtf`); a single type's answer
 /// carries `dsl` instead.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureTypeEntry {
     /// Whether it is a GDTF's, with no channels of its own.
@@ -80,11 +69,7 @@ pub struct FixtureTypeEntry {
 }
 
 /// What a GDTF type's card says about its archive.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GdtfSummary {
     pub fixture: String,
@@ -102,11 +87,7 @@ pub struct GdtfSummary {
 }
 
 /// A beam's kind and angle.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BeamBrief {
     #[serde(rename = "type")]
@@ -115,11 +96,7 @@ pub struct BeamBrief {
 }
 
 /// How many venue fixtures use a mode.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ModeUse {
     pub mode: String,
@@ -127,11 +104,7 @@ pub struct ModeUse {
 }
 
 /// What a GDTF archive's modes let a show do.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GdtfInspection {
     pub modes: Vec<GdtfMode>,
@@ -139,11 +112,7 @@ pub struct GdtfInspection {
 
 /// One DMX mode of a GDTF archive. A mode that cannot be imported has
 /// only its name, footprint and `refused`.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GdtfMode {
     pub name: String,
@@ -168,11 +137,7 @@ pub struct GdtfMode {
 }
 
 /// A strobe channel's rate range, in hertz.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StrobeRange {
     pub min_hz: Option<f64>,
@@ -181,11 +146,7 @@ pub struct StrobeRange {
 
 /// `GET /api/lighting/fixture-types/{name}/gdtf`: what a GDTF type's
 /// archive holds, for its page. Paths are in the asset store.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureTypeGdtf {
     /// The archive, project-relative.
@@ -205,11 +166,7 @@ pub struct FixtureTypeGdtf {
 }
 
 /// A beam as the archive states it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GdtfBeam {
     #[serde(rename = "type")]
@@ -223,11 +180,7 @@ pub struct GdtfBeam {
 }
 
 /// A venue's fixtures of a type.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TypeVenue {
     pub name: String,
@@ -236,11 +189,7 @@ pub struct TypeVenue {
 
 /// A venue fixture and the mode it is driven in; `null` when that names no
 /// mode of the archive.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TypeVenueFixture {
     pub name: String,
@@ -248,11 +197,7 @@ pub struct TypeVenueFixture {
 }
 
 /// A deleted fixture type, and what became of its archive.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureTypeDeleted {
     /// Always `deleted`.
@@ -265,11 +210,7 @@ pub struct FixtureTypeDeleted {
 
 /// `GET /api/lighting/fixture-types/{name}/settings`: what is the user's
 /// about a GDTF fixture.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FixtureSettingsData {
     pub name: String,
@@ -284,11 +225,7 @@ pub struct FixtureSettingsData {
 
 /// The GDTF's strobe function: the size of its own table (0: endpoints
 /// only) and the curve used when none is stated.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StrobeTable {
     pub steps: usize,
@@ -296,11 +233,8 @@ pub struct StrobeTable {
 }
 
 /// The body of a settings plan or save.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SettingsRequest {
     pub name: String,
@@ -319,11 +253,8 @@ pub struct SettingsRequest {
 }
 
 /// What a settings save does (or, planned, would do).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SettingsSaved {
     pub version: String,
@@ -335,11 +266,7 @@ pub struct SettingsSaved {
 }
 
 /// A fixture type renamed, and the venue lines that follow it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Rename {
     pub from: String,
@@ -349,11 +276,7 @@ pub struct Rename {
 }
 
 /// A venue's lines that name a renamed type.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RenamedLines {
     pub venue: String,
@@ -364,11 +287,8 @@ pub struct RenamedLines {
 /// `GET /api/lighting/venues`: the venues that parsed, the files that did
 /// not, and each file's version. Without a venues directory, only the
 /// (empty) venues.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueList {
     pub venues: HashMap<String, Venue>,
@@ -379,11 +299,7 @@ pub struct VenueList {
 }
 
 /// `GET /api/lighting/venues/{name}`: a venue, its file and its version.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueDetail {
     pub venue: Venue,
@@ -393,11 +309,8 @@ pub struct VenueDetail {
 
 /// `GET /api/lighting/venues/{name}/scene`: a venue from its files, as the
 /// 3D view draws it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueScene {
     pub fixtures: BTreeMap<String, SceneFixture>,
@@ -405,11 +318,7 @@ pub struct VenueScene {
 }
 
 /// A fixture as the 3D view draws it from the files.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SceneFixture {
     pub tags: Vec<String>,
@@ -424,11 +333,8 @@ pub struct SceneFixture {
 }
 
 /// The venue's points and scenery.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SceneVenue {
     pub name: String,

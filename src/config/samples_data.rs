@@ -23,11 +23,7 @@ use std::collections::HashMap;
 pub const DEFAULT_MAX_SAMPLE_VOICES: u32 = 32;
 
 /// A YAML representation of a sample definition.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct SampleDefinition {
     /// The audio file for this sample (used when velocity mode is not "layers").
@@ -70,11 +66,7 @@ pub(super) fn default_fade_time_ms() -> u32 {
 }
 
 /// Configuration for velocity handling.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, Default)]
 pub struct VelocityConfig {
     /// The velocity handling mode.
@@ -95,11 +87,7 @@ pub struct VelocityConfig {
 }
 
 /// Velocity handling mode.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityMode {
@@ -113,11 +101,7 @@ pub enum VelocityMode {
 }
 
 /// A velocity layer that maps a velocity range to a sample file.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct VelocityLayer {
     /// The velocity range [min, max] inclusive (0-127).
@@ -128,11 +112,7 @@ pub struct VelocityLayer {
 }
 
 /// Behavior when a voice is released (e.g. Note Off, trigger release).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseBehavior {
@@ -146,11 +126,7 @@ pub enum ReleaseBehavior {
 }
 
 /// Behavior when a sample is triggered while it's already playing.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RetriggerBehavior {
@@ -162,11 +138,7 @@ pub enum RetriggerBehavior {
 }
 
 /// A trigger that maps a MIDI event to a sample.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug)]
 pub struct SampleTrigger {
     /// The MIDI event that triggers the sample.
@@ -177,11 +149,8 @@ pub struct SampleTrigger {
 }
 
 /// Global samples configuration that can be embedded in player config or loaded from a file.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Clone, Serialize, Debug, Default)]
 pub struct SamplesConfig {
     /// Sample definitions by name.

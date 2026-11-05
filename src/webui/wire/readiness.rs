@@ -21,11 +21,7 @@ use serde::Serialize;
 use crate::lighting::findings::{LibraryFinding, VenueError, Warning};
 
 /// The readiness facts for the player's running profile.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Readiness {
     /// Whether the player has a DMX engine.
@@ -48,11 +44,7 @@ pub struct Readiness {
 }
 
 /// The current venue's size.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessVenue {
     pub name: String,
@@ -64,11 +56,7 @@ pub struct ReadinessVenue {
 
 /// The fixture types the venue uses, those it cannot, and the library's
 /// own findings.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessTypes {
     pub in_use: Vec<String>,
@@ -77,11 +65,7 @@ pub struct ReadinessTypes {
 }
 
 /// A fixture whose type or mode does not resolve, and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct UnresolvedFixture {
     pub fixture: String,
@@ -91,11 +75,7 @@ pub struct UnresolvedFixture {
 }
 
 /// A group the shows target.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessGroup {
     pub name: String,
@@ -106,11 +86,7 @@ pub struct ReadinessGroup {
 }
 
 /// A song's lighting.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessShow {
     pub song: String,
@@ -123,11 +99,7 @@ pub struct ReadinessShow {
 
 /// The DMX universes the venue uses, those with no output, and what olad
 /// says of them.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessOutput {
     pub universes: Vec<u16>,
@@ -137,11 +109,7 @@ pub struct ReadinessOutput {
 }
 
 /// Whether olad answered, and the universes it has no output patched for.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct OladPatch {
     pub reachable: bool,

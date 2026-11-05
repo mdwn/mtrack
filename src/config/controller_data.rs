@@ -122,11 +122,8 @@ pub(super) fn default_osc_timeline() -> String {
 }
 
 /// Allows users to specify various controllers.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
@@ -138,11 +135,7 @@ pub enum Controller {
 }
 
 /// The configuration that maps MIDI events to controller messages.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct MidiController {
     /// The MIDI event to look for to play the current song in the playlist.
@@ -182,11 +175,7 @@ pub struct MidiController {
 }
 
 /// The configuration for the multitrack player gRPC server.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct GrpcController {
     /// The port to listen on.
@@ -211,11 +200,7 @@ pub(super) fn default_mcp_idle_timeout_secs() -> Option<u64> {
 /// by default — set `bind_address: "0.0.0.0"` to expose it on the network.
 /// When binding beyond localhost you should also set `bearer_token` so the
 /// MCP surface is not exposed unauthenticated.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Deserialize, Serialize)]
 pub struct McpController {
     /// The port to listen on. Defaults to `DEFAULT_MCP_PORT`.
@@ -252,11 +237,7 @@ pub struct McpController {
 }
 
 /// The configuration for the multitrack player OSC server.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Deserialize, Serialize)]
 pub struct OscController {
     /// The port to listen on.
@@ -358,11 +339,7 @@ pub(super) fn default_osc_port() -> u16 {
 ///
 /// When present, mtrack will send SysEx messages to update the current bank
 /// name on the controller whenever the current song changes.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct MorningstarConfig {
     /// The Morningstar controller model.
@@ -373,11 +350,7 @@ pub struct MorningstarConfig {
 }
 
 /// Morningstar controller model.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum MorningstarModel {
@@ -394,11 +367,7 @@ pub enum MorningstarModel {
 }
 
 /// Custom Morningstar model with explicit device ID.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct CustomModel {
     pub model_id: u8,

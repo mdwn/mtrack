@@ -22,11 +22,7 @@ use crate::lighting::findings::Want;
 use crate::lighting::geometry::Vec3;
 
 /// The tags a group's constraints ask of a fixture.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Needs {
     /// Every one must be present.
@@ -38,11 +34,7 @@ pub struct Needs {
 }
 
 /// How high a fixture hangs.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Height {
@@ -55,11 +47,7 @@ pub enum Height {
 }
 
 /// How far upstage a fixture hangs, by thirds of the venue's y-extent.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Depth {
@@ -69,11 +57,7 @@ pub enum Depth {
 }
 
 /// One cluster of like fixtures: the same type, hanging in the same place.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Cluster {
     pub fixtures: Vec<String>,
@@ -87,11 +71,7 @@ pub struct Cluster {
 }
 
 /// Why a cluster is the suggestion.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Reason {
     pub count: usize,
@@ -106,11 +86,7 @@ pub struct Reason {
 }
 
 /// Fixtures and the tags that would put them in a group.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Suggestion {
     pub fixtures: Vec<String>,
@@ -119,11 +95,7 @@ pub struct Suggestion {
 }
 
 /// The answer for one group.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct Fit {
     pub suggestion: Option<Suggestion>,
@@ -137,11 +109,7 @@ pub struct Fit {
 
 /// Everything the fit page and `suggest_group_tags` say, gathered from the
 /// running player.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitReport {
     /// `None` when the player has no DMX engine or no current venue.
@@ -154,11 +122,7 @@ pub struct FitReport {
 }
 
 /// The current venue's fixtures, as the fit page offers them.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitVenue {
     pub name: String,
@@ -170,11 +134,7 @@ pub struct FitVenue {
 }
 
 /// A fixture of the venue, as the fit page offers it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitFixtureView {
     pub name: String,
@@ -187,11 +147,7 @@ pub struct FitFixtureView {
 }
 
 /// The fixture that fails the venue, when one does, and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitVenueError {
     pub fixture: Option<String>,
@@ -200,11 +156,7 @@ pub struct FitVenueError {
 
 /// A group the shows target: what it needs, finds and is asked, and the
 /// suggestion that would satisfy it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitGroup {
     pub name: String,
@@ -220,11 +172,7 @@ pub struct FitGroup {
 }
 
 /// A focus point the shows aim at that the venue lacks.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FocusWanted {
     pub name: String,
@@ -233,11 +181,7 @@ pub struct FocusWanted {
 
 /// The universes the venue streams to that have no output, or that olad
 /// has not patched.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FitOutput {
     pub unconfigured: Vec<u16>,

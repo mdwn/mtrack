@@ -34,11 +34,8 @@ use std::collections::HashMap;
 ///     verse: /path/to/verse_announce.wav
 ///     chorus: /path/to/chorus_announce.wav
 /// ```
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct NotificationConfig {
     /// Override audio for the "loop armed" notification.

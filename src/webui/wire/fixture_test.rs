@@ -23,11 +23,7 @@ use crate::lighting::fixture_test::{ControlSupport, FrameChannel};
 
 /// `GET /api/lighting/fixture-test/options`: the type's modes, the running
 /// profile's universes, and whether a test can run now.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestOptions {
     pub fixture_type: String,
@@ -45,11 +41,7 @@ pub struct TestOptions {
 }
 
 /// A mode of the type, and what a test can do in it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestMode {
     /// `null` for a hand-written type, which has one way of being driven.
@@ -64,11 +56,7 @@ pub struct TestMode {
 }
 
 /// A channel of a mode, by its 1-based offset.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestChannel {
     pub offset: u16,
@@ -76,11 +64,7 @@ pub struct TestChannel {
 }
 
 /// A universe of the running profile.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestUniverse {
     pub universe: u16,
@@ -90,11 +74,7 @@ pub struct TestUniverse {
 }
 
 /// Whether olad answered (`null`: not asked), and its port.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestOlad {
     pub reachable: Option<bool>,
@@ -114,11 +94,8 @@ pub enum TestUnavailable {
 
 /// `POST /api/lighting/fixture-test`: a test to send. The controls are read
 /// leniently, each refused by name when it is not what it should be.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct TestRequest {
     pub fixture_type: String,
@@ -141,11 +118,7 @@ pub struct TestRequest {
 }
 
 /// What a test sent, and what it should be told.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestAnswer {
     /// Always `true`: the test is live.
@@ -162,11 +135,7 @@ pub struct TestAnswer {
 }
 
 /// Something a test should be told.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TestWarning {

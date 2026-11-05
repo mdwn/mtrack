@@ -22,11 +22,7 @@ use crate::config::ambient::PlaylistAmbient;
 use crate::config::{AutoPlayConfig, EntryFades};
 
 /// A playlist, as the list of them shows it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PlaylistInfo {
     pub name: String,
@@ -36,11 +32,8 @@ pub struct PlaylistInfo {
 
 /// `GET /api/playlists/{name}`: a playlist's songs and, entry for entry,
 /// their settings, with the songs it could have.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PlaylistDetail {
     pub name: String,
@@ -65,11 +58,7 @@ pub struct PlaylistDetail {
 
 /// `PUT /api/playlists/{name}`: the songs, and what is set beyond them;
 /// each setting left out keeps what the playlist has.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct PlaylistBody {
     pub songs: Vec<String>,

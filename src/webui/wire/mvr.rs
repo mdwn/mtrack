@@ -23,11 +23,7 @@ use crate::lighting::mvr_types::{MvrExport, MvrImport, MvrPlan, SceneView};
 
 /// `POST /api/lighting/mvr/inspect`: what an import would do, and the file
 /// seen from above.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrInspection {
     pub file_name: String,
@@ -37,11 +33,7 @@ pub struct MvrInspection {
 
 /// `POST /api/lighting/mvr/import`: the plan (`write` false), or what the
 /// import did (`write` true), with the venue's reload and its load failure.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrImportAnswer {
     pub write: bool,
@@ -58,11 +50,7 @@ pub struct MvrImportAnswer {
 
 /// `GET /api/lighting/mvr/export/summary`: what an export would hold, and
 /// the name a download would carry.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrExportSummary {
     #[serde(flatten)]
@@ -71,22 +59,14 @@ pub struct MvrExportSummary {
 }
 
 /// `POST /api/lighting/mvr/export/keep`: where the kept copy is.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct MvrKept {
     pub kept: String,
 }
 
 /// `POST /api/lighting/venues/{name}/aim-points`: the focus points made.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct AimPoints {
     pub created: Vec<AimPoint>,
@@ -98,11 +78,7 @@ pub struct AimPoints {
 }
 
 /// A focus point made where a fixed fixture's rest beam meets the deck.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Debug)]
 pub struct AimPoint {
     pub name: String,

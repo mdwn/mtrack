@@ -19,11 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Group constraint types for role-based group resolution
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub enum GroupConstraint {
     /// All of these tags must be present
@@ -43,11 +39,7 @@ pub enum GroupConstraint {
 }
 
 /// Group definition with role-based constraints
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LogicalGroup {
     /// The name of the group
@@ -65,11 +57,8 @@ pub const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
 pub const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
 /// A YAML representation of the lighting configuration.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Lighting {
     /// The current venue selection.
@@ -98,11 +87,7 @@ pub struct Lighting {
 }
 
 /// Directory configuration for loading fixture types and venues.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Directories {
     /// Directory containing fixture type definitions.

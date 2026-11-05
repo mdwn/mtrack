@@ -29,11 +29,7 @@ use serde::{Deserialize, Serialize};
 pub type Matrix4 = [[f64; 4]; 4];
 
 /// A fixture type's rig, as the asset cache stores it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigModel {
     /// The rig format version this was written by.
@@ -60,11 +56,7 @@ pub struct RigModel {
 }
 
 /// One node of a rig.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigNode {
     /// The geometry's name.
@@ -81,11 +73,7 @@ pub struct RigNode {
 }
 
 /// What a rig node does.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RigRole {
@@ -103,11 +91,7 @@ pub enum RigRole {
 }
 
 /// What a rig node looks like.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
 pub enum RigShape {
@@ -125,11 +109,7 @@ pub enum RigShape {
 }
 
 /// A light source.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RigBeam {
     /// The node the beam leaves, along its local −Z.
@@ -150,11 +130,8 @@ pub struct RigBeam {
 
 /// A venue's scenery as the store writes it (design §16.3): every scene
 /// object with its transform in stage space and the meshes it draws.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SceneryModel {
     pub version: u32,
@@ -169,11 +146,7 @@ pub struct SceneryModel {
 }
 
 /// One piece of scenery.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SceneryObject {
     pub name: String,
@@ -190,11 +163,7 @@ pub struct SceneryObject {
 }
 
 /// A drawable mesh of an object.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SceneryMesh {
     pub file: String,

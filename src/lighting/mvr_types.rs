@@ -24,11 +24,8 @@ use super::geometry::Vec3;
 
 /// The hand edits a merge should keep instead of overwriting with the MVR's
 /// values. A field that is not a listed overwrite is ignored.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MvrKeep {
     /// Fixture name → the fields to keep: `position`, `rotation`, `patch`,
@@ -42,11 +39,7 @@ pub struct MvrKeep {
 
 /// A field of the venue that the merge would replace with the MVR's value,
 /// though it was edited by hand.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct HandEdit {
     /// `position`, `rotation`, `patch`, `mode` or `type`.
@@ -58,11 +51,7 @@ pub struct HandEdit {
 }
 
 /// Everything an import would do, resolved but not written.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct MvrPlan {
     /// The venue's name.
@@ -103,11 +92,7 @@ pub struct MvrPlan {
 
 /// A fixture type the patch references: an embedded GDTF, which the
 /// library makes a fixture (design §22).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct PlannedFixtureType {
     /// The fixture type's name.
@@ -126,11 +111,7 @@ pub struct PlannedFixtureType {
 }
 
 /// A patched fixture as the venue file will state it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct PlannedFixture {
     /// The fixture's name.
@@ -171,11 +152,7 @@ pub struct PlannedFixture {
 }
 
 /// A fixture the venue removed, with the tags that go with it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct RemovedFixture {
     pub name: String,
@@ -183,11 +160,7 @@ pub struct RemovedFixture {
 }
 
 /// A focus point as the venue file will state it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct PlannedFocusPoint {
     pub name: String,
@@ -203,11 +176,8 @@ pub struct PlannedFocusPoint {
 }
 
 /// What an import did.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Debug, Serialize)]
 pub struct MvrImport {
     /// The plan that was carried out.
@@ -221,11 +191,7 @@ pub struct MvrImport {
 }
 
 /// An axis-aligned box in scene millimeters.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct BoundsMm {
     pub min: [f64; 3],
@@ -233,11 +199,7 @@ pub struct BoundsMm {
 }
 
 /// A fixture as the file places it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct ViewFixture {
     pub name: String,
@@ -247,11 +209,7 @@ pub struct ViewFixture {
 }
 
 /// A focus point as the file places it.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct ViewFocusPoint {
     pub name: String,
@@ -259,11 +217,7 @@ pub struct ViewFocusPoint {
 }
 
 /// A piece of scenery, with its bounds when they could be read.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct ViewScenery {
     pub name: String,
@@ -275,11 +229,7 @@ pub struct ViewScenery {
 }
 
 /// The file seen from above.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Debug, Serialize)]
 pub struct SceneView {
     pub fixtures: Vec<ViewFixture>,
@@ -290,11 +240,8 @@ pub struct SceneView {
 }
 
 /// What an export produced, for reporting.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Debug, Serialize)]
 pub struct MvrExport {
     /// The venue's name.
@@ -321,11 +268,7 @@ pub struct MvrExport {
 }
 
 /// A fixed fixture and the focus point the export links it to.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, Serialize)]
 pub struct FixedFixture {
     pub name: String,

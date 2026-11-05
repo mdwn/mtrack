@@ -21,11 +21,7 @@ use crate::lighting::patch::{PatchOverlap, PatchOverrun};
 
 /// `GET /api/lighting/venues/{name}/patch`: the addresses a venue's
 /// fixtures occupy, read from the files, and the player's findings on them.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenuePatch {
     /// By patch order.
@@ -35,11 +31,7 @@ pub struct VenuePatch {
 }
 
 /// A fixture's addresses.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PatchedFixture {
     pub fixture: String,
@@ -54,11 +46,7 @@ pub struct PatchedFixture {
 }
 
 /// A venue save's answer.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueSaved {
     /// Always `saved`.

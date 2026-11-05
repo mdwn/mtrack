@@ -20,11 +20,7 @@ use serde::Serialize;
 
 /// Something a show asks of a group: what an effect needs its fixtures to
 /// have ([`Want::of`]), or a pixel fixture for `per: cell`.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Want {
@@ -42,11 +38,7 @@ pub enum Want {
 }
 
 /// A non-fatal finding.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Warning {
     /// Stable identifier, so callers can filter without matching prose.
@@ -57,11 +49,7 @@ pub struct Warning {
 /// Something about the library a person should know: two archives stating
 /// one name (`gdtf-name-collision`), or an archive that is not a readable
 /// GDTF (`gdtf-unreadable`). Neither stops the other fixtures.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LibraryFinding {
     pub kind: &'static str,
@@ -71,11 +59,7 @@ pub struct LibraryFinding {
 }
 
 /// A venue that does not register: the fixture that fails it and why.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VenueError {
     pub venue: String,

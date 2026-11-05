@@ -42,11 +42,7 @@ pub(super) fn default_noise_floor_decay_ms() -> u32 {
 }
 
 /// Configuration for the trigger system.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TriggerConfig {
     /// The audio input device name (matched against cpal input devices).
@@ -79,11 +75,7 @@ pub struct TriggerConfig {
 }
 
 /// A trigger input, discriminated by `kind`.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerInput {
@@ -94,11 +86,7 @@ pub enum TriggerInput {
 }
 
 /// What action an input channel performs when triggered.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerInputAction {
@@ -110,11 +98,7 @@ pub enum TriggerInputAction {
 }
 
 /// How amplitude maps to velocity (0-127).
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityCurve {
@@ -128,11 +112,7 @@ pub enum VelocityCurve {
 }
 
 /// Configuration for a single audio input channel used as a trigger.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AudioTriggerInput {
     /// 1-indexed input channel number.
@@ -182,11 +162,7 @@ pub struct AudioTriggerInput {
 }
 
 /// Configuration for a MIDI event trigger input.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct MidiTriggerInput {
     /// The MIDI event to listen for.

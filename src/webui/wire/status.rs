@@ -19,11 +19,7 @@ use serde::Serialize;
 use crate::player::{ControllerStatus, HardwareStatusSnapshot};
 
 /// `GET /api/status`: the build, the hardware and the controllers.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Status {
     pub build: BuildInfo,
@@ -33,11 +29,7 @@ pub struct Status {
 }
 
 /// The running binary's build.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BuildInfo {
     pub version: String,
@@ -48,11 +40,7 @@ pub struct BuildInfo {
 }
 
 /// `POST /api/controllers/restart`: the controllers, restarted.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ControllersRestarted {
     /// Always `restarted`.

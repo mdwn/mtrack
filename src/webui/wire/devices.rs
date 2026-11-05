@@ -23,11 +23,7 @@ use crate::player::AudioOutputHealth;
 /// `POST /api/devices/audio/probe`: whether a device can stream. A device
 /// this player already holds is reported from its health (`in_use`), not
 /// opened again; the fields a case does not decide are absent.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AudioProbe {
     pub outcome: ProbeKind,
@@ -57,11 +53,7 @@ pub enum ProbeKind {
 
 /// `POST /api/calibrate/start`: a channel's noise floor, and the stream it
 /// was measured on.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct NoiseFloor {
     pub peak: f32,
@@ -79,11 +71,7 @@ pub struct NoiseFloor {
 /// so the probe opens the device the way saving this profile would. Probing
 /// with defaults would answer a question nobody asked — a WING opens fine at
 /// some formats and refuses the one that matters.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct ProbeAudioRequest {
     pub device: String,

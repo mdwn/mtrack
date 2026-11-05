@@ -18,11 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Which resampling algorithm to use when source and output sample rates differ.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResamplerType {
@@ -103,11 +99,7 @@ impl<'de> Deserialize<'de> for StreamBufferSize {
 }
 
 /// A YAML representation of the audio configuration.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Audio {
     /// The audio device. Defaults to empty rather than failing

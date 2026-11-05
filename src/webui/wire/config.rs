@@ -18,11 +18,7 @@
 use serde::Serialize;
 
 /// `GET /api/config/store`: the config as written, and its checksum.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StoreSnapshot {
     pub yaml: String,
@@ -31,11 +27,7 @@ pub struct StoreSnapshot {
 
 /// A config save's answer: the config after it, and what became of its
 /// hardware reload.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ConfigSaved {
     pub yaml: String,
@@ -49,11 +41,7 @@ pub struct ConfigSaved {
 /// (`failed`), with why when it was not applied. A save while a song plays
 /// is kept and its reload deferred, so "Saved" alone would read as a change
 /// already in effect.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ConfigReload {
     pub applied: bool,

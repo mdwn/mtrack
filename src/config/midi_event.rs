@@ -20,11 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// MIDI events that can be parsed from YAML. `midi::Event` in the player;
 /// named in full here for TypeScript, where `Event` is the DOM's.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MidiEvent {
@@ -38,11 +34,7 @@ pub enum MidiEvent {
 }
 
 /// A NoteOff event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct NoteOff {
     /// The channel the MIDI event belongs to.
@@ -56,11 +48,7 @@ pub struct NoteOff {
 }
 
 /// A NoteOn event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct NoteOn {
     /// The channel the MIDI event belongs to.
@@ -74,11 +62,7 @@ pub struct NoteOn {
 }
 
 /// An Aftertouch event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct Aftertouch {
     /// The channel the MIDI event belongs to.
@@ -90,11 +74,7 @@ pub struct Aftertouch {
 }
 
 /// A ControlChange event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct ControlChange {
     /// The channel the MIDI event belongs to.
@@ -106,11 +86,7 @@ pub struct ControlChange {
 }
 
 /// A ProgramChange event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct ProgramChange {
     /// The channel the MIDI event belongs to.
@@ -120,11 +96,7 @@ pub struct ProgramChange {
 }
 
 /// A ChannelAftertouch event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct ChannelAftertouch {
     /// The channel the MIDI event belongs to.
@@ -134,11 +106,7 @@ pub struct ChannelAftertouch {
 }
 
 /// A PitchBend event.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct PitchBend {
     /// The channel the MIDI event belongs to.

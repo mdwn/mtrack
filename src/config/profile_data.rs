@@ -28,11 +28,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
 /// round-trips — important for the web UI config editor.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AudioConfig {
     #[serde(flatten)]
@@ -52,11 +49,7 @@ pub struct AudioConfig {
 /// A unified hardware profile representing one complete host configuration.
 /// Profiles are tried in list order; the first one whose hostname matches (or has
 /// no constraint) is used.
-#[cfg_attr(
-    feature = "tsify",
-    derive(tsify_next::Tsify),
-    tsify(missing_as_null, hashmap_as_object)
-)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Profile {
     /// Identifies this config file as a hardware profile.
