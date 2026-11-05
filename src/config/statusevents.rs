@@ -11,29 +11,14 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+pub use super::statusevents_data::*;
 use std::error::Error;
 
 use midly::live::LiveEvent;
-use serde::{Deserialize, Serialize};
 
 use self::midi::ToMidiEvent;
 
 use super::midi;
-
-/// The configuration for emitting status events.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct StatusEvents {
-    /// The events to emit to clear the status.
-    off_events: Vec<midi::Event>,
-    /// The events to emit to indicate that the player is idling and waiting for input.
-    idling_events: Vec<midi::Event>,
-    /// The events to emit to indicate that the player is currently playing.
-    playing_events: Vec<midi::Event>,
-    /// The events to emit, in place of the idling events, while an auto
-    /// play waits to start its song. None configured: the idling events.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    auto_play_events: Vec<midi::Event>,
-}
 
 impl StatusEvents {
     /// Gets the off events.

@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+pub use super::midi_data::*;
 use std::{error::Error, time::Duration};
 
 pub use super::midi_event::{
@@ -21,48 +22,8 @@ use midly::{
     live::LiveEvent,
     num::{u14, u4, u7},
 };
-use serde::{Deserialize, Serialize};
 
 const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
-
-/// A YAML representation of the MIDI configuration.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Midi {
-    /// The MIDI device.
-    device: String,
-
-    /// Controls how long to wait before playback of a MIDI file starts.
-    playback_delay: Option<String>,
-
-    /// Enable MIDI beat clock output (24 ppqn timing clock).
-    beat_clock: Option<bool>,
-
-    /// Keep the beat clock free-running at the last known tempo once a song
-    /// stops, until the next song starts. Only meaningful when `beat_clock` is
-    /// enabled.
-    persist_tempo: Option<bool>,
-
-    /// What the beat clock does where a loop goes back (a section loop's
-    /// jump, a looping song's next pass). Only meaningful when `beat_clock`
-    /// is enabled.
-    beat_clock_seams: Option<BeatClockSeams>,
-}
-
-/// What the beat clock does where a loop goes back.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BeatClockSeams {
-    /// Its pulses run straight on through the seam, from the first in the
-    /// stretch gone back to; nothing else is sent. Gear counting pulses
-    /// counts on past the loop.
-    #[default]
-    RunThrough,
-    /// Stop, then a Song Position Pointer to where the loop goes back to (the
-    /// nearest 16th note) and Continue, or Start at the top of the song, so
-    /// gear that follows song position goes back with it. Some gear treats
-    /// Continue as Start, or cuts its notes at Stop.
-    Relocate,
-}
 
 impl Midi {
     /// New will create a new MIDI configuration.

@@ -19,6 +19,7 @@ import type {
   ChannelCalibration,
   ConfigReload,
   ConfigSaved,
+  Controller,
   FitReport,
   Fixture,
   FixtureSettingsData,
@@ -27,6 +28,7 @@ import type {
   FixtureTypeGdtf,
   GdtfImport,
   LightingFileError,
+  MetronomeSounds,
   MidiDeviceInfo,
   MovementLimits,
   MvrExportSummary,
@@ -37,7 +39,10 @@ import type {
   PlaylistBody,
   PlaylistDetail,
   PlaylistInfo,
+  ProbeAudioRequest,
+  Profile,
   Readiness,
+  SampleDefinition,
   SettingsSaved,
   StoreSnapshot,
   Vec3,
@@ -90,17 +95,6 @@ export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
   return res.json();
 }
 
-/** What a device did when asked to actually stream. */
-/** The audio settings a probe honours, mirroring the profile's audio block. */
-export interface AudioProbeRequest {
-  device: string;
-  sample_rate?: number;
-  sample_format?: string;
-  bits_per_sample?: number;
-  buffer_size?: number;
-  stream_buffer_size?: string | number;
-}
-
 /**
  * Opens a device, confirms its output callback runs, and closes it again.
  *
@@ -108,7 +102,7 @@ export interface AudioProbeRequest {
  * to a couple of seconds, since it waits for a callback before giving up.
  */
 export async function probeAudioDevice(
-  req: AudioProbeRequest,
+  req: ProbeAudioRequest,
 ): Promise<AudioProbe> {
   const res = await post("/devices/audio/probe", JSON.stringify(req));
   if (!res.ok) throw await apiError(res, "Device test failed");
@@ -121,8 +115,15 @@ export async function fetchMidiDevices(): Promise<MidiDeviceInfo[]> {
   return res.json();
 }
 
+/** A profile as the editor holds it: the generated `Profile`, a section
+ *  set to `null` to remove it on save (the server drops a section sent as
+ *  null, and keeps one left out). */
+export type ProfileDraft = Omit<Profile, "controllers"> & {
+  controllers?: Controller[] | null;
+};
+
 export async function addProfile(
-  profile: object,
+  profile: ProfileDraft,
   checksum: string,
 ): Promise<ConfigSaved> {
   const res = await post(
@@ -135,7 +136,7 @@ export async function addProfile(
 
 export async function updateProfile(
   index: number,
-  profile: object,
+  profile: ProfileDraft,
   checksum: string,
 ): Promise<ConfigSaved> {
   const res = await put(
@@ -177,7 +178,7 @@ export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
 
 export async function fetchProfileFile(
   filename: string,
-): Promise<{ profile: object; yaml: string; version?: string }> {
+): Promise<{ profile: Profile; yaml: string; version?: string }> {
   const res = await get(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch profile");
   return res.json();
@@ -188,7 +189,7 @@ export async function fetchProfileFile(
  *  file's new version, and what became of the hardware reload. */
 export async function saveProfileFile(
   filename: string,
-  profile: object,
+  profile: ProfileDraft,
   version?: string,
 ): Promise<{ version: string | null; reload: Partial<ConfigReload> }> {
   const res = await put(
@@ -213,24 +214,24 @@ export async function deleteProfileFile(
 // Samples API
 
 export async function updateSamples(
-  samples: Record<string, unknown>,
+  samples: Record<string, SampleDefinition>,
   checksum: string,
   maxSampleVoices?: number,
 ): Promise<ConfigSaved> {
-  const body: Record<string, unknown> = {
+  const body = {
     expected_checksum: checksum,
     samples,
+    ...(maxSampleVoices !== undefined
+      ? { max_sample_voices: maxSampleVoices }
+      : {}),
   };
-  if (maxSampleVoices !== undefined) {
-    body.max_sample_voices = maxSampleVoices;
-  }
   const res = await put("/config/samples", JSON.stringify(body));
   if (!res.ok) throw await apiError(res, "Failed to update samples");
   return res.json();
 }
 
 export async function updateMetronomeDefaults(
-  sounds: Record<string, unknown> | null,
+  sounds: MetronomeSounds | null,
   enabled: boolean,
   volume: number | null,
   checksum: string,

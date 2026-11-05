@@ -13,33 +13,45 @@
 //
 pub mod ambient;
 mod audio;
+mod audio_data;
 mod controller;
+mod controller_data;
 mod dmx;
+mod dmx_data;
 mod error;
 mod fade;
 mod hostname;
+mod kind_data;
 pub mod lighting;
+mod lighting_data;
 pub mod metronome;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
+mod midi_data;
 mod midi_event;
 pub mod notification;
+mod notification_data;
 pub mod pilot;
 mod player;
 mod playlist;
 mod playlist_settings;
 mod profile;
+mod profile_data;
 pub mod samples;
+mod samples_data;
 mod section;
 mod song;
 mod statusevents;
+mod statusevents_data;
 pub mod store;
 mod tempo;
 mod track;
 mod trackmappings;
+mod trackmappings_data;
 pub mod trigger;
+mod trigger_data;
 
 pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
 pub use self::controller::Controller;

@@ -73,33 +73,11 @@ pub mod patch;
 #[allow(dead_code)]
 pub mod lighting;
 
-/// A transition's fade as status reports it (`src/config/fade.rs`).
-#[path = "../../../src/config/fade.rs"]
-mod config_fade;
-
-/// A song's pilot hints (`src/config/pilot.rs`).
-#[path = "../../../src/config/pilot.rs"]
+/// The player's config as written (`src/config/*`): the parts the web UI
+/// edits and is sent, under the paths they have in the player
+/// (`crate::config::…`). See `config.rs`.
 #[allow(dead_code)]
-pub mod pilot_config;
-
-/// A playlist's transitions and ambient light as written
-/// (`src/config/playlist_settings.rs`).
-#[path = "../../../src/config/playlist_settings.rs"]
-mod config_playlist_settings;
-
-/// The MIDI events a config names (`src/config/midi_event.rs`).
-#[path = "../../../src/config/midi_event.rs"]
-#[allow(dead_code)]
-mod config_midi_event;
-
-/// A song's tracks (`src/config/track.rs`).
-#[path = "../../../src/config/track.rs"]
-#[allow(dead_code)]
-mod config_track;
-
-/// A song's sections (`src/config/section.rs`).
-#[path = "../../../src/config/section.rs"]
-mod config_section;
+pub mod config;
 
 /// What the audio output is doing (`src/audio/output_status.rs`).
 #[path = "../../../src/audio/output_status.rs"]
@@ -176,16 +154,6 @@ pub mod wire_venue;
 // compiles as it is.
 pub mod audio {
     pub use crate::{beat_grid, guessed_tempo, output_status};
-}
-
-pub mod config {
-    pub use crate::config_fade::{FadeCurve, FadeStatus};
-    pub use crate::config_playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
-    pub use crate::config_section::Section;
-
-    pub mod ambient {
-        pub use crate::config_playlist_settings::{Ambient, PlaylistAmbient};
-    }
 }
 
 pub mod dmx {

@@ -14,6 +14,12 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    ReleaseBehavior,
+    RetriggerBehavior,
+    SampleDefinition,
+    VelocityMode,
+  } from "../../gen/rules/mtrack_rules";
   import FileUpload from "../songs/FileUpload.svelte";
   import { uploadSampleFile } from "../../lib/api/config";
   import { t } from "svelte-i18n";
@@ -28,7 +34,7 @@
   };
 
   interface Props {
-    samples: Record<string, any>;
+    samples: Record<string, SampleDefinition>;
     onchange: () => void;
     onbrowse: (target: SampleBrowseTarget) => void;
   }
@@ -41,7 +47,7 @@
   let uploading = $state(false);
   let uploadMsg = $state("");
 
-  function hasAdvancedSettings(def: any): boolean {
+  function hasAdvancedSettings(def: SampleDefinition): boolean {
     return (
       (def.release_behavior && def.release_behavior !== "play_to_completion") ||
       (def.retrigger && def.retrigger !== "cut") ||
@@ -93,27 +99,29 @@
     collapsed[name] = !collapsed[name];
   }
 
-  function setOrDelete(name: string, key: string, value: any) {
+  function setOrDelete<K extends keyof SampleDefinition>(
+    name: string,
+    key: K,
+    value: SampleDefinition[K] | "" | null | undefined,
+  ) {
     if (value === undefined || value === "" || value === null) {
-      delete samples[name][key];
+      delete (samples[name] as Partial<SampleDefinition>)[key];
     } else {
-      samples[name][key] = value;
+      samples[name][key] = value as SampleDefinition[K];
     }
     onchange();
   }
 
   function addLayer(name: string) {
-    if (!samples[name].velocity) samples[name].velocity = {};
-    if (!samples[name].velocity.layers) samples[name].velocity.layers = [];
-    samples[name].velocity.layers.push({ range: [1, 127], file: "" });
+    const velocity = (samples[name].velocity ??= {});
+    (velocity.layers ??= []).push({ range: [1, 127], file: "" });
     onchange();
   }
 
   function removeLayer(name: string, index: number) {
-    samples[name].velocity.layers.splice(index, 1);
-    if (samples[name].velocity.layers.length === 0) {
-      delete samples[name].velocity.layers;
-    }
+    const velocity = samples[name].velocity;
+    velocity?.layers?.splice(index, 1);
+    if (velocity?.layers?.length === 0) delete velocity.layers;
     onchange();
   }
 
@@ -123,7 +131,8 @@
     if (field === "file") {
       samples[sampleName].file = path;
     } else if (field === "layer" && layerIndex !== undefined) {
-      samples[sampleName].velocity.layers[layerIndex].file = path;
+      const layer = samples[sampleName].velocity?.layers?.[layerIndex];
+      if (layer) layer.file = path;
     }
     onchange();
   }
@@ -142,7 +151,8 @@
       if (field === "file") {
         samples[sampleName].file = result.path;
       } else if (field === "layer" && layerIndex !== undefined) {
-        samples[sampleName].velocity.layers[layerIndex].file = result.path;
+        const layer = samples[sampleName].velocity?.layers?.[layerIndex];
+        if (layer) layer.file = result.path;
       }
       uploadMsg = get(t)("samples.uploadedFile", {
         values: { name: files[0].name },
@@ -332,7 +342,8 @@
                     class="input"
                     value={def.release_behavior ?? "play_to_completion"}
                     onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
+                      const v = (e.target as HTMLSelectElement)
+                        .value as ReleaseBehavior;
                       setOrDelete(
                         name,
                         "release_behavior",
@@ -359,7 +370,8 @@
                     class="input"
                     value={def.retrigger ?? "cut"}
                     onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
+                      const v = (e.target as HTMLSelectElement)
+                        .value as RetriggerBehavior;
                       setOrDelete(
                         name,
                         "retrigger",
@@ -445,9 +457,8 @@
                         if (v === "ignore") {
                           delete samples[name].velocity;
                         } else {
-                          if (!samples[name].velocity)
-                            samples[name].velocity = {};
-                          samples[name].velocity.mode = v;
+                          (samples[name].velocity ??= {}).mode =
+                            v as VelocityMode;
                         }
                         onchange();
                       }}
@@ -481,9 +492,9 @@
                         value={def.velocity?.default ?? ""}
                         onchange={(e) => {
                           const v = (e.target as HTMLInputElement).value;
-                          if (!def.velocity) samples[name].velocity = {};
+                          const velocity = (samples[name].velocity ??= {});
                           if (v) {
-                            samples[name].velocity.default = parseInt(v);
+                            velocity.default = parseInt(v);
                           } else {
                             delete samples[name].velocity?.default;
                           }
@@ -540,7 +551,7 @@
                             placeholder="Min"
                             value={layer.range?.[0] ?? ""}
                             onchange={(e) => {
-                              samples[name].velocity.layers[li].range[0] =
+                              layer.range[0] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
                                 ) || 0;
@@ -556,7 +567,7 @@
                             placeholder="Max"
                             value={layer.range?.[1] ?? ""}
                             onchange={(e) => {
-                              samples[name].velocity.layers[li].range[1] =
+                              layer.range[1] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
                                 ) || 127;
@@ -574,7 +585,7 @@
                           placeholder={$t("samples.layerFilePlaceholder")}
                           value={layer.file ?? ""}
                           onchange={(e) => {
-                            samples[name].velocity.layers[li].file = (
+                            layer.file = (
                               e.target as HTMLInputElement
                             ).value.trim();
                             onchange();

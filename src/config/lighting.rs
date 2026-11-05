@@ -12,36 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use serde::{Deserialize, Serialize};
+pub use super::lighting_data::*;
 use std::collections::HashMap;
-
-/// Group constraint types for role-based group resolution
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub enum GroupConstraint {
-    /// All of these tags must be present
-    AllOf(Vec<String>),
-    /// Any of these tags must be present
-    AnyOf(Vec<String>),
-    /// Prefer fixtures with these tags
-    Prefer(Vec<String>),
-    /// Minimum number of fixtures required
-    MinCount(usize),
-    /// Maximum number of fixtures allowed
-    MaxCount(usize),
-    /// Fallback to this group if primary group fails
-    FallbackTo(String),
-    /// Allow group to be empty if no fixtures match (graceful degradation)
-    AllowEmpty(bool),
-}
-
-/// Group definition with role-based constraints
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct LogicalGroup {
-    /// The name of the group
-    name: String,
-    /// Constraints for resolving this group
-    constraints: Vec<GroupConstraint>,
-}
 
 impl LogicalGroup {
     #[cfg(test)]
@@ -57,14 +29,6 @@ impl LogicalGroup {
         &self.constraints
     }
 }
-
-/// Where a project's fixture types live, relative to the project, when the
-/// config does not say: `lighting.directories.fixture_types` moves it.
-pub const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
-
-/// Where a project's venues live, relative to the project, when the config
-/// does not say: `lighting.directories.venues` moves it.
-pub const DEFAULT_VENUES_DIR: &str = "lighting/venues";
 
 /// A directory as configured, or its default: the one resolution the
 /// engine, the web API, MCP and the CLI share. An empty value is unset.
@@ -89,41 +53,6 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
 /// the one way to patch a fixture.
 pub const RETIRED_INLINE_FIXTURES: &str = "dmx.lighting.fixtures is no longer supported: fixtures \
      are patched in venue files — run `mtrack migrate --apply` to move these into one";
-
-/// A YAML representation of the lighting configuration.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Lighting {
-    /// The current venue selection.
-    current_venue: Option<String>,
-
-    /// The retired inline fixture map (`fixtures:`), read only so the
-    /// loader can refuse it by name and `mtrack migrate` can move it into a
-    /// venue file. Never written back.
-    #[serde(rename = "fixtures", default, skip_serializing)]
-    retired_fixtures: Option<HashMap<String, String>>,
-
-    /// Logical group definitions with role-based constraints.
-    groups: Option<HashMap<String, LogicalGroup>>,
-
-    /// Where fixture types and venues are read from, when not the defaults
-    /// ([`DEFAULT_FIXTURE_TYPES_DIR`], [`DEFAULT_VENUES_DIR`]). Each is
-    /// independent: naming one leaves the other at its default.
-    directories: Option<Directories>,
-
-    /// The show the rig plays while no song is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    ambient: Option<super::ambient::Ambient>,
-}
-
-/// Directory configuration for loading fixture types and venues.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Directories {
-    /// Directory containing fixture type definitions.
-    fixture_types: Option<String>,
-
-    /// Directory containing venue definitions.
-    venues: Option<String>,
-}
 
 impl Lighting {
     /// A lighting configuration built in code — tests, and the web editor's

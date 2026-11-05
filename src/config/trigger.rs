@@ -18,62 +18,13 @@
 //! - `kind: audio` — piezo drum triggers via audio input channels
 //! - `kind: midi` — MIDI event triggers (replaces legacy `sample_triggers`)
 
+pub use super::trigger_data::*;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use super::samples::SampleTrigger;
 use crate::audio::format::SampleFormat;
-
-fn default_threshold() -> f32 {
-    0.1
-}
-
-fn default_retrigger_time_ms() -> u32 {
-    30
-}
-
-fn default_scan_time_ms() -> u32 {
-    5
-}
-
-fn default_gain() -> f32 {
-    1.0
-}
-
-fn default_fixed_velocity() -> u8 {
-    127
-}
-
-fn default_noise_floor_decay_ms() -> u32 {
-    200
-}
-
-/// Configuration for the trigger system.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TriggerConfig {
-    /// The audio input device name (matched against cpal input devices).
-    /// Only required when audio inputs are configured.
-    device: Option<String>,
-    /// Optional sample rate override for the input stream.
-    sample_rate: Option<u32>,
-    /// Target sample format ("int" or "float"). Default: device native.
-    sample_format: Option<String>,
-    /// Target bits per sample (16 or 32). Default: device native.
-    bits_per_sample: Option<u16>,
-    /// Stream buffer size in frames. Default: device default.
-    buffer_size: Option<usize>,
-    /// Per-channel input configurations.
-    #[serde(default)]
-    inputs: Vec<TriggerInput>,
-    /// Crosstalk suppression window in ms after any channel fires.
-    /// Both `crosstalk_window_ms` and `crosstalk_threshold` must be set to enable suppression.
-    crosstalk_window_ms: Option<u32>,
-    /// Threshold multiplier during crosstalk suppression window.
-    /// Both `crosstalk_window_ms` and `crosstalk_threshold` must be set to enable suppression.
-    crosstalk_threshold: Option<f32>,
-}
 
 impl TriggerConfig {
     /// Returns the device name, if configured.
@@ -164,84 +115,6 @@ impl TriggerConfig {
             crosstalk_threshold: None,
         }
     }
-}
-
-/// A trigger input, discriminated by `kind`.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TriggerInput {
-    /// Audio trigger input (piezo, line-level, etc.).
-    Audio(AudioTriggerInput),
-    /// MIDI event trigger input.
-    Midi(MidiTriggerInput),
-}
-
-/// What action an input channel performs when triggered.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TriggerInputAction {
-    /// Fire a sample (default).
-    #[default]
-    Trigger,
-    /// Release voices in the named release group.
-    Release,
-}
-
-/// How amplitude maps to velocity (0-127).
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum VelocityCurve {
-    /// Linear mapping: velocity = peak * 127.
-    #[default]
-    Linear,
-    /// Logarithmic mapping: threshold→1.0 maps log-scaled to 1→127.
-    Logarithmic,
-    /// Fixed velocity: always returns the configured fixed_velocity.
-    Fixed,
-}
-
-/// Configuration for a single audio input channel used as a trigger.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct AudioTriggerInput {
-    /// 1-indexed input channel number.
-    channel: u16,
-    /// Sample name to trigger (from samples config). Required when action is "trigger".
-    sample: Option<String>,
-    /// Minimum amplitude to trigger (0.0-1.0).
-    #[serde(default = "default_threshold")]
-    threshold: f32,
-    /// Lockout period after trigger fires, in milliseconds.
-    #[serde(default = "default_retrigger_time_ms")]
-    retrigger_time_ms: u32,
-    /// Peak detection window after threshold crossing, in milliseconds.
-    #[serde(default = "default_scan_time_ms")]
-    scan_time_ms: u32,
-    /// Input gain multiplier.
-    #[serde(default = "default_gain")]
-    gain: f32,
-    /// How amplitude maps to velocity.
-    #[serde(default)]
-    velocity_curve: VelocityCurve,
-    /// Velocity value when velocity_curve is "fixed".
-    #[serde(default = "default_fixed_velocity")]
-    fixed_velocity: u8,
-    /// Optional release group name for voice management.
-    release_group: Option<String>,
-    /// What action this input performs (trigger or release).
-    #[serde(default)]
-    action: TriggerInputAction,
-    /// High-pass filter cutoff frequency in Hz.
-    highpass_freq: Option<f32>,
-    /// Decay time for adaptive/dynamic threshold in ms.
-    dynamic_threshold_decay_ms: Option<u32>,
-    /// Noise floor tracking sensitivity multiplier. The adaptive noise floor
-    /// estimate is multiplied by this value to derive a minimum threshold.
-    /// Default: None (disabled). Typical value: 5.0.
-    noise_floor_sensitivity: Option<f32>,
-    /// Time constant for noise floor EMA in ms. Controls how quickly the
-    /// estimate tracks changing ambient levels.
-    #[serde(default = "default_noise_floor_decay_ms")]
-    noise_floor_decay_ms: u32,
 }
 
 #[cfg(test)]
@@ -390,15 +263,6 @@ impl AudioTriggerInput {
     pub fn noise_floor_decay_ms(&self) -> u32 {
         self.noise_floor_decay_ms
     }
-}
-
-/// Configuration for a MIDI event trigger input.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct MidiTriggerInput {
-    /// The MIDI event to listen for.
-    event: super::midi::Event,
-    /// The sample name to trigger.
-    sample: String,
 }
 
 impl MidiTriggerInput {

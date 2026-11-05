@@ -14,15 +14,10 @@
      * -->
 <script lang="ts" module>
   export type MetronomeSoundRole = "accent" | "half" | "normal" | "sub";
-  export interface MetronomeDefaultSounds {
-    accent?: { file?: string; freq?: number; volume?: number };
-    half?: { file?: string; freq?: number; volume?: number };
-    normal?: { file?: string; freq?: number; volume?: number };
-    sub?: { file?: string; freq?: number; volume?: number };
-  }
 </script>
 
 <script lang="ts">
+  import type { MetronomeSounds } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { uploadSampleFile } from "../../lib/api/config";
@@ -36,7 +31,7 @@
 
   interface Props {
     /** The player-wide `metronome.sounds` block, or null when unset. */
-    sounds: MetronomeDefaultSounds | null;
+    sounds: MetronomeSounds | null;
     /** Default-on: songs with a tempo map get a metronome automatically. */
     enabled: boolean;
     /** Player-wide master click volume, or null to leave it at 1x. */
@@ -57,7 +52,7 @@
 
   const DEFAULTS = SOUND_DEFAULTS;
 
-  function applyPreset(preset: MetronomeDefaultSounds) {
+  function applyPreset(preset: MetronomeSounds) {
     sounds = structuredClone(preset);
     onchange();
   }

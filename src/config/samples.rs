@@ -11,57 +11,13 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+pub use super::samples_data::*;
 use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
 
 use super::midi;
 
-/// Default maximum number of concurrent sample voices globally.
-pub const DEFAULT_MAX_SAMPLE_VOICES: u32 = 32;
-
 /// Default velocity value when velocity mode is set to ignore.
 pub const DEFAULT_VELOCITY: u8 = 100;
-
-/// A YAML representation of a sample definition.
-#[derive(Deserialize, Clone, Serialize, Debug)]
-pub struct SampleDefinition {
-    /// The audio file for this sample (used when velocity mode is not "layers").
-    file: Option<String>,
-
-    /// The output channels to route this sample to (1-indexed).
-    #[serde(default)]
-    output_channels: Vec<u16>,
-
-    /// A track mapping name to resolve output channels from the profile's track_mappings.
-    /// Mutually exclusive with output_channels; if both are set, output_track takes precedence.
-    #[serde(default)]
-    output_track: Option<String>,
-
-    /// Velocity handling configuration.
-    #[serde(default)]
-    velocity: VelocityConfig,
-
-    /// Behavior when the voice is released (e.g. Note Off, trigger release).
-    #[serde(default, alias = "note_off")]
-    release_behavior: ReleaseBehavior,
-
-    /// Behavior when the sample is retriggered while still playing.
-    #[serde(default)]
-    retrigger: RetriggerBehavior,
-
-    /// Maximum number of concurrent voices for this sample.
-    /// If not set, only the global limit applies.
-    max_voices: Option<u32>,
-
-    /// Fade time in milliseconds for release_behavior: fade.
-    #[serde(default = "default_fade_time_ms")]
-    fade_time_ms: u32,
-}
-
-fn default_fade_time_ms() -> u32 {
-    50
-}
 
 impl SampleDefinition {
     /// Gets the output channels for this sample.
@@ -169,24 +125,6 @@ impl SampleDefinition {
     }
 }
 
-/// Configuration for velocity handling.
-#[derive(Deserialize, Clone, Serialize, Debug, Default)]
-pub struct VelocityConfig {
-    /// The velocity handling mode.
-    #[serde(default)]
-    mode: VelocityMode,
-
-    /// Default velocity value when mode is "ignore".
-    default: Option<u8>,
-
-    /// Whether to also scale volume by velocity when using layers.
-    scale: Option<bool>,
-
-    /// Velocity layers (used when mode is "layers").
-    #[serde(default)]
-    layers: Vec<VelocityLayer>,
-}
-
 #[cfg(test)]
 impl VelocityConfig {
     /// Creates a new velocity config with ignore mode (test only).
@@ -220,69 +158,12 @@ impl VelocityConfig {
     }
 }
 
-/// Velocity handling mode.
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum VelocityMode {
-    /// Ignore velocity, play at default volume.
-    #[default]
-    Ignore,
-    /// Scale volume by velocity (velocity/127).
-    Scale,
-    /// Select different sample files based on velocity ranges.
-    Layers,
-}
-
-/// A velocity layer that maps a velocity range to a sample file.
-#[derive(Deserialize, Clone, Serialize, Debug)]
-pub struct VelocityLayer {
-    /// The velocity range [min, max] inclusive (0-127).
-    range: [u8; 2],
-
-    /// The audio file for this velocity layer.
-    file: String,
-}
-
 #[cfg(test)]
 impl VelocityLayer {
     /// Creates a new velocity layer (test only).
     pub fn new(range: [u8; 2], file: String) -> Self {
         Self { range, file }
     }
-}
-
-/// Behavior when a voice is released (e.g. Note Off, trigger release).
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReleaseBehavior {
-    /// Let the sample play to completion, ignoring the release.
-    #[default]
-    PlayToCompletion,
-    /// Immediately stop the sample on release.
-    Stop,
-    /// Fade out the sample over a short duration on release.
-    Fade,
-}
-
-/// Behavior when a sample is triggered while it's already playing.
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RetriggerBehavior {
-    /// Stop the previous voice and start a new one.
-    #[default]
-    Cut,
-    /// Allow multiple voices to play simultaneously.
-    Polyphonic,
-}
-
-/// A trigger that maps a MIDI event to a sample.
-#[derive(Deserialize, Clone, Serialize, Debug)]
-pub struct SampleTrigger {
-    /// The MIDI event that triggers the sample.
-    trigger: midi::Event,
-
-    /// The name of the sample to trigger (references a SampleDefinition).
-    sample: String,
 }
 
 impl SampleTrigger {
@@ -300,26 +181,6 @@ impl SampleTrigger {
     pub fn sample(&self) -> &str {
         &self.sample
     }
-}
-
-/// Global samples configuration that can be embedded in player config or loaded from a file.
-#[derive(Deserialize, Clone, Serialize, Debug, Default)]
-pub struct SamplesConfig {
-    /// Sample definitions by name.
-    #[serde(default)]
-    samples: HashMap<String, SampleDefinition>,
-
-    /// Sample triggers.
-    #[serde(default)]
-    sample_triggers: Vec<SampleTrigger>,
-
-    /// Maximum number of concurrent sample voices globally.
-    #[serde(default = "default_max_sample_voices")]
-    max_sample_voices: u32,
-}
-
-fn default_max_sample_voices() -> u32 {
-    DEFAULT_MAX_SAMPLE_VOICES
 }
 
 impl SamplesConfig {

@@ -17,7 +17,13 @@
   import type {
     AudioDeviceInfo,
     ChannelCalibration,
+    MidiEvent,
+    MidiTriggerInput,
     NoiseFloor,
+    TriggerConfig,
+    TriggerInput,
+    TriggerInputAction,
+    VelocityCurve,
   } from "../../gen/rules/mtrack_rules";
   import {
     startCalibration,
@@ -29,7 +35,7 @@
   import Tooltip from "./Tooltip.svelte";
 
   interface Props {
-    trigger: any;
+    trigger: TriggerConfig;
     audioDevices: AudioDeviceInfo[];
     sampleNames: string[];
     onrefresh: () => void;
@@ -55,7 +61,10 @@
     selectedDevice?.supported_sample_rates ?? [],
   );
 
-  function setOrDelete(key: string, value: any) {
+  function setOrDelete<K extends keyof TriggerConfig>(
+    key: K,
+    value: TriggerConfig[K] | "",
+  ) {
     if (value === undefined || value === "") {
       delete trigger[key];
     } else {
@@ -65,13 +74,13 @@
   }
 
   // Input list helpers
-  let inputs: any[] = $derived(trigger.inputs || []);
+  let inputs: TriggerInput[] = $derived(trigger.inputs || []);
 
   function addAudioInput() {
-    if (!trigger.inputs) trigger.inputs = [];
-    trigger.inputs.push({
+    const all = (trigger.inputs ??= []);
+    all.push({
       kind: "audio",
-      channel: trigger.inputs.filter((i: any) => i.kind === "audio").length + 1,
+      channel: all.filter((i) => i.kind === "audio").length + 1,
       sample: "",
       threshold: 0.1,
     });
@@ -79,8 +88,7 @@
   }
 
   function addMidiInput() {
-    if (!trigger.inputs) trigger.inputs = [];
-    trigger.inputs.push({
+    (trigger.inputs ??= []).push({
       kind: "midi",
       event: { type: "note_on", channel: 10, key: 60 },
       sample: "",
@@ -89,28 +97,42 @@
   }
 
   function removeInput(i: number) {
-    trigger.inputs.splice(i, 1);
-    if (trigger.inputs.length === 0) delete trigger.inputs;
+    const all = trigger.inputs ?? [];
+    all.splice(i, 1);
+    if (all.length === 0) delete trigger.inputs;
     onchange();
   }
 
-  function updateInput(i: number, key: string, value: any) {
-    trigger.inputs[i][key] = value;
+  function updateInput<T extends TriggerInput, K extends keyof T>(
+    input: T,
+    key: K,
+    value: T[K],
+  ) {
+    input[key] = value;
     onchange();
   }
 
-  function setOrDeleteInput(i: number, key: string, value: any) {
+  function setOrDeleteInput<T extends TriggerInput, K extends keyof T>(
+    input: T,
+    key: K,
+    value: T[K] | "" | undefined,
+  ) {
     if (value === undefined || value === "") {
-      delete trigger.inputs[i][key];
+      delete (input as Partial<T>)[key];
     } else {
-      trigger.inputs[i][key] = value;
+      input[key] = value as T[K];
     }
     onchange();
   }
 
-  function updateMidiEvent(i: number, key: string, value: any) {
-    if (!trigger.inputs[i].event) trigger.inputs[i].event = {};
-    trigger.inputs[i].event[key] = value;
+  /** A field of a MIDI input's event; the event's type decides which it
+   *  has, so a change is a new event. */
+  function updateMidiEvent(
+    input: MidiTriggerInput,
+    key: string,
+    value: string | number,
+  ) {
+    input.event = { ...input.event, [key]: value } as MidiEvent;
     onchange();
   }
 
@@ -142,7 +164,8 @@
     calResult = null;
     // Pre-fill from trigger config and input
     calDevice = trigger.device || "";
-    calChannel = trigger.inputs[i].channel || 1;
+    const input = trigger.inputs?.[i];
+    calChannel = (input?.kind === "audio" && input.channel) || 1;
     calDuration = 3;
   }
 
@@ -193,7 +216,8 @@
 
   function applyCalibration() {
     if (calResult === null || calInputIndex === null) return;
-    const input = trigger.inputs[calInputIndex];
+    const input = trigger.inputs?.[calInputIndex];
+    if (input?.kind !== "audio") return;
     input.threshold = parseFloat(calResult.threshold.toFixed(4));
     input.gain = parseFloat(calResult.gain.toFixed(2));
     if (calResult.scan_time_ms !== 5) {
@@ -567,7 +591,7 @@
                   value={input.channel}
                   onchange={(e) =>
                     updateInput(
-                      i,
+                      input,
                       "channel",
                       parseInt((e.target as HTMLInputElement).value) || 1,
                     )}
@@ -583,7 +607,7 @@
                   value={input.sample ?? ""}
                   onchange={(e) =>
                     setOrDeleteInput(
-                      i,
+                      input,
                       "sample",
                       (e.target as HTMLInputElement).value.trim() || undefined,
                     )}
@@ -599,9 +623,10 @@
                   class="input"
                   value={input.action ?? "trigger"}
                   onchange={(e) => {
-                    const v = (e.target as HTMLSelectElement).value;
+                    const v = (e.target as HTMLSelectElement)
+                      .value as TriggerInputAction;
                     setOrDeleteInput(
-                      i,
+                      input,
                       "action",
                       v === "trigger" ? undefined : v,
                     );
@@ -629,7 +654,7 @@
                   value={input.threshold ?? 0.1}
                   onchange={(e) =>
                     updateInput(
-                      i,
+                      input,
                       "threshold",
                       parseFloat((e.target as HTMLInputElement).value),
                     )}
@@ -649,7 +674,7 @@
                   value={input.gain ?? 1.0}
                   onchange={(e) => {
                     const v = parseFloat((e.target as HTMLInputElement).value);
-                    setOrDeleteInput(i, "gain", v === 1.0 ? undefined : v);
+                    setOrDeleteInput(input, "gain", v === 1.0 ? undefined : v);
                   }}
                 />
               </div>
@@ -665,7 +690,7 @@
                   value={input.release_group ?? ""}
                   onchange={(e) =>
                     setOrDeleteInput(
-                      i,
+                      input,
                       "release_group",
                       (e.target as HTMLInputElement).value.trim() || undefined,
                     )}
@@ -689,7 +714,7 @@
                     onchange={(e) => {
                       const v = parseInt((e.target as HTMLInputElement).value);
                       setOrDeleteInput(
-                        i,
+                        input,
                         "retrigger_time_ms",
                         v === 30 ? undefined : v,
                       );
@@ -710,7 +735,7 @@
                     onchange={(e) => {
                       const v = parseInt((e.target as HTMLInputElement).value);
                       setOrDeleteInput(
-                        i,
+                        input,
                         "scan_time_ms",
                         v === 5 ? undefined : v,
                       );
@@ -729,9 +754,10 @@
                     class="input"
                     value={input.velocity_curve ?? "linear"}
                     onchange={(e) => {
-                      const v = (e.target as HTMLSelectElement).value;
+                      const v = (e.target as HTMLSelectElement)
+                        .value as VelocityCurve;
                       setOrDeleteInput(
-                        i,
+                        input,
                         "velocity_curve",
                         v === "linear" ? undefined : v,
                       );
@@ -762,7 +788,7 @@
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
                       setOrDeleteInput(
-                        i,
+                        input,
                         "highpass_freq",
                         v ? parseFloat(v) : undefined,
                       );
@@ -785,7 +811,7 @@
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
                       setOrDeleteInput(
-                        i,
+                        input,
                         "dynamic_threshold_decay_ms",
                         v ? parseInt(v) : undefined,
                       );
@@ -809,7 +835,7 @@
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
                       setOrDeleteInput(
-                        i,
+                        input,
                         "noise_floor_sensitivity",
                         v ? parseFloat(v) : undefined,
                       );
@@ -839,7 +865,7 @@
                           (e.target as HTMLInputElement).value,
                         );
                         setOrDeleteInput(
-                          i,
+                          input,
                           "fixed_velocity",
                           v === 127 ? undefined : v,
                         );
@@ -864,7 +890,7 @@
                   value={input.event?.type ?? "note_on"}
                   onchange={(e) =>
                     updateMidiEvent(
-                      i,
+                      input,
                       "type",
                       (e.target as HTMLSelectElement).value,
                     )}
@@ -889,7 +915,7 @@
                   value={input.event?.channel ?? 10}
                   onchange={(e) =>
                     updateMidiEvent(
-                      i,
+                      input,
                       "channel",
                       parseInt((e.target as HTMLInputElement).value) || 1,
                     )}
@@ -903,15 +929,19 @@
                   min="0"
                   max="127"
                   class="input"
-                  value={input.event?.key ?? input.event?.controller ?? 60}
+                  value={"key" in input.event
+                    ? input.event.key
+                    : "controller" in input.event
+                      ? input.event.controller
+                      : 60}
                   onchange={(e) => {
                     const v =
                       parseInt((e.target as HTMLInputElement).value) || 0;
                     const type = input.event?.type ?? "note_on";
                     if (type === "control_change") {
-                      updateMidiEvent(i, "controller", v);
+                      updateMidiEvent(input, "controller", v);
                     } else {
-                      updateMidiEvent(i, "key", v);
+                      updateMidiEvent(input, "key", v);
                     }
                   }}
                 />
@@ -929,7 +959,7 @@
                 value={input.sample ?? ""}
                 onchange={(e) =>
                   updateInput(
-                    i,
+                    input,
                     "sample",
                     (e.target as HTMLInputElement).value.trim(),
                   )}

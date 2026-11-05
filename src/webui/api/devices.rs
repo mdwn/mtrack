@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::webui::wire::devices::{AudioProbe, NoiseFloor, ProbeKind};
+use crate::webui::wire::devices::{AudioProbe, NoiseFloor, ProbeAudioRequest, ProbeKind};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
 
@@ -62,23 +62,6 @@ pub(super) async fn get_midi_devices() -> impl IntoResponse {
 /// Process-wide rather than per-connection because the thing being contended
 /// for is the hardware, not the session.
 static PROBE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// What the config editor asks to have probed: a device name, plus whichever
-/// format settings are filled in beside it.
-///
-/// Everything but the name is optional and mirrors the profile's audio block,
-/// so the probe opens the device the way saving this profile would. Probing
-/// with defaults would answer a question nobody asked — a WING opens fine at
-/// some formats and refuses the one that matters.
-#[derive(serde::Deserialize)]
-pub(super) struct ProbeAudioRequest {
-    device: String,
-    sample_rate: Option<u32>,
-    sample_format: Option<String>,
-    bits_per_sample: Option<u16>,
-    buffer_size: Option<usize>,
-    stream_buffer_size: Option<crate::config::StreamBufferSize>,
-}
 
 /// POST /api/devices/audio/probe — opens a device, confirms its callback runs,
 /// and closes it again.

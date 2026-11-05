@@ -21,6 +21,7 @@ import type {
   MvrInspection,
   PlaylistDetail,
   PlaylistInfo,
+  Profile,
   FixtureMetadata,
   Readiness,
   RigModel,
@@ -322,7 +323,7 @@ export const PROFILE_FILE_DETAIL = {
     hostname: "test-host",
     audio: { device: "Default Audio Device" },
     controllers: [{ kind: "osc", address: "0.0.0.0:9000" }],
-  },
+  } satisfies Profile,
   yaml: 'hostname: test-host\naudio:\n  device: "Default Audio Device"\ncontrollers:\n  - kind: osc\n    address: "0.0.0.0:9000"\n',
 };
 

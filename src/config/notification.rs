@@ -16,44 +16,8 @@
 //!
 //! Supports global overrides (in the profile) and per-song overrides (in song YAML).
 
+pub use super::notification_data::*;
 use std::collections::HashMap;
-
-use serde::{Deserialize, Serialize};
-
-/// Global notification audio configuration.
-///
-/// Configured in the hardware profile to override default notification tones
-/// with custom audio files. All paths are relative to the config base directory
-/// unless absolute.
-///
-/// ```yaml
-/// notifications:
-///   loop_armed: /path/to/custom_loop_armed.wav
-///   break_requested: /path/to/custom_break.wav
-///   loop_exited: /path/to/custom_exited.wav
-///   section_entering: /path/to/default_section_enter.wav
-///   sections:
-///     verse: /path/to/verse_announce.wav
-///     chorus: /path/to/chorus_announce.wav
-/// ```
-#[derive(Deserialize, Serialize, Clone, Debug, Default)]
-pub struct NotificationConfig {
-    /// Override audio for the "loop armed" notification.
-    #[serde(default)]
-    loop_armed: Option<String>,
-    /// Override audio for the "break requested" notification.
-    #[serde(default)]
-    break_requested: Option<String>,
-    /// Override audio for the "loop exited" notification.
-    #[serde(default)]
-    loop_exited: Option<String>,
-    /// Override audio for the generic "section entering" notification.
-    #[serde(default)]
-    section_entering: Option<String>,
-    /// Per-section-name audio overrides.
-    #[serde(default)]
-    sections: HashMap<String, String>,
-}
 
 impl NotificationConfig {
     /// Returns a map of event key → file path for the configured overrides.

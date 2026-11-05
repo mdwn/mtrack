@@ -13,17 +13,18 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
   import type {
+    AudioConfig,
     AudioDeviceInfo,
     AudioProbe,
+    ResamplerType,
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import { channelsLabel, probeAudioDevice } from "../../lib/api/config";
 
   interface Props {
-    audio: any;
+    audio: AudioConfig;
     devices: AudioDeviceInfo[];
     trackNames: string[];
     onrefresh: () => void | Promise<void>;
@@ -144,12 +145,16 @@
     return [...bits].sort((a, b) => a - b);
   });
 
-  function set(key: string, value: any) {
+  function set<K extends keyof AudioConfig>(key: K, value: AudioConfig[K]) {
     audio[key] = value;
     onchange();
   }
 
-  function setOrDelete(key: string, value: any, defaultVal: any) {
+  function setOrDelete<K extends keyof AudioConfig>(
+    key: K,
+    value: AudioConfig[K] | "",
+    defaultVal: AudioConfig[K],
+  ) {
     if (value === defaultVal || value === "" || value === undefined) {
       delete audio[key];
     } else {
@@ -164,14 +169,14 @@
   );
 
   function addMapping() {
-    if (!audio.track_mappings) audio.track_mappings = {};
-    audio.track_mappings[""] = [1];
+    (audio.track_mappings ??= {})[""] = [1];
     onchange();
   }
 
   function removeMapping(name: string) {
-    delete audio.track_mappings[name];
-    if (Object.keys(audio.track_mappings).length === 0) {
+    const mappings = audio.track_mappings ?? {};
+    delete mappings[name];
+    if (Object.keys(mappings).length === 0) {
       delete audio.track_mappings;
     }
     onchange();
@@ -179,9 +184,10 @@
 
   function updateMappingName(oldName: string, newName: string) {
     if (oldName === newName || !newName) return;
-    const channels = audio.track_mappings[oldName];
-    delete audio.track_mappings[oldName];
-    audio.track_mappings[newName] = channels;
+    const mappings = (audio.track_mappings ??= {});
+    const channels = mappings[oldName];
+    delete mappings[oldName];
+    mappings[newName] = channels;
     onchange();
   }
 
@@ -203,7 +209,7 @@
 
   function updateMappingChannels(name: string, value: string) {
     channelErrors[name] = validateChannelMapping(value);
-    audio.track_mappings[name] = value
+    (audio.track_mappings ??= {})[name] = value
       .split(",")
       .map((s: string) => parseInt(s.trim()))
       .filter((n: number) => !isNaN(n));
@@ -302,7 +308,9 @@
         onchange={(e) =>
           setOrDelete(
             "sample_format",
-            (e.target as HTMLSelectElement).value || undefined,
+            ((e.target as HTMLSelectElement).value || undefined) as
+              | ResamplerType
+              | undefined,
             undefined,
           )}
       >
@@ -441,7 +449,9 @@
         onchange={(e) =>
           setOrDelete(
             "resampler",
-            (e.target as HTMLSelectElement).value || undefined,
+            ((e.target as HTMLSelectElement).value || undefined) as
+              | ResamplerType
+              | undefined,
             undefined,
           )}
       >

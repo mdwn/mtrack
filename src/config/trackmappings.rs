@@ -11,25 +11,13 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use indexmap::IndexMap;
-
-use serde::{Deserialize, Serialize};
-
-/// The mappings of tracks to output channels.
-///
-/// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
-/// round-trips — important for the web UI config editor.
-#[derive(Deserialize, Serialize, Clone)]
-pub struct TrackMappings {
-    // The individual track mappings.
-    #[serde(flatten)]
-    pub track_mappings: IndexMap<String, Vec<u16>>,
-}
+pub use super::trackmappings_data::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use config::{Config, File, FileFormat};
+    use indexmap::IndexMap;
 
     #[test]
     fn deserialize_basic() {

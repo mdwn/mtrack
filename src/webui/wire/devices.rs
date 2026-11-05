@@ -14,7 +14,9 @@
 
 //! The devices API's payloads (`/api/devices`, `/api/calibrate`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::config::StreamBufferSize;
 
 use crate::player::AudioOutputHealth;
 
@@ -68,4 +70,35 @@ pub struct NoiseFloor {
     pub channel: u16,
     pub sample_rate: u32,
     pub device_channels: u16,
+}
+
+/// What the config editor asks to have probed: a device name, plus whichever
+/// format settings are filled in beside it.
+///
+/// Everything but the name is optional and mirrors the profile's audio block,
+/// so the probe opens the device the way saving this profile would. Probing
+/// with defaults would answer a question nobody asked — a WING opens fine at
+/// some formats and refuses the one that matters.
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(missing_as_null, hashmap_as_object)
+)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct ProbeAudioRequest {
+    pub device: String,
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub sample_format: Option<String>,
+    #[serde(default)]
+    pub bits_per_sample: Option<u16>,
+    #[serde(default)]
+    pub buffer_size: Option<usize>,
+    #[serde(default)]
+    #[cfg_attr(
+        feature = "tsify",
+        tsify(type = "\"default\" | \"min\" | number | null")
+    )]
+    pub stream_buffer_size: Option<StreamBufferSize>,
 }

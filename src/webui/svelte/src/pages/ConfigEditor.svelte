@@ -16,6 +16,7 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import type {
     AudioDeviceInfo,
+    MetronomeSounds,
     MidiDeviceInfo,
   } from "../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
@@ -31,6 +32,7 @@
     updateMetronomeDefaults,
     deleteProfileFile,
     ConflictError,
+    type ProfileDraft,
     type ProfileFileInfo,
     uploadSampleFile,
   } from "../lib/api/config";
@@ -57,7 +59,6 @@
   } from "../components/config/SamplesSection.svelte";
   import MetronomeSection, {
     type MetronomeSoundRole,
-    type MetronomeDefaultSounds,
   } from "../components/config/MetronomeSection.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import Tooltip from "../components/config/Tooltip.svelte";
@@ -89,7 +90,7 @@
 
   let configYaml = $state("");
   let checksum = $state("");
-  let profiles = $state<any[]>([]);
+  let profiles = $state<ProfileDraft[]>([]);
   let selectedIndex = $state<number | null>(null);
   let isNew = $state(false);
   let loading = $state(true);
@@ -160,7 +161,7 @@
   let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
 
   // Player-wide metronome defaults (mtrack.yaml `metronome.sounds`).
-  let metronomeSounds = $state<MetronomeDefaultSounds | null>(null);
+  let metronomeSounds = $state<MetronomeSounds | null>(null);
   let metronomeEnabled = $state(false);
   let metronomeVolume = $state<number | null>(null);
   let metronomeSnapshot = $state("");
@@ -320,7 +321,7 @@
   async function addNewFileProfile() {
     const name = await showPrompt(get(t)("config.profileFilenamePrompt"));
     if (!name) return;
-    const empty: any = {};
+    const empty: ProfileDraft = {};
     profiles = [empty];
     selectedIndex = 0;
     selectedFilename = name;
@@ -419,7 +420,7 @@
   }
 
   function addNewProfile() {
-    const empty: any = {};
+    const empty: ProfileDraft = {};
     profiles.push(empty);
     selectedIndex = profiles.length - 1;
     startDraft(`Profile #${selectedIndex}`);
@@ -572,7 +573,7 @@
     metronomeSaveOk = false;
     try {
       const snapshot = await updateMetronomeDefaults(
-        metronomeSounds as Record<string, unknown> | null,
+        metronomeSounds,
         metronomeEnabled,
         metronomeVolume,
         checksum,
@@ -741,7 +742,7 @@
       // profile — selectProfile resets isNew/dirty, which would turn an
       // unsaved new profile into a bogus update of a nonexistent index.
       const idx = profiles.findIndex(
-        (p: any) =>
+        (p) =>
           (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
       );
       if (idx >= 0 && idx !== selectedIndex) {
