@@ -748,9 +748,9 @@ fn arg_list(args: &[SequenceArg], indent: &str) -> String {
 }
 
 /// A length in the grammar's form: the number and its unit (`2beats`,
-/// `0.5s`).
+/// `1measure`, `0.5s`).
 pub fn length_text(value: f64, unit: DurationUnit) -> String {
-    format!("{}{}", number(value), unit.keyword())
+    format!("{}{}", number(value), unit.keyword(value))
 }
 
 /// A length the timeline dragged, as the DSL writes it: whole measures
@@ -760,20 +760,10 @@ pub fn duration_text(span: Option<(f64, f64)>, ms: f64) -> String {
     let whole = |n: f64| n >= 1.0 && (n - round(n)).abs() < 0.001;
     if let Some((measures, beats)) = span {
         if whole(measures) {
-            let n = round(measures);
-            return if n == 1.0 {
-                "1measure".to_string()
-            } else {
-                length_text(n, DurationUnit::Measures)
-            };
+            return length_text(round(measures), DurationUnit::Measures);
         }
         if whole(beats) {
-            let n = round(beats);
-            return if n == 1.0 {
-                "1beat".to_string()
-            } else {
-                length_text(n, DurationUnit::Beats)
-            };
+            return length_text(round(beats), DurationUnit::Beats);
         }
     }
     if ms < 1000.0 || ms % 1000.0 != 0.0 {

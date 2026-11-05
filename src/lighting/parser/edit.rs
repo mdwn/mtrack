@@ -24,9 +24,10 @@ use std::collections::HashMap;
 use pest::Parser;
 use serde::{Deserialize, Serialize};
 
+use super::document::DurationUnit;
 use super::document::{CueEffect, EffectKind, EffectParams, Param, Remarks, SequenceRef};
 use super::grammar::{LightingParser, Rule};
-use super::writer::dropped;
+use super::writer::{dropped, length_text};
 
 /// An edit of an effect line's parameters, as a form makes it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -269,7 +270,12 @@ pub fn new_effect(layer: Option<&str>, by_bars: bool) -> CueEffect {
         is_ref: None,
         remarks: Remarks::default(),
     };
-    let mut params = vec![param("duration", if by_bars { "1measure" } else { "5s" })];
+    let duration = if by_bars {
+        length_text(1.0, DurationUnit::Measures)
+    } else {
+        length_text(5.0, DurationUnit::S)
+    };
+    let mut params = vec![param("duration", &duration)];
     if let Some(layer) = layer.filter(|l| !l.is_empty()) {
         params.push(param("layer", layer));
     }

@@ -57,38 +57,64 @@ pub(crate) enum TimeValue {
 }
 
 /// The unit a time is written in.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum TimeUnit {
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurationUnit {
     Ms,
     S,
     Beats,
     Measures,
 }
 
+/// Each unit as the grammar spells it after a number, and after a count
+/// of one: the one table, read both ways.
+const UNITS: [(DurationUnit, &str, &str); 4] = [
+    (DurationUnit::Ms, "ms", "ms"),
+    (DurationUnit::S, "s", "s"),
+    (DurationUnit::Beats, "beats", "beat"),
+    (DurationUnit::Measures, "measures", "measure"),
+];
+
+impl DurationUnit {
+    /// The unit `count` of it is written with: `1beat`, `2beats`.
+    pub fn keyword(self, count: f64) -> &'static str {
+        let (_, plural, one) = UNITS.iter().find(|(u, ..)| *u == self).expect("every unit");
+        if count == 1.0 {
+            one
+        } else {
+            plural
+        }
+    }
+}
+
 /// The units a time is written in -- `500ms` or `1.5ms`, `0.5s`, `2beats`,
 /// `1measure`, or a bare number, which is seconds -- read as the number
 /// written and its unit. The one table; each caller takes the units it
 /// allows and reports its own errors.
-pub(crate) fn parse_time_unit(value: &str) -> Result<(f64, TimeUnit), std::num::ParseFloatError> {
+pub(crate) fn parse_time_unit(
+    value: &str,
+) -> Result<(f64, DurationUnit), std::num::ParseFloatError> {
     let (number, unit) = split_unit(value);
-    let number = number.trim();
-    Ok(match unit {
-        "ms" => (number.parse()?, TimeUnit::Ms),
-        "s" => (number.parse()?, TimeUnit::S),
-        "beats" | "beat" => (number.parse()?, TimeUnit::Beats),
-        "measures" | "measure" => (number.parse()?, TimeUnit::Measures),
-        // Assume seconds if no unit
-        _ => (value.trim().parse()?, TimeUnit::S),
-    })
+    Ok(
+        match UNITS
+            .iter()
+            .find(|(_, plural, one)| unit == *plural || unit == *one)
+        {
+            Some((unit, ..)) => (number.trim().parse()?, *unit),
+            // Assume seconds if no unit
+            None => (value.trim().parse()?, DurationUnit::S),
+        },
+    )
 }
 
 /// A time as [`parse_time_unit`] reads it, in its unit ([`TimeValue`]).
 pub(crate) fn parse_time_value(value: &str) -> Result<TimeValue, std::num::ParseFloatError> {
     Ok(match parse_time_unit(value)? {
-        (ms, TimeUnit::Ms) => TimeValue::Seconds(ms / 1000.0),
-        (secs, TimeUnit::S) => TimeValue::Seconds(secs),
-        (beats, TimeUnit::Beats) => TimeValue::Beats(beats),
-        (measures, TimeUnit::Measures) => TimeValue::Measures(measures),
+        (ms, DurationUnit::Ms) => TimeValue::Seconds(ms / 1000.0),
+        (secs, DurationUnit::S) => TimeValue::Seconds(secs),
+        (beats, DurationUnit::Beats) => TimeValue::Beats(beats),
+        (measures, DurationUnit::Measures) => TimeValue::Measures(measures),
     })
 }
 

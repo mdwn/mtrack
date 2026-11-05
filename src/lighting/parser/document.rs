@@ -34,9 +34,9 @@ use super::super::tempo::{parse_signature_in, SignatureRange};
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
 pub use super::types::{EffectKind, LayerCommandType};
+pub use super::utils::DurationUnit;
 use super::utils::{
-    parse_measure_time, parse_time_string, parse_time_unit, parse_time_value, unquote, TimeUnit,
-    TimeValue,
+    parse_measure_time, parse_time_string, parse_time_unit, parse_time_value, unquote, TimeValue,
 };
 
 /// A `.light` file as written.
@@ -237,28 +237,6 @@ pub struct WrittenDuration {
     pub text: String,
     pub value: f64,
     pub unit: DurationUnit,
-}
-
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum DurationUnit {
-    Ms,
-    S,
-    Beats,
-    Measures,
-}
-
-impl DurationUnit {
-    /// The unit as the grammar writes it after a number.
-    pub fn keyword(self) -> &'static str {
-        match self {
-            DurationUnit::Ms => "ms",
-            DurationUnit::S => "s",
-            DurationUnit::Beats => "beats",
-            DurationUnit::Measures => "measures",
-        }
-    }
 }
 
 /// A cue's or a tempo change's position: a time (`@MM:SS.mmm`, `@S.sss`)
@@ -1394,12 +1372,6 @@ fn signature(raw: &str) -> Result<(u32, u32), Box<dyn Error>> {
 /// the player's one table (`parse_time_unit`).
 fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
     let (value, unit) = parse_time_unit(raw)?;
-    let unit = match unit {
-        TimeUnit::Ms => DurationUnit::Ms,
-        TimeUnit::S => DurationUnit::S,
-        TimeUnit::Beats => DurationUnit::Beats,
-        TimeUnit::Measures => DurationUnit::Measures,
-    };
     Ok(DurationValue {
         value,
         unit,
