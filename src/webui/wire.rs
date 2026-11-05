@@ -18,6 +18,7 @@
 //! compiles it as it is and the UI's TypeScript types are generated from
 //! it (`tsify`), leaving the UI no copy of a payload's shape to drift.
 
+pub mod devices;
 pub mod fixture_test;
 pub mod messages;
 pub mod preview;

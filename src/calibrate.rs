@@ -24,6 +24,7 @@ mod stream;
 pub use analysis::{analyze_noise_floor, derive_channel_params, detect_hits};
 pub use stream::{build_capture_stream, resolve_stream_params};
 
+pub use crate::device_info::{ChannelCalibration, NoiseFloorStats};
 use std::error::Error;
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,14 +77,6 @@ impl CaptureBuffer {
     }
 }
 
-/// Noise floor statistics for a single channel.
-#[derive(serde::Serialize)]
-pub struct NoiseFloorStats {
-    pub peak: f32,
-    pub rms: f32,
-    pub low_freq_energy: f32,
-}
-
 /// A detected hit envelope on a single channel.
 pub struct HitEnvelope {
     pub peak_amplitude: f32,
@@ -91,23 +84,6 @@ pub struct HitEnvelope {
     pub peak_sample: usize,
     pub decay_sample: usize,
     pub ring_end_sample: Option<usize>,
-}
-
-/// Calibrated parameters for a single channel.
-#[derive(serde::Serialize)]
-pub struct ChannelCalibration {
-    pub channel: u16,
-    pub threshold: f32,
-    pub gain: f32,
-    pub scan_time_ms: u32,
-    pub retrigger_time_ms: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub highpass_freq: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dynamic_threshold_decay_ms: Option<u32>,
-    pub num_hits_detected: usize,
-    pub noise_floor_peak: f32,
-    pub max_hit_amplitude: f32,
 }
 
 /// Calibrated crosstalk parameters.

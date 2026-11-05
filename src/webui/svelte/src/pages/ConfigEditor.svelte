@@ -14,6 +14,10 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    AudioDeviceInfo,
+    MidiDeviceInfo,
+  } from "../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
@@ -27,8 +31,6 @@
     updateMetronomeDefaults,
     deleteProfileFile,
     ConflictError,
-    type AudioDeviceInfo,
-    type MidiDeviceInfo,
     type ProfileFileInfo,
     uploadSampleFile,
   } from "../lib/api/config";

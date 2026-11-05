@@ -14,10 +14,13 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    AudioDeviceInfo,
+    MidiDeviceInfo,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
-  import type { AudioDeviceInfo, MidiDeviceInfo } from "../../lib/api/config";
   import Tooltip from "./Tooltip.svelte";
   import AudioSection from "./AudioSection.svelte";
   import MidiSection from "./MidiSection.svelte";

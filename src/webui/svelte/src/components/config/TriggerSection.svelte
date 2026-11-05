@@ -17,8 +17,8 @@
   import type {
     AudioDeviceInfo,
     ChannelCalibration,
-    NoiseFloorResult,
-  } from "../../lib/api/config";
+    NoiseFloor,
+  } from "../../gen/rules/mtrack_rules";
   import {
     startCalibration,
     startCapture,
@@ -129,7 +129,7 @@
   let calChannel: number = $state(1);
   let calDuration: number = $state(3);
   let calError: string = $state("");
-  let calNoiseFloor: NoiseFloorResult | null = $state(null);
+  let calNoiseFloor: NoiseFloor | null = $state(null);
   let calResult: ChannelCalibration | null = $state(null);
   let calCountdown: number = $state(0);
   let calCountdownTimer: ReturnType<typeof setInterval> | null = $state(null);

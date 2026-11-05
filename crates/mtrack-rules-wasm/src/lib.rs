@@ -95,6 +95,11 @@ pub mod output_status;
 #[path = "../../../src/player/hardware_status.rs"]
 mod hardware_status;
 
+/// The audio and MIDI devices and the trigger calibration as the web UI is
+/// told of them (`src/device_info.rs`).
+#[path = "../../../src/device_info.rs"]
+pub mod device_info;
+
 /// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
 #[path = "../../../src/audio/guessed_tempo.rs"]
 pub mod guessed_tempo;
@@ -114,6 +119,9 @@ mod pose;
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
+/// The devices API's payloads.
+#[path = "../../../src/webui/wire/devices.rs"]
+pub mod wire_devices;
 /// The fixture test's payloads.
 #[path = "../../../src/webui/wire/fixture_test.rs"]
 pub mod wire_fixture_test;

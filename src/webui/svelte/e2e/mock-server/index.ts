@@ -12,7 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { Preview } from "../../src/gen/rules/mtrack_rules";
+import type {
+  ChannelCalibration,
+  NoiseFloor,
+  Preview,
+} from "../../src/gen/rules/mtrack_rules";
 import express from "express";
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
@@ -883,7 +887,7 @@ app.post("/api/calibrate/start", (_req, res) => {
     channel: 0,
     sample_rate: 48000,
     device_channels: 2,
-  });
+  } satisfies NoiseFloor);
 });
 
 app.post("/api/calibrate/capture", (_req, res) => {
@@ -900,7 +904,7 @@ app.post("/api/calibrate/stop", (_req, res) => {
     num_hits_detected: 5,
     noise_floor_peak: 0.01,
     max_hit_amplitude: 0.8,
-  });
+  } satisfies ChannelCalibration);
 });
 
 app.delete("/api/calibrate", (_req, res) => {

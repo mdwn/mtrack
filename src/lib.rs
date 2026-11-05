@@ -19,6 +19,7 @@ pub mod cli;
 pub(crate) mod clock;
 pub mod config;
 pub mod controller;
+pub mod device_info;
 pub mod dmx;
 pub mod lighting;
 pub mod midi;

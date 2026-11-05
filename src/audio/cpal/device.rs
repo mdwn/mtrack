@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+pub use crate::device_info::{AudioDeviceInfo, SupportedFormat};
 use std::{
     collections::HashMap,
     error::Error,
@@ -124,13 +125,6 @@ fn resolve_buffer_size(
         Some(StreamBufferSize::Min) => min_supported.or(Some(fallback_buffer_size)),
         Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
     }
-}
-
-/// A supported sample format for an audio device.
-#[derive(serde::Serialize, Clone, PartialEq, Eq, Hash)]
-pub struct SupportedFormat {
-    pub sample_format: String,
-    pub bits_per_sample: u32,
 }
 
 /// Standard sample rates to check against device-reported ranges.
@@ -281,23 +275,6 @@ fn dev_index(device_name: &str) -> Option<u16> {
         .unwrap_or(second_field)
         .parse()
         .ok()
-}
-
-/// Serializable info about an audio device for the web UI.
-#[derive(serde::Serialize)]
-pub struct AudioDeviceInfo {
-    pub name: String,
-    pub max_channels: u16,
-    pub host_name: String,
-    pub supported_sample_rates: Vec<u32>,
-    pub supported_formats: Vec<SupportedFormat>,
-    /// Whether this is an ALSA plug/virtual node. Such a node is a legitimate
-    /// and sometimes mandatory choice, so this labels it rather than hiding it.
-    pub virtual_node: bool,
-    /// Whether `max_channels` is the device's real maximum. False when the
-    /// count is cpal's clamp and no hardware node was available to resolve it,
-    /// in which case the true figure is `max_channels` or more.
-    pub channels_known: bool,
 }
 
 impl AudioDeviceInfo {

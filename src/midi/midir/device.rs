@@ -14,6 +14,7 @@
 //! The midir device: its ports, input watch and reopening, and the
 //! playback of a song's MIDI on it.
 
+pub use crate::device_info::MidiDeviceInfo;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -424,14 +425,6 @@ impl fmt::Display for Device {
 
         write!(f, "{} ({})", self.name, capabilities.join("/"))
     }
-}
-
-/// Serializable info about a MIDI device for the web UI.
-#[derive(serde::Serialize)]
-pub struct MidiDeviceInfo {
-    pub name: String,
-    pub has_input: bool,
-    pub has_output: bool,
 }
 
 /// Lists MIDI devices as simple info structs (no trait objects).

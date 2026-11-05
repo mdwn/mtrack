@@ -14,9 +14,9 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { MidiDeviceInfo } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import type { MidiDeviceInfo } from "../../lib/api/config";
 
   interface Props {
     midi: any;

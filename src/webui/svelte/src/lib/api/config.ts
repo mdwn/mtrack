@@ -13,8 +13,13 @@
 //
 
 import type {
+  AudioDeviceInfo,
+  AudioProbe,
+  ChannelCalibration,
   FitReport,
   FixtureMetadata,
+  MidiDeviceInfo,
+  NoiseFloor,
   Readiness,
   Vec3,
   VenueError,
@@ -39,56 +44,10 @@ import {
 } from "./rest";
 export { ConflictError } from "./rest";
 
-// Calibration types
-export interface NoiseFloorResult {
-  peak: number;
-  rms: number;
-  low_freq_energy: number;
-  channel: number;
-  sample_rate: number;
-  device_channels: number;
-}
-
-export interface ChannelCalibration {
-  channel: number;
-  threshold: number;
-  gain: number;
-  scan_time_ms: number;
-  retrigger_time_ms: number;
-  highpass_freq?: number;
-  dynamic_threshold_decay_ms?: number;
-  num_hits_detected: number;
-  noise_floor_peak: number;
-  max_hit_amplitude: number;
-}
-
-export interface SupportedFormat {
-  sample_format: string;
-  bits_per_sample: number;
-}
-
-export interface AudioDeviceInfo {
-  name: string;
-  max_channels: number;
-  host_name: string;
-  supported_sample_rates: number[];
-  supported_formats: SupportedFormat[];
-  /** An ALSA plug/virtual node. Still selectable — some rigs need one. */
-  virtual_node: boolean;
-  /** False when max_channels is a floor rather than the real maximum. */
-  channels_known: boolean;
-}
-
 /** Describes a device's channel count without overstating what is known. */
 export function channelsLabel(device: AudioDeviceInfo): string {
   if (device.channels_known) return `${device.max_channels}ch`;
   return device.virtual_node ? "virtual" : `${device.max_channels}ch+`;
-}
-
-export interface MidiDeviceInfo {
-  name: string;
-  has_input: boolean;
-  has_output: boolean;
 }
 
 /** The config after a change, with what became of its hardware reload
@@ -120,23 +79,6 @@ export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
 }
 
 /** What a device did when asked to actually stream. */
-export type ProbeOutcome =
-  | "streaming"
-  | "opened_but_silent"
-  | "could_not_open"
-  | "opened_cannot_report"
-  /** Already open by this player, so it was reported rather than probed. */
-  | "in_use";
-
-export interface AudioProbeResult {
-  outcome: ProbeOutcome;
-  /** Whether the device proved it can stream. */
-  ok: boolean;
-  /** Why it could not be opened. Only ever set for `could_not_open`. */
-  reason?: string | null;
-  callbacks?: number | null;
-}
-
 /** The audio settings a probe honours, mirroring the profile's audio block. */
 export interface AudioProbeRequest {
   device: string;
@@ -155,7 +97,7 @@ export interface AudioProbeRequest {
  */
 export async function probeAudioDevice(
   req: AudioProbeRequest,
-): Promise<AudioProbeResult> {
+): Promise<AudioProbe> {
   const res = await post("/devices/audio/probe", JSON.stringify(req));
   if (!res.ok) throw await apiError(res, "Device test failed");
   return res.json();
@@ -322,7 +264,7 @@ export async function startCalibration(
   device: string,
   channel: number,
   duration?: number,
-): Promise<NoiseFloorResult> {
+): Promise<NoiseFloor> {
   const body: Record<string, unknown> = { device, channel };
   if (duration !== undefined) body.duration = duration;
   const res = await post("/calibrate/start", JSON.stringify(body));

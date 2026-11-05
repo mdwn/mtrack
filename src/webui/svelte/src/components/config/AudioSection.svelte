@@ -14,14 +14,13 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    AudioDeviceInfo,
+    AudioProbe,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import {
-    channelsLabel,
-    probeAudioDevice,
-    type AudioDeviceInfo,
-    type AudioProbeResult,
-  } from "../../lib/api/config";
+  import { channelsLabel, probeAudioDevice } from "../../lib/api/config";
 
   interface Props {
     audio: any;
@@ -54,7 +53,7 @@
   // The generic form, not `let x: T | null = $state(null)`: with the latter
   // TypeScript narrows the variable to `null` for the rest of the file, and the
   // deriveds below would come out as `null` rather than the result type.
-  let probeResult = $state<AudioProbeResult | null>(null);
+  let probeResult = $state<AudioProbe | null>(null);
   let probeErrorText = $state<string | null>(null);
   // The settings the result describes, captured when the probe was sent.
   let probedSettings = $state<string | null>(null);
@@ -103,7 +102,7 @@
     }
   }
 
-  const PROBE_MESSAGES: Record<AudioProbeResult["outcome"], string> = {
+  const PROBE_MESSAGES: Record<AudioProbe["outcome"], string> = {
     streaming: "audio.testStreaming",
     opened_cannot_report: "audio.testOpenedCannotReport",
     opened_but_silent: "audio.testOpenedButSilent",
@@ -111,7 +110,7 @@
     in_use: "audio.testInUse",
   };
 
-  function probeMessage(result: AudioProbeResult): string {
+  function probeMessage(result: AudioProbe): string {
     // "In use" splits on health: the device is open either way, but an open
     // device whose callback has stopped is the failure worth shouting about.
     if (result.outcome === "in_use" && !result.ok) {

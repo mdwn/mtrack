@@ -13,7 +13,10 @@
 //
 
 import type {
+  AudioDeviceInfo,
+  AudioProbe,
   FitReport,
+  MidiDeviceInfo,
   FixtureMetadata,
   Readiness,
   SocketMessage,
@@ -216,7 +219,7 @@ export const STATUS: Status = {
   locked: false,
 };
 
-export const AUDIO_DEVICES = [
+export const AUDIO_DEVICES: AudioDeviceInfo[] = [
   {
     name: "Default Audio Device",
     max_channels: 8,
@@ -255,15 +258,7 @@ export const AUDIO_DEVICES = [
 
 // One canned probe result per device, so the result panel's branches can be
 // driven without audio hardware. Keyed by the name the editor sends.
-export const AUDIO_PROBE_RESULTS: Record<
-  string,
-  {
-    outcome: string;
-    ok: boolean;
-    reason?: string | null;
-    callbacks?: number | null;
-  }
-> = {
+export const AUDIO_PROBE_RESULTS: Record<string, AudioProbe> = {
   default: { outcome: "streaming", ok: true, reason: null, callbacks: 3 },
   "USB Interface": {
     outcome: "streaming",
@@ -283,10 +278,11 @@ export const AUDIO_PROBE_RESULTS: Record<
     outcome: "in_use",
     ok: true,
     callbacks: 4821,
+    health: null,
   },
 };
 
-export const MIDI_DEVICES = [
+export const MIDI_DEVICES: MidiDeviceInfo[] = [
   { name: "MIDI Through Port-0", has_input: true, has_output: true },
   { name: "USB MIDI Controller", has_input: true, has_output: false },
 ];
