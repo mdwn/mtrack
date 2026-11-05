@@ -141,6 +141,17 @@ fn assert_round_trips(label: &str, fixture: &FixtureInfo) -> usize {
         StrobeMap::Endpoints(step) => std::slice::from_ref(step),
         _ => &[],
     };
+    // Byte 0 is a rate only where a step of the function declares it one;
+    // otherwise it is what the engine writes for off.
+    let declared_at_zero = steps
+        .iter()
+        .any(|s| s.dmx_from == 0 && s.to.max(s.from) > 0.0);
+    assert_eq!(
+        fixture.strobe_hz(0).is_some(),
+        declared_at_zero && fixture.channels.contains_key("strobe"),
+        "{label}: byte 0 → {:?} through {map:?}",
+        fixture.strobe_hz(0)
+    );
     // Half a byte of the step `byte` sits in, in hertz.
     let half_byte_hz = |byte: u8| {
         steps
@@ -155,7 +166,6 @@ fn assert_round_trips(label: &str, fixture: &FixtureInfo) -> usize {
                 }
             })
     };
-    assert_eq!(fixture.strobe_hz(0), None, "{label}: byte 0 is off");
     let mut reported = 0;
     for byte in 0..=255u8 {
         let Some(hz) = fixture.strobe_hz(byte) else {
@@ -228,7 +238,34 @@ fn tabled_fixture_type() -> FixtureType {
     FixtureType::from_channel_defs("Tabled".to_string(), channel_defs)
 }
 
-/// The example fixture types, and the tabled one, each under the curve
+/// A strobe function that starts at byte 0, with no "open" range before
+/// it: byte 0 is its lowest rate, and the engine writes byte 0 both for
+/// that rate and for off.
+fn bottomless_fixture_type() -> FixtureType {
+    let mut strobe = ChannelDef::at(4);
+    strobe.functions = vec![ChannelFunction {
+        name: "strobe".to_string(),
+        dmx_from: 0,
+        dmx_to: 255,
+        physical: Some(PhysicalRange {
+            from: 1.0,
+            to: 20.0,
+            unit: PhysicalUnit::Hertz,
+        }),
+        steps: Vec::new(),
+    }];
+    let channel_defs: HashMap<String, ChannelDef> = [
+        ("red".to_string(), ChannelDef::at(1)),
+        ("green".to_string(), ChannelDef::at(2)),
+        ("blue".to_string(), ChannelDef::at(3)),
+        ("strobe".to_string(), strobe),
+    ]
+    .into_iter()
+    .collect();
+    FixtureType::from_channel_defs("Bottomless".to_string(), channel_defs)
+}
+
+/// The example fixture types, the tabled one and the bottomless one, each under the curve
 /// its file states (or the automatic one) and under every curve.
 fn example_fixtures() -> Vec<(String, FixtureInfo)> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -247,6 +284,7 @@ fn example_fixtures() -> Vec<(String, FixtureInfo)> {
         types.extend(parsed.into_values());
     }
     types.push(tabled_fixture_type());
+    types.push(bottomless_fixture_type());
     types.sort_by(|a, b| a.name().cmp(b.name()));
     let mut out = Vec::new();
     for fixture_type in types {
@@ -296,6 +334,40 @@ fn every_strobe_byte_reads_back_as_a_rate_the_engine_writes_it_for() {
         ["declared", "endpoints", "linear", "period", "ratio"],
         "every strobe rule is exercised"
     );
+}
+
+/// Byte 0 at the two ends of its meaning. A function starting at byte 0
+/// (1–20 Hz over 0..255, no open range) has the engine write byte 0 for
+/// 1.00–1.03 Hz, and the views must flash at 1 Hz, not sit still. A
+/// channel with no function (a ratio of the maximum alone) gets byte 0
+/// for a rate below a 255th of its maximum — 0.04 Hz on a 20 Hz unit —
+/// and that reads back as off: nothing declares byte 0 a rate there, and
+/// byte 0 is what the engine writes for off.
+#[test]
+fn byte_zero_is_a_rate_only_where_a_function_declares_it_one() {
+    // Linear (or declared): the function itself. Automatic for a type
+    // with no GDTF is period, which with no offset is a ratio of the
+    // maximum, and writes 1 Hz at byte 12.
+    let mut fixture_type = bottomless_fixture_type();
+    fixture_type.set_strobe_curve(Some(StrobeCurve::Linear));
+    let bottomless = fixture_info_for("f", 1, 1, "Bottomless", &fixture_type);
+    let map = bottomless.strobe_map();
+    assert!(matches!(map, StrobeMap::Endpoints(_)), "{map:?}");
+    assert_eq!(coarse_byte(map.normalized(1.0)), 0);
+    assert_eq!(coarse_byte(map.normalized(1.03)), 0);
+    assert_eq!(bottomless.strobe_hz(0), Some(1.0));
+    assert_eq!(bottomless.strobe_hz(255), Some(20.0));
+
+    let ratio = example_fixtures()
+        .into_iter()
+        .find(|(label, _)| label == "MovingHead (automatic)")
+        .map(|(_, info)| info)
+        .expect("the example moving head");
+    let map = ratio.strobe_map();
+    assert!(matches!(map, StrobeMap::Ratio { .. }), "{map:?}");
+    assert_eq!(coarse_byte(map.normalized(0.04)), 0);
+    assert_eq!(ratio.strobe_hz(0), None, "off, as the engine writes it");
+    assert!(ratio.strobe_hz(1).is_some_and(|hz| hz < 0.2));
 }
 
 /// The rate the stage views flashed at before the player said it: a
