@@ -13,14 +13,13 @@
 //
 
 // The player's own rules -- beat grid, tempo map, signatures, metronome
-// accents -- compiled to WebAssembly (`crates/mtrack-rules-wasm`), with
-// their argument and result types generated from the Rust structs. The UI
-// calls these and never re-derives a rule of its own. `ready` resolves once
-// the module is loaded; `main.ts` awaits it before mounting, so every
-// component may call `rules.*` synchronously.
+// accents, the light show parser and its layout -- compiled to WebAssembly
+// (`crates/mtrack-rules-wasm`), with their argument and result types
+// generated from the Rust structs. The UI calls these and never re-derives
+// a rule of its own. `main.ts` loads the module before mounting, so every
+// component may call `rules.*` synchronously; a test under node loads it
+// from the file (`e2e/tests/rules-node.ts`).
 
-import init, * as rules from "../gen/rules/mtrack_rules";
-import url from "../gen/rules/mtrack_rules_bg.wasm?url";
+import * as rules from "../gen/rules/mtrack_rules";
 
-export const ready: Promise<unknown> = init({ module_or_path: url });
 export { rules };

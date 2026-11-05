@@ -14,31 +14,33 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type {
-    Cue,
-    Sequence,
-    TempoSection,
-    SubLaneType,
-  } from "../../../lib/lighting/types";
+  import type { Cue, SubLaneType } from "../../../lib/lighting/types";
   import { LAYERS } from "../../../lib/lighting/types";
-  import type { OffsetMarker } from "../../../lib/lighting/timeline-state";
-  import { expandSequencesIntoCues } from "../../../lib/lighting/timeline-state";
+  import type {
+    CueLayout,
+    GridLine,
+    TempoSource,
+  } from "../../../gen/rules/mtrack_rules";
   import ShowLane from "./ShowLane.svelte";
 
   interface Props {
     name: string;
     cues: Cue[];
-    sequences?: Sequence[];
+    /** Where the player fires each of `cues`, from its layout; empty
+     *  while the file does not lay out. */
+    laidCues?: CueLayout[];
+    /** The bar and beat lines the lanes are drawn under. */
+    grid?: GridLine[];
+    /** The tempo map the lanes snap and place against. */
+    tempoSource: TempoSource | null;
     pixelsPerMs: number;
     scrollLeft: number;
     viewportWidth: number;
-    tempo?: TempoSection;
     selectedCueIndex: number | null;
     selectedSubLane: SubLaneType | null;
     snapEnabled: boolean;
     snapResolution: import("../../../lib/lighting/timeline-state").SnapResolution;
     laneType?: "show" | "sequence";
-    offsets?: OffsetMarker[];
     playheadMs?: number | null;
     onselect: (index: number, subLane: SubLaneType) => void;
     oncuechange: (index: number, cue: Cue) => void;
@@ -53,17 +55,17 @@
   let {
     name,
     cues,
-    sequences = [],
+    laidCues = [],
+    grid = [],
+    tempoSource,
     pixelsPerMs,
     scrollLeft,
     viewportWidth,
-    tempo,
     selectedCueIndex,
     selectedSubLane,
     snapEnabled,
     snapResolution,
     laneType = "show",
-    offsets = [],
     playheadMs = null,
     onselect,
     oncuechange,
@@ -74,13 +76,6 @@
     onloopchange,
     onsequenceedit,
   }: Props = $props();
-
-  // Expand sequence references into concrete cues for layer lane display
-  let expandedCues = $derived(
-    sequences.length > 0
-      ? expandSequencesIntoCues(cues, sequences, tempo)
-      : cues,
-  );
 
   const LAYER_LABELS: Record<string, string> = {
     foreground: "FG",
@@ -133,19 +128,20 @@
     {#each subLanes as sl (sl.type)}
       <ShowLane
         {name}
-        cues={sl.type.startsWith("effects") ? expandedCues : cues}
+        {cues}
+        {laidCues}
+        {grid}
+        {tempoSource}
         {laneType}
         {pixelsPerMs}
         {scrollLeft}
         {viewportWidth}
-        {tempo}
         selectedCueIndex={selectedSubLane === sl.type ? selectedCueIndex : null}
         {snapEnabled}
         {snapResolution}
         subLaneType={sl.type}
         laneHeight={sl.height}
         hideLabel={true}
-        {offsets}
         {playheadMs}
         onselect={(ci) => onselect(ci, sl.type)}
         {oncuechange}
@@ -157,7 +153,6 @@
           : undefined}
         onloopchange={sl.type === "sequences" ? onloopchange : undefined}
         onsequenceedit={sl.type === "sequences" ? onsequenceedit : undefined}
-        sequenceDefs={sl.type === "sequences" ? sequences : []}
       />
     {/each}
   </div>

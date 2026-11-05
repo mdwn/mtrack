@@ -29,13 +29,19 @@
     type WaveformTrack,
   } from "../../lib/api/songs";
   import type {
+    Include,
     LightFile,
     LightShow,
     Sequence,
     TempoSection,
   } from "../../lib/lighting/types";
-  import { parseLightFile } from "../../lib/lighting/parser";
   import { serializeLightFile } from "../../lib/lighting/serializer";
+  import { tempoSourceOf } from "../../lib/lighting/timeline-state";
+  import { rules } from "../../lib/rules";
+  import type {
+    IncludeSource,
+    TempoSource,
+  } from "../../gen/rules/mtrack_rules";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
   import { configToSection } from "../../lib/tempoConvert";
   import LightingSummary from "../lighting/LightingSummary.svelte";
@@ -88,6 +94,9 @@
   let lightFiles = $state<LoadedLightFile[]>([]);
   let waveformTracks = $state<WaveformTrack[]>([]);
   let mergedLightFile = $state<LightFile>({ sequences: [], shows: [] });
+  /** The files the song's light files include, fetched for the player's
+   *  layout (which reads them as the player would off the disk). */
+  let includeSources = $state<IncludeSource[]>([]);
   let rawFileIndex = $state(0);
   let rawContent = $state("");
   let validationResult = $state<{ valid: boolean; errors?: string[] } | null>(
@@ -237,6 +246,73 @@
     return { sequences: [], shows: [{ name: "Main", cues: [] }] };
   }
 
+  /** The file as written, read by the player's own grammar; what the
+   *  editor cannot hold (a file that does not parse, or defines what the
+   *  show editor does not edit) is an error. */
+  function parseLightFile(raw: string, path: string): LightFile {
+    const read = rules.document(raw, path);
+    if (read.error !== undefined || !read.document) {
+      throw new Error(read.error ?? "could not read the file");
+    }
+    return read.document;
+  }
+
+  /** The song's own tempo map, for a file with no tempo block: its
+   *  `tempo:` block, else the beat grid of its click track. */
+  let songTempoSource = $derived<TempoSource | null>(
+    songTempo
+      ? { config: songTempo }
+      : song.beat_grid
+        ? { grid: song.beat_grid }
+        : null,
+  );
+
+  /** The tempo map the timeline snaps and places against. */
+  let tempoSource = $derived(
+    tempoSourceOf(mergedLightFile.tempo, songTempoSource),
+  );
+
+  /** The player's layout of the show as it is being edited: the merged
+   *  file written out and read back by the one parser, with the files it
+   *  includes and the song's tempo, as loading the song would. */
+  let layout = $derived(
+    rules.layout({
+      source: serializeLightFile(mergedLightFile),
+      path: lightFiles[0]?.path,
+      song_tempo: songTempoSource ?? undefined,
+      includes: includeSources,
+      until_ms: song.duration_ms || 60000,
+    }),
+  );
+
+  /** Fetches every file the loaded files include, and the files those
+   *  include, once each; one that cannot be fetched is held with the
+   *  reason, so the layout reports the include as the player would. */
+  async function loadIncludes() {
+    const sources: IncludeSource[] = [];
+    const seen: Record<string, true> = {};
+    const queue = lightFiles
+      .filter((lf) => !lf.parseError)
+      .flatMap((lf) => lf.parsed.includes ?? [])
+      .map((inc) => inc.path);
+    while (queue.length > 0) {
+      const path = queue.shift()!;
+      if (seen[path]) continue;
+      seen[path] = true;
+      try {
+        const source = await fetchLightingFile(path);
+        sources.push({ path, source });
+        for (const inc of rules.document(source, path).document?.includes ??
+          []) {
+          queue.push(inc.path);
+        }
+      } catch (e: any) {
+        sources.push({ path, error: e.message });
+      }
+    }
+    includeSources = sources;
+  }
+
   /** Whether a file has a cue or a sequence in it. */
   function hasContent(lf: LoadedLightFile): boolean {
     return (
@@ -273,7 +349,7 @@
         try {
           const raw = await fetchLightingFile(filePath);
           try {
-            const parsed = parseLightFile(raw);
+            const parsed = parseLightFile(raw, filePath);
             loaded.push({ path: filePath, raw, parsed });
           } catch (e: any) {
             loaded.push({
@@ -321,6 +397,7 @@
   function rebuildMergedLightFile() {
     const allShows: LightShow[] = [];
     const allSequences: Sequence[] = [];
+    const allIncludes: Include[] = [];
     let tempo: TempoSection | undefined;
 
     for (const lf of lightFiles) {
@@ -328,9 +405,15 @@
       if (!tempo && lf.parsed.tempo) tempo = lf.parsed.tempo;
       allShows.push(...lf.parsed.shows);
       allSequences.push(...lf.parsed.sequences);
+      allIncludes.push(...(lf.parsed.includes ?? []));
     }
 
-    mergedLightFile = { tempo, sequences: allSequences, shows: allShows };
+    mergedLightFile = {
+      tempo,
+      sequences: allSequences,
+      shows: allShows,
+      ...(allIncludes.length > 0 ? { includes: allIncludes } : {}),
+    };
   }
 
   function onTimelineChange(lf: LightFile) {
@@ -346,6 +429,7 @@
       const origSeqCount = loaded.parsed.sequences.length;
 
       loaded.parsed = {
+        ...(loaded.parsed.includes ? { includes: loaded.parsed.includes } : {}),
         tempo: lf.tempo,
         shows: lf.shows.slice(showOffset, showOffset + origShowCount),
         sequences: lf.sequences.slice(seqOffset, seqOffset + origSeqCount),
@@ -409,7 +493,7 @@
     const lf = lightFiles[rawFileIndex];
     if (!lf || rawContent === lf.raw) return;
     try {
-      lf.parsed = parseLightFile(rawContent);
+      lf.parsed = parseLightFile(rawContent, lf.path);
     } catch (e: any) {
       throw new Error(`${lf.path.replace(/^.*\//, "")}: ${e.message}`, {
         cause: e,
@@ -418,6 +502,7 @@
     lf.raw = rawContent;
     lf.parseError = undefined;
     rebuildMergedLightFile();
+    void loadIncludes();
   }
 
   async function writeLightFile(lf: LoadedLightFile) {
@@ -470,11 +555,15 @@
   function switchToTimeline() {
     if (tab === "raw" && lightFiles.length > 0) {
       try {
-        const parsed = parseLightFile(rawContent);
+        const parsed = parseLightFile(
+          rawContent,
+          lightFiles[rawFileIndex].path,
+        );
         lightFiles[rawFileIndex].parsed = parsed;
         lightFiles[rawFileIndex].raw = rawContent;
         lightFiles[rawFileIndex].parseError = undefined;
         rebuildMergedLightFile();
+        void loadIncludes();
       } catch (e: any) {
         error = `Parse error: ${e.message}. Fix in Raw DSL tab.`;
         return;
@@ -493,7 +582,10 @@
   function selectRawFile(index: number) {
     if (lightFiles[rawFileIndex] && !lightFiles[rawFileIndex].parseError) {
       try {
-        lightFiles[rawFileIndex].parsed = parseLightFile(rawContent);
+        lightFiles[rawFileIndex].parsed = parseLightFile(
+          rawContent,
+          lightFiles[rawFileIndex].path,
+        );
         lightFiles[rawFileIndex].raw = rawContent;
       } catch {
         // Keep old
@@ -541,7 +633,7 @@
     }
 
     try {
-      const parsed = parseLightFile(defaultContent);
+      const parsed = parseLightFile(defaultContent, fullPath);
       // Inherit tempo from current merged state so it isn't lost
       if (mergedLightFile.tempo && !parsed.tempo) {
         parsed.tempo = mergedLightFile.tempo;
@@ -722,6 +814,8 @@
       {/if}
       <TimelineEditor
         lightFile={mergedLightFile}
+        {layout}
+        {tempoSource}
         groups={venueGroups}
         {sequenceNames}
         songDurationMs={song.duration_ms}

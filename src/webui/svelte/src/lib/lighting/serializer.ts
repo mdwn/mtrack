@@ -24,13 +24,15 @@ import type {
 } from "./types";
 
 /**
- * Serialize a LightFile structure back to DSL text.
+ * Serialize a LightFile structure back to DSL text: what the document
+ * holds, as written (`rules.document` reads the text back to the same
+ * document).
  */
 export function serializeLightFile(file: LightFile): string {
   const parts: string[] = [];
 
   if (file.includes?.length) {
-    for (const path of file.includes) parts.push(`include "${path}"`);
+    for (const inc of file.includes) parts.push(`include "${inc.written}"`);
     parts.push("");
   }
 
@@ -61,7 +63,10 @@ export function serializeLightFile(file: LightFile): string {
   return parts.join("\n");
 }
 
-function serializeTempo(tempo: TempoSection): string {
+/** The `tempo { }` block alone: what `rules.tempo_query` reads a section
+ *  through (`{ dsl }`), so the editor's tempo questions go to the parser's
+ *  own reading of the block it will write. */
+export function serializeTempo(tempo: TempoSection): string {
   const lines: string[] = [];
   lines.push("tempo {");
   lines.push(`    start: ${tempo.start.value}${tempo.start.unit}`);
@@ -132,6 +137,11 @@ function serializeCues(cues: Cue[]): string {
       lines.push(`    reset_measures`);
     }
 
+    // Inline loops, kept as the text they were read from.
+    for (const loop of cue.loops ?? []) {
+      lines.push(`    ${loop}`);
+    }
+
     // Blank line between cues (except after last)
     if (i < cues.length - 1) {
       lines.push("");
@@ -164,21 +174,13 @@ function serializeEffect(cueEffect: CueEffect): string {
   const effect = cueEffect.effect;
   const parts: string[] = [];
 
-  // All effect types use comma-separated parameters.
-
-  // Colors, for the effect types that have one. `EffectType::Strobe`, `Chase`,
-  // `Pulse` and `Dimmer` do not: the parser accepts a `color:` on them and
-  // drops it, so writing one produced a file whose colour never took effect.
-  const usesColor = effect.type === "static" || effect.type === "cycle";
-  if (usesColor) {
-    for (const color of effect.colors) {
-      parts.push(`color: ${quoted(color)}`);
-    }
+  // All effect types use comma-separated parameters, each written as the
+  // document holds it: what a line said comes back out of the editor, and
+  // the forms offer each type only the parameters it reads.
+  for (const color of effect.colors) {
+    parts.push(`color: ${quoted(color)}`);
   }
-
-  // Known parameters. `intensity` only where it is read — on a strobe it is
-  // accepted and ignored, which is why the control was removed.
-  if (effect.intensity !== undefined && effect.type !== "strobe")
+  if (effect.intensity !== undefined)
     parts.push(`intensity: ${effect.intensity}`);
   if (effect.dimmer !== undefined) parts.push(`dimmer: ${effect.dimmer}`);
   if (effect.frequency !== undefined)
@@ -207,8 +209,6 @@ function serializeEffect(cueEffect: CueEffect): string {
     parts.push(`base_level: ${effect.base_level}`);
   if (effect.pulse_amplitude !== undefined)
     parts.push(`pulse_amplitude: ${effect.pulse_amplitude}`);
-  // `duty_cycle` is read by nothing — `EffectType::Strobe` carries only a
-  // frequency and a duration — so it is not written.
   if (effect.pattern !== undefined) parts.push(`pattern: ${effect.pattern}`);
   if (effect.saturation !== undefined)
     parts.push(`saturation: ${effect.saturation}`);

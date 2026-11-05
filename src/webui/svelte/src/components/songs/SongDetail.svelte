@@ -33,7 +33,7 @@
     type WaveformTrack,
   } from "../../lib/api/songs";
   import { fetchLightingFile } from "../../lib/api/config";
-  import { parseLightFile } from "../../lib/lighting/parser";
+  import { rules } from "../../lib/rules";
   import type { TempoSection } from "../../lib/lighting/types";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
@@ -180,8 +180,11 @@
     const found: { file: string; tempo: TempoSection }[] = [];
     for (const file of files) {
       try {
-        const parsed = parseLightFile(await fetchLightingFile(file));
-        if (parsed.tempo) {
+        const parsed = rules.document(
+          await fetchLightingFile(file),
+          file,
+        ).document;
+        if (parsed?.tempo) {
           found.push({ file, tempo: parsed.tempo });
         }
       } catch {

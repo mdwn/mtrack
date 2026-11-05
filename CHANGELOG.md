@@ -150,6 +150,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
+  reads a `.light` file through the player's grammar (its document model, compiled to
+  WebAssembly with the parser) and places every cue, effect and sequence pass where the player
+  fires it, under the player's own tempo map; it no longer re-derives the DSL, the tempo map
+  or sequence expansion in TypeScript. What this corrects on the timeline: a sequence placed by
+  its earliest cue rather than its first-written one; a pass as long as its effects' fade in,
+  hold and fade out (`up_time`/`down_time` counted, as the player counts them); nested sequence
+  references and inline `loop { }` blocks drawn; a `loop:` reference running to the song's end;
+  several `offset`s under one cue added up. A file the player refuses -- an effect with no
+  duration, a cue past its sequence's length, a bar-and-beat cue with no tempo, a missing
+  include, an unquoted `#` colour (a comment, to the grammar) -- is refused in the editor with
+  the player's words, where the old timeline drew it anyway. A file that defines a fixture type or a
+  venue, or gives a show its own `tempo` block, is edited as text. Inline loops and every
+  parameter a line carries are written back as read, where a save used to drop them.
+  Included files are fetched for the layout, and a file's `include` lines survive a save.
+
 - **A Format 1 MIDI file's tempo lives on its conductor track**: the web UI's tempo guess read
   tempo and time-signature events from every track; it reads the conductor track (track 0) as
   playback does, so a file with its tempo events elsewhere now gets no suggestion from the

@@ -14,35 +14,38 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { TempoSection } from "../../../lib/lighting/types";
-  import {
-    msToPixel,
-    offsetTimeline,
-    tempoLaneSpans,
-    type OffsetMarker,
-  } from "../../../lib/lighting/timeline-state";
+  import type { TempoSpan } from "../../../gen/rules/mtrack_rules";
+  import { msToPixel } from "../../../lib/lighting/timeline-state";
   import { effectiveTheme } from "../../../lib/theme";
 
   interface Props {
-    tempo: TempoSection;
+    /** The tempo map's stretches, from the player's layout: one label
+     *  each, already moved by the offsets the cues are drawn under. */
+    spans: TempoSpan[];
     pixelsPerMs: number;
     scrollLeft: number;
     viewportWidth: number;
     totalDurationMs: number;
-    offsets?: OffsetMarker[];
   }
 
   let {
-    tempo,
+    spans,
     pixelsPerMs,
     scrollLeft,
     viewportWidth,
     totalDurationMs,
-    offsets = [],
   }: Props = $props();
 
-  // The cumulative offset at a raw ms position, as the cues have it
-  let cumulativeOffsetAt = $derived(offsetTimeline(offsets));
+  /** `120 BPM, 4/4`, or `132.5 → 180 BPM, 4/4` while a ramp runs, the
+   *  tempo to the hundredth a tempo block is written to. */
+  function label(span: TempoSpan): string {
+    const round = (bpm: number) => Math.round(bpm * 100) / 100;
+    const bpm =
+      span.bpm_to !== undefined
+        ? `${round(span.bpm)} → ${round(span.bpm_to)}`
+        : `${round(span.bpm)}`;
+    return `${bpm} BPM, ${span.sig[0]}/${span.sig[1]}`;
+  }
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
 
@@ -69,17 +72,13 @@
       ? "rgba(94, 202, 234, 0.3)"
       : "rgba(31, 143, 175, 0.4)"; // cyan-600
 
-    const spans = tempoLaneSpans(tempo);
     const colors = ["rgba(94, 202, 234, 0.12)", "rgba(139, 92, 246, 0.12)"];
 
     for (let i = 0; i < spans.length; i++) {
       const span = spans[i];
-      const rawNextMs =
-        i < spans.length - 1 ? spans[i + 1].startMs : totalDurationMs;
-      const adjustedStart = span.startMs + cumulativeOffsetAt(span.startMs);
-      const adjustedEnd = rawNextMs + cumulativeOffsetAt(rawNextMs);
-      const x1 = msToPixel(adjustedStart, pixelsPerMs) - scrollLeft;
-      const x2 = msToPixel(adjustedEnd, pixelsPerMs) - scrollLeft;
+      const endMs = i < spans.length - 1 ? span.end_ms : totalDurationMs;
+      const x1 = msToPixel(span.start_ms, pixelsPerMs) - scrollLeft;
+      const x2 = msToPixel(endMs, pixelsPerMs) - scrollLeft;
 
       // Skip spans entirely outside viewport
       if (x2 < 0 || x1 > w) continue;
@@ -105,7 +104,7 @@
         ctx.font = "12px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(span.label, labelX, h / 2);
+        ctx.fillText(label(span), labelX, h / 2);
       }
     }
   }
@@ -115,8 +114,7 @@
     void scrollLeft;
     void viewportWidth;
     void totalDurationMs;
-    void tempo;
-    void offsets;
+    void spans;
     void $effectiveTheme;
     draw();
   });

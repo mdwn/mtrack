@@ -14,12 +14,12 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import type { Cue, Sequence, SubLaneType } from "../../../lib/lighting/types";
   import type {
-    Cue,
-    Sequence,
-    TempoSection,
-    SubLaneType,
-  } from "../../../lib/lighting/types";
+    SequenceLayout,
+    TempoLayout,
+    TempoSource,
+  } from "../../../gen/rules/mtrack_rules";
   import {
     timestampToMs,
     msToPixel,
@@ -30,9 +30,14 @@
 
   interface Props {
     sequence: Sequence;
+    /** The player's layout of the sequence on its own timeline, with its
+     *  parameters at their defaults; none while it cannot be laid out. */
+    laid?: SequenceLayout;
+    /** The file's tempo layout, for a sequence with no tempo of its own. */
+    fileTempo?: TempoLayout;
+    tempoSource: TempoSource | null;
     groups: string[];
     sequenceNames: string[];
-    tempo?: TempoSection;
     onchange: (sequence: Sequence) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -40,9 +45,11 @@
 
   let {
     sequence,
+    laid,
+    fileTempo,
+    tempoSource,
     groups,
     sequenceNames,
-    tempo,
     onchange,
     ondelete,
     onclose,
@@ -60,12 +67,10 @@
   let selectedSubLane = $state<SubLaneType | null>(null);
   let scrollContainer: HTMLDivElement | undefined = $state();
 
+  let tempoLayout = $derived(laid?.tempo ?? fileTempo);
+
   function getDurationMs(): number {
-    let max = 0;
-    for (const cue of sequence.cues) {
-      max = Math.max(max, timestampToMs(cue.timestamp, tempo));
-    }
-    return Math.max(max + 5000, 15000);
+    return Math.max((laid?.end_ms ?? 0) + 5000, 15000);
   }
 
   function getTotalWidthPx(): number {
@@ -100,7 +105,8 @@
     const cues = [...sequence.cues, cue];
     cues.sort(
       (a, b) =>
-        timestampToMs(a.timestamp, tempo) - timestampToMs(b.timestamp, tempo),
+        timestampToMs(a.timestamp, tempoSource) -
+        timestampToMs(b.timestamp, tempoSource),
     );
     onchange({ ...sequence, cues });
     selectedCueIndex = cues.indexOf(cue);
@@ -162,7 +168,10 @@
         })}</span
       >
       <span class="seq-modal-hint">{$t("timeline.sequenceEditor.hint")}</span>
-      {#if tempo}
+      {#if laid?.error}
+        <span class="seq-modal-hint" title={laid.error}>{laid.error}</span>
+      {/if}
+      {#if tempoSource}
         <div class="snap-controls">
           <label class="snap-toggle">
             <input type="checkbox" bind:checked={localSnapEnabled} />
@@ -206,7 +215,7 @@
             <TimeRuler
               {pixelsPerMs}
               totalDurationMs={getDurationMs()}
-              {tempo}
+              grid={tempoLayout?.grid ?? []}
               {scrollLeft}
               {viewportWidth}
             />
@@ -218,11 +227,13 @@
           <ShowGroup
             name={sequence.name}
             cues={sequence.cues}
+            laidCues={laid?.cues ?? []}
+            grid={tempoLayout?.grid ?? []}
+            {tempoSource}
             laneType="sequence"
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}
-            {tempo}
             {selectedCueIndex}
             {selectedSubLane}
             snapEnabled={localSnapEnabled}
@@ -251,7 +262,9 @@
             laneName={selCue.laneName}
             {groups}
             {sequenceNames}
-            {tempo}
+            cueMs={selectedCueIndex !== null
+              ? (laid?.cues[selectedCueIndex]?.ms ?? 0)
+              : 0}
             focusTab={selectedSubLane}
             onchange={handleSelectedCueChange}
             ondelete={handleSelectedCueDelete}
