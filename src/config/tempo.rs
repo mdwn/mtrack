@@ -16,8 +16,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::tempo::{
-    measure_beat_order, parse_signature_in, SignatureRange, TempoChange, TempoChangePosition,
-    TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    check_bpm, check_change_bpm, check_transition, measure_beat_order, parse_signature_in,
+    SignatureRange, TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature,
+    TransitionCurve,
 };
 
 /// A YAML representation of a song's tempo map. This is the canonical
@@ -151,9 +152,7 @@ impl TempoConfig {
 
     /// Converts this configuration into a resolved tempo map.
     pub fn to_tempo_map(&self) -> Result<TempoMap, String> {
-        if !self.bpm.is_finite() || self.bpm <= 0.0 {
-            return Err(format!("tempo bpm must be positive, got {}", self.bpm));
-        }
+        check_bpm(self.bpm)?;
         let initial_time_signature = parse_time_signature(&self.time_signature)?;
         let start = self.start.unwrap_or(0.0);
         if !start.is_finite() || start < 0.0 {
@@ -181,13 +180,9 @@ impl TempoConfig {
             }
             last_position = (change.measure, beat);
 
+            let at = format!("measure {}", change.measure);
             if let Some(bpm) = change.bpm {
-                if !bpm.is_finite() || bpm <= 0.0 {
-                    return Err(format!(
-                        "tempo change at measure {} has invalid bpm {bpm}",
-                        change.measure
-                    ));
-                }
+                check_change_bpm(&at, bpm)?;
             }
             if change.bpm.is_none() && change.time_signature.is_none() {
                 return Err(format!(
@@ -203,24 +198,13 @@ impl TempoConfig {
             let transition = match change.transition {
                 None => TempoTransition::Snap,
                 Some(TransitionConfig::Beats(beats)) => {
-                    if !beats.is_finite() || beats <= 0.0 {
-                        return Err(format!(
-                            "tempo change at measure {} has invalid transition length",
-                            change.measure
-                        ));
-                    }
                     TempoTransition::Beats(beats, TransitionCurve::Linear)
                 }
                 Some(TransitionConfig::Measures(measures)) => {
-                    if !measures.is_finite() || measures <= 0.0 {
-                        return Err(format!(
-                            "tempo change at measure {} has invalid transition length",
-                            change.measure
-                        ));
-                    }
                     TempoTransition::Measures(measures, TransitionCurve::Linear)
                 }
             };
+            check_transition(&at, transition)?;
 
             changes.push(TempoChange {
                 position: TempoChangePosition::MeasureBeat(change.measure, beat),

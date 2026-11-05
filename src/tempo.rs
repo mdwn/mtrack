@@ -374,6 +374,42 @@ pub enum TempoTransition {
     Measures(f64, TransitionCurve),
 }
 
+/// A tempo and a ramp's length are positive and finite: a tempo of 0 puts
+/// every later beat infinitely far away, and a ramp of no length has no
+/// curve. What a song's `tempo:` config and a light show's `tempo {}`
+/// block are held to, in the same words; `at` names a change's position
+/// as the error says it ("measure 3", "4.000s").
+pub(crate) fn check_bpm(bpm: f64) -> Result<(), String> {
+    walkable(bpm)
+        .then_some(())
+        .ok_or_else(|| format!("tempo bpm must be positive, got {bpm}"))
+}
+
+/// A change's tempo, by [`check_bpm`]'s rule.
+pub(crate) fn check_change_bpm(at: &str, bpm: f64) -> Result<(), String> {
+    walkable(bpm)
+        .then_some(())
+        .ok_or_else(|| format!("tempo change at {at} has invalid bpm {bpm}"))
+}
+
+/// A change's ramp, by [`check_bpm`]'s rule.
+pub(crate) fn check_transition(at: &str, transition: TempoTransition) -> Result<(), String> {
+    match transition {
+        TempoTransition::Beats(length, _) | TempoTransition::Measures(length, _)
+            if !walkable(length) =>
+        {
+            Err(format!(
+                "tempo change at {at} has invalid transition length"
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn walkable(x: f64) -> bool {
+    x.is_finite() && x > 0.0
+}
+
 /// Position where a tempo change occurs
 #[derive(Debug, Clone, PartialEq)]
 pub enum TempoChangePosition {

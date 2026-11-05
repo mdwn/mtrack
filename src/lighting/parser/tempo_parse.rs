@@ -16,8 +16,9 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::tempo::{
-    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
-    TempoTransition, TimeSignature, TransitionCurve, DEFAULT_TIME_SIGNATURE,
+    check_bpm, check_change_bpm, check_transition, parse_signature_in, SignatureRange, TempoChange,
+    TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    DEFAULT_TIME_SIGNATURE,
 };
 
 use super::grammar::Rule;
@@ -81,11 +82,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
         }
     }
 
-    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
-    // later beat infinitely far away.
-    if !bpm.is_finite() || bpm <= 0.0 {
-        return Err(format!("tempo bpm must be positive, got {bpm}").into());
-    }
+    check_bpm(bpm)?;
 
     // Bar 1 is at `start`, so a change timed before it has no bar to fall in.
     for change in &changes {
@@ -211,22 +208,14 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
         }
     }
 
-    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
-    // later beat infinitely far away, and a ramp of no length has no curve.
     let at = match position {
         TempoChangePosition::MeasureBeat(m, _) => format!("measure {m}"),
         TempoChangePosition::Time(t) => format!("{:.3}s", t.as_secs_f64()),
     };
     if let Some(bpm) = bpm {
-        if !bpm.is_finite() || bpm <= 0.0 {
-            return Err(format!("tempo change at {at} has invalid bpm {bpm}").into());
-        }
+        check_change_bpm(&at, bpm)?;
     }
-    if let TempoTransition::Beats(length, _) | TempoTransition::Measures(length, _) = transition {
-        if !length.is_finite() || length <= 0.0 {
-            return Err(format!("tempo change at {at} has invalid transition length").into());
-        }
-    }
+    check_transition(&at, transition)?;
 
     // Determine original measure/beat if position is MeasureBeat
     let original_measure_beat = match position {
