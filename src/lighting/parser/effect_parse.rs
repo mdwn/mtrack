@@ -17,14 +17,14 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::effects::{
-    BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
-    Easing, EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
+    ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve, Easing,
+    EffectType, MoveTarget, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::grammar::Rule;
-use super::types::{Effect, ParseContext};
+use super::types::{Effect, EffectKind, ParseContext};
 use super::utils::{
-    parse_color_string, parse_frequency_string, parse_layer, parse_percentage_to_f64,
-    parse_speed_string, split_unit,
+    parse_blend_mode, parse_color_string, parse_frequency_string, parse_layer,
+    parse_percentage_to_f64, parse_speed_string, split_unit, unquoted,
 };
 use pest::iterators::Pair;
 
@@ -127,16 +127,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                                 })?);
                             }
                             "blend_mode" => {
-                                blend_mode = Some(match value.as_str() {
-                                    "replace" => BlendMode::Replace,
-                                    "multiply" => BlendMode::Multiply,
-                                    "add" => BlendMode::Add,
-                                    "overlay" => BlendMode::Overlay,
-                                    "screen" => BlendMode::Screen,
-                                    _ => {
-                                        return Err(format!("Invalid blend mode: {}", value).into())
-                                    }
-                                });
+                                blend_mode = Some(
+                                    parse_blend_mode(&value)
+                                        .ok_or_else(|| format!("Invalid blend mode: {}", value))?,
+                                );
                             }
                             "up_time" => up_time = Some(ctx.duration(&value)?),
                             "hold_time" => hold_time = Some(ctx.duration(&value)?),
@@ -219,48 +213,48 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
 /// The effect an author's keyword names, with every parameter at its
 /// default, or `None` for a word that names none.
 fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
-    Some(match keyword {
-        "static" => EffectType::Static {
+    Some(match EffectKind::from_keyword(keyword)? {
+        EffectKind::Static => EffectType::Static {
             parameters: HashMap::new(),
             duration: Duration::ZERO,
         },
-        "cycle" => EffectType::ColorCycle {
+        EffectKind::Cycle => EffectType::ColorCycle {
             colors: Vec::new(),
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
             duration: Duration::ZERO,
         },
-        "strobe" => EffectType::Strobe {
+        EffectKind::Strobe => EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(8.0),
             duration: Duration::ZERO,
         },
-        "pulse" => EffectType::Pulse {
+        EffectKind::Pulse => EffectType::Pulse {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
             duration: Duration::ZERO,
         },
-        "chase" => EffectType::Chase {
+        EffectKind::Chase => EffectType::Chase {
             pattern: ChasePattern::Linear,
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
             duration: Duration::ZERO,
         },
-        "dimmer" => EffectType::Dimmer {
+        EffectKind::Dimmer => EffectType::Dimmer {
             start_level: 0.0,
             end_level: 1.0,
             duration: Duration::from_secs(1),
             curve: DimmerCurve::Linear,
         },
-        "rainbow" => EffectType::Rainbow {
+        EffectKind::Rainbow => EffectType::Rainbow {
             speed: TempoAwareSpeed::Fixed(1.0),
             saturation: 1.0,
             brightness: 1.0,
             duration: Duration::ZERO,
         },
-        "move" => EffectType::Move {
+        EffectKind::Move => EffectType::Move {
             to: MoveTarget::Angles {
                 pan: None,
                 tilt: None,
@@ -269,7 +263,6 @@ fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
             easing: Easing::default(),
             duration: Duration::ZERO,
         },
-        _ => return None,
     })
 }
 
@@ -277,16 +270,7 @@ fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
 /// [`effect_with_defaults`] reads. (`EffectType::name` is the type's own
 /// spelling, `ColorCycle` for `cycle`.)
 pub(crate) fn effect_keyword(effect_type: &EffectType) -> &'static str {
-    match effect_type {
-        EffectType::Static { .. } => "static",
-        EffectType::ColorCycle { .. } => "cycle",
-        EffectType::Strobe { .. } => "strobe",
-        EffectType::Pulse { .. } => "pulse",
-        EffectType::Chase { .. } => "chase",
-        EffectType::Dimmer { .. } => "dimmer",
-        EffectType::Rainbow { .. } => "rainbow",
-        EffectType::Move { .. } => "move",
-    }
+    EffectKind::of(effect_type).keyword()
 }
 
 /// Parses an angle written with its unit: `45deg`, `-20.5deg`.
@@ -562,10 +546,10 @@ pub(crate) fn apply_parameters_to_effect_type(
             let mut from_tilt: Option<f64> = None;
             for (key, value) in parameters {
                 match key.as_str() {
-                    "focus" | "to" => to_focus = Some(value.trim_matches('"').to_string()),
+                    "focus" | "to" => to_focus = Some(unquoted(value).to_string()),
                     "pan" => to_pan = Some(parse_degrees(value)?),
                     "tilt" => to_tilt = Some(parse_degrees(value)?),
-                    "from" => from_focus = Some(value.trim_matches('"').to_string()),
+                    "from" => from_focus = Some(unquoted(value).to_string()),
                     "from_pan" => from_pan = Some(parse_degrees(value)?),
                     "from_tilt" => from_tilt = Some(parse_degrees(value)?),
                     "easing" => {

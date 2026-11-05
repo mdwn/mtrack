@@ -14,8 +14,9 @@
 
 // The editor's model of a `.light` file is the player's own document model
 // (`src/lighting/parser/document.rs`), read off the one grammar by
-// `rules.document` and written back by `serializer.ts`; its types are
-// generated from the Rust structs. What is here is the editor's own: the
+// `rules.document`, edited through `rules.effect_edit` and written back by
+// the player's writer (`rules.document_write`); its types are generated
+// from the Rust structs. What is here is the editor's own: the
 // option lists its controls offer, and the constructors its forms use.
 
 import type {

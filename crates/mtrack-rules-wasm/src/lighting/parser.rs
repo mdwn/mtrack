@@ -18,6 +18,8 @@
 
 #[path = "../../../../src/lighting/parser/document.rs"]
 pub mod document;
+#[path = "../../../../src/lighting/parser/edit.rs"]
+pub mod edit;
 #[path = "../../../../src/lighting/parser/effect_parse.rs"]
 mod effect_parse;
 #[path = "../../../../src/lighting/parser/error.rs"]
@@ -36,6 +38,8 @@ mod tempo_parse;
 mod types;
 #[path = "../../../../src/lighting/parser/utils.rs"]
 pub(crate) mod utils;
+#[path = "../../../../src/lighting/parser/writer.rs"]
+pub mod writer;
 
 /// The player's grammar (`src/lighting/grammar.pest`), derived here
 /// because `pest_derive` reads the file relative to the crate being built.

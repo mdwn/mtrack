@@ -27,12 +27,12 @@ use super::include::{add_included, Include, IncludeReader, IncludingFile, Source
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
-    pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
-    SequenceCall, SequenceLoop,
+    pass_start, Cue, LayerCommand, LayerCommandParam, LayerCommandType, LightShow, LightShows,
+    ParseContext, Sequence, SequenceCall, SequenceLoop,
 };
 use super::utils::{
     items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
-    parse_time_string,
+    parse_time_string, unquote,
 };
 use crate::tempo::{snap_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
@@ -433,7 +433,7 @@ fn parse_light_show_definition(
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::show_name => {
-                name = inner_pair.as_str().trim_matches('"').to_string();
+                name = unquote(&inner_pair);
             }
             Rule::show_content => {
                 let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
@@ -515,7 +515,7 @@ pub(super) fn parse_sequence_structure(
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::sequence_name => {
-                name = inner_pair.as_str().trim_matches('"').to_string();
+                name = unquote(&inner_pair);
             }
             Rule::sequence_length => {
                 length = inner_pair
@@ -642,7 +642,7 @@ fn parse_sequence_reference_pair(seq_ref_pair: Pair<Rule>) -> Result<SequenceCal
     for inner in seq_ref_pair.into_inner() {
         match inner.as_rule() {
             Rule::sequence_name => {
-                seq_name = inner.as_str().trim_matches('"').to_string();
+                seq_name = unquote(&inner);
             }
             Rule::sequence_args => {
                 for arg in inner.into_inner() {
@@ -730,7 +730,7 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
 }
 
 /// Parse an offset command to extract the number of measures
-fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
+pub(super) fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
     // offset_command = { "offset" ~ number_value ~ "measures" }
     let mut number_str = String::new();
     let mut found_number = false;
@@ -1076,9 +1076,10 @@ fn parse_cue(
         let seq_name = stop_pair
             .into_inner()
             .find(|p| p.as_rule() == Rule::sequence_name)
+            .map(|name| unquote(&name))
             .ok_or("Stop sequence command missing sequence name")?
-            .as_str()
-            .trim_matches('"')
+            // A stop names its sequence with the space inside its quotes
+            // trimmed, where a reference keeps it.
             .trim()
             .to_string();
         base.stop_sequences.push(seq_name);
@@ -1166,13 +1167,7 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::layer_command_type => {
-                command_type = match inner_pair.as_str() {
-                    "clear" => LayerCommandType::Clear,
-                    "freeze" => LayerCommandType::Freeze,
-                    "unfreeze" => LayerCommandType::Unfreeze,
-                    "master" => LayerCommandType::Master,
-                    other => return Err(format!("Unknown layer command type: {}", other).into()),
-                };
+                command_type = LayerCommandType::from_keyword(inner_pair.as_str())?;
             }
             Rule::layer_command_params => {
                 for param_pair in inner_pair.into_inner() {
@@ -1192,24 +1187,19 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
                             }
                         }
 
-                        match param_name.as_str() {
-                            "layer" => {
+                        match LayerCommandParam::from_keyword(&param_name)? {
+                            LayerCommandParam::Layer => {
                                 layer =
                                     Some(parse_layer(&param_value).ok_or_else(|| {
                                         format!("Invalid layer: {}", param_value)
                                     })?);
                             }
-                            "intensity" => {
+                            LayerCommandParam::Intensity => {
                                 intensity =
                                     Some(parse_percentage_to_f64(&param_value)?.clamp(0.0, 1.0));
                             }
-                            "speed" => {
+                            LayerCommandParam::Speed => {
                                 speed = Some(parse_percentage_to_f64(&param_value)?.max(0.0));
-                            }
-                            other => {
-                                return Err(
-                                    format!("Unknown layer command parameter: {}", other).into()
-                                );
                             }
                         }
                     }

@@ -50,9 +50,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                                 if time_str.is_empty() {
                                     continue;
                                 }
-                                start_offset = parse_time_parameter(time_str).map_err(|e| {
-                                    format!("Failed to parse time_parameter '{}': {}", time_str, e)
-                                })?;
+                                start_offset = parse_tempo_start(time_str)?;
                                 break;
                             }
                         }
@@ -102,7 +100,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
 }
 
 /// The tempo a `bpm: N` sets: a tempo block's, or a change's.
-fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
+pub(crate) fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
     let value = pair.into_inner().next().map_or("", |p| p.as_str().trim());
     Ok(value
         .parse()
@@ -110,7 +108,7 @@ fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
 }
 
 /// The metre a `time_signature: N/D` sets: a tempo block's, or a change's.
-fn signature_of(pair: Pair<Rule>) -> Result<TimeSignature, Box<dyn Error>> {
+pub(crate) fn signature_of(pair: Pair<Rule>) -> Result<TimeSignature, Box<dyn Error>> {
     let value = pair.into_inner().next().map_or("", |p| p.as_str());
     Ok(parse_signature_in(value, SignatureRange::Light)?)
 }
@@ -150,46 +148,7 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                 for inner_pair in actual_param.into_inner() {
                                     match inner_pair.as_rule() {
                                         Rule::tempo_transition_duration => {
-                                            // tempo_transition_duration is an OR of the three options
-                                            for trans_pair in inner_pair.into_inner() {
-                                                match trans_pair.as_rule() {
-                                                    Rule::tempo_transition_snap => {
-                                                        transition = TempoTransition::Snap;
-                                                    }
-                                                    Rule::tempo_transition_beats => {
-                                                        // tempo_transition_beats = { number_value }
-                                                        // So trans_pair contains number_value as inner pair
-                                                        for value_pair in trans_pair.into_inner() {
-                                                            if value_pair.as_rule()
-                                                                == Rule::number_value
-                                                            {
-                                                                let beats = value_pair
-                                                                    .as_str()
-                                                                    .trim()
-                                                                    .parse()?;
-                                                                transition = TempoTransition::Beats(
-                                                                    beats,
-                                                                    TransitionCurve::Linear,
-                                                                );
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                    Rule::tempo_transition_measures => {
-                                                        // tempo_transition_measures is atomic, so we can get the string directly
-                                                        let measure_str =
-                                                            trans_pair.as_str().trim();
-                                                        let num_str =
-                                                            measure_str.trim_end_matches('m');
-                                                        let measures = num_str.trim().parse()?;
-                                                        transition = TempoTransition::Measures(
-                                                            measures,
-                                                            TransitionCurve::Linear,
-                                                        );
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
+                                            transition = parse_transition(inner_pair)?;
                                         }
                                         _ => {
                                             // Skip "transition" and ":" tokens
@@ -230,6 +189,54 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
         time_signature,
         transition,
     })
+}
+
+/// What follows a transition's length in measures (`2m`), as the grammar
+/// spells it.
+pub(crate) const TRANSITION_MEASURES: char = 'm';
+
+/// A transition with no length, as the grammar spells it.
+pub(crate) const TRANSITION_SNAP: &str = "snap";
+
+/// A `tempo_transition_duration` (`snap`, `4` beats, `2m` measures) as
+/// the transition it names.
+pub(crate) fn parse_transition(pair: Pair<Rule>) -> Result<TempoTransition, Box<dyn Error>> {
+    let mut transition = TempoTransition::Snap;
+    // tempo_transition_duration is an OR of the three options
+    for trans_pair in pair.into_inner() {
+        match trans_pair.as_rule() {
+            Rule::tempo_transition_snap => {
+                transition = TempoTransition::Snap;
+            }
+            Rule::tempo_transition_beats => {
+                // tempo_transition_beats = { number_value }
+                // So trans_pair contains number_value as inner pair
+                for value_pair in trans_pair.into_inner() {
+                    if value_pair.as_rule() == Rule::number_value {
+                        let beats = value_pair.as_str().trim().parse()?;
+                        transition = TempoTransition::Beats(beats, TransitionCurve::Linear);
+                        break;
+                    }
+                }
+            }
+            Rule::tempo_transition_measures => {
+                // tempo_transition_measures is atomic, so we can get the string directly
+                let measure_str = trans_pair.as_str().trim();
+                let num_str = measure_str.trim_end_matches(TRANSITION_MEASURES);
+                let measures = num_str.trim().parse()?;
+                transition = TempoTransition::Measures(measures, TransitionCurve::Linear);
+            }
+            _ => {}
+        }
+    }
+    Ok(transition)
+}
+
+/// A tempo block's `start:` value (`time_str`, trimmed) as the player
+/// reads it: a time in `s` or `ms`.
+pub(crate) fn parse_tempo_start(time_str: &str) -> Result<Duration, Box<dyn Error>> {
+    parse_time_parameter(time_str)
+        .map_err(|e| format!("Failed to parse time_parameter '{}': {}", time_str, e).into())
 }
 
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {

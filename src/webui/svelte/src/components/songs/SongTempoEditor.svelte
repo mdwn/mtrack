@@ -15,7 +15,7 @@
 <script lang="ts">
   import type { TempoConfig, TempoChangeConfig } from "../../lib/api/songs";
   import type { TempoSection } from "../../lib/lighting/types";
-  import { configToSection } from "../../lib/tempoConvert";
+  import { configToSection, transitionOf } from "../../lib/tempoConvert";
   import { rules } from "../../lib/rules";
   import TempoEditor from "../lighting/TempoEditor.svelte";
 
@@ -35,19 +35,6 @@
     hasBeatGrid = false,
     hasMidi = false,
   }: Props = $props();
-
-  function parseTransition(
-    raw: string | undefined,
-  ): TempoChangeConfig["transition"] {
-    if (!raw) return undefined;
-    const trimmed = raw.trim();
-    if (trimmed === "" || trimmed === "snap") return undefined;
-    const measures = /^(\d+(?:\.\d+)?)\s*m$/.exec(trimmed);
-    if (measures) return { measures: parseFloat(measures[1]) };
-    const beats = /^(\d+(?:\.\d+)?)$/.exec(trimmed);
-    if (beats) return { beats: parseFloat(beats[1]) };
-    return undefined;
-  }
 
   /** The lighting TempoEditor's data model -> song.yaml tempo config. */
   function sectionToConfig(section: TempoSection): TempoConfig {
@@ -79,7 +66,7 @@
         if (c.time_signature) {
           change.time_signature = `${c.time_signature[0]}/${c.time_signature[1]}`;
         }
-        const transition = parseTransition(c.transition);
+        const transition = transitionOf(c.transition);
         if (transition) {
           change.transition = transition;
         }

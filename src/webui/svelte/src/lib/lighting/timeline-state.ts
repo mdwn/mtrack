@@ -15,7 +15,7 @@
 // The timeline's drawing helpers. Where a cue lands, how long an effect
 // runs, where the bars and beats are and what the tempo lane says all come
 // from the player's own layout of the file (`rules.layout`) and its tempo
-// map (`rules.tempo_query`, `rules.tempo_distance`); what is here turns
+// map (`rules.tempo_query`); what is here turns
 // those answers into pixels, labels and the snap steps the toolbar offers.
 
 import type {
@@ -26,17 +26,17 @@ import type {
   TempoSection,
 } from "../../gen/rules/mtrack_rules";
 import { rules } from "../rules";
-import { serializeTempo } from "./serializer";
 
 export type { GridLine };
 
 /** The tempo map the timeline asks about: the file's own `tempo` block
- *  (read through the parser, as the written block), else the song's. */
+ *  (read through the parser, as the player's writer writes it), else the
+ *  song's. */
 export function tempoSourceOf(
   tempo: TempoSection | undefined,
   songTempo: TempoSource | null,
 ): TempoSource | null {
-  return tempo ? { dsl: serializeTempo(tempo) } : songTempo;
+  return tempo ? { dsl: rules.tempo_write(tempo) ?? "" } : songTempo;
 }
 
 /** A grid line as the ruler draws it. */
@@ -141,51 +141,6 @@ export function msToTimestamp(
   };
 }
 
-/** How long a duration written as an effect's (`2beats`, `1measure`,
- *  `500ms`, `5s`) lasts from a time, as the parser reads it there. */
-export function durationStringToMs(
-  durationStr: string | undefined,
-  source: TempoSource | null,
-  atMs: number = 0,
-): number {
-  if (!durationStr) return 0;
-  const end = rules.tempo_query(source, {
-    from_ms: atMs,
-    duration: durationStr,
-  });
-  return end ? end.ms - atMs : 0;
-}
-
-/** A length from a time as the DSL writes it: whole measures when it is
- *  whole bars of the metres there, else whole beats, else time. */
-export function msToDurationString(
-  ms: number,
-  source: TempoSource | null,
-  atMs: number = 0,
-): string {
-  const span = source ? rules.tempo_distance(source, atMs, atMs + ms) : null;
-  if (span) {
-    if (
-      span.measures >= 1 &&
-      Math.abs(span.measures - Math.round(span.measures)) < 0.001
-    ) {
-      const rounded = Math.round(span.measures);
-      return rounded === 1 ? "1measure" : `${rounded}measures`;
-    }
-    if (
-      span.beats >= 1 &&
-      Math.abs(span.beats - Math.round(span.beats)) < 0.001
-    ) {
-      const rounded = Math.round(span.beats);
-      return rounded === 1 ? "1beat" : `${rounded}beats`;
-    }
-  }
-  if (ms < 1000 || ms % 1000 !== 0) {
-    return `${Math.round(ms)}ms`;
-  }
-  return `${ms / 1000}s`;
-}
-
 /** Pixel <-> time conversion helpers */
 export function msToPixel(ms: number, pixelsPerMs: number): number {
   return ms * pixelsPerMs;
@@ -204,7 +159,10 @@ export type SnapResolution =
   | "1/8"
   | "1/16";
 
-const SNAP_BEATS: Record<Exclude<SnapResolution, "measure">, number> = {
+/** The step of a beat each resolution snaps to; `measure` snaps to
+ *  barlines. */
+export const SNAP_BEATS: Record<SnapResolution, number | undefined> = {
+  measure: undefined,
   beat: 1,
   "1/2": 0.5,
   "1/4": 0.25,
@@ -232,25 +190,9 @@ export function snapToNearestGrid(
     if (!next) return here.ms;
     return ms - here.ms <= next.ms - ms ? here.ms : next.ms;
   }
-  const step = SNAP_BEATS[resolution];
+  const step = SNAP_BEATS[resolution]!;
   const beat = 1 + Math.round((at.beat - 1) / step) * step;
   return rules.tempo_query(source, { measure: at.measure, beat })?.ms ?? ms;
-}
-
-/** Snap a duration to the nearest grid step at a given playback position. */
-export function snapDurationToGrid(
-  durationMs: number,
-  atMs: number,
-  source: TempoSource,
-  resolution: SnapResolution,
-): number {
-  const span = rules.tempo_distance(source, atMs, atMs + durationMs);
-  if (!span) return durationMs;
-  const length =
-    resolution === "measure"
-      ? `${Math.max(1, Math.round(span.measures))}measures`
-      : `${Math.max(SNAP_BEATS[resolution], Math.round(span.beats / SNAP_BEATS[resolution]) * SNAP_BEATS[resolution])}beats`;
-  return durationStringToMs(length, source, atMs);
 }
 
 /** An offset marker on the ruler: a cue's `offset` or `reset_measures`,

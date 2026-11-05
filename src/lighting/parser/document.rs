@@ -15,12 +15,12 @@
 //! one grammar (`grammar.pest`) so the editor and the player agree on what
 //! a line says. Nothing here is resolved -- a `@bar/beat` stays a bar and
 //! a beat, a `2beats` stays the text `2beats`, a parameter is its name and
-//! its value as written -- so the editor's serializer can write the file
-//! back; where a line lands in time is [`super::layout`]'s business.
+//! its value as written -- so [`super::writer`] can write the file back;
+//! where a line lands in time is [`super::layout`]'s business.
 //!
 //! The types' TypeScript declarations are generated from them (`tsify`)
-//! for the web UI, which holds and edits a [`Document`] and never parses
-//! the DSL itself.
+//! for the web UI, which holds a [`Document`], edits it through
+//! [`super::edit`] and never parses or writes the DSL itself.
 
 use std::error::Error;
 use std::path::Path;
@@ -28,11 +28,16 @@ use std::time::Duration;
 
 use pest::iterators::Pair;
 use pest::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
-use super::utils::{parse_measure_time, parse_time_string, parse_time_value, TimeValue};
+use super::tempo_parse::{bpm_of, signature_of};
+pub use super::types::{EffectKind, LayerCommandParam, LayerCommandType};
+pub use super::utils::DurationUnit;
+use super::utils::{
+    parse_measure_time, parse_time_string, parse_time_unit, parse_time_value, unquote, TimeValue,
+};
 
 /// A `.light` file as written.
 #[cfg_attr(
@@ -40,7 +45,7 @@ use super::utils::{parse_measure_time, parse_time_string, parse_time_value, Time
     derive(tsify_next::Tsify),
     tsify(into_wasm_abi, hashmap_as_object)
 )]
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Document {
     /// Its `include`s, in order, when it has any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,7 +71,7 @@ pub struct Document {
 
 /// The kinds of item a file holds.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentItem {
     Include,
@@ -83,7 +88,7 @@ pub enum DocumentItem {
     derive(tsify_next::Tsify),
     tsify(into_wasm_abi, hashmap_as_object)
 )]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DocumentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -95,7 +100,7 @@ pub struct DocumentResult {
 
 /// An `include "…"` as written, and the file it names.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Include {
     /// The path as written, relative to the file's folder.
     pub written: String,
@@ -115,7 +120,7 @@ pub struct Include {
 
 /// A `tempo { }` block as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoSection {
     pub start: DurationValue,
     pub bpm: f64,
@@ -159,7 +164,7 @@ pub struct TempoSection {
 /// A comment inside a `tempo { }` block: above the field it names (or on
 /// that field's line, `inline`); `end` for one after the last field.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoComment {
     pub at: TempoField,
     pub inline: bool,
@@ -167,7 +172,7 @@ pub struct TempoComment {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TempoField {
     Start,
@@ -177,9 +182,32 @@ pub enum TempoField {
     End,
 }
 
+/// Each tempo field and its name, as the grammar spells it (a change's
+/// `bpm:` and `time_signature:` too): the one table.
+const TEMPO_FIELDS: [(TempoField, &str); 4] = [
+    (TempoField::Start, "start"),
+    (TempoField::Bpm, "bpm"),
+    (TempoField::TimeSignature, "time_signature"),
+    (TempoField::Changes, "changes"),
+];
+
+/// A tempo change's `transition:`, as the grammar spells it.
+pub const TRANSITION: &str = "transition";
+
+impl TempoField {
+    /// The field's name, as the grammar spells it before its `:`; `End`,
+    /// the place after the last field, has none.
+    pub fn keyword(self) -> &'static str {
+        TEMPO_FIELDS
+            .iter()
+            .find(|(f, _)| *f == self)
+            .map_or("", |(_, k)| *k)
+    }
+}
+
 /// One entry of a tempo block's `changes:`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoChange {
     pub timestamp: Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,7 +241,7 @@ pub struct TempoChange {
 
 /// A number with its unit, as a tempo block's `start:` is written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DurationValue {
     pub value: f64,
     pub unit: DurationUnit,
@@ -227,27 +255,17 @@ pub struct DurationValue {
 /// A duration as written (`0.0s`, `500ms`) and the value and unit it reads
 /// as.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WrittenDuration {
     pub text: String,
     pub value: f64,
     pub unit: DurationUnit,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum DurationUnit {
-    Ms,
-    S,
-    Beats,
-    Measures,
-}
-
 /// A cue's or a tempo change's position: a time (`@MM:SS.mmm`, `@S.sss`)
 /// in milliseconds, or a bar and beat (`@bar/beat`).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Timestamp {
     #[serde(rename = "type")]
     pub kind: TimestampKind,
@@ -268,7 +286,7 @@ pub struct Timestamp {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampKind {
     Absolute,
@@ -277,7 +295,7 @@ pub enum TimestampKind {
 
 /// A `sequence "name"(params), length: … { }` definition.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Sequence {
     pub name: String,
     /// Its parameters (`$name` in the body), each with its default if any.
@@ -313,7 +331,7 @@ pub struct Sequence {
 /// A `name: value` in a sequence's parameter list or a reference's
 /// arguments; a declared parameter with no default is its name alone.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceArg {
     pub name: String,
     /// As written: a quoted colour, a group, a number, a `$param`…
@@ -326,7 +344,7 @@ pub struct SequenceArg {
 
 /// A `show "name" { }`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LightShow {
     /// As written; `""` for a show written without a name (the only show
     /// of a file may be, and plays as `default`).
@@ -359,7 +377,7 @@ pub struct LightShow {
 
 /// One `@time` and everything written under it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Cue {
     pub timestamp: Timestamp,
     pub effects: Vec<CueEffect>,
@@ -414,7 +432,7 @@ pub struct Cue {
 
 /// An `offset N measures` line as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OffsetLine {
     pub measures: u32,
     /// The comment lines above it, as written (`# …`, `// …`).
@@ -429,7 +447,7 @@ pub struct OffsetLine {
 
 /// The kinds of line a cue holds.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CueLine {
     #[default]
@@ -444,7 +462,7 @@ pub enum CueLine {
 
 /// An inline `loop { } repeats: n` block, as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct InlineLoop {
     pub text: String,
     /// The comment lines above it, as written (`# …`, `// …`).
@@ -458,8 +476,12 @@ pub struct InlineLoop {
 }
 
 /// An effect line: its groups and its parameters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, hashmap_as_object)
+)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CueEffect {
     pub groups: Vec<String>,
     /// The comments around each of its groups, one per group, when any
@@ -487,9 +509,9 @@ pub struct CueEffect {
 /// An effect's parameters as written: each `name: value` in order, the
 /// value as its text (a colour with its quotes, `50%`, `$level`), so a
 /// repeated name and a spelling survive a save. The editor's forms read
-/// and set them by name (`lib/lighting/params.ts`).
+/// and set them by name ([`super::edit`]).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct EffectParams {
     #[serde(rename = "type")]
     pub kind: EffectKind,
@@ -503,7 +525,7 @@ pub struct EffectParams {
 
 /// A `name: value` parameter as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
     pub value: String,
@@ -519,7 +541,7 @@ pub struct Param {
 /// The comments written around one element of a list -- a parameter, an
 /// argument, a group name -- for a save to write back in place.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Remarks {
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,26 +563,11 @@ impl Remarks {
     }
 }
 
-/// The effect keywords of the grammar.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectKind {
-    Static,
-    Cycle,
-    Strobe,
-    Pulse,
-    Chase,
-    Dimmer,
-    Rainbow,
-    Move,
-}
-
 /// A `clear(…)`, `freeze(…)`, `unfreeze(…)` or `master(…)`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LayerCommand {
-    pub command: LayerCommandKind,
+    pub command: LayerCommandType,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub layer: Option<String>,
@@ -585,20 +592,34 @@ pub struct LayerCommand {
     pub comment: Option<String>,
 }
 
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum LayerCommandKind {
-    Clear,
-    Freeze,
-    Unfreeze,
-    Master,
+impl LayerCommand {
+    /// Where the document holds a parameter's value.
+    pub fn param_mut(&mut self, param: LayerCommandParam) -> &mut Option<String> {
+        match param {
+            LayerCommandParam::Layer => &mut self.layer,
+            LayerCommandParam::Intensity => &mut self.intensity,
+            LayerCommandParam::Speed => &mut self.speed,
+        }
+    }
+
+    /// A parameter's value, as the document holds it.
+    pub fn param(&self, param: LayerCommandParam) -> Option<&str> {
+        match param {
+            LayerCommandParam::Layer => self.layer.as_deref(),
+            LayerCommandParam::Intensity => self.intensity.as_deref(),
+            LayerCommandParam::Speed => self.speed.as_deref(),
+        }
+    }
 }
 
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
 /// "name"`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, hashmap_as_object)
+)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceRef {
     pub name: String,
     /// The arguments bound here, in order, values as written.
@@ -656,7 +677,6 @@ pub fn document(source: &str, path: Option<&Path>) -> DocumentResult {
 fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
     let mut pairs = LightingParser::parse(Rule::file, source)
         .map_err(|e| super::error::describe_pest_error(&e, source))?;
-    let folder = path.and_then(Path::parent).unwrap_or(Path::new(""));
     let mut document = Document::default();
     let mut includes = Vec::new();
     let mut comments = Comments::default();
@@ -690,16 +710,14 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         match pair.as_rule() {
             Rule::include => {
                 let inner = pair.clone();
-                let written = pair
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .map(|p| p.as_str().trim_matches('"').to_string())
-                    .unwrap_or_default();
-                let path = normalize(&folder.join(&written))
+                // The file the player reads for it, by the key it reads
+                // it by (`Sources::resolve`), or why it reads none.
+                let named = super::include::Include::from_pair(pair);
+                let path = normalize(&named.target(path)?)
                     .to_string_lossy()
                     .into_owned();
                 let mut include = Include {
-                    written,
+                    written: named.written,
                     path,
                     line,
                     comments_before: comments.take(),
@@ -1178,7 +1196,12 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_parameter)
                     {
-                        section.start = duration_value(value.as_str())?;
+                        let raw = value.as_str().trim();
+                        if !raw.is_empty() {
+                            // Refused as the player refuses it.
+                            super::tempo_parse::parse_tempo_start(raw)?;
+                            section.start = duration_value(raw)?;
+                        }
                     }
                 }
                 Rule::tempo_bpm => {
@@ -1195,11 +1218,11 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                             &mut section.comment,
                         );
                     }
+                    section.bpm = bpm_of(item.clone())?;
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::number_value)
                     {
-                        section.bpm = value.as_str().trim().parse()?;
                         section.bpm_text = Some(value.as_str().trim().to_string());
                     }
                 }
@@ -1217,11 +1240,11 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                             &mut section.comment,
                         );
                     }
+                    section.time_signature = signature(item.clone())?;
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_sig_value)
                     {
-                        section.time_signature = signature(value.as_str())?;
                         section.time_signature_text = Some(value.as_str().trim().to_string());
                     }
                 }
@@ -1340,22 +1363,23 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
                     .flat_map(Pair::into_inner)
                 {
                     let rule = param.as_rule();
+                    let whole = param.clone();
                     let Some(value) = param.into_inner().next() else {
                         continue;
                     };
                     let text = value.as_str().trim().to_string();
                     let name = match rule {
                         Rule::tempo_bpm => {
-                            change.bpm = Some(text.parse()?);
-                            "bpm"
+                            change.bpm = Some(bpm_of(whole)?);
+                            TempoField::Bpm.keyword()
                         }
                         Rule::tempo_time_signature => {
-                            change.time_signature = Some(signature(&text)?);
-                            "time_signature"
+                            change.time_signature = Some(signature(whole)?);
+                            TempoField::TimeSignature.keyword()
                         }
                         Rule::tempo_change_transition => {
                             change.transition = Some(text.clone());
-                            "transition"
+                            TRANSITION
                         }
                         _ => continue,
                     };
@@ -1379,27 +1403,17 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
     Ok(change)
 }
 
-/// `4/4` as `(4, 4)`, as written: the player's own range check is in
-/// `parse_signature_in`, applied when the file loads.
-fn signature(raw: &str) -> Result<(u32, u32), Box<dyn Error>> {
-    let (numerator, denominator) = raw
-        .trim()
-        .split_once('/')
-        .ok_or_else(|| format!("Invalid time signature: {raw}"))?;
-    Ok((numerator.trim().parse()?, denominator.trim().parse()?))
+/// A `time_signature:` (a block's or a change's) as the player reads it
+/// (`tempo_parse::signature_of`).
+fn signature(pair: Pair<Rule>) -> Result<(u32, u32), Box<dyn Error>> {
+    let sig = signature_of(pair)?;
+    Ok((sig.numerator, sig.denominator))
 }
 
-/// `2.5s`, `500ms`, `1beat`, `2measures` as the number and its unit.
+/// `2.5s`, `500ms`, `1beat`, `2measures` as the number and its unit, by
+/// the player's one table (`parse_time_unit`).
 fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
-    let (number, unit) = super::utils::split_unit(raw);
-    let unit = match unit {
-        "ms" => DurationUnit::Ms,
-        "s" | "" => DurationUnit::S,
-        "beat" | "beats" => DurationUnit::Beats,
-        "measure" | "measures" => DurationUnit::Measures,
-        other => return Err(format!("Unknown time unit: {other}").into()),
-    };
-    let value = number.trim().parse()?;
+    let (value, unit) = parse_time_unit(raw)?;
     Ok(DurationValue {
         value,
         unit,
@@ -1431,6 +1445,20 @@ pub fn time_in(value: f64, from: &str, to: &str) -> Option<f64> {
         .filter_map(|places| format!("{raw:.places$}").parse::<f64>().ok())
         .chain([raw])
         .find(|&v| read(v, to) == Some(time))
+}
+
+/// A tempo change's `transition:` value (`snap`, `4`, `2m`) as the
+/// player reads it (`tempo_parse::parse_transition`); `None` for text the
+/// grammar does not read as one, whole.
+pub fn transition(text: &str) -> Option<super::super::tempo::TempoTransition> {
+    let text = text.trim();
+    let pair = LightingParser::parse(Rule::tempo_transition_duration, text)
+        .ok()?
+        .next()?;
+    if pair.as_span().end() != text.len() {
+        return None;
+    }
+    super::tempo_parse::parse_transition(pair).ok()
 }
 
 fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {
@@ -1485,7 +1513,7 @@ fn sequence(pair: Pair<Rule>, source: &str) -> Result<Sequence, Box<dyn Error>> 
             Item::Pair(pair) => pair,
         };
         match item.as_rule() {
-            Rule::sequence_name => sequence.name = item.as_str().trim_matches('"').to_string(),
+            Rule::sequence_name => sequence.name = unquote(&item),
             Rule::sequence_param_decls => {
                 let mut found =
                     LineComments::read(&item, source, &|r| r == Rule::sequence_param_decl);
@@ -1550,7 +1578,7 @@ fn show(pair: Pair<Rule>, source: &str) -> Result<LightShow, Box<dyn Error>> {
         };
         match item.as_rule() {
             Rule::show_name => {
-                show.name = item.as_str().trim_matches('"').to_string();
+                show.name = unquote(&item);
                 show.unnamed = None;
             }
             Rule::show_content => {
@@ -1701,7 +1729,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 cue.keep_tail(tail, &mut comments);
             }
             Rule::layer_command => {
-                let (mut command, tail) = layer_command(item, source);
+                let (mut command, tail) = layer_command(item, source)?;
                 command.comments_before = joined(comments.take(), command.comments_before);
                 cue.commands.push(command);
                 cue.last = CueLine::Command;
@@ -1721,7 +1749,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 let name = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::sequence_name)
-                    .map(|p| p.as_str().trim_matches('"').to_string())
+                    .map(|p| unquote(&p))
                     .unwrap_or_default();
                 cue.sequences.push(SequenceRef {
                     name,
@@ -1740,12 +1768,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
             }
             Rule::offset_command => {
                 let inner = item.clone();
-                let measures: u32 = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::number_value)
-                    .map(|p| p.as_str().trim().parse())
-                    .transpose()?
-                    .unwrap_or(0);
+                let measures = super::show::parse_offset_command(item)?;
                 cue.offset_measures = Some(cue.offset_measures.unwrap_or(0) + measures);
                 cue.offsets.get_or_insert_with(Vec::new).push(OffsetLine {
                     measures,
@@ -1821,17 +1844,8 @@ fn effect<'i>(
             }
             Rule::effect_type => {
                 type_end = Some(item.as_span().end() - base);
-                params.kind = match item.as_str() {
-                    "static" => EffectKind::Static,
-                    "cycle" => EffectKind::Cycle,
-                    "strobe" => EffectKind::Strobe,
-                    "pulse" => EffectKind::Pulse,
-                    "chase" => EffectKind::Chase,
-                    "dimmer" => EffectKind::Dimmer,
-                    "rainbow" => EffectKind::Rainbow,
-                    "move" => EffectKind::Move,
-                    other => return Err(format!("Unknown effect type: {other}").into()),
-                }
+                params.kind = EffectKind::from_keyword(item.as_str())
+                    .ok_or_else(|| format!("Unknown effect type: {}", item.as_str()))?;
             }
             Rule::parameters => {
                 if let Some(end) = type_end {
@@ -1883,10 +1897,13 @@ fn effect<'i>(
 
 /// A layer command, with the comments after its text (see
 /// [`LineComments`]).
-fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Vec<Item<'i>>) {
+fn layer_command<'i>(
+    pair: Pair<'i, Rule>,
+    source: &'i str,
+) -> Result<(LayerCommand, Vec<Item<'i>>), Box<dyn Error>> {
     let mut found = LineComments::read(&pair, source, &|r| r == Rule::layer_command_param);
     let mut command = LayerCommand {
-        command: LayerCommandKind::Clear,
+        command: LayerCommandType::Clear,
         layer: None,
         intensity: None,
         speed: None,
@@ -1898,12 +1915,7 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::layer_command_type => {
-                command.command = match item.as_str() {
-                    "freeze" => LayerCommandKind::Freeze,
-                    "unfreeze" => LayerCommandKind::Unfreeze,
-                    "master" => LayerCommandKind::Master,
-                    _ => LayerCommandKind::Clear,
-                }
+                command.command = LayerCommandType::from_keyword(item.as_str())?;
             }
             Rule::layer_command_params => {
                 for param in item
@@ -1921,13 +1933,8 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
                         is_ref: None,
                         remarks: Remarks::default(),
                     });
-                    let value = Some(text);
-                    match name.as_str().trim() {
-                        "layer" => command.layer = value,
-                        "intensity" => command.intensity = value,
-                        "speed" => command.speed = value,
-                        _ => {}
-                    }
+                    *command.param_mut(LayerCommandParam::from_keyword(name.as_str().trim())?) =
+                        Some(text);
                 }
             }
             _ => {}
@@ -1940,7 +1947,7 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
         command.written = Some(written);
     }
     command.comments_before = take(&mut found.loose);
-    (command, found.tail)
+    Ok((command, found.tail))
 }
 
 /// A sequence reference, with the comments after its text (see
@@ -1980,7 +1987,7 @@ fn sequence_ref<'i>(pair: Pair<'i, Rule>, whole: &'i str) -> (SequenceRef, Vec<I
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::sequence_name => {
-                reference.name = item.as_str().trim_matches('"').to_string();
+                reference.name = unquote(&item);
                 before_params = item.as_span().end() - base;
             }
             Rule::sequence_args => {
@@ -2123,7 +2130,7 @@ show "Song" {
             ]
         );
         assert_eq!(effect.effect.no_comma, None);
-        assert_eq!(first.commands[0].command, LayerCommandKind::Clear);
+        assert_eq!(first.commands[0].command, LayerCommandType::Clear);
         assert_eq!(first.commands[0].layer.as_deref(), Some("background"));
         assert_eq!(first.sequences[0].name, "strike");
         assert_eq!(first.sequences[0].loop_.as_deref(), Some("2"));
@@ -2176,7 +2183,9 @@ show "Song" {
     #[test]
     fn every_comment_is_kept_where_it_was() {
         let source = "# top\ninclude \"a.light\" # inc\n// before tempo\ntempo { # head\n    # before start\n    start: 0s // on start\n    bpm: 120\n    # before changes\n    changes: [\n        # before change\n        @3/1 { bpm: 90 }, # on change\n        @4/1 { bpm: 100 }\n        # after changes\n    ]\n    # at end\n} # close\nsequence \"s\" { # seq head\n    @1/1\n    a: static, color: \"red\", duration: 1s\n    # seq after\n}\n# before show\nshow \"S\" { // show head\n    # before cue\n    @1/1 # on cue\n    # before effect\n    front: static, color: \"red\", duration: 1s # on effect\n    clear(layer: background) # on command\n    # before ref\n    sequence \"s\" # on ref\n    offset 1 measures # on offset\n    reset_measures # on reset\n    # between cues\n    @2/1\n    loop {\n        @0.0\n        a: strobe, frequency: 4, duration: 0.5s\n    } repeats: 2 # on loop\n    # show after\n} # show close\n# file end\n";
-        let doc = document(source, None).document.expect("parses");
+        let doc = document(source, Some(Path::new("show.light")))
+            .document
+            .expect("parses");
         let v = |xs: &[&str]| Some(xs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
         let inc = &doc.includes.as_ref().unwrap()[0];
         assert_eq!(inc.comments_before, v(&["# top"]));
@@ -2438,6 +2447,38 @@ show "Song" {
                 .unwrap();
             assert_eq!(doc.shows[0].cues[0].timestamp.ms, Some(ms), "{written}");
         }
+    }
+
+    #[test]
+    fn refuses_what_the_player_refuses_with_its_words() {
+        let error = |source: &str, path: Option<&str>| {
+            document(source, path.map(Path::new))
+                .error
+                .unwrap_or_else(|| panic!("{source} is refused"))
+        };
+        let show = "show \"S\" {\n    @1/1\n}\n";
+        let player = |source: &str| {
+            crate::lighting::parser::parse_light_shows(source)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        };
+        // A zero metre, a start in beats: the player's own text.
+        for tempo in [
+            "tempo {\n    time_signature: 0/4\n}\n",
+            "tempo {\n    start: 2beats\n}\n",
+        ] {
+            let source = format!("{tempo}{show}");
+            let refused = error(&source, Some("s.light"));
+            assert!(player(&source).contains(&refused), "{refused}");
+        }
+        // An include with no file to resolve against, or not a `.light`.
+        assert!(error(&format!("include \"a.light\"\n{show}"), None)
+            .contains("resolves against the file's folder"));
+        assert!(
+            error(&format!("include \"a.txt\"\n{show}"), Some("s.light"))
+                .contains("only .light files can be included")
+        );
     }
 
     #[test]

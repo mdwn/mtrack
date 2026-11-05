@@ -62,7 +62,9 @@
           time_signature: c.time_signature,
         };
         if (c.transition_beats) {
-          change.transition = `${c.transition_beats}`;
+          change.transition = rules.transition_text({
+            beats: c.transition_beats,
+          });
         }
         return change;
       }),

@@ -36,8 +36,7 @@
   } from "../../../gen/rules/mtrack_rules";
   import {
     effectTypeColor,
-    msToDurationString,
-    snapDurationToGrid,
+    SNAP_BEATS,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
   import { rules } from "../../../lib/rules";
@@ -253,14 +252,16 @@
         } else if (onresize) {
           const snappedMs =
             snapEnabled && tempoSource && !bypassSnap
-              ? snapDurationToGrid(
-                  newTotalMs,
-                  cueMs,
+              ? (rules.duration_snap(
                   tempoSource,
-                  snapResolution,
-                )
+                  cueMs,
+                  newTotalMs,
+                  SNAP_BEATS[snapResolution],
+                ) ?? newTotalMs)
               : newTotalMs;
-          onresize(msToDurationString(snappedMs, tempoSource, cueMs));
+          onresize(
+            rules.duration_text(tempoSource ?? undefined, cueMs, snappedMs),
+          );
         }
       }
     }

@@ -34,7 +34,7 @@
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock, { type Block, type BlockEffect } from "./CueBlock.svelte";
-  import { colorsOf } from "../../../lib/lighting/params";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     name: string;
@@ -155,7 +155,9 @@
         own.push({
           type: e.kind,
           groups: e.groups,
-          colors: written ? colorsOf(written.effect) : [],
+          colors: written
+            ? (rules.effect_view(written.effect)?.colors ?? [])
+            : [],
         });
         ownEnd = Math.max(ownEnd, e.end_ms);
       });
@@ -228,19 +230,7 @@
       const layer = subLaneType?.startsWith("effects:")
         ? (subLaneType.split(":")[1] as Layer)
         : undefined;
-      const defaultDuration = tempoSource ? "1measure" : "5s";
-      newCue.effects = [
-        {
-          groups: ["all"],
-          effect: {
-            type: "static",
-            params: [
-              { name: "duration", value: defaultDuration },
-              ...(layer ? [{ name: "layer", value: layer }] : []),
-            ],
-          },
-        },
-      ];
+      newCue.effects = [rules.effect_new(layer, !!tempoSource)];
     } else if (subLaneType === "commands") {
       newCue.commands = [{ command: "clear" }];
     } else if (subLaneType === "sequences") {

@@ -31,6 +31,7 @@ use super::effect_parse::effect_keyword;
 use super::grammar::Rule;
 use super::include::IncludeReader;
 use super::show::{parse_file_with, ParsedCue, ParsedShow};
+use super::utils::unquote;
 use crate::lighting::effects::DEFAULT_LAYER;
 use crate::tempo::TempoMap;
 
@@ -271,7 +272,7 @@ pub fn layout(
             pair.clone()
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::sequence_name)
-                .map(|p| p.as_str().trim_matches('"').to_string())
+                .map(|p| unquote(&p))
         })
         .map(|name| match parsed.library.structure(&name) {
             Ok(structure) => {
@@ -431,7 +432,7 @@ fn cue_layout(
                 .enumerate()
                 .map(move |(i, effect)| EffectLayout {
                     kind: effect_keyword(&effect.effect_type).to_string(),
-                    layer: format!("{:?}", effect.layer.unwrap_or(DEFAULT_LAYER)).to_lowercase(),
+                    layer: effect.layer.unwrap_or(DEFAULT_LAYER).keyword().to_string(),
                     groups: effect.groups.clone(),
                     start_ms: ms(placed.time),
                     end_ms: ms(placed.time.saturating_add(effect.total_duration())),

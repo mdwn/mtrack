@@ -1684,7 +1684,7 @@ impl McpServer {
             "per_layer_seconds": analysis
                 .per_layer_seconds
                 .iter()
-                .map(|(layer, secs)| (format!("{layer:?}").to_lowercase(), *secs))
+                .map(|(layer, secs)| (layer.keyword().to_string(), *secs))
                 .collect::<std::collections::BTreeMap<_, _>>(),
             "warnings": warnings,
         })))
@@ -1742,9 +1742,9 @@ impl McpServer {
                 "position": e.position,
                 "groups": e.groups,
                 "type": e.effect_type,
-                "layer": format!("{:?}", e.layer).to_lowercase(),
+                "layer": e.layer.keyword(),
                 "duration": e.duration.as_secs_f64(),
-                "blend_mode": format!("{:?}", e.blend_mode).to_lowercase(),
+                "blend_mode": e.blend_mode.keyword(),
                 "parameters": e.parameters,
             })
         };
@@ -3034,7 +3034,7 @@ fn evaluation_json(
             json!({
                 "id": effect.id,
                 "type": effect.effect_type,
-                "layer": format!("{:?}", effect.layer).to_lowercase(),
+                "layer": effect.layer.keyword(),
                 "elapsed": effect.elapsed.as_secs_f64(),
                 "duration": effect.duration.as_secs_f64(),
                 "fixtures": effect.fixtures,

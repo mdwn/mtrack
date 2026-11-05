@@ -70,7 +70,7 @@ pub struct TempoChangeConfig {
 }
 
 /// How a tempo change transitions from the previous tempo.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionConfig {

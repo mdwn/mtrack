@@ -2131,7 +2131,7 @@ pub(super) async fn evaluate_lighting(
                         "id": effect.id,
                         "groups": evaluated.effect_groups.get(&effect.id),
                         "kind": effect.effect_type,
-                        "layer": format!("{:?}", effect.layer).to_lowercase(),
+                        "layer": effect.layer.keyword(),
                         "elapsed": effect.elapsed.as_secs_f64(),
                         "duration": effect.duration.as_secs_f64(),
                         "fixtures": effect.fixtures,

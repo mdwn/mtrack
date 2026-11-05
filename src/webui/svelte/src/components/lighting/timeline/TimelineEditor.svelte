@@ -33,7 +33,7 @@
     offsetMarkers,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
-  import { withParam } from "../../../lib/lighting/params";
+  import { rules } from "../../../lib/rules";
   import TimelineToolbar from "./TimelineToolbar.svelte";
   import TimeRuler from "./TimeRuler.svelte";
   import WaveformLane from "./WaveformLane.svelte";
@@ -415,8 +415,13 @@
     const shows = [...lightFile.shows];
     const cues = [...shows[showIndex].cues];
     const cue = { ...cues[cueIndex] };
-    cue.effects = cue.effects.map((eff) =>
-      withParam(eff, "duration", newDurationStr),
+    cue.effects = cue.effects.map(
+      (eff) =>
+        rules.effect_edit(eff, {
+          op: "set",
+          name: "duration",
+          value: newDurationStr,
+        }) ?? eff,
     );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
@@ -435,7 +440,7 @@
     // plays: the others keep their counts.
     const dragged = cue.sequences.findIndex((ref) => !ref.stop);
     cue.sequences = cue.sequences.map((ref, i) =>
-      i === dragged ? { ...ref, loop: String(newLoopCount) } : ref,
+      i === dragged ? (rules.reference_loop(ref, newLoopCount) ?? ref) : ref,
     );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
