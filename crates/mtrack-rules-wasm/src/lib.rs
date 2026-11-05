@@ -672,6 +672,40 @@ pub fn document(source: &str, path: Option<String>) -> DocumentResult {
     lighting::parser::document::document(source, path.as_deref().map(Path::new))
 }
 
+/// Whether `text`, whole, is a sequence parameter reference (`$name`) by
+/// the grammar's `param_ref`: what a form asks of a value typed into it,
+/// so it stays bare where a string would be quoted.
+#[wasm_bindgen]
+pub fn param_ref(text: &str) -> bool {
+    use pest::Parser;
+    lighting::parser::grammar::LightingParser::parse(
+        lighting::parser::grammar::Rule::param_ref_only,
+        text.trim(),
+    )
+    .is_ok()
+}
+
+/// What a light show's tempo block says when it says nothing: the
+/// player's default tempo and metre (`DEFAULT_BPM`,
+/// `DEFAULT_TIME_SIGNATURE`), which the editor's serializer leaves
+/// unwritten when a block never wrote them.
+#[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct TempoDefaults {
+    pub bpm: f64,
+    pub time_signature: (u32, u32),
+}
+
+/// [`TempoDefaults`], for the web UI.
+#[wasm_bindgen]
+pub fn tempo_defaults() -> TempoDefaults {
+    let sig = tempo::DEFAULT_TIME_SIGNATURE;
+    TempoDefaults {
+        bpm: tempo::DEFAULT_BPM,
+        time_signature: (sig.numerator, sig.denominator),
+    }
+}
+
 // ── Metronome ───────────────────────────────────────────────────────────────
 
 /// Per-beat accent levels: 0 silent, 1 normal, 2 half, 3 accent.

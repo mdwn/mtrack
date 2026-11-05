@@ -284,6 +284,10 @@ comment_tok = @{ comment_body }
 
 gap = ${ SOI ~ (comment_tok | !comment_tok ~ ANY)* ~ EOI }
 
+// A whole value that is a sequence parameter reference: what the web UI
+// asks of text typed into a form. The player never invokes it.
+param_ref_only = { SOI ~ param_ref ~ EOI }
+
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }
 

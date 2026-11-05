@@ -15,6 +15,7 @@
 import type {
   LightFile,
   Timestamp,
+  TempoChange,
   TempoSection,
   Cue,
   CueEffect,
@@ -22,7 +23,13 @@ import type {
   SequenceRef,
   SequenceArg,
 } from "./types";
-import type { CueLine, TempoField } from "../../gen/rules/mtrack_rules";
+import type {
+  CueLine,
+  DocumentItem,
+  Param,
+  TempoField,
+} from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
 
 /**
  * Serialize a LightFile structure back to DSL text: what the document
@@ -32,41 +39,65 @@ import type { CueLine, TempoField } from "../../gen/rules/mtrack_rules";
 export function serializeLightFile(file: LightFile): string {
   const parts: string[] = [];
 
-  if (file.includes?.length) {
-    for (const inc of file.includes) {
+  // The items in the order the file wrote them, while the lists still
+  // match it (an edit that adds or removes an item writes them grouped).
+  const counts = {
+    include: file.includes?.length ?? 0,
+    tempo: file.tempo ? 1 : 0,
+    sequence: file.sequences.length,
+    show: file.shows.length,
+  };
+  const written = file.items ?? [];
+  const seen: Record<string, number> = {};
+  for (const k of written) seen[k] = (seen[k] ?? 0) + 1;
+  const asWritten = Object.entries(counts).every(
+    ([k, n]) => (seen[k] ?? 0) === n,
+  );
+  const order: DocumentItem[] = asWritten
+    ? written
+    : [
+        ...Array<DocumentItem>(counts.include).fill("include"),
+        ...Array<DocumentItem>(counts.tempo).fill("tempo"),
+        ...Array<DocumentItem>(counts.sequence).fill("sequence"),
+        ...Array<DocumentItem>(counts.show).fill("show"),
+      ];
+  const next: Record<string, number> = {};
+  order.forEach((kind, i) => {
+    const n = next[kind] ?? 0;
+    next[kind] = n + 1;
+    if (kind === "include") {
+      const inc = file.includes![n];
       parts.push(...own(inc.comments_before, ""));
       parts.push(line(`include "${inc.written}"`, inc.comment));
+      // Includes sit together, one blank line after the run.
+      if (order[i + 1] !== "include") parts.push("");
+    } else if (kind === "tempo") {
+      parts.push(serializeTempo(file.tempo!));
+      parts.push("");
+    } else if (kind === "sequence") {
+      const seq = file.sequences[n];
+      const params = seq.params ? serializeArgList(seq.params) : "";
+      const length = seq.length ? `, length: ${seq.length}` : "";
+      parts.push(...own(seq.comments_before, ""));
+      parts.push(
+        line(`sequence "${seq.name}"${params}${length} {`, seq.comment),
+      );
+      parts.push(serializeCues(seq.cues));
+      parts.push(...own(seq.comments_after, "    "));
+      parts.push(line("}", seq.close_comment));
+      parts.push("");
+    } else {
+      const show = file.shows[n];
+      parts.push(...own(show.comments_before, ""));
+      const head =
+        show.unnamed && show.name === "" ? "show {" : `show "${show.name}" {`;
+      parts.push(line(head, show.comment));
+      parts.push(serializeCues(show.cues));
+      parts.push(...own(show.comments_after, "    "));
+      parts.push(line("}", show.close_comment));
+      parts.push("");
     }
-    parts.push("");
-  }
-
-  // Tempo block
-  if (file.tempo) {
-    parts.push(serializeTempo(file.tempo));
-    parts.push("");
-  }
-
-  // Sequences
-  for (const seq of file.sequences) {
-    const params = seq.params ? serializeArgList(seq.params) : "";
-    const length = seq.length ? `, length: ${seq.length}` : "";
-    parts.push(...own(seq.comments_before, ""));
-    parts.push(line(`sequence "${seq.name}"${params}${length} {`, seq.comment));
-    parts.push(serializeCues(seq.cues));
-    parts.push(...own(seq.comments_after, "    "));
-    parts.push(line("}", seq.close_comment));
-    parts.push("");
-  }
-
-  // Shows
-  for (const show of file.shows) {
-    parts.push(...own(show.comments_before, ""));
-    parts.push(line(`show "${show.name}" {`, show.comment));
-    parts.push(serializeCues(show.cues));
-    parts.push(...own(show.comments_after, "    "));
-    parts.push(line("}", show.close_comment));
-    parts.push("");
-  }
+  });
 
   parts.push(...own(file.comments_after, ""));
   if (file.comments_after?.length) parts.push("");
@@ -103,11 +134,13 @@ export function serializeTempo(tempo: TempoSection): string {
   // written after them only once it is set to something other than the
   // parser's default for it (a block with no `start:` stays without one).
   const order: TempoField[] = [...(tempo.fields ?? [])];
+  const defaults = rules.tempo_defaults();
   const unset: Record<string, boolean> = {
     start: tempo.start.value === 0,
-    bpm: tempo.bpm === 120,
+    bpm: tempo.bpm === defaults.bpm,
     time_signature:
-      tempo.time_signature[0] === 4 && tempo.time_signature[1] === 4,
+      tempo.time_signature[0] === defaults.time_signature[0] &&
+      tempo.time_signature[1] === defaults.time_signature[1],
     changes:
       tempo.changes.length === 0 && !tempo.changes_comments_after?.length,
   };
@@ -123,13 +156,20 @@ export function serializeTempo(tempo: TempoSection): string {
           ? text
           : undefined;
       field("start", `start: ${kept ?? `${value}${unit}`}`);
-    } else if (name === "bpm") field("bpm", `bpm: ${tempo.bpm}`);
-    else if (name === "time_signature")
-      field(
-        "time_signature",
-        `time_signature: ${tempo.time_signature[0]}/${tempo.time_signature[1]}`,
-      );
-    else if (name === "changes") writeChanges();
+    } else if (name === "bpm") {
+      const kept =
+        tempo.bpm_text && parseFloat(tempo.bpm_text) === tempo.bpm
+          ? tempo.bpm_text
+          : undefined;
+      field("bpm", `bpm: ${kept ?? tempo.bpm}`);
+    } else if (name === "time_signature") {
+      const [n, d] = tempo.time_signature;
+      const kept =
+        tempo.time_signature_text?.replace(/\s+/g, "") === `${n}/${d}`
+          ? tempo.time_signature_text
+          : undefined;
+      field("time_signature", `time_signature: ${kept ?? `${n}/${d}`}`);
+    } else if (name === "changes") writeChanges();
   };
   const writeChanges = () => {
     if (tempo.changes.length === 0 && !tempo.changes_comments_after?.length)
@@ -137,18 +177,17 @@ export function serializeTempo(tempo: TempoSection): string {
     field("changes", "changes: [");
     tempo.changes.forEach((change, i) => {
       const ts = formatTimestamp(change.timestamp);
-      const params: string[] = [];
-      if (change.bpm !== undefined) params.push(`bpm: ${change.bpm}`);
-      if (change.time_signature)
-        params.push(
-          `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
-        );
-      if (change.transition) params.push(`transition: ${change.transition}`);
+      const params = changeParams(change);
       const comma = i < tempo.changes.length - 1 ? "," : "";
       lines.push(...own(change.comments_before, "        "));
-      lines.push(
-        line(`        @${ts} { ${params.join(", ")} }${comma}`, change.comment),
-      );
+      const text = `        @${ts} { ${params.join(", ")} }`;
+      if (comma && change.comment && change.comment_before_comma) {
+        // The comment was between the `}` and the comma: it stays there.
+        lines.push(line(text, change.comment));
+        lines.push("        ,");
+      } else {
+        lines.push(line(`${text}${comma}`, change.comment));
+      }
     });
     lines.push(...own(tempo.changes_comments_after, "        "));
     lines.push(line("    ]", at("end", true).join(" ") || undefined));
@@ -158,6 +197,36 @@ export function serializeTempo(tempo: TempoSection): string {
 
   lines.push(line("}", tempo.close_comment));
   return lines.join("\n");
+}
+
+/** A tempo change's parameters: as written, in order and spelling, while
+ *  the values are still those (an edit writes them afresh). */
+function changeParams(change: TempoChange): string[] {
+  const written = change.written ?? [];
+  const holds = (p: Param) =>
+    (p.name === "bpm" &&
+      change.bpm !== undefined &&
+      parseFloat(p.value) === change.bpm) ||
+    (p.name === "time_signature" &&
+      change.time_signature !== undefined &&
+      p.value.replace(/\s+/g, "") ===
+        `${change.time_signature[0]}/${change.time_signature[1]}`) ||
+    (p.name === "transition" && p.value === change.transition);
+  const count =
+    (change.bpm !== undefined ? 1 : 0) +
+    (change.time_signature ? 1 : 0) +
+    (change.transition ? 1 : 0);
+  if (written.length === count && written.every(holds)) {
+    return written.map((p) => `${p.name}: ${p.value}`);
+  }
+  const params: string[] = [];
+  if (change.bpm !== undefined) params.push(`bpm: ${change.bpm}`);
+  if (change.time_signature)
+    params.push(
+      `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
+    );
+  if (change.transition) params.push(`transition: ${change.transition}`);
+  return params;
 }
 
 function serializeCues(cues: Cue[]): string {
@@ -172,11 +241,19 @@ function serializeCues(cues: Cue[]): string {
     // The cue's lines, each kind in its list's order, in the order the
     // file wrote them when the lists still match that order (an edit that
     // adds or removes a line writes the kinds grouped).
+    // Several `offset` lines stay several while they still add up.
+    const sum = (cue.offsets ?? []).reduce((a, b) => a + b, 0);
+    const offsets =
+      cue.offsets && sum === cue.offset_measures
+        ? cue.offsets
+        : cue.offset_measures !== undefined
+          ? [cue.offset_measures]
+          : [];
     const kinds = {
       effect: cue.effects.length,
       command: cue.commands.length,
       reference: cue.sequences.length,
-      offset: cue.offset_measures !== undefined ? 1 : 0,
+      offset: offsets.length,
       reset: cue.reset_measures ? 1 : 0,
       loop: cue.loops?.length ?? 0,
     };
@@ -215,11 +292,11 @@ function serializeCues(cues: Cue[]): string {
         lines.push(...own(ref.comments_before, "    "));
         lines.push(line(`    ${serializeSequenceRef(ref)}`, ref.comment));
       } else if (kind === "offset") {
-        lines.push(...own(cue.offset_comments_before, "    "));
+        if (i === 0) lines.push(...own(cue.offset_comments_before, "    "));
         lines.push(
           line(
-            `    offset ${cue.offset_measures} measures`,
-            cue.offset_comment,
+            `    offset ${offsets[i]} measures`,
+            i === offsets.length - 1 ? cue.offset_comment : undefined,
           ),
         );
       } else if (kind === "reset") {
@@ -276,10 +353,20 @@ function serializeEffect(cueEffect: CueEffect): string {
 }
 
 function serializeLayerCommand(cmd: LayerCommand): string {
-  const params: string[] = [];
-  if (cmd.layer) params.push(`layer: ${cmd.layer}`);
-  if (cmd.intensity) params.push(`intensity: ${cmd.intensity}`);
-  if (cmd.speed) params.push(`speed: ${cmd.speed}`);
+  // As written, in order, while the values are still those.
+  const typed: Record<string, string | undefined> = {
+    layer: cmd.layer,
+    intensity: cmd.intensity,
+    speed: cmd.speed,
+  };
+  const written = cmd.written ?? [];
+  const count = Object.values(typed).filter((v) => v).length;
+  const params =
+    written.length === count && written.every((p) => typed[p.name] === p.value)
+      ? written.map((p) => `${p.name}: ${p.value}`)
+      : Object.entries(typed)
+          .filter(([, v]) => v)
+          .map(([k, v]) => `${k}: ${v}`);
   return `${cmd.command}(${params.join(", ")})`;
 }
 

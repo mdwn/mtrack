@@ -19,6 +19,7 @@
 // back as it was.
 
 import type { EffectParams } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
 
 /** The value of the last `name` parameter, as written. */
 export function param(effect: EffectParams, name: string): string | undefined {
@@ -33,9 +34,10 @@ export function unquoted(value: string | undefined): string | undefined {
   return value !== undefined ? value.replace(/^"(.*)"$/, "$1") : undefined;
 }
 
-/** A sequence parameter, `$name`, substituted before the value is read. */
+/** A sequence parameter, `$name`, substituted before the value is read:
+ *  the grammar's own `param_ref`. */
 export function isParam(value: string): boolean {
-  return /^\$[A-Za-z_][\w-]*$/.test(value.trim());
+  return rules.param_ref(value);
 }
 
 /** A string value in quotes, unless it is a parameter, which must stay bare. */
