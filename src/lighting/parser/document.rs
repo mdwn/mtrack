@@ -183,6 +183,10 @@ pub struct TempoChange {
 pub struct DurationValue {
     pub value: f64,
     pub unit: DurationUnit,
+    /// As written (`0.0s`), for a save to keep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub text: Option<String>,
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -202,6 +206,11 @@ pub enum DurationUnit {
 pub struct Timestamp {
     #[serde(rename = "type")]
     pub kind: TimestampKind,
+    /// As written (`@0.000`, `@1/1.5`), for a save to keep; an edit makes
+    /// a timestamp without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub ms: Option<f64>,
@@ -344,14 +353,22 @@ pub struct Cue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub reset_comment: Option<String>,
+    /// Its lines in the order they were written (an effect, a command, a
+    /// reference, an offset, a reset, a loop; each kind's in its list's
+    /// order), so a save keeps them so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub lines: Option<Vec<CueLine>>,
     /// Which of its lines was read last: where a comment on that line goes.
     #[serde(skip)]
     last: CueLine,
 }
 
 /// The kinds of line a cue holds.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-enum CueLine {
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CueLine {
     #[default]
     Timestamp,
     Effect,
@@ -484,6 +501,10 @@ pub struct SequenceRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub stop: Option<bool>,
+    /// Whether a comma preceded `loop:`, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub loop_comma: Option<bool>,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -688,6 +709,7 @@ fn tempo_section(
         start: DurationValue {
             value: 0.0,
             unit: DurationUnit::S,
+            text: None,
         },
         bpm: crate::tempo::DEFAULT_BPM,
         time_signature: (
@@ -869,6 +891,7 @@ fn tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
     let mut change = TempoChange {
         timestamp: Timestamp {
             kind: TimestampKind::Absolute,
+            text: None,
             ms: Some(0.0),
             measure: None,
             beat: None,
@@ -933,6 +956,7 @@ fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
     Ok(DurationValue {
         value: number.trim().parse()?,
         unit,
+        text: Some(raw.trim().to_string()),
     })
 }
 
@@ -942,6 +966,7 @@ fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {
             let (measure, beat) = parse_measure_time(pair.as_str())?;
             Timestamp {
                 kind: TimestampKind::MeasureBeat,
+                text: Some(pair.as_str().trim().to_string()),
                 ms: None,
                 measure: Some(measure),
                 beat: Some(beat),
@@ -952,6 +977,7 @@ fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {
         // thousand is not 1005.
         _ => Timestamp {
             kind: TimestampKind::Absolute,
+            text: Some(pair.as_str().trim().to_string()),
             ms: Some(parse_time_string(pair.as_str())?.as_millis() as f64),
             measure: None,
             beat: None,
@@ -1126,11 +1152,16 @@ impl Cue {
     }
 }
 
-fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box<dyn Error>> {
+/// A cue as read, with the comment lines its own pairs held after its
+/// last line, which belong to what follows it.
+type CueAndTrailing = (Cue, Option<Vec<String>>);
+
+fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>> {
     let line = pair.line_col().0 as u32;
     let mut cue = Cue {
         timestamp: Timestamp {
             kind: TimestampKind::Absolute,
+            text: None,
             ms: Some(0.0),
             measure: None,
             beat: None,
@@ -1148,9 +1179,11 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
         offset_comment: None,
         reset_comments_before: None,
         reset_comment: None,
+        lines: None,
         last: CueLine::Timestamp,
     };
     let mut comments = Comments::new(source);
+    let mut lines: Vec<CueLine> = Vec::new();
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::comment => {
@@ -1166,6 +1199,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                 comments.absorb(&item, &mut effect.comment);
                 cue.effects.push(effect);
                 cue.last = CueLine::Effect;
+                lines.push(CueLine::Effect);
             }
             Rule::layer_command => {
                 let mut command = layer_command(item.clone());
@@ -1173,6 +1207,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                 comments.absorb(&item, &mut command.comment);
                 cue.commands.push(command);
                 cue.last = CueLine::Command;
+                lines.push(CueLine::Command);
             }
             Rule::sequence_reference => {
                 let mut reference = sequence_ref(item.clone());
@@ -1180,6 +1215,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                 comments.absorb(&item, &mut reference.comment);
                 cue.sequences.push(reference);
                 cue.last = CueLine::Reference;
+                lines.push(CueLine::Reference);
             }
             Rule::stop_sequence_command => {
                 let name = item
@@ -1193,12 +1229,14 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                     args: None,
                     loop_: None,
                     stop: Some(true),
+                    loop_comma: None,
                     comments_before: comments.take(),
                     comment: None,
                 };
                 comments.absorb(&item, &mut stop.comment);
                 cue.sequences.push(stop);
                 cue.last = CueLine::Reference;
+                lines.push(CueLine::Reference);
             }
             Rule::offset_command => {
                 let measures: u32 = item
@@ -1216,6 +1254,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                 }
                 comments.absorb(&item, &mut cue.offset_comment);
                 cue.last = CueLine::Offset;
+                lines.push(CueLine::Offset);
             }
             Rule::reset_measures_command => {
                 cue.reset_measures = Some(true);
@@ -1226,6 +1265,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                 }
                 comments.absorb(&item, &mut cue.reset_comment);
                 cue.last = CueLine::Reset;
+                lines.push(CueLine::Reset);
             }
             Rule::inline_loop => {
                 cue.loops.get_or_insert_with(Vec::new).push(InlineLoop {
@@ -1234,9 +1274,13 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
                     comment: None,
                 });
                 cue.last = CueLine::Loop;
+                lines.push(CueLine::Loop);
             }
             _ => {}
         }
+    }
+    if !lines.is_empty() {
+        cue.lines = Some(lines);
     }
     // A comment line the cue's own pairs hold after its last line belongs
     // to what follows the cue: handed back to the body.
@@ -1350,13 +1394,21 @@ fn sequence_ref(pair: Pair<Rule>) -> SequenceRef {
         args: None,
         loop_: None,
         stop: None,
+        loop_comma: None,
         comments_before: None,
         comment: None,
     };
+    let source = pair.as_str();
+    let base = pair.as_span().start();
+    let mut before_params = 0;
     for item in pair.children() {
         match item.as_rule() {
-            Rule::sequence_name => reference.name = item.as_str().trim_matches('"').to_string(),
+            Rule::sequence_name => {
+                reference.name = item.as_str().trim_matches('"').to_string();
+                before_params = item.as_span().end() - base;
+            }
             Rule::sequence_args => {
+                before_params = item.as_span().end() - base;
                 reference.args = Some(
                     item.children()
                         .filter(|p| p.as_rule() == Rule::sequence_arg)
@@ -1365,6 +1417,9 @@ fn sequence_ref(pair: Pair<Rule>) -> SequenceRef {
                 )
             }
             Rule::sequence_params => {
+                if source[before_params..item.as_span().start() - base].contains(',') {
+                    reference.loop_comma = Some(true);
+                }
                 for param in item
                     .children()
                     .filter(|p| p.as_rule() == Rule::sequence_param)

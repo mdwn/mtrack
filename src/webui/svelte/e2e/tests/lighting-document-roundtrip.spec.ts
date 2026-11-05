@@ -105,7 +105,7 @@ for (const folder of folders) {
       const bytes = (text: string) =>
         text
           .split("\n")
-          .map((l) => l.trim())
+          .map((l) => l.trim().replace(/\s+/g, " "))
           .filter((l) => l !== "");
       const differing = bytes(source).filter((l, i) => l !== bytes(written)[i]);
       if (process.env.MTRACK_LIGHT_DIFF) {

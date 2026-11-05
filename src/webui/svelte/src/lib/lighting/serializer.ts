@@ -22,7 +22,7 @@ import type {
   SequenceRef,
   SequenceArg,
 } from "./types";
-import type { TempoField } from "../../gen/rules/mtrack_rules";
+import type { CueLine, TempoField } from "../../gen/rules/mtrack_rules";
 
 /**
  * Serialize a LightFile structure back to DSL text: what the document
@@ -99,15 +99,31 @@ export function serializeTempo(tempo: TempoSection): string {
   };
   lines.push(...own(tempo.comments_before, ""));
   lines.push(line("tempo {", tempo.comment));
-  // The fields in the order the block wrote them, those it left out after.
+  // The fields in the order the block wrote them; one it left out is
+  // written after them only once it is set to something other than the
+  // parser's default for it (a block with no `start:` stays without one).
   const order: TempoField[] = [...(tempo.fields ?? [])];
+  const unset: Record<string, boolean> = {
+    start: tempo.start.value === 0,
+    bpm: tempo.bpm === 120,
+    time_signature:
+      tempo.time_signature[0] === 4 && tempo.time_signature[1] === 4,
+    changes:
+      tempo.changes.length === 0 && !tempo.changes_comments_after?.length,
+  };
   for (const f of ["start", "bpm", "time_signature", "changes"] as const) {
-    if (!order.includes(f)) order.push(f);
+    if (!order.includes(f) && !(tempo.fields && unset[f])) order.push(f);
   }
   const writeField = (name: TempoField) => {
-    if (name === "start")
-      field("start", `start: ${tempo.start.value}${tempo.start.unit}`);
-    else if (name === "bpm") field("bpm", `bpm: ${tempo.bpm}`);
+    if (name === "start") {
+      // As written, while the value is still the one that was read.
+      const { text, value, unit } = tempo.start;
+      const kept =
+        text && parseFloat(text) === value && text.endsWith(unit)
+          ? text
+          : undefined;
+      field("start", `start: ${kept ?? `${value}${unit}`}`);
+    } else if (name === "bpm") field("bpm", `bpm: ${tempo.bpm}`);
     else if (name === "time_signature")
       field(
         "time_signature",
@@ -153,42 +169,68 @@ function serializeCues(cues: Cue[]): string {
     lines.push(...own(cue.comments_before, "    "));
     lines.push(line(`    @${formatTimestamp(cue.timestamp)}`, cue.comment));
 
-    // Effects
-    for (const eff of cue.effects) {
-      const s = serializeEffect(eff);
-      if (!s) continue;
-      lines.push(...own(eff.comments_before, "    "));
-      lines.push(line(`    ${s}`, eff.comment));
-    }
-
-    // Layer commands
-    for (const cmd of cue.commands) {
-      lines.push(...own(cmd.comments_before, "    "));
-      lines.push(line(`    ${serializeLayerCommand(cmd)}`, cmd.comment));
-    }
-
-    // Sequence references
-    for (const ref of cue.sequences) {
-      lines.push(...own(ref.comments_before, "    "));
-      lines.push(line(`    ${serializeSequenceRef(ref)}`, ref.comment));
-    }
-
-    // Offset/reset measures
-    if (cue.offset_measures !== undefined) {
-      lines.push(...own(cue.offset_comments_before, "    "));
-      lines.push(
-        line(`    offset ${cue.offset_measures} measures`, cue.offset_comment),
-      );
-    }
-    if (cue.reset_measures) {
-      lines.push(...own(cue.reset_comments_before, "    "));
-      lines.push(line(`    reset_measures`, cue.reset_comment));
-    }
-
-    // Inline loops, kept as the text they were read from.
-    for (const loop of cue.loops ?? []) {
-      lines.push(...own(loop.comments_before, "    "));
-      lines.push(line(`    ${loop.text}`, loop.comment));
+    // The cue's lines, each kind in its list's order, in the order the
+    // file wrote them when the lists still match that order (an edit that
+    // adds or removes a line writes the kinds grouped).
+    const kinds = {
+      effect: cue.effects.length,
+      command: cue.commands.length,
+      reference: cue.sequences.length,
+      offset: cue.offset_measures !== undefined ? 1 : 0,
+      reset: cue.reset_measures ? 1 : 0,
+      loop: cue.loops?.length ?? 0,
+    };
+    const written = cue.lines ?? [];
+    const counts: Record<string, number> = {};
+    for (const k of written) counts[k] = (counts[k] ?? 0) + 1;
+    const asWritten = Object.entries(kinds).every(
+      ([k, n]) => (counts[k] ?? 0) === n,
+    );
+    const order: CueLine[] = asWritten
+      ? written
+      : [
+          ...Array<CueLine>(kinds.effect).fill("effect"),
+          ...Array<CueLine>(kinds.command).fill("command"),
+          ...Array<CueLine>(kinds.reference).fill("reference"),
+          ...Array<CueLine>(kinds.offset).fill("offset"),
+          ...Array<CueLine>(kinds.reset).fill("reset"),
+          ...Array<CueLine>(kinds.loop).fill("loop"),
+        ];
+    const next: Record<string, number> = {};
+    for (const kind of order) {
+      const i = next[kind] ?? 0;
+      next[kind] = i + 1;
+      if (kind === "effect") {
+        const eff = cue.effects[i];
+        const s = serializeEffect(eff);
+        if (!s) continue;
+        lines.push(...own(eff.comments_before, "    "));
+        lines.push(line(`    ${s}`, eff.comment));
+      } else if (kind === "command") {
+        const cmd = cue.commands[i];
+        lines.push(...own(cmd.comments_before, "    "));
+        lines.push(line(`    ${serializeLayerCommand(cmd)}`, cmd.comment));
+      } else if (kind === "reference") {
+        const ref = cue.sequences[i];
+        lines.push(...own(ref.comments_before, "    "));
+        lines.push(line(`    ${serializeSequenceRef(ref)}`, ref.comment));
+      } else if (kind === "offset") {
+        lines.push(...own(cue.offset_comments_before, "    "));
+        lines.push(
+          line(
+            `    offset ${cue.offset_measures} measures`,
+            cue.offset_comment,
+          ),
+        );
+      } else if (kind === "reset") {
+        lines.push(...own(cue.reset_comments_before, "    "));
+        lines.push(line(`    reset_measures`, cue.reset_comment));
+      } else if (kind === "loop") {
+        // Inline loops, kept as the text they were read from.
+        const loop = cue.loops![i];
+        lines.push(...own(loop.comments_before, "    "));
+        lines.push(line(`    ${loop.text}`, loop.comment));
+      }
     }
 
     // Blank line between cues (except after last)
@@ -204,6 +246,8 @@ function serializeCues(cues: Cue[]): string {
  * Format a timestamp as a DSL string.
  */
 export function formatTimestamp(ts: Timestamp): string {
+  // As written, when the timestamp is the one that was read.
+  if (ts.text) return ts.text.replace(/^@/, "");
   if (ts.type === "measure_beat") {
     const beat = ts.beat !== undefined ? ts.beat.toString() : "1";
     return `${ts.measure ?? 1}/${beat}`;
@@ -244,7 +288,8 @@ function serializeSequenceRef(ref: SequenceRef): string {
   if (ref.stop) parts.push("stop ");
   parts.push(`sequence "${ref.name}"`);
   if (ref.args && !ref.stop) parts.push(serializeArgList(ref.args));
-  if (ref.loop && !ref.stop) parts.push(` loop: ${ref.loop}`);
+  if (ref.loop && !ref.stop)
+    parts.push(`${ref.loop_comma ? "," : ""} loop: ${ref.loop}`);
   return parts.join("");
 }
 
