@@ -1867,14 +1867,10 @@ impl McpServer {
         let group = report
             .groups
             .iter()
-            .find(|g| g["name"] == json!(args.group))
-            .cloned()
+            .find(|g| g.name == args.group)
+            .map(|g| json!(g))
             .ok_or_else(|| {
-                let known: Vec<&str> = report
-                    .groups
-                    .iter()
-                    .filter_map(|g| g["name"].as_str())
-                    .collect();
+                let known: Vec<&str> = report.groups.iter().map(|g| g.name.as_str()).collect();
                 McpError::invalid_params(
                     format!(
                         "no song's show targets a group named '{}'; groups the shows use: {known:?}",

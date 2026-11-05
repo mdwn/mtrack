@@ -70,8 +70,7 @@
   // Types only: the 3D view and the preview panel load the first time 3D
   // is pressed, and three.js with them.
   import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
-  import type { PreviewFrame } from "../lib/lighting/preview";
-  import { t } from "svelte-i18n";
+    import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
 
@@ -172,8 +171,8 @@
       (!!info3d.stats?.generic || !!info3d.scenery || !!info3d.sceneryError),
   );
   /** The previewed moment; null until the first evaluation. */
-  let feed = $state<PreviewFrame | null>(null);
-  const EMPTY_FRAME: PreviewFrame = {
+  let feed = $state<StageValues | null>(null);
+  const EMPTY_FRAME: StageValues = {
     fixtures: {},
     poses: {},
     cells: {},

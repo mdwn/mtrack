@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import type { Readiness } from "../../gen/rules/mtrack_rules";
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { BadAnswerError } from "../../lib/lighting/answer";
@@ -21,7 +22,6 @@
     evaluateReadiness,
     type Check,
     type Finding,
-    type Readiness,
   } from "../../lib/lighting/readiness";
   import { metadataStore, reloadStore, venueStore } from "../../lib/ws/stores";
   import StageView from "../StageView.svelte";

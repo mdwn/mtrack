@@ -31,6 +31,7 @@
 //! content and kept in `lighting/.cache/`; while an archive's length and
 //! modification time are unchanged it is not opened again.
 
+pub use super::findings::LibraryFinding;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -63,17 +64,6 @@ pub struct LibraryType {
     pub manufacturer: String,
     /// The name it would have had, when another fixture already has it.
     pub renamed_from: Option<String>,
-}
-
-/// Something about the library a person should know: two archives stating
-/// one name (`gdtf-name-collision`), or an archive that is not a readable
-/// GDTF (`gdtf-unreadable`). Neither stops the other fixtures.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct LibraryFinding {
-    pub kind: &'static str,
-    /// The archive's file name.
-    pub file: String,
-    pub message: String,
 }
 
 /// What [`unrecorded_types`] found.

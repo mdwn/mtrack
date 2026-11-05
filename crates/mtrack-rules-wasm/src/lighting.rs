@@ -20,6 +20,14 @@
 pub use crate::tempo;
 
 pub mod effects;
+#[path = "../../../src/lighting/findings.rs"]
+pub mod findings;
+#[path = "../../../src/lighting/fit/types.rs"]
+mod fit_types;
 #[path = "../../../src/lighting/geometry.rs"]
 pub mod geometry;
 pub mod parser;
+
+pub mod fit {
+    pub use super::fit_types::*;
+}

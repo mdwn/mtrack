@@ -1990,10 +1990,8 @@ pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoR
 /// off the async worker.
 pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoResponse {
     let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::lighting::fit::FitReport::gather(&player).to_json()
-    })
-    .await
+    match tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+        .await
     {
         Ok(report) => Json(report).into_response(),
         Err(e) => (
@@ -2113,55 +2111,47 @@ pub(super) async fn evaluate_lighting(
         }
     };
 
-    let untouched: Vec<&String> = evaluated
+    use crate::webui::wire::preview::{Preview, PreviewEffect, PreviewEvaluation};
+    let untouched = evaluated
         .venue_fixtures
         .iter()
         .filter(|name| !evaluated.targeted.contains(*name))
+        .cloned()
         .collect();
-    let evaluations: Vec<serde_json::Value> = evaluated
+    let evaluations = evaluated
         .evaluations
         .iter()
-        .map(|evaluation| {
-            let maps = super::super::state::stage_frame(&evaluation.fixtures, &evaluation.poses);
-            let active: Vec<serde_json::Value> = evaluation
+        .map(|evaluation| PreviewEvaluation {
+            time: evaluation.time.as_secs_f64(),
+            frame: super::super::state::stage_frame(&evaluation.fixtures, &evaluation.poses),
+            active_effects: evaluation
                 .active_effects
                 .iter()
-                .map(|effect| {
-                    json!({
-                        "id": effect.id,
-                        "groups": evaluated.effect_groups.get(&effect.id),
-                        "kind": effect.effect_type,
-                        "layer": effect.layer.keyword(),
-                        "elapsed": effect.elapsed.as_secs_f64(),
-                        "duration": effect.duration.as_secs_f64(),
-                        "fixtures": effect.fixtures,
-                    })
+                .map(|effect| PreviewEffect {
+                    id: effect.id.clone(),
+                    groups: evaluated.effect_groups.get(&effect.id).cloned(),
+                    kind: effect.effect_type.to_string(),
+                    layer: effect.layer.keyword().to_string(),
+                    elapsed: effect.elapsed.as_secs_f64(),
+                    duration: effect.duration.as_secs_f64(),
+                    fixtures: effect.fixtures.clone(),
                 })
-                .collect();
-            json!({
-                "time": evaluation.time.as_secs_f64(),
-                "fixtures": maps.fixtures,
-                "poses": maps.poses,
-                "cells": maps.cells,
-                "strobe_rates": maps.strobe_rates,
-                "active_effects": active,
-            })
+                .collect(),
         })
         .collect();
-    Json(json!({
-        "song": request.song,
-        "evaluations": evaluations,
-        "untouched": untouched,
-        // The current venue does not load: what is evaluated is an empty
-        // rig, and this says why rather than letting it look like one.
-        "venue_error": evaluated.venue_error,
-    }))
+    Json(Preview {
+        song: request.song,
+        evaluations,
+        untouched,
+        venue_error: evaluated.venue_error,
+    })
     .into_response()
 }
 
 /// The readiness facts for the player's running profile.
-fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
+fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readiness::Readiness {
     use crate::lighting::readiness::{group_names, VenueFacts};
+    use crate::webui::wire::readiness::*;
     use std::collections::BTreeSet;
 
     // Shows are reported with or without DMX: a laptop with no DMX output is
@@ -2185,7 +2175,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // The lighting system, under its lock for as short a time as it takes to
     // read what the sections below need.
     let mut facts = VenueFacts::default();
-    let mut venue = serde_json::Value::Null;
+    let mut venue = None;
     let mut in_use: BTreeSet<String> = BTreeSet::new();
     let mut unresolved = Vec::new();
     let mut library = Vec::new();
@@ -2198,11 +2188,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
         // The library's own findings: two archives that would share a name,
         // an archive that cannot be read. Neither stops a load.
-        library = guard
-            .library_findings()
-            .iter()
-            .map(|f| json!({"kind": f.kind, "file": f.file, "message": f.message}))
-            .collect();
+        library = guard.library_findings().to_vec();
         if let Some(current) = guard.get_current_venue() {
             let mut fixtures: Vec<&lighting::types::Fixture> =
                 current.fixtures().values().collect();
@@ -2213,43 +2199,40 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                     None => {
                         in_use.insert(fixture.fixture_type().to_string());
                     }
-                    Some(reason) => unresolved.push(json!({
-                        "fixture": fixture.name(),
-                        "type": fixture.fixture_type(),
-                        "reason": reason,
-                    })),
+                    Some(reason) => unresolved.push(UnresolvedFixture {
+                        fixture: fixture.name().to_string(),
+                        fixture_type: fixture.fixture_type().to_string(),
+                        reason,
+                    }),
                 }
             }
-            venue = json!({
-                "name": current.name(),
-                "fixtures": fixtures.len(),
-                "placed": fixtures.iter().filter(|f| f.position().is_some()).count(),
-                "focus_points": current.focus_points().keys().collect::<Vec<_>>(),
+            venue = Some(ReadinessVenue {
+                name: current.name().to_string(),
+                fixtures: fixtures.len(),
+                placed: fixtures.iter().filter(|f| f.position().is_some()).count(),
+                focus_points: current.focus_points().keys().cloned().collect(),
             });
         }
     }
 
-    let groups: Vec<serde_json::Value> = names
+    let groups: Vec<ReadinessGroup> = names
         .iter()
         .filter(|_| dmx.is_some())
-        .map(|name| {
-            let songs_using: Vec<&str> = with_lighting
+        .map(|name| ReadinessGroup {
+            name: name.clone(),
+            fixtures: facts.group_fixture_counts.get(name).copied().unwrap_or(0),
+            songs: with_lighting
                 .iter()
                 .filter(|(_, shows)| group_names(shows).contains(name))
-                .map(|(song, _)| song.name())
-                .collect();
-            json!({
-                "name": name,
-                "fixtures": facts.group_fixture_counts.get(name).copied().unwrap_or(0),
-                "songs": songs_using,
-            })
+                .map(|(song, _)| song.name().to_string())
+                .collect(),
         })
         .collect();
 
-    let mut shows: Vec<serde_json::Value> = with_lighting
+    let mut shows: Vec<ReadinessShow> = with_lighting
         .iter()
         .map(|(song, shows)| {
-            let warnings: Vec<serde_json::Value> = facts
+            let warnings: Vec<_> = facts
                 .lint(shows, Some(song))
                 .into_iter()
                 // Venue-level: the Output and Venue sections already carry
@@ -2261,7 +2244,6 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         "unconfigured-universe" | "patch-overlap" | "patch-overrun"
                     )
                 })
-                .map(|w| json!({"kind": w.kind, "message": w.message}))
                 .collect();
             let files: Vec<String> = song
                 .dsl_lighting_shows()
@@ -2274,7 +2256,12 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         .to_string()
                 })
                 .collect();
-            json!({"song": song.name(), "files": files, "warnings": warnings})
+            ReadinessShow {
+                song: song.name().to_string(),
+                files,
+                error: None,
+                warnings,
+            }
         })
         .collect();
     // A song whose show does not parse never loads (`Song::new` fails as a
@@ -2282,15 +2269,15 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // with the parser's own message, and that is the error.
     for failure in songs.failures() {
         if failure.concerns_lighting() {
-            shows.push(json!({
-                "song": failure.name(),
-                "files": [],
-                "error": failure.error(),
-                "warnings": [],
-            }));
+            shows.push(ReadinessShow {
+                song: failure.name().to_string(),
+                files: Vec::new(),
+                error: Some(failure.error().to_string()),
+                warnings: Vec::new(),
+            });
         }
     }
-    shows.sort_by(|a, b| a["song"].as_str().cmp(&b["song"].as_str()));
+    shows.sort_by(|a, b| a.song.cmp(&b.song));
 
     let unconfigured: Vec<u16> = used_universes
         .iter()
@@ -2315,34 +2302,35 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     let olad = match &dmx {
         Some(dmx) if !to_probe.is_empty() => {
             let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
-            json!({"reachable": report.reachable, "unpatched": report.unpatched})
+            Some(OladPatch {
+                reachable: report.reachable,
+                unpatched: report.unpatched,
+            })
         }
-        _ => serde_json::Value::Null,
+        _ => None,
     };
 
     // The venue's own findings: whether it loads at all (one fixture that
     // cannot be driven fails the whole venue, and nothing lights), and
     // fixtures patched over each other or past the universe's end.
-    let patch_warnings: Vec<serde_json::Value> = facts
-        .patch_warnings
-        .iter()
-        .map(|w| json!({"kind": w.kind, "message": w.message}))
-        .collect();
-
-    json!({
-        "dmx": dmx.is_some(),
-        "venue": venue,
-        "venue_error": facts.venue_error,
-        "patch_warnings": patch_warnings,
-        "fixture_types": {"in_use": in_use, "unresolved": unresolved, "library": library},
-        "groups": groups,
-        "shows": shows,
-        "output": {
-            "universes": used_universes,
-            "unconfigured": unconfigured,
-            "olad": olad,
+    Readiness {
+        dmx: dmx.is_some(),
+        venue,
+        venue_error: facts.venue_error,
+        patch_warnings: facts.patch_warnings,
+        fixture_types: ReadinessTypes {
+            in_use: in_use.into_iter().collect(),
+            unresolved,
+            library,
         },
-    })
+        groups,
+        shows,
+        output: ReadinessOutput {
+            universes: used_universes.into_iter().collect(),
+            unconfigured,
+            olad,
+        },
+    }
 }
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
@@ -8569,5 +8557,274 @@ mod venue_file_tests {
             got["versions"]["House"].as_str().unwrap(),
             super::content_version(FILE.as_bytes())
         );
+    }
+}
+
+/// The lighting API's payloads are what the `json!` they replaced built:
+/// that `json!`, kept in each test as the oracle.
+#[cfg(test)]
+mod wire_tests {
+    use serde_json::json;
+
+    /// Readiness and fit are what the `json!` they replaced built: that
+    /// `json!`, kept here as the oracle.
+    #[test]
+    fn readiness_and_fit_match_the_old_json() {
+        use crate::lighting::findings::{LibraryFinding, VenueError, Want, Warning};
+        use crate::lighting::fit::*;
+        use crate::webui::wire::readiness::*;
+
+        let warning = Warning {
+            kind: "patch-overlap",
+            message: "a overlaps b".to_string(),
+        };
+        let w = |w: &Warning| json!({"kind": w.kind, "message": w.message});
+        for olad in [
+            None,
+            Some(OladPatch {
+                reachable: true,
+                unpatched: vec![2],
+            }),
+        ] {
+            let readiness = Readiness {
+                dmx: true,
+                venue: Some(ReadinessVenue {
+                    name: "club".to_string(),
+                    fixtures: 2,
+                    placed: 1,
+                    focus_points: vec!["dsc".to_string()],
+                }),
+                venue_error: Some(VenueError {
+                    venue: "club".to_string(),
+                    fixture: "p1".to_string(),
+                    reason: "no type".to_string(),
+                }),
+                patch_warnings: vec![warning.clone()],
+                fixture_types: ReadinessTypes {
+                    in_use: vec!["par".to_string()],
+                    unresolved: vec![UnresolvedFixture {
+                        fixture: "p1".to_string(),
+                        fixture_type: "spot".to_string(),
+                        reason: "missing".to_string(),
+                    }],
+                    library: vec![LibraryFinding {
+                        kind: "gdtf-unreadable",
+                        file: "x.gdtf".to_string(),
+                        message: "bad".to_string(),
+                    }],
+                },
+                groups: vec![ReadinessGroup {
+                    name: "front".to_string(),
+                    fixtures: 2,
+                    songs: vec!["Song".to_string()],
+                }],
+                shows: vec![
+                    ReadinessShow {
+                        song: "A".to_string(),
+                        files: vec!["a.light".to_string()],
+                        error: None,
+                        warnings: vec![warning.clone()],
+                    },
+                    ReadinessShow {
+                        song: "B".to_string(),
+                        files: vec![],
+                        error: Some("parse".to_string()),
+                        warnings: vec![],
+                    },
+                ],
+                output: ReadinessOutput {
+                    universes: vec![1, 2],
+                    unconfigured: vec![2],
+                    olad: olad.clone(),
+                },
+            };
+            let old_olad = match &olad {
+                Some(r) => json!({"reachable": r.reachable, "unpatched": r.unpatched}),
+                None => serde_json::Value::Null,
+            };
+            assert_eq!(
+                json!(readiness),
+                json!({
+                    "dmx": true,
+                    "venue": {"name": "club", "fixtures": 2, "placed": 1, "focus_points": ["dsc"]},
+                    "venue_error": {"venue": "club", "fixture": "p1", "reason": "no type"},
+                    "patch_warnings": [w(&warning)],
+                    "fixture_types": {
+                        "in_use": ["par"],
+                        "unresolved": [json!({"fixture": "p1", "type": "spot", "reason": "missing"})],
+                        "library": [json!({"kind": "gdtf-unreadable", "file": "x.gdtf", "message": "bad"})],
+                    },
+                    "groups": [json!({"name": "front", "fixtures": 2, "songs": ["Song"]})],
+                    "shows": [
+                        json!({"song": "A", "files": ["a.light"], "warnings": [w(&warning)]}),
+                        json!({"song": "B", "files": [], "error": "parse", "warnings": []}),
+                    ],
+                    "output": {"universes": [1, 2], "unconfigured": [2], "olad": old_olad},
+                })
+            );
+        }
+
+        let cluster = Cluster {
+            fixtures: vec!["p1".to_string()],
+            fixture_type: "par".to_string(),
+            place: Some("upstage truss".to_string()),
+            height: Some(Height::Truss),
+            depth: Some(Depth::Upstage),
+        };
+        let fit = Fit {
+            suggestion: Some(Suggestion {
+                fixtures: vec!["p1".to_string()],
+                tags: vec!["front".to_string()],
+                reason: Reason {
+                    count: 1,
+                    fixture_type: "par".to_string(),
+                    place: None,
+                    height: None,
+                    depth: None,
+                    can: vec![Want::Color],
+                },
+            }),
+            others: vec![cluster],
+            unmet: vec![Want::Move],
+            unmet_together: false,
+        };
+        let needs = Needs {
+            all_of: vec!["front".to_string()],
+            any_of: vec![],
+            prefer: vec!["wash".to_string()],
+        };
+        let report = FitReport {
+            venue: Some(FitVenue {
+                name: "club".to_string(),
+                fixtures: vec![FitFixtureView {
+                    name: "p1".to_string(),
+                    fixture_type: "par".to_string(),
+                    tags: vec![],
+                    position: Some([0.0, 1.0, 2.0]),
+                    capabilities: vec!["color".to_string()],
+                }],
+                focus_points: vec![],
+                error: Some(FitVenueError {
+                    fixture: None,
+                    reason: "bad".to_string(),
+                }),
+            }),
+            groups: vec![FitGroup {
+                name: "front".to_string(),
+                defined: true,
+                needs: needs.clone(),
+                fixtures: vec![],
+                songs: vec!["Song".to_string()],
+                wants: vec![Want::Color, Want::Strobe],
+                fit: fit.clone(),
+            }],
+            focus_points_wanted: vec![FocusWanted {
+                name: "dsc".to_string(),
+                songs: vec!["Song".to_string()],
+            }],
+            output: FitOutput {
+                unconfigured: vec![],
+                unpatched: vec![3],
+                reachable: None,
+                ola_http_port: Some(9090),
+            },
+        };
+        assert_eq!(
+            json!(report),
+            json!({
+                "venue": {
+                    "name": "club",
+                    "fixtures": [json!({
+                        "name": "p1",
+                        "type": "par",
+                        "tags": [],
+                        "position": [0.0, 1.0, 2.0],
+                        "capabilities": ["color"],
+                    })],
+                    "focus_points": [],
+                    "error": {"fixture": null, "reason": "bad"},
+                },
+                "groups": [json!({
+                    "name": "front",
+                    "defined": true,
+                    "needs": needs,
+                    "fixtures": [],
+                    "songs": ["Song"],
+                    "wants": [Want::Color.name(), Want::Strobe.name()],
+                    "suggestion": fit.suggestion,
+                    "others": fit.others,
+                    "unmet": fit.unmet,
+                    "unmet_together": fit.unmet_together,
+                })],
+                "focus_points_wanted": [json!({"name": "dsc", "songs": ["Song"]})],
+                "output": {
+                    "unconfigured": [],
+                    "unpatched": [3],
+                    "reachable": null,
+                    "ola_http_port": 9090,
+                },
+            })
+        );
+    }
+
+    /// The preview is what the `json!` it replaced built: that `json!`,
+    /// kept here as the oracle.
+    #[test]
+    fn preview_matches_the_old_json() {
+        use crate::webui::wire::messages::StageValues;
+        use crate::webui::wire::preview::*;
+
+        let frame = StageValues {
+            fixtures: std::collections::BTreeMap::from([(
+                "p".to_string(),
+                std::collections::HashMap::from([("red".to_string(), 9u8)]),
+            )]),
+            strobe_rates: std::collections::BTreeMap::from([("p".to_string(), 4.0)]),
+            ..Default::default()
+        };
+        for groups in [None, Some(vec!["front".to_string()])] {
+            let preview = Preview {
+                song: "Song".to_string(),
+                evaluations: vec![PreviewEvaluation {
+                    time: 1.5,
+                    frame: frame.clone(),
+                    active_effects: vec![PreviewEffect {
+                        id: "e1".to_string(),
+                        groups: groups.clone(),
+                        kind: "Static".to_string(),
+                        layer: "foreground".to_string(),
+                        elapsed: 0.5,
+                        duration: 2.0,
+                        fixtures: vec!["p".to_string()],
+                    }],
+                }],
+                untouched: vec!["q".to_string()],
+                venue_error: None,
+            };
+            assert_eq!(
+                json!(preview),
+                json!({
+                    "song": "Song",
+                    "evaluations": [json!({
+                        "time": 1.5,
+                        "fixtures": frame.fixtures,
+                        "poses": frame.poses,
+                        "cells": frame.cells,
+                        "strobe_rates": frame.strobe_rates,
+                        "active_effects": [json!({
+                            "id": "e1",
+                            "groups": groups,
+                            "kind": "Static",
+                            "layer": "foreground",
+                            "elapsed": 0.5,
+                            "duration": 2.0,
+                            "fixtures": ["p"],
+                        })],
+                    })],
+                    "untouched": ["q"],
+                    "venue_error": null,
+                })
+            );
+        }
     }
 }

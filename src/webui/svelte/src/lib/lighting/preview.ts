@@ -20,90 +20,21 @@
 
 import type {
   FixtureMetadata,
-  PoseSnapshot,
+  Preview,
+  PreviewEffect,
   SongInfo,
-  StageValues,
 } from "../../gen/rules/mtrack_rules";
 import { post } from "../api/rest";
-import {
-  BadAnswerError,
-  arr,
-  hasAny,
-  isObj,
-  num,
-  obj,
-  readJson,
-  str,
-  type Obj,
-} from "./answer";
+import { readAnswer } from "./answer";
 import { rules } from "../rules";
 import { sectionColor } from "../sectionColors";
-
-/** An effect running at the previewed moment. */
-export interface PreviewEffect {
-  id: string;
-  /** The logical groups the cue named; null when the engine did not say. */
-  groups: string[] | null;
-  /** The effect's kind as the engine names it: `Static`, `Move`, ... */
-  kind: string;
-  layer: string;
-  /** Seconds into the effect. */
-  elapsed: number;
-  /** The effect's authored length, seconds. */
-  duration: number;
-  /** The fixtures the groups resolved to. */
-  fixtures: string[];
-}
-
-/** What the scene is fed: the live state message's four maps. */
-export interface PreviewFrame {
-  fixtures: StageValues["fixtures"];
-  poses: Record<string, PoseSnapshot>;
-  cells: StageValues["cells"];
-  strobe_rates: StageValues["strobe_rates"];
-}
-
-export interface PreviewEvaluation extends PreviewFrame {
-  time: number;
-  active_effects: PreviewEffect[];
-}
-
-export interface PreviewResult {
-  song: string;
-  evaluations: PreviewEvaluation[];
-  /** Fixtures no cue in the show targets. */
-  untouched: string[];
-}
-
-/** Guards `POST /api/lighting/evaluate`'s answer: arrays default to `[]`,
- *  the three state maps to `{}`. Null when the body is not an object with any
- *  of the expected fields. */
-export function parsePreview(body: unknown): PreviewResult | null {
-  if (!hasAny(body, ["evaluations", "untouched", "song"])) return null;
-  return {
-    song: str(body.song),
-    evaluations: arr<Obj>(body.evaluations)
-      .filter(isObj)
-      .map((e) => ({
-        time: num(e.time),
-        fixtures: obj(e.fixtures) as unknown as PreviewFrame["fixtures"],
-        poses: obj(e.poses) as unknown as PreviewFrame["poses"],
-        cells: obj(e.cells) as unknown as PreviewFrame["cells"],
-        strobe_rates: obj(
-          e.strobe_rates,
-        ) as unknown as StageValues["strobe_rates"],
-        active_effects: arr<PreviewEffect>(e.active_effects).filter(isObj),
-      })),
-    untouched: arr<string>(body.untouched),
-  };
-}
 
 /** Evaluates a song's shows at the given times (seconds). Throws with the
  *  server's message when the song is unknown or its lighting does not load. */
 export async function evaluatePreview(
   song: string,
   times: number[],
-): Promise<PreviewResult> {
+): Promise<Preview> {
   const res = await post("/lighting/evaluate", JSON.stringify({ song, times }));
   if (!res.ok) {
     let message = `Failed to evaluate: ${res.status}`;
@@ -115,9 +46,11 @@ export async function evaluatePreview(
     }
     throw new Error(message);
   }
-  const result = parsePreview(await readJson(res, "the preview"));
-  if (!result) throw new BadAnswerError("the preview");
-  return result;
+  return readAnswer<Preview>(res, "the preview", [
+    "evaluations",
+    "untouched",
+    "song",
+  ]);
 }
 
 /** "1:05" for a time in seconds; tenths when asked, for the scrubber. */

@@ -12,16 +12,16 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { Vec3 } from "../../gen/rules/mtrack_rules";
 import type {
+  FitReport,
   FixtureMetadata,
+  Readiness,
+  Vec3,
   VenueMetadata,
 } from "../../gen/rules/mtrack_rules";
 import type { ConfigReload } from "../configReload";
-import { BadAnswerError, readJson } from "../lighting/answer";
+import { readAnswer } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
-import { parseFit, type Fit } from "../lighting/fit";
-import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
   get,
   post,
@@ -1019,18 +1019,26 @@ export async function fetchLightingGroups(): Promise<
 export async function fetchLightingReadiness(): Promise<Readiness> {
   const res = await get("/lighting/readiness");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
-  const readiness = parseReadiness(await readJson(res, "the readiness checks"));
-  if (!readiness) throw new BadAnswerError("the readiness checks");
-  return readiness;
+  return readAnswer<Readiness>(res, "the readiness checks", [
+    "dmx",
+    "venue",
+    "fixture_types",
+    "groups",
+    "shows",
+    "output",
+  ]);
 }
 
 /** The facts and suggestions behind the Fit shows page. */
-export async function fetchLightingFit(): Promise<Fit> {
+export async function fetchLightingFit(): Promise<FitReport> {
   const res = await get("/lighting/fit");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting fit");
-  const fit = parseFit(await readJson(res, "the fit"));
-  if (!fit) throw new BadAnswerError("the fit");
-  return fit;
+  return readAnswer<FitReport>(res, "the fit", [
+    "venue",
+    "groups",
+    "focus_points_wanted",
+    "output",
+  ]);
 }
 
 /** A `.light` file in a lighting directory that could not be parsed. */

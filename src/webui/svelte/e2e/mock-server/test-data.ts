@@ -13,7 +13,9 @@
 //
 
 import type {
+  FitReport,
   FixtureMetadata,
+  Readiness,
   SocketMessage,
   SongList,
   Status,
@@ -330,7 +332,7 @@ export const PLAYBACK_STATE = {
   locked: false,
   hardware_reload_started: 0,
   hardware_reload_refused: [],
-  process_id: "1",
+  process_id: "process-a",
   beat_grid: null,
   looping: false,
   available_sections: [],
@@ -347,7 +349,7 @@ export const PLAYBACK_STATE = {
 
 /** The readiness facts of a rig where everything lines up. Specs that need a
  *  problem route their own copy of this with `page.route`; nothing mutates it. */
-export const READINESS = {
+export const READINESS: Readiness = {
   dmx: true,
   venue: {
     name: "test-venue",
@@ -355,13 +357,9 @@ export const READINESS = {
     placed: 8,
     focus_points: ["center"],
   },
-  venue_error: null as null | {
-    venue: string;
-    fixture: string;
-    reason: string;
-  },
-  patch_warnings: [] as { kind: string; message: string }[],
-  fixture_types: { in_use: ["par", "mover"], unresolved: [] },
+  venue_error: null,
+  patch_warnings: [],
+  fixture_types: { in_use: ["par", "mover"], unresolved: [], library: [] },
   groups: [{ name: "front_wash", fixtures: 4, songs: ["Test Song Alpha"] }],
   shows: [
     {
@@ -381,7 +379,7 @@ export const READINESS = {
  *  (one with a suggestion and an alternative, one nothing fits, one that
  *  already finds a fixture), a focus point the venue lacks and a universe
  *  with no output. Tests serve their own copy with `page.route`. */
-export const FIT = {
+export const FIT: FitReport = {
   venue: {
     name: "fit-venue",
     fixtures: [
@@ -422,6 +420,7 @@ export const FIT = {
       },
     ],
     focus_points: ["center"],
+    error: null,
   },
   groups: [
     {

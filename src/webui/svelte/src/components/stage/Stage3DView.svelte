@@ -73,10 +73,7 @@
     venueChanges,
   } from "../../lib/lighting/changes";
   import { lightingHref } from "../../lib/lightingRoute";
-  import {
-    wheelFixtureCount,
-    type PreviewFrame,
-  } from "../../lib/lighting/preview";
+  import { wheelFixtureCount } from "../../lib/lighting/preview";
   import type { StageScene } from "../../lib/stage/scene3d";
 
   interface Props {
@@ -87,7 +84,7 @@
     venuesDir?: string;
     /** A previewed moment to draw instead of the live state (live venue
      *  only); null draws the engine's state. */
-    previewFrame?: PreviewFrame | null;
+    previewFrame?: StageValues | null;
     /** Fixture labels; left unset, on for a small rig and off for a big one. */
     labels?: boolean;
     /** Selected fixtures, marked in the scene. */

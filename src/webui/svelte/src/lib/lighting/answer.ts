@@ -13,12 +13,11 @@
 //
 
 /**
- * Guards for the lighting endpoints' answers. A 200 is not proof of the shape
- * the page reads: a proxy's HTML page, a server older than the UI, or `{}` all
- * arrive as 200s, and a page that assumes the shape throws on first use. Each
- * endpoint's guard lives beside its types and normalizes what it accepts
- * (arrays default to `[]`); anything else is a `BadAnswerError`, which the
- * page words from i18n.
+ * The lighting endpoints' answers are the server's generated types, but a 200
+ * is not proof that the server answered: a proxy's HTML page, `{}` or `[]`
+ * arrive as 200s too, and a page that assumes the shape throws on first use.
+ * `readAnswer` refuses those with a `BadAnswerError`, which the page words
+ * from i18n; past that, the shape is the generated type's.
  */
 
 /** The server answered, but not with what this page reads. */
@@ -29,49 +28,20 @@ export class BadAnswerError extends Error {
   }
 }
 
-export type Obj = Record<string, unknown>;
-
-export function isObj(value: unknown): value is Obj {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Whether `value` is an object carrying at least one of `keys`: `{}` and
- *  unrelated JSON are objects too, but not an answer to this endpoint. */
-export function hasAny(value: unknown, keys: string[]): value is Obj {
-  return isObj(value) && keys.some((k) => k in value);
-}
-
-/** The array at `value`, or `[]`. */
-export function arr<T = unknown>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : [];
-}
-
-/** The object at `value`, or `{}`. */
-export function obj(value: unknown): Obj {
-  return isObj(value) ? value : {};
-}
-
-/** The object at `value`, or null. */
-export function objOrNull(value: unknown): Obj | null {
-  return isObj(value) ? value : null;
-}
-
-/** The finite number at `value`, or `fallback`. */
-export function num(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-/** The string at `value`, or `fallback`. */
-export function str(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-/** Reads a fetch response's JSON, or throws `BadAnswerError` when it is not
- *  JSON (an HTML page, an empty body). */
-export async function readJson(res: Response, what: string): Promise<unknown> {
-  try {
-    return await res.json();
-  } catch {
-    throw new BadAnswerError(what);
-  }
+/** Reads a fetch response as `what`'s answer: JSON, and an object carrying
+ *  at least one of `keys` (unrelated JSON is not this endpoint's answer).
+ *  Anything else throws `BadAnswerError`. */
+export async function readAnswer<T extends object>(
+  res: Response,
+  what: string,
+  keys: (keyof T & string)[],
+): Promise<T> {
+  const body: unknown = await res.json().catch(() => null);
+  const isAnswer =
+    typeof body === "object" &&
+    body !== null &&
+    !Array.isArray(body) &&
+    keys.some((k) => k in body);
+  if (!isAnswer) throw new BadAnswerError(what);
+  return body as T;
 }

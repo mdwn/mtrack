@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Preview } from "../../src/gen/rules/mtrack_rules";
 import express from "express";
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
@@ -604,10 +605,12 @@ app.post("/api/lighting/evaluate", (req, res) => {
       fixtures: {},
       poses: {},
       cells: {},
+      strobe_rates: {},
       active_effects: [],
     })),
     untouched: [],
-  });
+    venue_error: null,
+  } satisfies Preview);
 });
 
 // One-step import: no mode, no name. The mock answers as if the archive

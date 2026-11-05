@@ -117,6 +117,12 @@ mod pose;
 /// The websocket's messages.
 #[path = "../../../src/webui/wire/messages.rs"]
 pub mod wire_messages;
+/// A song's shows evaluated offline (the 3D view's Preview mode).
+#[path = "../../../src/webui/wire/preview.rs"]
+pub mod wire_preview;
+/// The lighting readiness facts.
+#[path = "../../../src/webui/wire/readiness.rs"]
+pub mod wire_readiness;
 /// The songs API's payloads.
 #[path = "../../../src/webui/wire/songs.rs"]
 pub mod wire_songs;
@@ -152,6 +158,12 @@ pub mod playlist {
 
 pub mod state {
     pub use crate::pose::PoseSnapshot;
+}
+
+pub mod webui {
+    pub mod wire {
+        pub use crate::wire_messages as messages;
+    }
 }
 
 /// What the included modules' own unit tests reach for in the player
