@@ -33,6 +33,7 @@
     offsetMarkers,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
+  import { withParam } from "../../../lib/lighting/params";
   import TimelineToolbar from "./TimelineToolbar.svelte";
   import TimeRuler from "./TimeRuler.svelte";
   import WaveformLane from "./WaveformLane.svelte";
@@ -416,7 +417,7 @@
     const cue = { ...cues[cueIndex] };
     cue.effects = cue.effects.map((eff) => ({
       ...eff,
-      effect: { ...eff.effect, duration: newDurationStr },
+      effect: withParam(eff.effect, "duration", newDurationStr),
     }));
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };

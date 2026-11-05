@@ -35,6 +35,7 @@
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock, { type Block, type BlockEffect } from "./CueBlock.svelte";
+  import { colorsOf } from "../../../lib/lighting/params";
 
   interface Props {
     name: string;
@@ -140,27 +141,22 @@
         push({ index, ms, endMs, scoreMs, effects: [] });
         return;
       }
-      // An effects lane (one layer, or every layer in the sequence editor).
-      const own: BlockEffect[] = cue.effects
-        .filter(
-          (e) => !laneLayer || (e.effect.layer ?? "background") === laneLayer,
-        )
-        .map((e) => ({
-          type: e.effect.type,
+      // An effects lane (one layer, or every layer in the sequence editor):
+      // the cue's own effects as the layout places them (their layer by the
+      // player's default), shown with the document's colours.
+      const ownLaid = (laid?.effects ?? []).filter((e) => e.own);
+      const own: BlockEffect[] = [];
+      let ownEnd = ms + DEFAULT_BLOCK_MS;
+      ownLaid.forEach((e, i) => {
+        if (laneLayer && e.layer !== laneLayer) return;
+        const written = cue.effects[i];
+        own.push({
+          type: e.kind,
           groups: e.groups,
-          colors: e.effect.colors,
-        }));
-      const ownEnd = Math.max(
-        ms + DEFAULT_BLOCK_MS,
-        ...(laid?.effects ?? [])
-          .filter(
-            (e) =>
-              e.sequence === undefined &&
-              e.start_ms === ms &&
-              (!laneLayer || e.layer === laneLayer),
-          )
-          .map((e) => e.end_ms),
-      );
+          colors: written ? colorsOf(written.effect) : [],
+        });
+        ownEnd = Math.max(ownEnd, e.end_ms);
+      });
       if (own.length > 0 || (!laneLayer && cue.commands.length > 0)) {
         push({ index, ms, endMs: ownEnd, scoreMs, effects: own });
       }
@@ -168,7 +164,7 @@
       // per pass.
       const generated: Record<string, Block> = {};
       for (const e of laid?.effects ?? []) {
-        if (e.sequence === undefined && e.start_ms === ms) continue;
+        if (e.own) continue;
         if (laneLayer && e.layer !== laneLayer) continue;
         const key = `${e.sequence ?? ""}@${e.start_ms}`;
         const block = generated[key];
@@ -236,10 +232,10 @@
           groups: ["all"],
           effect: {
             type: "static",
-            colors: [],
-            duration: defaultDuration,
-            layer,
-            extra: {},
+            params: [
+              { name: "duration", value: defaultDuration },
+              ...(layer ? [{ name: "layer", value: layer }] : []),
+            ],
           },
         },
       ];

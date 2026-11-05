@@ -22,7 +22,6 @@
 //! for the web UI, which holds and edits a [`Document`] and never parses
 //! the DSL itself.
 
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
 
@@ -121,6 +120,11 @@ pub struct TempoSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub changes_comments_after: Option<Vec<String>>,
+    /// The fields in the order the block wrote them; one it left out is
+    /// written after them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub fields: Option<Vec<TempoField>>,
     /// A comment on its closing brace's line, as written.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -389,106 +393,29 @@ pub struct CueEffect {
     pub comment: Option<String>,
 }
 
-/// An effect's parameters as written: the ones the editor has controls
-/// for by name, numbers read as numbers (one that is not a plain number --
-/// `50%`, `$level` -- stays as written in `extra`), the rest under
-/// `extra` by name.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(hashmap_as_object))]
+/// An effect's parameters as written: each `name: value` in order, the
+/// value as its text (a colour with its quotes, `50%`, `$level`), so a
+/// repeated name and a spelling survive a save. The editor's forms read
+/// and set them by name (`lib/lighting/params.ts`).
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EffectParams {
     #[serde(rename = "type")]
     pub kind: EffectKind,
-    /// Each `color:`, unquoted, in order.
-    pub colors: Vec<String>,
+    pub params: Vec<Param>,
+    /// Whether the line wrote its parameters after the type with no comma
+    /// (`static color: …`), as the grammar also allows.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub intensity: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub dimmer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub frequency: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub speed: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub direction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub transition: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub duration: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub up_time: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub hold_time: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub down_time: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub start_level: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub end_level: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub curve: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub layer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub blend_mode: Option<String>,
-    #[serde(rename = "loop", skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub loop_: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub base_level: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub pulse_amplitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub pattern: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub saturation: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub brightness: Option<f64>,
-    /// `move`: the focus point to aim at (`focus:` or `to:`), unquoted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub focus: Option<String>,
-    /// `move`: the focus point to start from, unquoted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub from: Option<String>,
-    /// `move`: explicit angles, with their unit (`45deg`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub pan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub tilt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub from_pan: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub from_tilt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub easing: Option<String>,
-    /// Every other parameter, by name, as written.
-    pub extra: BTreeMap<String, String>,
+    pub no_comma: Option<bool>,
+}
+
+/// A `name: value` parameter as written.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub value: String,
 }
 
 /// The effect keywords of the grammar.
@@ -772,9 +699,11 @@ fn tempo_section(
         comment: None,
         comments: None,
         changes_comments_after: None,
+        fields: None,
         close_comment: None,
     };
     let mut inner: Vec<TempoComment> = Vec::new();
+    let mut fields: Vec<TempoField> = Vec::new();
     // The field whose line a comment on the same line belongs to.
     let mut last: Option<TempoField> = None;
     let place = |pending: Option<Vec<String>>, at: TempoField, inner: &mut Vec<TempoComment>| {
@@ -817,6 +746,7 @@ fn tempo_section(
                         }
                         Rule::tempo_start => {
                             place(comments.take(), TempoField::Start, &mut inner);
+                            fields.push(TempoField::Start);
                             last = Some(TempoField::Start);
                             if let Some(value) = item
                                 .clone()
@@ -829,6 +759,7 @@ fn tempo_section(
                         }
                         Rule::tempo_bpm => {
                             place(comments.take(), TempoField::Bpm, &mut inner);
+                            fields.push(TempoField::Bpm);
                             last = Some(TempoField::Bpm);
                             if let Some(value) = item
                                 .clone()
@@ -841,6 +772,7 @@ fn tempo_section(
                         }
                         Rule::tempo_time_signature => {
                             place(comments.take(), TempoField::TimeSignature, &mut inner);
+                            fields.push(TempoField::TimeSignature);
                             last = Some(TempoField::TimeSignature);
                             if let Some(value) = item
                                 .clone()
@@ -853,6 +785,7 @@ fn tempo_section(
                         }
                         Rule::tempo_changes => {
                             place(comments.take(), TempoField::Changes, &mut inner);
+                            fields.push(TempoField::Changes);
                             tempo_changes(item, &mut section, comments)?;
                             last = Some(TempoField::End);
                         }
@@ -866,6 +799,9 @@ fn tempo_section(
     place(comments.take(), TempoField::End, &mut inner);
     if !inner.is_empty() {
         section.comments = Some(inner);
+    }
+    if !fields.is_empty() {
+        section.fields = Some(fields);
     }
     Ok(section)
 }
@@ -1308,46 +1244,22 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<(Cue, Option<Vec<String>>), Box
 }
 
 fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
+    let source = pair.as_str();
+    let base = pair.as_span().start();
     let mut groups = Vec::new();
     let mut params = EffectParams {
         kind: EffectKind::Static,
-        colors: Vec::new(),
-        intensity: None,
-        dimmer: None,
-        frequency: None,
-        speed: None,
-        direction: None,
-        transition: None,
-        duration: None,
-        up_time: None,
-        hold_time: None,
-        down_time: None,
-        start_level: None,
-        end_level: None,
-        curve: None,
-        layer: None,
-        blend_mode: None,
-        loop_: None,
-        base_level: None,
-        pulse_amplitude: None,
-        pattern: None,
-        saturation: None,
-        brightness: None,
-        focus: None,
-        from: None,
-        pan: None,
-        tilt: None,
-        from_pan: None,
-        from_tilt: None,
-        easing: None,
-        extra: BTreeMap::new(),
+        params: Vec::new(),
+        no_comma: None,
     };
+    let mut type_end = None;
     for item in pair.children() {
         match item.as_rule() {
             Rule::group_list => {
                 groups.extend(item.children().map(|g| g.as_str().trim().to_string()))
             }
             Rule::effect_type => {
+                type_end = Some(item.as_span().end() - base);
                 params.kind = match item.as_str() {
                     "static" => EffectKind::Static,
                     "cycle" => EffectKind::Cycle,
@@ -1361,14 +1273,21 @@ fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
                 }
             }
             Rule::parameters => {
+                if let Some(end) = type_end {
+                    let between = &source[end..item.as_span().start() - base];
+                    if !between.contains(',') {
+                        params.no_comma = Some(true);
+                    }
+                }
                 for parameter in item.children().filter(|p| p.as_rule() == Rule::parameter) {
                     let mut parts = parameter.children();
                     let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
                         continue;
                     };
-                    let name = name.as_str().trim().trim_matches('"').to_string();
-                    let value = value.as_str().trim();
-                    set_param(&mut params, &name, value);
+                    params.params.push(Param {
+                        name: name.as_str().trim().to_string(),
+                        value: value.as_str().trim().to_string(),
+                    });
                 }
             }
             _ => {}
@@ -1380,54 +1299,6 @@ fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
         comments_before: None,
         comment: None,
     })
-}
-
-/// Files a parameter under the field the editor edits it by, else under
-/// `extra`.
-fn set_param(params: &mut EffectParams, name: &str, value: &str) {
-    let text = || value.to_string();
-    let unquoted = || value.trim_matches('"').to_string();
-    let number =
-        |slot: &mut Option<f64>, extra: &mut BTreeMap<String, String>| match value.parse::<f64>() {
-            Ok(n) => *slot = Some(n),
-            Err(_) => {
-                extra.insert(name.to_string(), value.to_string());
-            }
-        };
-    match name {
-        "color" => params.colors.push(unquoted()),
-        "intensity" => number(&mut params.intensity, &mut params.extra),
-        "dimmer" => params.dimmer = Some(text()),
-        "frequency" => params.frequency = Some(text()),
-        "speed" => params.speed = Some(text()),
-        "direction" => params.direction = Some(text()),
-        "transition" => params.transition = Some(text()),
-        "duration" => params.duration = Some(text()),
-        "up_time" => params.up_time = Some(text()),
-        "hold_time" => params.hold_time = Some(text()),
-        "down_time" => params.down_time = Some(text()),
-        "start_level" => number(&mut params.start_level, &mut params.extra),
-        "end_level" => number(&mut params.end_level, &mut params.extra),
-        "curve" => params.curve = Some(text()),
-        "layer" => params.layer = Some(text()),
-        "blend_mode" => params.blend_mode = Some(text()),
-        "loop" => params.loop_ = Some(text()),
-        "base_level" => number(&mut params.base_level, &mut params.extra),
-        "pulse_amplitude" => number(&mut params.pulse_amplitude, &mut params.extra),
-        "pattern" => params.pattern = Some(text()),
-        "saturation" => number(&mut params.saturation, &mut params.extra),
-        "brightness" => number(&mut params.brightness, &mut params.extra),
-        "focus" | "to" => params.focus = Some(unquoted()),
-        "from" => params.from = Some(unquoted()),
-        "pan" => params.pan = Some(text()),
-        "tilt" => params.tilt = Some(text()),
-        "from_pan" => params.from_pan = Some(text()),
-        "from_tilt" => params.from_tilt = Some(text()),
-        "easing" => params.easing = Some(text()),
-        _ => {
-            params.extra.insert(name.to_string(), text());
-        }
-    }
 }
 
 fn layer_command(pair: Pair<Rule>) -> LayerCommand {
@@ -1579,7 +1450,7 @@ show "Song" {
         assert_eq!(params[0].name, "hit");
         assert_eq!(params[0].value, None);
         assert_eq!(params[1].value.as_deref(), Some("\"#0000FF\""));
-        assert_eq!(seq.cues[0].effects[0].effect.colors, vec!["$hit"]);
+        assert_eq!(seq.cues[0].effects[0].effect.params[0].value, "$hit");
         let show = &doc.shows[0];
         assert_eq!(show.name, "Song");
         let first = &show.cues[0];
@@ -1596,11 +1467,23 @@ show "Song" {
         let effect = &first.effects[0];
         assert_eq!(effect.groups, vec!["front", "back"]);
         assert_eq!(effect.effect.kind, EffectKind::Static);
-        assert_eq!(effect.effect.colors, vec!["blue"]);
-        assert_eq!(effect.effect.intensity, Some(0.6));
-        assert_eq!(effect.effect.dimmer.as_deref(), Some("80%"));
-        assert_eq!(effect.effect.duration.as_deref(), Some("1measure"));
-        assert_eq!(effect.effect.layer.as_deref(), Some("foreground"));
+        let written: Vec<(&str, &str)> = effect
+            .effect
+            .params
+            .iter()
+            .map(|p| (p.name.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(
+            written,
+            [
+                ("color", "\"blue\""),
+                ("intensity", "0.6"),
+                ("dimmer", "80%"),
+                ("duration", "1measure"),
+                ("layer", "foreground"),
+            ]
+        );
+        assert_eq!(effect.effect.no_comma, None);
         assert_eq!(first.commands[0].command, LayerCommandKind::Clear);
         assert_eq!(first.commands[0].layer.as_deref(), Some("background"));
         assert_eq!(first.sequences[0].name, "strike");
@@ -1620,27 +1503,35 @@ show "Song" {
         assert_eq!(second.timestamp.beat, Some(1.5));
         assert_eq!(second.sequences[0].stop, Some(true));
         assert_eq!(second.reset_measures, Some(true));
-        assert_eq!(second.effects[0].effect.focus.as_deref(), Some("front"));
-        assert_eq!(second.effects[0].effect.easing.as_deref(), Some("smooth"));
+        assert_eq!(second.effects[0].effect.params[0].value, "\"front\"");
+        assert_eq!(second.effects[0].effect.params[1].name, "easing");
         let loops = second.loops.as_ref().expect("loop kept as text");
         assert!(loops[0].text.starts_with("loop {") && loops[0].text.ends_with("repeats: 3"));
     }
 
     #[test]
-    fn a_number_that_is_not_one_stays_as_written() {
+    fn parameters_are_kept_as_written_repeats_and_all() {
         let doc = document(
-            "show \"S\" {\n    @0.0\n    all: static, intensity: 50%, color: \"#FF0000\"\n}\n",
+            "show \"S\" {\n    @0.0\n    all: static intensity: 50%, intensity: 0.5, color: \"#FF0000\"\n}\n",
             None,
         )
         .document
         .unwrap();
         let effect = &doc.shows[0].cues[0].effects[0].effect;
-        assert_eq!(effect.intensity, None);
+        let written: Vec<(&str, &str)> = effect
+            .params
+            .iter()
+            .map(|p| (p.name.as_str(), p.value.as_str()))
+            .collect();
         assert_eq!(
-            effect.extra.get("intensity").map(String::as_str),
-            Some("50%")
+            written,
+            [
+                ("intensity", "50%"),
+                ("intensity", "0.5"),
+                ("color", "\"#FF0000\"")
+            ]
         );
-        assert_eq!(effect.colors, vec!["#FF0000"]);
+        assert_eq!(effect.no_comma, Some(true));
     }
 
     #[test]

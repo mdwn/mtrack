@@ -192,6 +192,9 @@ pub struct EffectLayout {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub sequence: Option<String>,
+    /// Whether it is one of the written cue's own effect lines, in their
+    /// order (the others are a pass's or a loop's).
+    pub own: bool,
 }
 
 /// Where a sequence reference's passes run.
@@ -389,16 +392,22 @@ fn cue_layout(index: usize, cue: &ParsedCue, horizon: Duration) -> CueLayout {
     let effects = cue
         .cues
         .iter()
-        .filter(|placed| placed.time <= horizon)
-        .flat_map(|placed| {
-            placed.effects.iter().map(move |effect| EffectLayout {
-                kind: effect_keyword(&effect.effect_type).to_string(),
-                layer: format!("{:?}", effect.layer.unwrap_or(DEFAULT_LAYER)).to_lowercase(),
-                groups: effect.groups.clone(),
-                start_ms: ms(placed.time),
-                end_ms: ms(placed.time.saturating_add(effect.total_duration())),
-                sequence: effect.sequence_name().map(str::to_string),
-            })
+        .enumerate()
+        .filter(|(_, placed)| placed.time <= horizon)
+        .flat_map(|(index, placed)| {
+            placed
+                .effects
+                .iter()
+                .enumerate()
+                .map(move |(i, effect)| EffectLayout {
+                    kind: effect_keyword(&effect.effect_type).to_string(),
+                    layer: format!("{:?}", effect.layer.unwrap_or(DEFAULT_LAYER)).to_lowercase(),
+                    groups: effect.groups.clone(),
+                    start_ms: ms(placed.time),
+                    end_ms: ms(placed.time.saturating_add(effect.total_duration())),
+                    sequence: effect.sequence_name().map(str::to_string),
+                    own: cue.base == Some(index) && i < cue.own_effects,
+                })
         })
         .collect();
     let passes = cue

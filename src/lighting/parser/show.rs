@@ -53,7 +53,10 @@ pub(super) struct ParsedCue {
     /// references too, in time order.
     pub(super) cues: Vec<Cue>,
     /// Its own cue's place in `cues`, when it holds anything of its own.
-    base: Option<usize>,
+    pub(super) base: Option<usize>,
+    /// How many of that cue's effects are the written cue's own (the
+    /// rest were merged in from a pass at the same time).
+    pub(super) own_effects: usize,
     /// The sequences it references, in order.
     references: Vec<SequenceCall>,
     /// The passes of the sequences it references, once placed: where each
@@ -1066,6 +1069,7 @@ fn parse_cue(
     let has_base_content = !base.effects.is_empty()
         || !base.layer_commands.is_empty()
         || !base.stop_sequences.is_empty();
+    let own_effects = base.effects.len();
     let mut cues = Vec::new();
     let mut base_index = None;
     if has_base_content || (inline_loop_pairs.is_empty() && sequence_ref_pairs.is_empty()) {
@@ -1108,6 +1112,7 @@ fn parse_cue(
         offset_secs: applied_offset_secs,
         cues,
         base: base_index,
+        own_effects,
         references,
         passes: Vec::new(),
         new_offset,

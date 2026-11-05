@@ -29,6 +29,7 @@ export type {
   Cue,
   CueEffect,
   Document as LightFile,
+  Param,
   DurationValue as Duration,
   EffectKind as EffectType,
   EffectParams,
@@ -98,7 +99,7 @@ export type SubLaneType =
 
 /** Creates an empty EffectParams of a given type */
 export function emptyEffect(type: EffectKind): EffectParams {
-  return { type, colors: [], extra: {} };
+  return { type, params: [] };
 }
 
 /** Creates an empty cue at a given timestamp */

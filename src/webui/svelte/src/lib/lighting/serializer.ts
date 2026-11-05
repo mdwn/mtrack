@@ -99,14 +99,25 @@ export function serializeTempo(tempo: TempoSection): string {
   };
   lines.push(...own(tempo.comments_before, ""));
   lines.push(line("tempo {", tempo.comment));
-  field("start", `start: ${tempo.start.value}${tempo.start.unit}`);
-  field("bpm", `bpm: ${tempo.bpm}`);
-  field(
-    "time_signature",
-    `time_signature: ${tempo.time_signature[0]}/${tempo.time_signature[1]}`,
-  );
-
-  if (tempo.changes.length > 0 || tempo.changes_comments_after?.length) {
+  // The fields in the order the block wrote them, those it left out after.
+  const order: TempoField[] = [...(tempo.fields ?? [])];
+  for (const f of ["start", "bpm", "time_signature", "changes"] as const) {
+    if (!order.includes(f)) order.push(f);
+  }
+  const writeField = (name: TempoField) => {
+    if (name === "start")
+      field("start", `start: ${tempo.start.value}${tempo.start.unit}`);
+    else if (name === "bpm") field("bpm", `bpm: ${tempo.bpm}`);
+    else if (name === "time_signature")
+      field(
+        "time_signature",
+        `time_signature: ${tempo.time_signature[0]}/${tempo.time_signature[1]}`,
+      );
+    else if (name === "changes") writeChanges();
+  };
+  const writeChanges = () => {
+    if (tempo.changes.length === 0 && !tempo.changes_comments_after?.length)
+      return;
     field("changes", "changes: [");
     tempo.changes.forEach((change, i) => {
       const ts = formatTimestamp(change.timestamp);
@@ -125,7 +136,8 @@ export function serializeTempo(tempo: TempoSection): string {
     });
     lines.push(...own(tempo.changes_comments_after, "        "));
     lines.push(line("    ]", at("end", true).join(" ") || undefined));
-  }
+  };
+  for (const name of order) writeField(name);
   lines.push(...own(at("end", false), "    "));
 
   lines.push(line("}", tempo.close_comment));
@@ -210,92 +222,13 @@ function serializeEffect(cueEffect: CueEffect): string {
   const groups = cueEffect.groups.filter((g) => g.length > 0).join(", ");
   if (!groups) return ""; // Skip effects with no group names
   const effect = cueEffect.effect;
-  const parts: string[] = [];
-
-  // All effect types use comma-separated parameters, each written as the
-  // document holds it: what a line said comes back out of the editor, and
-  // the forms offer each type only the parameters it reads.
-  for (const color of effect.colors) {
-    parts.push(`color: ${quoted(color)}`);
-  }
-  if (effect.intensity !== undefined)
-    parts.push(`intensity: ${effect.intensity}`);
-  if (effect.dimmer !== undefined) parts.push(`dimmer: ${effect.dimmer}`);
-  if (effect.frequency !== undefined)
-    parts.push(`frequency: ${effect.frequency}`);
-  if (effect.speed !== undefined) parts.push(`speed: ${effect.speed}`);
-  if (effect.direction !== undefined)
-    parts.push(`direction: ${effect.direction}`);
-  if (effect.transition !== undefined)
-    parts.push(`transition: ${effect.transition}`);
-  if (effect.duration !== undefined) parts.push(`duration: ${effect.duration}`);
-  if (effect.up_time !== undefined) parts.push(`up_time: ${effect.up_time}`);
-  if (effect.hold_time !== undefined)
-    parts.push(`hold_time: ${effect.hold_time}`);
-  if (effect.down_time !== undefined)
-    parts.push(`down_time: ${effect.down_time}`);
-  if (effect.start_level !== undefined)
-    parts.push(`start_level: ${effect.start_level}`);
-  if (effect.end_level !== undefined)
-    parts.push(`end_level: ${effect.end_level}`);
-  if (effect.curve !== undefined) parts.push(`curve: ${effect.curve}`);
-  if (effect.layer !== undefined) parts.push(`layer: ${effect.layer}`);
-  if (effect.blend_mode !== undefined)
-    parts.push(`blend_mode: ${effect.blend_mode}`);
-  if (effect.loop !== undefined) parts.push(`loop: ${effect.loop}`);
-  if (effect.base_level !== undefined)
-    parts.push(`base_level: ${effect.base_level}`);
-  if (effect.pulse_amplitude !== undefined)
-    parts.push(`pulse_amplitude: ${effect.pulse_amplitude}`);
-  if (effect.pattern !== undefined) parts.push(`pattern: ${effect.pattern}`);
-  if (effect.saturation !== undefined)
-    parts.push(`saturation: ${effect.saturation}`);
-  if (effect.brightness !== undefined)
-    parts.push(`brightness: ${effect.brightness}`);
-  // `move`: a focus point or explicit angles, never both.
-  if (effect.focus !== undefined && effect.focus !== "")
-    parts.push(`focus: ${quoted(effect.focus)}`);
-  else {
-    if (effect.pan !== undefined && effect.pan !== "")
-      parts.push(`pan: ${withDeg(effect.pan)}`);
-    if (effect.tilt !== undefined && effect.tilt !== "")
-      parts.push(`tilt: ${withDeg(effect.tilt)}`);
-  }
-  if (effect.from !== undefined && effect.from !== "")
-    parts.push(`from: ${quoted(effect.from)}`);
-  else {
-    if (effect.from_pan !== undefined && effect.from_pan !== "")
-      parts.push(`from_pan: ${withDeg(effect.from_pan)}`);
-    if (effect.from_tilt !== undefined && effect.from_tilt !== "")
-      parts.push(`from_tilt: ${withDeg(effect.from_tilt)}`);
-  }
-  if (effect.easing !== undefined) parts.push(`easing: ${effect.easing}`);
-
-  // Extra params
-  for (const [k, v] of Object.entries(effect.extra)) {
-    parts.push(`${k}: ${v}`);
-  }
-
+  // Each parameter as the document holds it, in order.
+  const parts = effect.params.map((p) => `${p.name}: ${p.value}`);
   if (parts.length > 0) {
-    return `${groups}: ${effect.type}, ${parts.join(", ")}`;
+    const sep = effect.no_comma ? " " : ", ";
+    return `${groups}: ${effect.type}${sep}${parts.join(", ")}`;
   }
   return `${groups}: ${effect.type}`;
-}
-
-/** An angle as the DSL wants it: `45deg`; a bare number gets the unit. */
-function withDeg(value: string): string {
-  const v = value.trim();
-  return v.endsWith("deg") || isParam(v) ? v : `${v}deg`;
-}
-
-/** A sequence parameter, `$name`, substituted before the value is read. */
-function isParam(value: string): boolean {
-  return /^\$[A-Za-z_][\w-]*$/.test(value.trim());
-}
-
-/** A string value in quotes, unless it is a parameter, which must stay bare. */
-function quoted(value: string): string {
-  return isParam(value) ? value.trim() : `"${value}"`;
 }
 
 function serializeLayerCommand(cmd: LayerCommand): string {
