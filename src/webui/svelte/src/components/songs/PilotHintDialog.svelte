@@ -88,7 +88,9 @@
 
   /** The beat nearest a time, as the player snaps a time to one. */
   function playheadBeat(time: number) {
-    return beatGrid ? rules.grid_query(beatGrid, { secs: time }) : undefined;
+    return beatGrid
+      ? rules.grid_query(beatGrid, { secs: time, snap: 1 })
+      : undefined;
   }
 
   /** The player's tempo map answers for the measure the picker asks about;

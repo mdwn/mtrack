@@ -16,6 +16,7 @@
   import type { TempoConfig, TempoChangeConfig } from "../../lib/api/songs";
   import type { TempoSection } from "../../lib/lighting/types";
   import { configToSection } from "../../lib/tempoConvert";
+  import { rules } from "../../lib/rules";
   import TempoEditor from "../lighting/TempoEditor.svelte";
 
   interface Props {
@@ -91,8 +92,13 @@
   }
 
   let section = $derived(tempo ? configToSection(tempo) : undefined);
+  /** Why this tempo map cannot be saved, as the player says it. */
+  let verdict = $derived(tempo ? rules.tempo_validate(tempo) : undefined);
 </script>
 
+{#if verdict}
+  <p class="verdict" role="alert" data-testid="tempo-verdict">{verdict}</p>
+{/if}
 <TempoEditor
   tempo={section}
   {songName}
@@ -101,3 +107,11 @@
   measureOnly
   onchange={(updated) => onchange(updated ? sectionToConfig(updated) : null)}
 />
+
+<style>
+  .verdict {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--text-danger, #c33);
+  }
+</style>

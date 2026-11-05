@@ -348,29 +348,14 @@
     });
   });
 
+  /** The measure and whole beat at the playhead, from the player's grid. */
   let currentBeatInfo = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
-    if (!grid || grid.beats.length === 0) return null;
-    const elapsed = $playbackStore.elapsed_ms / 1000;
-
-    let beatIdx = 0;
-    for (let i = grid.beats.length - 1; i >= 0; i--) {
-      if (grid.beats[i] <= elapsed) {
-        beatIdx = i;
-        break;
-      }
-    }
-
-    let measureIdx = 0;
-    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
-      if (grid.measure_starts[i] <= beatIdx) {
-        measureIdx = i;
-        break;
-      }
-    }
-
-    const beatInMeasure = beatIdx - grid.measure_starts[measureIdx] + 1;
-    return { measure: measureIdx + 1, beat: beatInMeasure };
+    if (!grid) return null;
+    const at = rules.grid_query(grid, {
+      secs: $playbackStore.elapsed_ms / 1000,
+    });
+    return at ? { measure: at.measure, beat: Math.floor(at.beat) } : null;
   });
 </script>
 

@@ -13,8 +13,8 @@
      *
      * -->
 <script lang="ts">
-  import type { BeatGrid } from "../../lib/ws/stores";
   import { playbackStore } from "../../lib/ws/stores";
+  import { rules } from "../../lib/rules";
 
   // Never extrapolate more than this past the last frame — if frames stop
   // arriving (disconnect), the indicator freezes instead of running away.
@@ -45,47 +45,31 @@
     return () => cancelAnimationFrame(raf);
   });
 
+  /** The beat the playhead is on, from the player's grid: one `grid_query`
+   * per animation frame. Before the first beat nothing has struck yet. */
   let beatState = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
-    if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
-      return null;
-    }
+    if (!grid) return null;
     const elapsed = smoothElapsedMs / 1000;
-
-    // The last beat at or before the playhead (binary search).
-    let lo = 0;
-    let hi = grid.beats.length - 1;
-    if (elapsed < grid.beats[0]) {
+    const at = rules.grid_query(grid, { secs: elapsed });
+    if (!at) return null;
+    if (at.secs > elapsed) {
       return {
         beatIdx: -1,
         beatInMeasure: -1,
-        beatsInMeasure: countBeats(grid, 0),
+        beatsInMeasure: at.beats_in_measure,
         measureStart: 0,
         level: 1,
       };
     }
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (grid.beats[mid] <= elapsed) lo = mid;
-      else hi = mid - 1;
-    }
-    const beatIdx = lo;
-
-    // The measure containing this beat.
-    let measure = 0;
-    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
-      if (grid.measure_starts[i] <= beatIdx) {
-        measure = i;
-        break;
-      }
-    }
-    const measureStart = grid.measure_starts[measure];
+    const beatInMeasure = Math.floor(at.beat) - 1;
+    const measureStart = at.beat_index - beatInMeasure;
     return {
-      beatIdx,
-      beatInMeasure: beatIdx - measureStart,
-      beatsInMeasure: countBeats(grid, measure),
+      beatIdx: at.beat_index,
+      beatInMeasure,
+      beatsInMeasure: at.beats_in_measure,
       measureStart,
-      level: levelOf(beatIdx, measureStart),
+      level: levelOf(at.beat_index, measureStart),
     };
   });
 
@@ -95,15 +79,6 @@
     const levels = $playbackStore.beat_grid?.accent_levels;
     if (levels && beatIdx < levels.length) return levels[beatIdx];
     return beatIdx === measureStart ? 3 : 1;
-  }
-
-  function countBeats(grid: BeatGrid, measure: number): number {
-    const start = grid.measure_starts[measure];
-    const end =
-      measure + 1 < grid.measure_starts.length
-        ? grid.measure_starts[measure + 1]
-        : grid.beats.length;
-    return Math.max(end - start, 1);
   }
 </script>
 

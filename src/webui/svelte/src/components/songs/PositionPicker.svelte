@@ -189,7 +189,7 @@
     return out;
   });
 
-  /** Whole seconds inside a measure, placed where they fall in its span —
+  /** Whole seconds inside a measure, placed at the beat they fall on —
    * under a tempo change they bunch up, which is the point. */
   function secondsIn(m: number): { time: number; pct: number }[] {
     const from = secondsAt(m, 1);
@@ -197,7 +197,9 @@
     if (from === null || to === null || to <= from) return [];
     const out: { time: number; pct: number }[] = [];
     for (let s = Math.ceil(from); s < to; s += 1) {
-      out.push({ time: s, pct: ((s - from) / (to - from)) * 100 });
+      const at = beatAt(s);
+      if (!at || at.measure !== m) continue;
+      out.push({ time: s, pct: ((at.beat - 1) / beatsIn(m)) * 100 });
     }
     return out;
   }

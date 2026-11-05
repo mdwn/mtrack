@@ -112,7 +112,10 @@ export function sectionToConfigSnapped(
       beat = c.timestamp.beat ?? 1;
     } else {
       const at = beatGrid
-        ? rules.grid_query(beatGrid, { secs: (c.timestamp.ms ?? 0) / 1000 })
+        ? rules.grid_query(beatGrid, {
+            secs: (c.timestamp.ms ?? 0) / 1000,
+            snap: 1,
+          })
         : undefined;
       if (!at) {
         dropped++;
@@ -143,9 +146,9 @@ export function sectionToConfigSnapped(
   }
   const ordered = rules.tempo_normalize(config);
   return {
-    config: ordered.config,
+    config: ordered?.config ?? config,
     snapped,
     dropped,
-    duplicates: ordered.duplicates,
+    duplicates: ordered?.duplicates ?? 0,
   };
 }

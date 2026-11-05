@@ -115,7 +115,7 @@
       // The nearest beat, as the player snaps a time to one; beat 1 stays
       // implicit.
       const nearest = beatGrid
-        ? rules.grid_query(beatGrid, { secs: at.time })
+        ? rules.grid_query(beatGrid, { secs: at.time, snap: 1 })
         : undefined;
       updateHint(index, {
         at: nearest
