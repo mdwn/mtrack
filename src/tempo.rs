@@ -377,8 +377,9 @@ pub enum TempoTransition {
 /// A tempo and a ramp's length are positive and finite: a tempo of 0 puts
 /// every later beat infinitely far away, and a ramp of no length has no
 /// curve. What a song's `tempo:` config and a light show's `tempo {}`
-/// block are held to, in the same words; `at` names a change's position
-/// as the error says it ("measure 3", "4.000s").
+/// block are held to, in the same words. This checks the starting tempo;
+/// [`check_change_bpm`] and [`check_transition`] a change's, whose `at`
+/// names its position as the error says it ("measure 3", "4.000s").
 pub(crate) fn check_bpm(bpm: f64) -> Result<(), String> {
     walkable(bpm)
         .then_some(())
