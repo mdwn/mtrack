@@ -26,7 +26,7 @@ use pest::Parser;
 
 use super::parser::grammar::{LightingParser, Rule};
 use super::parser::parse_fixture_types;
-use super::parser::utils::items;
+use super::parser::utils::{items, Children};
 use super::types::{MovementLimits, StrobeCurve};
 
 /// What the fixture page's settings form owns in a type's file.
@@ -71,7 +71,7 @@ pub fn patch_fixture_type(
         .filter(|p| p.as_rule() == Rule::fixture_type)
         .find(|p| {
             p.clone()
-                .into_inner()
+                .children()
                 .find(|c| c.as_rule() == Rule::fixture_type_name)
                 .is_some_and(|n| n.as_str().trim_matches('"') == current)
         })
@@ -82,7 +82,7 @@ pub fn patch_fixture_type(
     let mut name = None;
     let mut source = None;
     let mut body = None;
-    for child in declaration.clone().into_inner() {
+    for child in declaration.clone().children() {
         match child.as_rule() {
             Rule::fixture_type_name => name = Some(child),
             Rule::gdtf_source => source = Some(child),
@@ -107,7 +107,7 @@ pub fn patch_fixture_type(
     // line of its own before the closing brace.
     let find = |rule: Rule| {
         body.clone()
-            .and_then(|b| b.into_inner().find(|p| p.as_rule() == rule))
+            .and_then(|b| b.children().find(|p| p.as_rule() == rule))
     };
     let curve = settings
         .strobe_curve

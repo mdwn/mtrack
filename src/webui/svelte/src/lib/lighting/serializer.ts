@@ -22,6 +22,7 @@ import type {
   SequenceRef,
   SequenceArg,
 } from "./types";
+import type { TempoField } from "../../gen/rules/mtrack_rules";
 
 /**
  * Serialize a LightFile structure back to DSL text: what the document
@@ -32,7 +33,10 @@ export function serializeLightFile(file: LightFile): string {
   const parts: string[] = [];
 
   if (file.includes?.length) {
-    for (const inc of file.includes) parts.push(`include "${inc.written}"`);
+    for (const inc of file.includes) {
+      parts.push(...own(inc.comments_before, ""));
+      parts.push(line(`include "${inc.written}"`, inc.comment));
+    }
     parts.push("");
   }
 
@@ -46,21 +50,38 @@ export function serializeLightFile(file: LightFile): string {
   for (const seq of file.sequences) {
     const params = seq.params ? serializeArgList(seq.params) : "";
     const length = seq.length ? `, length: ${seq.length}` : "";
-    parts.push(`sequence "${seq.name}"${params}${length} {`);
+    parts.push(...own(seq.comments_before, ""));
+    parts.push(line(`sequence "${seq.name}"${params}${length} {`, seq.comment));
     parts.push(serializeCues(seq.cues));
-    parts.push("}");
+    parts.push(...own(seq.comments_after, "    "));
+    parts.push(line("}", seq.close_comment));
     parts.push("");
   }
 
   // Shows
   for (const show of file.shows) {
-    parts.push(`show "${show.name}" {`);
+    parts.push(...own(show.comments_before, ""));
+    parts.push(line(`show "${show.name}" {`, show.comment));
     parts.push(serializeCues(show.cues));
-    parts.push("}");
+    parts.push(...own(show.comments_after, "    "));
+    parts.push(line("}", show.close_comment));
     parts.push("");
   }
 
+  parts.push(...own(file.comments_after, ""));
+  if (file.comments_after?.length) parts.push("");
+
   return parts.join("\n");
+}
+
+/** A line with the comment that was on it, if one was. */
+function line(text: string, comment: string | undefined): string {
+  return comment ? `${text} ${comment}` : text;
+}
+
+/** Comment lines of their own, as written, at an indent. */
+function own(comments: string[] | undefined, indent: string): string[] {
+  return (comments ?? []).map((c) => `${indent}${c}`);
 }
 
 /** The `tempo { }` block alone: what `rules.tempo_query` reads a section
@@ -68,17 +89,26 @@ export function serializeLightFile(file: LightFile): string {
  *  own reading of the block it will write. */
 export function serializeTempo(tempo: TempoSection): string {
   const lines: string[] = [];
-  lines.push("tempo {");
-  lines.push(`    start: ${tempo.start.value}${tempo.start.unit}`);
-  lines.push(`    bpm: ${tempo.bpm}`);
-  lines.push(
-    `    time_signature: ${tempo.time_signature[0]}/${tempo.time_signature[1]}`,
+  const at = (field: TempoField, inline: boolean) =>
+    (tempo.comments ?? [])
+      .filter((c) => c.at === field && c.inline === inline)
+      .map((c) => c.text);
+  const field = (name: TempoField, text: string) => {
+    lines.push(...own(at(name, false), "    "));
+    lines.push(line(`    ${text}`, at(name, true).join(" ") || undefined));
+  };
+  lines.push(...own(tempo.comments_before, ""));
+  lines.push(line("tempo {", tempo.comment));
+  field("start", `start: ${tempo.start.value}${tempo.start.unit}`);
+  field("bpm", `bpm: ${tempo.bpm}`);
+  field(
+    "time_signature",
+    `time_signature: ${tempo.time_signature[0]}/${tempo.time_signature[1]}`,
   );
 
-  if (tempo.changes.length > 0) {
-    lines.push("    changes: [");
-    const changeLines: string[] = [];
-    for (const change of tempo.changes) {
+  if (tempo.changes.length > 0 || tempo.changes_comments_after?.length) {
+    field("changes", "changes: [");
+    tempo.changes.forEach((change, i) => {
       const ts = formatTimestamp(change.timestamp);
       const params: string[] = [];
       if (change.bpm !== undefined) params.push(`bpm: ${change.bpm}`);
@@ -87,13 +117,18 @@ export function serializeTempo(tempo: TempoSection): string {
           `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
         );
       if (change.transition) params.push(`transition: ${change.transition}`);
-      changeLines.push(`        @${ts} { ${params.join(", ")} }`);
-    }
-    lines.push(changeLines.join(",\n"));
-    lines.push("    ]");
+      const comma = i < tempo.changes.length - 1 ? "," : "";
+      lines.push(...own(change.comments_before, "        "));
+      lines.push(
+        line(`        @${ts} { ${params.join(", ")} }${comma}`, change.comment),
+      );
+    });
+    lines.push(...own(tempo.changes_comments_after, "        "));
+    lines.push(line("    ]", at("end", true).join(" ") || undefined));
   }
+  lines.push(...own(at("end", false), "    "));
 
-  lines.push("}");
+  lines.push(line("}", tempo.close_comment));
   return lines.join("\n");
 }
 
@@ -103,43 +138,45 @@ function serializeCues(cues: Cue[]): string {
   for (let i = 0; i < cues.length; i++) {
     const cue = cues[i];
 
-    // Comment
-    if (cue.comment) {
-      for (const commentLine of cue.comment.split("\n")) {
-        lines.push(`    # ${commentLine}`);
-      }
-    }
-
-    // Timestamp
-    lines.push(`    @${formatTimestamp(cue.timestamp)}`);
+    lines.push(...own(cue.comments_before, "    "));
+    lines.push(line(`    @${formatTimestamp(cue.timestamp)}`, cue.comment));
 
     // Effects
     for (const eff of cue.effects) {
       const s = serializeEffect(eff);
-      if (s) lines.push(`    ${s}`);
+      if (!s) continue;
+      lines.push(...own(eff.comments_before, "    "));
+      lines.push(line(`    ${s}`, eff.comment));
     }
 
     // Layer commands
     for (const cmd of cue.commands) {
-      lines.push(`    ${serializeLayerCommand(cmd)}`);
+      lines.push(...own(cmd.comments_before, "    "));
+      lines.push(line(`    ${serializeLayerCommand(cmd)}`, cmd.comment));
     }
 
     // Sequence references
     for (const ref of cue.sequences) {
-      lines.push(`    ${serializeSequenceRef(ref)}`);
+      lines.push(...own(ref.comments_before, "    "));
+      lines.push(line(`    ${serializeSequenceRef(ref)}`, ref.comment));
     }
 
     // Offset/reset measures
     if (cue.offset_measures !== undefined) {
-      lines.push(`    offset ${cue.offset_measures} measures`);
+      lines.push(...own(cue.offset_comments_before, "    "));
+      lines.push(
+        line(`    offset ${cue.offset_measures} measures`, cue.offset_comment),
+      );
     }
     if (cue.reset_measures) {
-      lines.push(`    reset_measures`);
+      lines.push(...own(cue.reset_comments_before, "    "));
+      lines.push(line(`    reset_measures`, cue.reset_comment));
     }
 
     // Inline loops, kept as the text they were read from.
     for (const loop of cue.loops ?? []) {
-      lines.push(`    ${loop}`);
+      lines.push(...own(loop.comments_before, "    "));
+      lines.push(line(`    ${loop.text}`, loop.comment));
     }
 
     // Blank line between cues (except after last)

@@ -32,7 +32,7 @@ use super::types::{
 };
 use super::utils::{
     items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
-    parse_time_string,
+    parse_time_string, Children,
 };
 use crate::tempo::{snap_beats, DEFAULT_BPM};
 use pest::iterators::Pair;
@@ -396,13 +396,13 @@ fn parse_light_show_definition(
     let mut tempo_map = global_tempo.clone();
     let mut own_tempo = false;
 
-    for inner_pair in pair.into_inner() {
+    for inner_pair in pair.children() {
         match inner_pair.as_rule() {
             Rule::show_name => {
                 name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::show_content => {
-                let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
+                let block = parse_cue_block(inner_pair.children(), global_tempo, library)?;
                 tempo_map = block.effective_tempo.clone();
                 own_tempo = block.own_tempo;
                 cues = block.place_each(library)?;
@@ -478,20 +478,20 @@ pub(super) fn parse_sequence_structure(
     let mut length = None;
     let mut block = None;
 
-    for inner_pair in pair.into_inner() {
+    for inner_pair in pair.children() {
         match inner_pair.as_rule() {
             Rule::sequence_name => {
                 name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::sequence_length => {
                 length = inner_pair
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::time_parameter)
                     .map(|p| p.as_str().trim().to_string());
             }
             Rule::sequence_content => {
                 block = Some(parse_cue_block(
-                    inner_pair.into_inner(),
+                    inner_pair.children(),
                     global_tempo,
                     library,
                 )?);
@@ -602,26 +602,26 @@ fn parse_sequence_reference_pair(seq_ref_pair: Pair<Rule>) -> Result<SequenceCal
     let mut args = Vec::new();
     let mut loop_param: Option<SequenceLoop> = None;
 
-    for inner in seq_ref_pair.into_inner() {
+    for inner in seq_ref_pair.children() {
         match inner.as_rule() {
             Rule::sequence_name => {
                 seq_name = inner.as_str().trim_matches('"').to_string();
             }
             Rule::sequence_args => {
-                for arg in inner.into_inner() {
-                    let mut parts = arg.into_inner();
+                for arg in inner.children() {
+                    let mut parts = arg.children();
                     if let (Some(param), Some(value)) = (parts.next(), parts.next()) {
                         args.push((param.as_str().to_string(), value.as_str().to_string()));
                     }
                 }
             }
             Rule::sequence_params => {
-                for param_pair in inner.into_inner() {
+                for param_pair in inner.children() {
                     if param_pair.as_rule() == Rule::sequence_param {
                         let mut param_name = String::new();
                         let mut param_value = String::new();
 
-                        for param_inner in param_pair.into_inner() {
+                        for param_inner in param_pair.children() {
                             match param_inner.as_rule() {
                                 Rule::sequence_param_name => {
                                     param_name = param_inner.as_str().trim().to_string();
@@ -698,7 +698,7 @@ fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
     let mut number_str = String::new();
     let mut found_number = false;
 
-    for inner_pair in pair.into_inner() {
+    for inner_pair in pair.children() {
         if inner_pair.as_rule() == Rule::number_value {
             number_str = inner_pair.as_str().trim().to_string();
             found_number = true;
@@ -875,7 +875,7 @@ fn place_inline_loop(
     let mut repeats = 1;
     if let Some(count) = pair
         .clone()
-        .into_inner()
+        .children()
         .find(|p| p.as_rule() == Rule::number_value)
     {
         repeats = match parse_sequence_loop_param(count.as_str())? {
@@ -888,7 +888,7 @@ fn place_inline_loop(
     // sequences are available in an inline loop.
     let library = SequenceLibrary::empty();
     let body = Sequence {
-        cues: parse_cue_block(pair.into_inner(), tempo_map, &library)?.place(&library)?,
+        cues: parse_cue_block(pair.children(), tempo_map, &library)?.place(&library)?,
         tempo_map: tempo_map.clone(),
         length: None,
     };
@@ -923,7 +923,7 @@ fn parse_cue(
     let mut new_offset: Option<f64> = None;
 
     // First pass: collect all pairs (don't parse measure_time yet, as we need to process offsets first)
-    for inner_pair in pair.into_inner() {
+    for inner_pair in pair.children() {
         match inner_pair.as_rule() {
             Rule::time_string => {
                 score_time = parse_time_string(inner_pair.as_str())?;
@@ -1037,7 +1037,7 @@ fn parse_cue(
     };
     for stop_pair in stop_sequence_pairs {
         let seq_name = stop_pair
-            .into_inner()
+            .children()
             .find(|p| p.as_rule() == Rule::sequence_name)
             .ok_or("Stop sequence command missing sequence name")?
             .as_str()
@@ -1124,7 +1124,7 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
     let mut intensity = None;
     let mut speed = None;
 
-    for inner_pair in pair.into_inner() {
+    for inner_pair in pair.children() {
         match inner_pair.as_rule() {
             Rule::layer_command_type => {
                 command_type = match inner_pair.as_str() {
@@ -1136,12 +1136,12 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
                 };
             }
             Rule::layer_command_params => {
-                for param_pair in inner_pair.into_inner() {
+                for param_pair in inner_pair.children() {
                     if param_pair.as_rule() == Rule::layer_command_param {
                         let mut param_name = String::new();
                         let mut param_value = String::new();
 
-                        for param_inner in param_pair.into_inner() {
+                        for param_inner in param_pair.children() {
                             match param_inner.as_rule() {
                                 Rule::layer_command_param_name => {
                                     param_name = param_inner.as_str().trim().to_string();

@@ -21,7 +21,7 @@ use super::super::types::{
 };
 use super::error::describe_pest_error_in;
 use super::grammar::{LightingParser, Rule};
-use super::utils::{items, split_unit};
+use super::utils::{items, split_unit, Children};
 use pest::iterators::Pair;
 use pest::Parser;
 
@@ -72,7 +72,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut rich_defs: HashMap<String, ChannelDef> = HashMap::new();
     let mut cells: Vec<Cell> = Vec::new();
 
-    for pair in pair.into_inner() {
+    for pair in pair.children() {
         match pair.as_rule() {
             Rule::fixture_type_name => {
                 name = extract_string(pair);
@@ -242,7 +242,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
 
 fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
     let mut strings = pair
-        .into_inner()
+        .children()
         .filter(|p| p.as_rule() == Rule::string)
         .map(|p| p.as_str().trim().trim_matches('"').to_string());
     let path = strings
@@ -264,7 +264,7 @@ fn parse_gdtf_source(pair: Pair<Rule>) -> Result<GdtfSource, Box<dyn Error>> {
 /// mode with a trailing space, and the name must pick that mode.
 fn parse_fixture_mode(pair: Pair<Rule>) -> Result<String, Box<dyn Error>> {
     let mode = pair
-        .into_inner()
+        .children()
         .find(|p| p.as_rule() == Rule::string)
         .map(|p| p.as_str().trim().trim_matches('"').to_string())
         .ok_or("`mode` needs a quoted mode name")?;
@@ -278,12 +278,12 @@ fn parse_movement_block(pair: Pair<Rule>) -> Result<MovementLimits, Box<dyn Erro
     let mut movement = MovementLimits::default();
     let mut seen: Vec<String> = Vec::new();
     for param in pair
-        .into_inner()
+        .children()
         .filter(|p| p.as_rule() == Rule::movement_param)
     {
         let mut name = String::new();
         let mut value = None;
-        for inner in param.into_inner() {
+        for inner in param.children() {
             match inner.as_rule() {
                 Rule::movement_param_name => name = inner.as_str().to_string(),
                 Rule::speed_value => {
@@ -330,7 +330,7 @@ fn parse_phys_value(text: &str) -> Result<(f64, PhysicalUnit), Box<dyn Error>> {
 
 fn parse_phys_range(pair: Pair<Rule>) -> Result<PhysicalRange, Box<dyn Error>> {
     let mut values = pair
-        .into_inner()
+        .children()
         .filter(|p| p.as_rule() == Rule::phys_value)
         .map(|p| parse_phys_value(p.as_str()));
     let (from, unit_from) = values.next().ok_or("range needs two values")??;
@@ -360,7 +360,7 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
     let mut name = String::new();
     let mut def = ChannelDef::at(0);
     let mut seen_offset = false;
-    for inner in pair.into_inner() {
+    for inner in pair.children() {
         match inner.as_rule() {
             Rule::string => name = extract_string(inner),
             Rule::offset_value => {
@@ -369,21 +369,21 @@ fn parse_channel_def(pair: Pair<Rule>) -> Result<(String, ChannelDef), Box<dyn E
             }
             Rule::channel_fine => {
                 let number = inner
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::offset_value)
                     .ok_or("fine needs an offset")?;
                 def.fine = Some(parse_number::<u16>(&number, "fine offset")?);
             }
             Rule::channel_range => {
                 let range = inner
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::phys_range)
                     .ok_or("range needs two values")?;
                 def.range = Some(parse_phys_range(range)?);
             }
             Rule::channel_block => {
                 for function in inner
-                    .into_inner()
+                    .children()
                     .filter(|p| p.as_rule() == Rule::function_def)
                 {
                     def.functions.push(parse_function_def(function)?);
@@ -447,12 +447,12 @@ fn parse_function_def(pair: Pair<Rule>) -> Result<ChannelFunction, Box<dyn Error
         dmx_to: 0,
         physical: None,
     };
-    for inner in pair.into_inner() {
+    for inner in pair.children() {
         match inner.as_rule() {
             Rule::string => function.name = extract_string(inner),
             Rule::dmx_range => {
                 let mut numbers = inner
-                    .into_inner()
+                    .children()
                     .filter(|p| p.as_rule() == Rule::offset_value);
                 let from = numbers.next().ok_or("DMX range needs two values")?;
                 let to = numbers.next().ok_or("DMX range needs two values")?;
@@ -476,7 +476,7 @@ fn parse_cell_def(pair: Pair<Rule>) -> Result<Cell, Box<dyn Error>> {
         channels: HashMap::new(),
         offset: [0.0; 3],
     };
-    for inner in pair.into_inner() {
+    for inner in pair.children() {
         match inner.as_rule() {
             Rule::string => cell.name = extract_string(inner),
             Rule::cell_offset => {
@@ -518,7 +518,7 @@ fn parse_fixture_content(
     min_strobe_frequency: &mut Option<f64>,
     strobe_dmx_offset: &mut Option<u8>,
 ) -> Result<(), Box<dyn Error>> {
-    for content_pair in pair.into_inner() {
+    for content_pair in pair.children() {
         match content_pair.as_rule() {
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
@@ -559,7 +559,7 @@ fn parse_fixture_content(
                     return Err("strobe_curve is declared more than once".into());
                 }
                 let value = content_pair
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::strobe_curve_value)
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
@@ -570,7 +570,7 @@ fn parse_fixture_content(
                 });
             }
             Rule::max_strobe_frequency => {
-                for inner in content_pair.into_inner() {
+                for inner in content_pair.children() {
                     if inner.as_rule() == Rule::number_value {
                         let freq: f64 =
                             inner.as_str().trim().parse().map_err(|e| {
@@ -581,7 +581,7 @@ fn parse_fixture_content(
                 }
             }
             Rule::min_strobe_frequency => {
-                for inner in content_pair.into_inner() {
+                for inner in content_pair.children() {
                     if inner.as_rule() == Rule::number_value {
                         let freq: f64 =
                             inner.as_str().trim().parse().map_err(|e| {
@@ -592,7 +592,7 @@ fn parse_fixture_content(
                 }
             }
             Rule::strobe_dmx_offset => {
-                for inner in content_pair.into_inner() {
+                for inner in content_pair.children() {
                     if inner.as_rule() == Rule::number_value {
                         let offset: u8 = inner
                             .as_str()
@@ -613,15 +613,15 @@ fn parse_fixture_content(
 }
 
 fn parse_channel_mappings(pair: Pair<Rule>) -> HashMap<String, u16> {
-    pair.into_inner()
+    pair.children()
         .filter(|p| p.as_rule() == Rule::channel_mapping_list)
-        .flat_map(|list| list.into_inner())
+        .flat_map(|list| list.children())
         .filter(|p| p.as_rule() == Rule::channel_mapping)
         .filter_map(|mapping| {
             let mut key = String::new();
             let mut value = 0u16;
 
-            for inner in mapping.into_inner() {
+            for inner in mapping.children() {
                 match inner.as_rule() {
                     Rule::channel_name => key = extract_string(inner),
                     Rule::channel_number => value = inner.as_str().trim().parse().unwrap_or(0),
@@ -638,9 +638,9 @@ fn parse_channel_mappings(pair: Pair<Rule>) -> HashMap<String, u16> {
 }
 
 fn parse_special_case_list(pair: Pair<Rule>) -> Vec<String> {
-    pair.into_inner()
+    pair.children()
         .filter(|p| p.as_rule() == Rule::special_case_list)
-        .flat_map(|list| list.into_inner())
+        .flat_map(|list| list.children())
         .filter(|p| p.as_rule() == Rule::special_case)
         .map(|case| extract_string(case))
         .collect()
@@ -662,7 +662,7 @@ fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
     let mut name = String::new();
     let mut body = VenueBody::default();
 
-    for pair in pair.into_inner() {
+    for pair in pair.children() {
         match pair.as_rule() {
             Rule::string => {
                 name = extract_string(pair);
@@ -696,7 +696,7 @@ fn parse_vec3(pair: Pair<Rule>) -> Result<Vec3, Box<dyn Error>> {
     let mut values = [0.0; 3];
     let mut count = 0;
     for inner in pair
-        .into_inner()
+        .children()
         .filter(|p| p.as_rule() == Rule::signed_number)
     {
         if count == 3 {
@@ -718,12 +718,12 @@ fn parse_vec3(pair: Pair<Rule>) -> Result<Vec3, Box<dyn Error>> {
 fn parse_venue_source(pair: Pair<Rule>) -> Result<VenueSource, Box<dyn Error>> {
     let mut mvr = None;
     let mut origin = [0.0; 3];
-    for inner in pair.into_inner() {
+    for inner in pair.children() {
         match inner.as_rule() {
             Rule::string => mvr = Some(extract_string(inner)),
             Rule::venue_origin => {
                 let vec = inner
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::vec3)
                     .ok_or("origin requires a coordinate triple")?;
                 origin = parse_vec3(vec)?;
@@ -738,7 +738,7 @@ fn parse_venue_source(pair: Pair<Rule>) -> Result<VenueSource, Box<dyn Error>> {
 }
 
 fn parse_venue_content(pair: Pair<Rule>, body: &mut VenueBody) -> Result<(), Box<dyn Error>> {
-    for content_pair in pair.into_inner() {
+    for content_pair in pair.children() {
         match content_pair.as_rule() {
             Rule::fixture => {
                 let fixture = parse_fixture_definition(content_pair)?;
@@ -754,7 +754,7 @@ fn parse_venue_content(pair: Pair<Rule>, body: &mut VenueBody) -> Result<(), Box
             Rule::focus_point => {
                 let mut name = String::new();
                 let mut point = None;
-                for inner in content_pair.into_inner() {
+                for inner in content_pair.children() {
                     match inner.as_rule() {
                         Rule::string => name = extract_string(inner),
                         Rule::vec3 => point = Some(parse_vec3(inner)?),
@@ -786,7 +786,7 @@ fn parse_venue_content(pair: Pair<Rule>, body: &mut VenueBody) -> Result<(), Box
             // fixture", which is no help to someone holding a rig file.
             Rule::group => {
                 let name = content_pair
-                    .into_inner()
+                    .children()
                     .find(|p| p.as_rule() == Rule::string)
                     .map(extract_string)
                     .unwrap_or_default();
@@ -831,7 +831,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
     let mut mode = None;
     let mut beam_angle: Option<f64> = None;
 
-    for pair in pair.into_inner() {
+    for pair in pair.children() {
         match pair.as_rule() {
             // Positional: the first quoted value is the fixture's name, a
             // second is its type. Only the type may be given either way.
@@ -876,7 +876,7 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
                     return Err(duplicate_attribute(name.as_deref(), "beam_angle"));
                 }
                 let text = pair
-                    .into_inner()
+                    .children()
                     .next()
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
@@ -918,17 +918,17 @@ fn duplicate_attribute(fixture: Option<&str>, attribute: &str) -> Box<dyn Error>
 
 /// The `vec3` inside a `position`/`rotation` attribute.
 fn single_vec3(pair: Pair<Rule>) -> Result<Pair<Rule>, Box<dyn Error>> {
-    pair.into_inner()
+    pair.children()
         .find(|p| p.as_rule() == Rule::vec3)
         .ok_or_else(|| "coordinate triple required".into())
 }
 
 fn parse_tags(pair: Pair<Rule>) -> Vec<String> {
-    pair.into_inner()
+    pair.children()
         .filter(|p| p.as_rule() == Rule::tag_list)
         .flat_map(|tag_list| {
             tag_list
-                .into_inner()
+                .children()
                 .filter(|p| p.as_rule() == Rule::string)
                 .map(|tag| extract_string(tag))
         })

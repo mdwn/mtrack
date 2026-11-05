@@ -44,6 +44,25 @@ function stripped(value: unknown): unknown {
   return value;
 }
 
+/** The comment on each line, as written: what must survive a save. */
+function commentLines(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split("\n")) {
+    const l = raw.trim();
+    // Outside a quoted string, `#` or `//` starts a comment.
+    let quoted = false;
+    for (let i = 0; i < l.length; i++) {
+      const c = l[i];
+      if (c === '"') quoted = !quoted;
+      if (!quoted && (c === "#" || (c === "/" && l[i + 1] === "/"))) {
+        out.push(l.slice(i).trimEnd());
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 function lightFilesIn(dir: string): string[] {
   return readdirSync(dir)
     .filter((f) => f.endsWith(".light"))
@@ -80,6 +99,21 @@ for (const folder of folders) {
       const again = rules.document(written, path);
       expect(again.error, written).toBeUndefined();
       expect(stripped(again.document)).toEqual(stripped(read.document));
+      // Every comment line comes back, as written and in order; the bytes
+      // differ in whitespace alone where the file's own spacing did.
+      expect(commentLines(written)).toEqual(commentLines(source));
+      const bytes = (text: string) =>
+        text
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l !== "");
+      const differing = bytes(source).filter((l, i) => l !== bytes(written)[i]);
+      if (process.env.MTRACK_LIGHT_DIFF) {
+        console.log(
+          `${path}: ${differing.length} lines differ beyond whitespace`,
+        );
+        for (const l of differing.slice(0, 6)) console.log(`  ${l}`);
+      }
     });
   }
 }
