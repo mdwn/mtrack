@@ -155,7 +155,13 @@ fn names_of(
     index: &mut Index,
     dirty: &mut bool,
 ) -> Result<Names, String> {
-    let stamp = crate::util::FileStamp::of(path).ok_or("cannot read it")?;
+    let stamp = crate::util::FileStamp::of(path).ok_or_else(|| {
+        let e = std::fs::metadata(path).err().map_or_else(
+            || "its modified time is unknown".to_string(),
+            |e| e.to_string(),
+        );
+        format!("cannot read it: {e}")
+    })?;
     let stat = (stamp.len, modified_ns(&stamp));
     if let Some(seen) = index.files.get(file_name) {
         if (seen.len, seen.modified_ns) == stat {
