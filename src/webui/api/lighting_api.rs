@@ -7952,7 +7952,10 @@ show "test" {
             .find(|f| f["name"] == json!("M"))
             .unwrap();
         assert_eq!(m["tags"], json!(["other"]));
-        assert_eq!(m["capabilities"], json!(["color", "pan_tilt", "dimmer"]));
+        assert_eq!(
+            m["capabilities"],
+            json!(["color", "pan_tilt", "strobe", "dimmer"])
+        );
 
         let groups = report["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
@@ -8041,14 +8044,14 @@ show "test" {
             &[(
                 "Song",
                 "show \"S\" {\n    @00:00.000\n    washes: static color: \"red\", duration: 2s\n    \
-                 washes: strobe frequency: 8, duration: 1s\n}\n",
+                 washes: move pan: 45deg, tilt: 0deg, duration: 1s\n}\n",
             )],
             &[1],
         );
         let report = fit(rig.state.clone()).await;
         let washes = &report["groups"][0];
         assert_eq!(washes["suggestion"], json!(null));
-        assert_eq!(washes["unmet"], json!(["strobe"]));
+        assert_eq!(washes["unmet"], json!(["move"]));
         assert_eq!(washes["unmet_together"], json!(false));
     }
 

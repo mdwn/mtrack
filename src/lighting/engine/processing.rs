@@ -589,7 +589,7 @@ fn apply_dimmer(
     let dimmer_value = if duration.is_zero() {
         end_level // Instant transition
     } else {
-        let linear_progress = (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0);
+        let linear_progress = fade_progress(elapsed, duration);
 
         // Apply curve to the progress value
         let curved_progress = match curve {
@@ -777,12 +777,7 @@ fn move_poses(
     duration: Duration,
     elapsed: Duration,
 ) -> HashMap<String, Pose> {
-    let progress = if duration.is_zero() {
-        1.0
-    } else {
-        (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
-    };
-    let travel = easing.apply(progress);
+    let travel = easing.apply(fade_progress(elapsed, duration));
 
     let mut poses = HashMap::new();
     for name in &effect.target_fixtures {

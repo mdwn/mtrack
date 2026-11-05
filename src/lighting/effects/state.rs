@@ -248,7 +248,7 @@ impl FixtureState {
         cell: &crate::lighting::types::Cell,
         own: Option<&FixtureState>,
     ) -> Vec<(String, f64)> {
-        let cell_has_dimmer = cell.channels.contains_key("dimmer");
+        let cell_has_dimmer = cell.has_dimmer();
         let read = |k: &str| {
             own.and_then(|o| o.channels.get(k))
                 .or_else(|| self.channels.get(k))
@@ -295,7 +295,7 @@ impl FixtureState {
         cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
     ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
-        let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
+        let has_dedicated_dimmer = fixture_info.has_dimmer();
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
         let cell_owned = |channel: &str| {

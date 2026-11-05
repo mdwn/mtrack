@@ -18,7 +18,7 @@ use crate::lighting::EffectEngine;
 use std::collections::HashMap;
 
 /// A mover at universe 1, address 1: dimmer 1, red 2, pan 3, strobe 4,
-/// gobo 5.
+/// gobo 5, green 6, blue 7.
 fn engine() -> EffectEngine {
     let mut channels = HashMap::new();
     for (name, offset) in [
@@ -27,6 +27,8 @@ fn engine() -> EffectEngine {
         ("pan", 3),
         ("strobe", 4),
         ("gobo", 5),
+        ("green", 6),
+        ("blue", 7),
     ] {
         channels.insert(name.to_string(), offset);
     }
@@ -207,7 +209,7 @@ fn shown_bytes(
     let registry = engine.get_fixture_registry();
     let has_dimmer: HashMap<String, bool> = registry
         .iter()
-        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
     let mut bytes = HashMap::new();
     for snapshot in crate::state::fixture_snapshots_with_cells(states, &has_dimmer, registry) {

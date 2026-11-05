@@ -20,7 +20,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::effects::{is_multiplier_channel, FixtureState};
+use crate::lighting::effects::{coarse_byte, is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all non-multiplier channels at 0-255.
@@ -286,7 +286,7 @@ async fn init_dimmer_map(effect_engine: &Arc<Mutex<EffectEngine>>) -> HashMap<St
         engine
             .get_fixture_registry()
             .iter()
-            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+            .map(|(name, info)| (name.clone(), info.has_dimmer()))
             .collect()
     })
     .await
@@ -436,8 +436,7 @@ pub(crate) fn compute_fixture_snapshots(
                     channel_state,
                     has_dedicated_dimmer,
                 );
-                let dmx_value = (value * 255.0) as u8;
-                channels.insert(channel_name.clone(), dmx_value);
+                channels.insert(channel_name.clone(), coarse_byte(value));
             }
 
             FixtureSnapshot {
@@ -547,15 +546,16 @@ fn attach_pointing(
     }
 }
 
-/// Whether a snapshot channel carries where a head points rather than what
-/// it shows: pan, tilt and their fine bytes, as the engine has them, under
-/// the `#n` a snapshot names a ganged channel's mirrors by.
-pub fn is_pointing_channel(name: &str) -> bool {
+/// Whether a snapshot channel carries a level that lights the rig -- one
+/// going dark takes to 0, as the engine has it (`fades_to_dark`) -- rather
+/// than where a head points, an optic or a setting. The channel's name is
+/// read under the `#n` a snapshot names a ganged channel's mirrors by.
+pub fn is_level_channel(name: &str) -> bool {
     let base = match name.split_once('#') {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
     };
-    crate::lighting::engine::is_position_channel(base)
+    crate::lighting::engine::fades_to_dark(base)
 }
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
@@ -582,11 +582,13 @@ pub(crate) fn attach_cell_snapshots(
         let parent_state = states.get(parent).unwrap_or(&empty);
         let mut cells = std::collections::BTreeMap::new();
         for cell in &info.cells {
-            let own = states.get(&format!("{parent}/{}", cell.name));
+            let own = states.get(&crate::lighting::effects::cell_fixture_name(
+                parent, &cell.name,
+            ));
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
-                .map(|(name, value)| (name, (value * 255.0) as u8))
+                .map(|(name, value)| (name, coarse_byte(value)))
                 .collect();
             cells.insert(cell.name.clone(), values);
         }
@@ -1038,7 +1040,7 @@ mod tests {
         use crate::lighting::effects::{EffectInstance, EffectType, FixtureInfo};
         let engine = Arc::new(Mutex::new(EffectEngine::new()));
         {
-            let channels: HashMap<String, u16> = [("red", 1u16)]
+            let channels: HashMap<String, u16> = [("red", 1u16), ("green", 2), ("blue", 3)]
                 .into_iter()
                 .map(|(n, o)| (n.to_string(), o))
                 .collect();
@@ -1135,7 +1137,7 @@ mod tests {
     /// `EffectEngine::register` builds one: the cell's own channels, and
     /// `parent` set so `attach_cell_snapshots` folds its state back in.
     fn sub_fixture(parent: &str, cell: &Cell) -> FixtureInfo {
-        let name = format!("{parent}/{}", cell.name);
+        let name = crate::lighting::effects::cell_fixture_name(parent, &cell.name);
         let channels: HashMap<String, u16> = cell
             .channels
             .iter()
@@ -1388,6 +1390,7 @@ mod tests {
             !bar.contains_key("dimmer#2"),
             "an unganged channel has no mirrors"
         );
-        assert!(is_pointing_channel("pan#2") && !is_pointing_channel("red#2"));
+        assert!(is_level_channel("red#2") && !is_level_channel("pan#2"));
+        assert!(!is_level_channel("zoom#2") && !is_level_channel("gobo"));
     }
 }

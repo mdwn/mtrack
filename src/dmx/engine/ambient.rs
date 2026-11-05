@@ -694,7 +694,7 @@ impl Engine {
             .collect();
         self.midi_dmx_store
             .read()
-            .fade_out(fade.as_secs_f64() * crate::dmx::universe::TARGET_HZ);
+            .fade_out(crate::dmx::universe::dim_ticks(fade));
         floor
     }
 
@@ -2671,6 +2671,8 @@ mod tests {
                 std::collections::HashMap::from([
                     ("red".to_string(), 1),
                     ("dimmer".to_string(), 2),
+                    ("green".to_string(), 5),
+                    ("blue".to_string(), 6),
                 ]),
                 None,
             )

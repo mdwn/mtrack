@@ -83,7 +83,7 @@ pub(crate) fn unscale_by_speed(elapsed: Duration, speed: f64) -> Duration {
 
 /// A channel's name without its section (`dimmer:background`, as GDTF
 /// profiles with several emitters name theirs) or its fine byte.
-fn base_channel(channel: &str) -> &str {
+pub(crate) fn base_channel(channel: &str) -> &str {
     let base = channel.split(':').next().unwrap_or(channel);
     base.strip_suffix("_fine").unwrap_or(base)
 }
@@ -147,7 +147,7 @@ impl FixtureRegistry {
         if fixture.parent.is_none() && !fixture.cells.is_empty() {
             let mut names = Vec::with_capacity(fixture.cells.len());
             for cell in &fixture.cells {
-                let name = format!("{}/{}", fixture.name, cell.name);
+                let name = cell_fixture_name(&fixture.name, &cell.name);
                 let channels: HashMap<String, u16> = cell
                     .channels
                     .iter()
@@ -448,14 +448,6 @@ impl EffectEngine {
 
     /// Register a fixture with the engine
     pub fn register_fixture(&mut self, fixture: FixtureInfo) {
-        // Validate fixture capabilities based on special cases
-        if let Err(e) = validation::validate_fixture_capabilities(&fixture) {
-            eprintln!(
-                "Warning: Fixture '{}' has capability issues: {}",
-                fixture.name, e
-            );
-        }
-
         self.fixtures.register(fixture);
     }
 
@@ -739,11 +731,10 @@ impl EffectEngine {
                 if states.contains_key(parent) {
                     continue;
                 }
-                let cell_name = name.rsplit('/').next().unwrap_or(name);
                 let cell = self
                     .fixtures
                     .get(parent)
-                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name));
+                    .and_then(|p| p.cells.iter().find(|c| c.name == cell_name(name)));
                 if let Some(cell) = cell {
                     out.insert(
                         name.clone(),
@@ -752,7 +743,7 @@ impl EffectEngine {
                 }
                 continue;
             }
-            let has_dimmer = info.is_some_and(|i| i.channels.contains_key("dimmer"));
+            let has_dimmer = info.is_some_and(FixtureInfo::has_dimmer);
             let mut resolved = FixtureState::new();
             resolved.physical = state.physical.clone();
             for (channel, channel_state) in &state.channels {
@@ -764,9 +755,9 @@ impl EffectEngine {
             }
             out.insert(name.clone(), resolved);
             for cell in info.map(|i| i.cells.as_slice()).unwrap_or_default() {
-                let cell_name = format!("{name}/{}", cell.name);
-                let own = states.get(&cell_name);
-                out.insert(cell_name, cell_state(state.cell_values(cell, own)));
+                let sub = cell_fixture_name(name, &cell.name);
+                let own = states.get(&sub);
+                out.insert(sub, cell_state(state.cell_values(cell, own)));
             }
         }
         out
@@ -1064,13 +1055,14 @@ impl EffectEngine {
                 for (slot_idx, normalized_value) in store.iter_active() {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
-                        if let Some(&offset) = fixture_info.channels.get(channel_name) {
-                            let dmx_value = (normalized_value * 255.0) as u8;
-                            commands.push(DmxCommand {
-                                universe: fixture_info.universe,
-                                channel: fixture_info.dmx_channel(offset),
-                                value: dmx_value,
-                            });
+                        if let Some(def) = fixture_info.channel_defs.get(channel_name) {
+                            for (offset, byte) in resolve_normalized(def, normalized_value) {
+                                commands.push(DmxCommand {
+                                    universe: fixture_info.universe,
+                                    channel: fixture_info.dmx_channel(offset),
+                                    value: byte,
+                                });
+                            }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
                                 .entry(fixture_name.clone())
@@ -1343,7 +1335,7 @@ impl EffectEngine {
             } else {
                 commands.extend(
                     fixture_state.to_dmx_commands_with_cells(fixture_info, |cell| {
-                        current_fixture_states.get(&format!("{fixture_name}/{cell}"))
+                        current_fixture_states.get(&cell_fixture_name(fixture_name, cell))
                     }),
                 );
             }

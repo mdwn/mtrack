@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use super::universe::{dim_rate, dim_step};
+use super::universe::{dim_rate, dim_step, DEFAULT_DIM_TICKS};
 
 /// Stores an f64 in an AtomicU64 via bit representation.
 fn store_f64(atom: &AtomicU64, val: f64) {
@@ -167,7 +167,7 @@ impl MidiDmxStore {
     pub fn register_universe(&mut self, universe_id: u16) {
         self.dim_rates
             .entry(universe_id)
-            .or_insert_with(|| AtomicU64::new(1.0f64.to_bits()));
+            .or_insert_with(|| AtomicU64::new(DEFAULT_DIM_TICKS.to_bits()));
     }
 
     /// Writes a value from the MIDI thread. Lockless (atomics only).
@@ -181,7 +181,12 @@ impl MidiDmxStore {
 
             if dim {
                 let current = load_f64(&slot.current);
-                let ticks = self.dim_rates.get(&universe).map(load_f64).unwrap_or(1.0);
+                let ticks = self
+                    .dim_rates
+                    .get(&universe)
+                    .map(load_f64)
+                    .unwrap_or(DEFAULT_DIM_TICKS);
+
                 store_f64(&slot.rate, dim_rate(current, value_f64, ticks));
             } else {
                 store_f64(&slot.rate, 0.0); // instant
@@ -325,7 +330,7 @@ impl MidiDmxStore {
             }
             let current = load_f64(&slot.current);
             store_f64(&slot.target, 0.0);
-            store_f64(&slot.rate, -current / ticks.max(1.0));
+            store_f64(&slot.rate, dim_rate(current, 0.0, ticks));
             slot.store_fade.store(true, Ordering::Release);
             any = true;
         }
@@ -357,6 +362,8 @@ impl MidiDmxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dmx::universe::{dim_ticks, TARGET_HZ};
+    use std::time::Duration;
 
     /// A store with one slot at (1, 1), dimming over `ticks` frames.
     fn one_slot(ticks: f64) -> MidiDmxStore {
@@ -395,6 +402,25 @@ mod tests {
         store.tick();
         store.clear();
         assert_eq!(store.iter_active().count(), 0, "a song start cuts it");
+    }
+
+    /// A fade to dark counts its ticks as a MIDI dim does (`dim_ticks`):
+    /// over no time, or a tick's worth, the level's byte is out on the
+    /// next tick. (A tick's worth, in whole nanoseconds, is a hair over a
+    /// tick, which leaves a millionth behind for the tick after.)
+    #[test]
+    fn a_fade_to_dark_over_no_time_or_one_tick_is_out_next_tick() {
+        for fade in [Duration::ZERO, Duration::from_secs_f64(1.0 / TARGET_HZ)] {
+            let store = one_slot(1.0);
+            store.write(1, 1, 200, false);
+            store.tick();
+            assert_eq!(value(&store), 200.0);
+            store.fade_out(dim_ticks(fade));
+            store.tick();
+            assert_eq!(value(&store).round() as u8, 0, "fade {fade:?}");
+            store.tick();
+            assert_eq!(value(&store), 0.0, "fade {fade:?}");
+        }
     }
 
     #[test]

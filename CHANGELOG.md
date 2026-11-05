@@ -171,6 +171,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to -- absolute, or with a `..` component, is refused -- so a name with `..` inside it
   (`v1..2`) is now taken, where the web UI refused any two dots; `.` is refused as a folder to
   create, as it is as a name.
+- **Milliseconds may be fractional**: `1.5ms` is a duration, a rate and a tempo `start:` like any
+  other; it was an error, milliseconds being read as a whole number. Every time is read through
+  one table of units, so a space before the unit is allowed everywhere, as a tempo `start:`
+  allowed it.
+- **An inline loop follows the tempo map**: a `loop { } repeats:` lays its passes in beats
+  through the tempo changes they run through, as a referenced sequence does, and reads each
+  pass's `beats` and `measures` durations at the tempo where it plays; its passes used to be
+  placed a fixed number of seconds apart, the first pass's length, their durations read at
+  the loop's own start. Its effects carry the show `offset` in force at the loop, as a
+  sequence's do. A loop under one tempo is placed as it was.
+- **An effect is refused at load, and reported by lint, by one rule**: a `strobe` needs a
+  strobe channel, a dimmer or colour channels (the engine strobes a dimmer or colour in
+  software; lint used to report a strobe on a group with no strobe channel), a `static`
+  naming a colour, a `cycle` and a `rainbow` need colour channels (RGB or CMY), a `dimmer` and
+  a `pulse` a dimmer or colour channels, a `move` pan or tilt, and a `chase` nothing in
+  particular (it used to need colour channels or a dimmer). A `static` naming a colour, a
+  `dimmer` and a `pulse` on a fixture without what they ask used to load; a `chase` on one
+  with neither colour nor a dimmer used to be refused. The warning printed to stderr at
+  registration for a fixture type named `RGB`, `Strobe` or `MovingHead` without the channels
+  its name suggests is gone; what a fixture can do is read from its channels alone, and lint
+  reports the same.
+- **A fade to dark counts its ticks as a MIDI dim does**: what MIDI DMX holds fades to dark
+  over the ticks `dim_ticks` gives the fade -- one for none, as before, so the bytes sent are
+  the same; there is one rule for it now.
 - **A cue's own effects merge with each sequence it references, inside a sequence as in a show**:
   a sequence cue holding `sequence "a"`, `sequence "b"` and an effect of its own makes one cue
   at that time, its own effect first, as a show cue always has; it used to make two, with its
@@ -296,6 +320,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1:30.5s`), with the leading `@` the DSL's parser took (`@1:30`), surrounding whitespace
   trimmed, and fractions kept to the microsecond where the DSL's parser cut them to the
   millisecond.
+- **MIDI DMX writes a channel's fine byte and mirrors**: a 16-bit channel driven from MIDI got
+  its coarse byte alone, and a ganged channel its first copy; both go out as a show's value
+  does, through the one byte resolution. On a 16-bit channel the value is rounded on the
+  16-bit scale, so mid-fade its coarse byte can be one above the truncated byte MIDI used to
+  send; an 8-bit channel's byte is as it was.
+- **`evaluate_show` reads an optic or a setting as dark**: `is_dark` counts only the levels
+  going dark takes to 0 -- not zoom, focus, iris, frost, nor a snap channel such as a gobo --
+  the rule the fade to dark goes by, so a zoom at its setting no longer makes a dark rig read
+  as lit.
+- **A head moves on a `pan:1` or a fine byte**: a fixture's panning and tilting are derived by
+  the rule the crossfade goes by, so a GDTF profile's sectioned pan or tilt, or a fine byte on
+  its own, makes it a mover for lint, validation and the fit, where only a channel named
+  exactly `pan` or `tilt` did.
+- **A GDTF export's home for a head is the centre of the span it is pointed over**: the
+  `Default` of a pan or tilt goes through the one degree span the pointing math uses -- the
+  channel's range, else a function's degrees, else the assumed travel -- where it took the
+  range alone and fell back to 128.
 - **`evaluate_show` reads a GDTF head's `pan:1` as pointing, not lit**: `is_dark` counts pan
   and tilt out by the same rule as the crossfade, so a section of either (`pan:1`, as a GDTF
   profile names it) parked at centre no longer makes a dark rig read as lit. The MVR export's

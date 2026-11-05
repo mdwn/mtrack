@@ -34,6 +34,31 @@ pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>
     }
 }
 
+/// A time as written, in its unit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TimeValue {
+    Seconds(f64),
+    Beats(f64),
+    Measures(f64),
+}
+
+/// The units a time is written in -- `500ms` or `1.5ms`, `0.5s`, `2beats`,
+/// `1measure`, or a bare number, which is seconds -- read into
+/// [`TimeValue`]. The one table; each caller takes the units it allows
+/// and reports its own errors.
+pub(crate) fn parse_time_value(value: &str) -> Result<TimeValue, std::num::ParseFloatError> {
+    let (number, unit) = split_unit(value);
+    let number = number.trim();
+    Ok(match unit {
+        "ms" => TimeValue::Seconds(number.parse::<f64>()? / 1000.0),
+        "s" => TimeValue::Seconds(number.parse()?),
+        "beats" | "beat" => TimeValue::Beats(number.parse()?),
+        "measures" | "measure" => TimeValue::Measures(number.parse()?),
+        // Assume seconds if no unit
+        _ => TimeValue::Seconds(value.trim().parse()?),
+    })
+}
+
 /// A value written as a number and its unit -- `2.5s`, `4beats`, `45deg`
 /// -- split into the number as written and the unit: the letters it ends
 /// in, `""` for a bare number. Each caller takes the units it knows and
@@ -73,28 +98,22 @@ pub(crate) fn parse_tempo_aware_string(
         return Ok(TempoAwareValue::Fixed(val));
     }
 
-    let (number, unit) = split_unit(value);
-    match unit {
-        "ms" => Ok(TempoAwareValue::Seconds(number.parse::<f64>()? / 1000.0)),
-        "measures" | "measure" => {
-            let num = number.parse::<f64>()?;
+    match parse_time_value(value)? {
+        TimeValue::Seconds(secs) => Ok(TempoAwareValue::Seconds(secs)),
+        TimeValue::Measures(num) => {
             if tempo_map.is_some() {
                 Ok(TempoAwareValue::Measures(num))
             } else {
                 Err(format!("Measure-based {kind_label} values require a tempo section").into())
             }
         }
-        "beats" | "beat" => {
-            let num = number.parse::<f64>()?;
+        TimeValue::Beats(num) => {
             if tempo_map.is_some() {
                 Ok(TempoAwareValue::Beats(num))
             } else {
                 Err(format!("Beat-based {kind_label} values require a tempo section").into())
             }
         }
-        "s" => Ok(TempoAwareValue::Seconds(number.parse::<f64>()?)),
-        // Fallback: try parsing as a number
-        _ => Ok(TempoAwareValue::Fixed(value.parse::<f64>()?)),
     }
 }
 
@@ -123,11 +142,9 @@ pub(crate) fn parse_duration_string(
     at_time: Option<Duration>,
     offset_secs: f64,
 ) -> Result<Duration, Box<dyn Error>> {
-    let (number, unit) = split_unit(value);
-    match unit {
-        "ms" => Ok(Duration::from_millis(number.parse::<u64>()?)),
-        "measures" | "measure" => {
-            let num = number.parse::<f64>()?;
+    match parse_time_value(value)? {
+        TimeValue::Seconds(secs) => Ok(Duration::from_secs_f64(secs)),
+        TimeValue::Measures(num) => {
             if let Some(tm) = tempo_map {
                 let time = at_time.unwrap_or(Duration::ZERO);
                 Ok(tm.measures_to_duration(num, time, offset_secs))
@@ -135,8 +152,7 @@ pub(crate) fn parse_duration_string(
                 Err("Measure-based durations require a tempo section".into())
             }
         }
-        "beats" | "beat" => {
-            let num = number.parse::<f64>()?;
+        TimeValue::Beats(num) => {
             if let Some(tm) = tempo_map {
                 let time = at_time.unwrap_or(Duration::ZERO);
                 Ok(tm.beats_to_duration(num, time, offset_secs))
@@ -144,9 +160,6 @@ pub(crate) fn parse_duration_string(
                 Err("Beat-based durations require a tempo section".into())
             }
         }
-        "s" => Ok(Duration::from_secs_f64(number.parse::<f64>()?)),
-        // Assume seconds if no unit
-        _ => Ok(Duration::from_secs_f64(value.trim().parse::<f64>()?)),
     }
 }
 
@@ -525,6 +538,33 @@ mod tests {
     #[test]
     fn duration_beats_without_tempo_errors() {
         assert!(parse_duration_string("2beats", &None, None, 0.0).is_err());
+    }
+
+    #[test]
+    fn milliseconds_may_be_fractional_and_whole_ones_are_as_they_were() {
+        assert_eq!(
+            parse_duration_string("1.5ms", &None, None, 0.0).unwrap(),
+            Duration::from_micros(1500)
+        );
+        assert_eq!(
+            parse_speed_string("2.5ms", &None).unwrap(),
+            TempoAwareSpeed::Seconds(0.0025)
+        );
+        // Whole milliseconds were read as an integer into `from_millis`;
+        // through the one table they land on the same nanosecond, a day
+        // in included.
+        for ms in (0..5000).chain([59_999, 60_000, 3_600_000, 86_400_000]) {
+            assert_eq!(
+                parse_duration_string(&format!("{ms}ms"), &None, None, 0.0).unwrap(),
+                Duration::from_millis(ms),
+                "{ms}ms"
+            );
+        }
+        assert_eq!(
+            parse_time_value("3 s").unwrap(),
+            TimeValue::Seconds(3.0),
+            "the number is trimmed, as a tempo start's was"
+        );
     }
 
     #[test]

@@ -413,7 +413,7 @@ fn test_validate_effect_compatibility_color_cycle_no_rgb() {
     let result = engine.start_effect(effect);
     assert!(result.is_err());
     if let Err(EffectError::Parameter(msg)) = result {
-        assert!(msg.contains("Color cycle") && msg.contains("RGB capability"));
+        assert!(msg.contains("cycle effect") && msg.contains("colour channels"));
     } else {
         panic!("Expected Parameter error for incompatible effect");
     }
@@ -453,7 +453,7 @@ fn test_validate_effect_compatibility_rainbow_no_rgb() {
     let result = engine.start_effect(effect);
     assert!(result.is_err());
     if let Err(EffectError::Parameter(msg)) = result {
-        assert!(msg.contains("Rainbow") && msg.contains("RGB capability"));
+        assert!(msg.contains("rainbow effect") && msg.contains("colour channels"));
     } else {
         panic!("Expected Parameter error for incompatible effect");
     }

@@ -26,6 +26,7 @@ use std::error::Error;
 use std::io::Write;
 
 use super::escape;
+use crate::lighting::effects::{degree_span, PhysicalParameter};
 use crate::lighting::types::{Cell, ChannelDef, FixtureType, PhysicalUnit};
 
 /// The generated mode's name.
@@ -258,16 +259,18 @@ impl Emitted {
     }
 }
 
-/// The DMX byte a physical value of zero lands on within a channel's
-/// range — the centre of a symmetric pan or tilt travel.
-fn byte_at_physical_zero(def: &ChannelDef) -> u8 {
-    match def.range {
-        Some(r) if (r.to - r.from).abs() > f64::EPSILON => {
-            let fraction = ((0.0 - r.from) / (r.to - r.from)).clamp(0.0, 1.0);
-            (fraction * 255.0).round() as u8
-        }
-        _ => 128,
-    }
+/// The DMX byte a pan or tilt of zero degrees lands on -- the centre of a
+/// symmetric travel -- within the span the pointing math resolves the
+/// channel over ([`degree_span`]): its range, else a function's, else the
+/// assumed travel.
+fn byte_at_physical_zero(def: &ChannelDef, parameter: PhysicalParameter) -> u8 {
+    let (from, to, dmx_lo, dmx_hi) = degree_span(def, parameter);
+    let fraction = if (to - from).abs() > f64::EPSILON {
+        ((0.0 - from) / (to - from)).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    (f64::from(dmx_lo) + fraction * f64::from(dmx_hi - dmx_lo)).round() as u8
 }
 
 /// Emits one channel on `geometry`.
@@ -275,7 +278,11 @@ fn emit_channel(out: &mut Emitted, geometry: &str, name: &str, def: &ChannelDef)
     let attribute = attribute_for(name, def);
     let is_dimmer = attribute.name == "Dimmer";
     let is_color = attribute.feature == "Color.RGB";
-    let is_pose = attribute.name == "Pan" || attribute.name == "Tilt";
+    let pose = match attribute.name.as_str() {
+        "Pan" => Some(PhysicalParameter::Pan),
+        "Tilt" => Some(PhysicalParameter::Tilt),
+        _ => None,
+    };
     let is_shutter = attribute.name == "Shutter1";
     let attribute_name = out.declare(attribute);
 
@@ -352,8 +359,8 @@ fn emit_channel(out: &mut Emitted, geometry: &str, name: &str, def: &ChannelDef)
     // Where a console's "home" and "highlight" put the channel: a dimmer
     // and a colour dark at home and full when highlighted, a mover at the
     // centre of its travel, a shutter on its `open` function.
-    let default = if is_pose {
-        byte_at_physical_zero(def)
+    let default = if let Some(parameter) = pose {
+        byte_at_physical_zero(def, parameter)
     } else if is_shutter {
         functions
             .iter()
@@ -656,6 +663,38 @@ mod tests {
         assert_eq!(back.channels()["cyan"], 2);
         assert_eq!(back.channels()["magenta"], 3);
         assert_eq!(back.channels()["yellow"], 4);
+    }
+
+    /// A head's home is the centre of its travel as the pointing math has
+    /// it: a function's degree span when the channel has no range of its
+    /// own, and the assumed travel when it has neither.
+    #[test]
+    fn a_heads_home_is_the_centre_of_the_span_it_is_pointed_over() {
+        let dsl = "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 {\n    function \"pan\" 64..255 -90deg..270deg\n  }\n  channel \"tilt\" @ 2\n}\n";
+        let types = parse_fixture_types(dsl).unwrap();
+        let xml = description(&types["Mover"]).unwrap();
+        strict(&xml);
+        // Shown on failure: the channel's own function line, not the
+        // description (it carries a generated UUID).
+        let function = |name: &str| {
+            xml.lines()
+                .find(|line| line.contains(&format!("Name=\"{name}\" Attribute=")))
+                .unwrap_or("no such function")
+                .trim()
+                .to_string()
+        };
+        // 0° is a quarter of the way from -90° to 270°: 64 + 191 / 4.
+        assert!(
+            xml.contains("Name=\"pan\" Attribute=\"Pan\" DMXFrom=\"64/1\" Default=\"112/1\""),
+            "{}",
+            function("pan")
+        );
+        // Tilt, with nothing said, is pointed over -135°..135°: centre 128.
+        assert!(
+            xml.contains("Name=\"tilt\" Attribute=\"Tilt\" DMXFrom=\"0/1\" Default=\"128/1\""),
+            "{}",
+            function("tilt")
+        );
     }
 
     #[test]

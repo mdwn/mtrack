@@ -534,6 +534,54 @@ fn test_inline_loop_respects_tempo_for_durations() {
     );
 }
 
+/// An inline loop's passes are laid in beats, through the tempo changes
+/// they run through, as a referenced sequence's are, and each pass's
+/// musical durations are read where it plays. Four passes of a 2-beat
+/// effect from 0 at 120 BPM, with 60 BPM from bar 2 (2 s): passes at 0,
+/// 1, 2 and 4 s, lasting 1, 1, 2 and 2 s. (Placed a fixed second apart,
+/// as they were, the passes fell at 0, 1, 2 and 3 s, each lasting 1 s.)
+#[test]
+fn test_inline_loop_follows_a_tempo_change() {
+    let content = r#"show "Ritardando" {
+    tempo {
+        bpm: 120
+        time_signature: 4/4
+        changes: [
+            @2/1 { bpm: 60 }
+        ]
+    }
+    @0.0
+    loop {
+        @0.0
+        band: static, color: "red", duration: 2beats
+    }, repeats: 4
+}"#;
+
+    let shows = parse_light_shows(content).expect("parse should succeed");
+    let show = &shows["Ritardando"];
+    let placed: Vec<(Duration, Duration)> = show
+        .cues
+        .iter()
+        .map(|c| (c.time, c.effects[0].total_duration()))
+        .collect();
+    let secs = |s: u64| Duration::from_secs(s);
+    assert_eq!(
+        placed,
+        vec![
+            (secs(0), secs(1)),
+            (secs(1), secs(1)),
+            (secs(2), secs(2)),
+            (secs(4), secs(2)),
+        ]
+    );
+    assert!(
+        show.cues.iter().all(|c| c.start_sequences.is_empty()
+            && c.stop_sequences.is_empty()
+            && c.effects.iter().all(|e| e.sequences.is_empty())),
+        "an inline loop is no sequence: its passes are plain cues"
+    );
+}
+
 #[test]
 fn test_inline_loop_inside_sequence_preserves_times() {
     // Inline loop inside a sequence should expand to distinct cues with absolute times.

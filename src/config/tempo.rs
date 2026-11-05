@@ -73,7 +73,8 @@ pub enum TransitionConfig {
 }
 
 fn default_time_signature() -> String {
-    "4/4".to_string()
+    let meter = crate::tempo::DEFAULT_TIME_SIGNATURE;
+    format!("{}/{}", meter.numerator, meter.denominator)
 }
 
 /// Parses a "numerator/denominator" time signature string, in the range a

@@ -277,10 +277,8 @@ impl SequenceLibrary {
             .ok_or("Sequence definition did not parse (internal error)")?;
 
         let definition = parse_sequence_structure(pair, &self.global_tempo, self)?;
-        let tempo = definition
-            .tempo_map
-            .clone()
-            .or_else(|| self.global_tempo.clone());
+        let tempo = definition.block.effective_tempo.clone();
+
         // Checked before any reference is placed: a cue past the length is
         // an error whatever it would expand to, and a long expansion is
         // spared.

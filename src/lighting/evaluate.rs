@@ -66,13 +66,14 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
-    /// `Some(true)` when every channel of every fixture is at zero — the rig
+    /// `Some(true)` when every level of every fixture is at zero — the rig
     /// is dark. `None` when there were no fixtures to evaluate, which is not
     /// darkness but an absence of evidence: no venue is loaded, so nothing can
     /// be said either way. `all()` over an empty set would answer `true`.
     ///
-    /// Pan and tilt do not count: a mover parked at centre reads 128 on
-    /// both, and where a head points says nothing about whether it is lit.
+    /// Only the channels going dark takes to 0 count (`is_level_channel`):
+    /// a mover parked at centre reads 128 on pan and tilt, a zoom or focus
+    /// holds its setting, and none of that says whether it is lit.
     pub fn is_dark(&self) -> Option<bool> {
         if self.fixtures.is_empty() {
             return None;
@@ -80,7 +81,7 @@ impl Evaluation {
         Some(self.fixtures.iter().all(|f| {
             f.channels
                 .iter()
-                .all(|(name, &v)| v == 0 || crate::state::is_pointing_channel(name))
+                .all(|(name, &v)| v == 0 || !crate::state::is_level_channel(name))
         }))
     }
 }
@@ -302,7 +303,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     let has_dimmer: HashMap<String, bool> = engine
         .get_fixture_registry()
         .iter()
-        .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+        .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
 
     let mut active_effects: Vec<EvaluatedEffect> = engine
@@ -829,7 +830,7 @@ show "T" {
         }
         let has_dimmer: HashMap<String, bool> = fixtures
             .iter()
-            .map(|f| (f.name.clone(), f.channels.contains_key("dimmer")))
+            .map(|f| (f.name.clone(), f.has_dimmer()))
             .collect();
 
         timeline.start();
@@ -998,6 +999,28 @@ show "T" {
             ..evaluation
         };
         assert_eq!(lit.is_dark(), Some(false));
+    }
+
+    /// An optic (zoom, focus) or a setting (a gobo) holds its value in the
+    /// dark; only a level says the rig is lit, by the rule going dark
+    /// fades by.
+    #[test]
+    fn is_dark_ignores_optics_and_settings() {
+        let channels: HashMap<String, u8> = [("zoom", 128u8), ("gobo", 3), ("dimmer", 0)]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        let evaluation = Evaluation {
+            time: Duration::ZERO,
+            fixtures: vec![FixtureSnapshot {
+                name: "m".to_string(),
+                channels,
+                cells: Default::default(),
+            }],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        };
+        assert_eq!(evaluation.is_dark(), Some(true));
     }
 
     /// A GDTF profile names a head's pan `pan:1`, a section of the one

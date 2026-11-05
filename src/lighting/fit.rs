@@ -815,12 +815,12 @@ mod test {
     fn no_fitting_cluster_names_the_want_nothing_meets() {
         let fixtures = vec![fixture("w", "Par", None, WASH)];
         let fit = suggest(
-            &needs(&["strobes"], &[]),
-            &wants(&[Want::Color, Want::Strobe]),
+            &needs(&["movers"], &[]),
+            &wants(&[Want::Color, Want::Move]),
             &fixtures,
         );
         assert!(fit.suggestion.is_none());
-        assert_eq!(fit.unmet, vec![Want::Strobe]);
+        assert_eq!(fit.unmet, vec![Want::Move]);
         assert!(!fit.unmet_together);
     }
 
@@ -876,7 +876,7 @@ mod test {
     fn capability_names_carry_what_else_the_fixture_has() {
         assert_eq!(
             named(&["red", "green", "blue", "white", "dimmer", "zoom"]).capability_names(),
-            vec!["color", "dimmer", "white", "zoom"]
+            vec!["color", "strobe", "dimmer", "white", "zoom"]
         );
         assert_eq!(named(&["pan", "tilt"]).capability_names(), vec!["pan_tilt"]);
     }
@@ -885,7 +885,7 @@ mod test {
     fn a_wheel_is_colour_only_when_nothing_mixes() {
         assert_eq!(
             named(&["color1", "dimmer"]).capability_names(),
-            vec!["dimmer", "color_wheel"]
+            vec!["strobe", "dimmer", "color_wheel"]
         );
         // A mixing fixture with a wheel is a colour fixture: the wheel is extra.
         assert!(!named(&["red", "green", "blue", "color1"]).color_wheel);

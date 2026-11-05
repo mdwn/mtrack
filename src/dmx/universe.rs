@@ -33,11 +33,22 @@ const UNIVERSE_SIZE: usize = 512;
 /// The target number of updates per second.
 pub(crate) const TARGET_HZ: f64 = 44.0;
 
+/// The ticks a full transition takes before any dimming time is set, and
+/// under none: one, so a write lands next tick.
+pub(crate) const DEFAULT_DIM_TICKS: f64 = 1.0;
+
+/// The byte a channel's value goes out as: rounded, within a byte's reach.
+/// (Not a number goes out full: `min` and `max` answer the other operand
+/// for it.)
+fn dmx_byte(value: f64) -> u8 {
+    value.min(u8::MAX.into()).max(u8::MIN.into()).round() as u8
+}
+
 /// A MIDI DMX dimming time as the ticks a full transition takes, at
 /// [`TARGET_HZ`]: one tick for none.
 pub(crate) fn dim_ticks(dimming: Duration) -> f64 {
     if dimming.is_zero() {
-        1.0
+        DEFAULT_DIM_TICKS
     } else {
         dimming.as_secs_f64() * TARGET_HZ
     }
@@ -123,7 +134,8 @@ impl Universe {
             rates: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             current: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             target: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
-            global_dim_rate: RwLock::new(1.0),
+            global_dim_rate: RwLock::new(DEFAULT_DIM_TICKS),
+
             max_channels: Arc::new(AtomicU16::new(0)),
             config,
             cancel_handle,
@@ -180,7 +192,7 @@ impl Universe {
                 } else {
                     target[idx]
                 };
-                (idx, value.round().clamp(0.0, 255.0) as u8)
+                (idx, dmx_byte(value))
             })
             .filter(|&(_, value)| value > 0)
             .map(|(idx, value)| (idx as u16 + 1, value))
@@ -350,10 +362,7 @@ impl Universe {
             if (current[i] - target[i]).abs() > f64::EPSILON {
                 changed = true;
                 current[i] = dim_step(current[i], target[i], rates[i]);
-                buffer.set_channel(
-                    i,
-                    current[i].min(u8::MAX.into()).max(u8::MIN.into()).round() as u8,
-                );
+                buffer.set_channel(i, dmx_byte(current[i]));
             }
         }
         changed
@@ -363,6 +372,20 @@ impl Universe {
 #[cfg(test)]
 mod dimming_test {
     use super::*;
+
+    /// The byte a channel's value goes out as, as the universe thread
+    /// always sent it; what `lit_channels` reports is the same byte.
+    #[test]
+    fn dmx_byte_rounds_within_a_byte() {
+        assert_eq!(dmx_byte(0.0), 0);
+        assert_eq!(dmx_byte(-0.4), 0);
+        assert_eq!(dmx_byte(-7.0), 0);
+        assert_eq!(dmx_byte(127.5), 128);
+        assert_eq!(dmx_byte(254.6), 255);
+        assert_eq!(dmx_byte(255.4), 255);
+        assert_eq!(dmx_byte(300.0), 255);
+        assert_eq!(dmx_byte(f64::NAN), 255);
+    }
 
     /// A tick at a time lands where the closed form says, whatever the
     /// rate: the store and the universe thread step, a replay jumps. (At

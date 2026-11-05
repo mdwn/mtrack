@@ -16,6 +16,15 @@ use std::time::{Duration, Instant};
 
 use super::types::{BlendMode, EffectLayer, EffectType, DEFAULT_BLEND, DEFAULT_LAYER};
 
+/// How far through a fade of `duration` it is `elapsed` in: from 0 at its
+/// start to 1 at its end, held there after (and from the start of one with
+/// no duration), as [`crossfade_progress`] counts a loop's crossfade.
+///
+/// [`crossfade_progress`]: crate::section_loop::crossfade_progress
+pub(crate) fn fade_progress(elapsed: Duration, duration: Duration) -> f64 {
+    crate::section_loop::crossfade_progress(elapsed, duration).clamp(0.0, 1.0)
+}
+
 /// An instance of an effect with timing and targeting information.
 /// All effects have a finite duration — there are no perpetual or permanent effects.
 #[derive(Debug, Clone)]
@@ -76,23 +85,7 @@ impl EffectInstance {
         hold_time: Option<Duration>,
         down_time: Option<Duration>,
     ) -> Self {
-        // Extract duration from effect_type (None for Dimmer, which uses its own timing model)
-        let duration = if matches!(&effect_type, EffectType::Dimmer { .. }) {
-            None
-        } else {
-            Some(effect_type.duration())
-        };
-
-        // Use the effect type's duration as hold_time if hold_time wasn't explicitly provided.
-        // Dimmer is special: it doesn't use the up/hold/down timing model.
-        let default_hold_time = if matches!(&effect_type, EffectType::Dimmer { .. }) {
-            None
-        } else {
-            duration
-        };
-
-        let final_hold_time = hold_time.or(default_hold_time);
-
+        let hold_time = hold_time.or_else(|| effect_type.default_hold());
         Self {
             id,
             effect_type,
@@ -103,7 +96,7 @@ impl EffectInstance {
             start_time: None,
             cue_time: None,
             up_time,
-            hold_time: final_hold_time,
+            hold_time,
             down_time,
             enabled: true,
             per_cell: false,
@@ -152,33 +145,15 @@ impl EffectInstance {
         // Small epsilon to make boundary checks inclusive and avoid flapping
         let eps = Duration::from_micros(1);
 
-        if up_time.is_zero() {
-            // No fade in phase - go directly to hold or fade out
-            if elapsed <= hold_end + eps {
-                // Hold phase (100%)
-                1.0
-            } else if !down_time.is_zero() && elapsed < total_end + eps {
-                // Fade out phase (100% to 0%)
-                let fade_out_elapsed = elapsed.saturating_sub(hold_end);
-                let t = (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0);
-                1.0 - t
-            } else if elapsed > total_end + eps {
-                // Effect has ended
-                0.0
-            } else {
-                1.0
-            }
-        } else if elapsed < up_end + eps {
+        if !up_time.is_zero() && elapsed < up_end + eps {
             // Fade in phase (0% to 100%)
-            (elapsed.as_secs_f64() / up_time.as_secs_f64()).clamp(0.0, 1.0)
+            fade_progress(elapsed, up_time)
         } else if elapsed <= hold_end + eps {
             // Hold phase (100%)
             1.0
         } else if !down_time.is_zero() && elapsed < total_end + eps {
             // Fade out phase (100% to 0%)
-            let fade_out_elapsed = elapsed.saturating_sub(hold_end);
-            let t = (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0);
-            1.0 - t
+            1.0 - fade_progress(elapsed.saturating_sub(hold_end), down_time)
         } else if elapsed > total_end + eps {
             // Effect has ended
             0.0
@@ -187,17 +162,10 @@ impl EffectInstance {
         }
     }
 
-    /// Get the total duration of this effect (up_time + hold_time + down_time).
-    /// All effects have a finite duration.
+    /// How long the effect lasts (see [`EffectType::total_duration`]).
     pub fn total_duration(&self) -> Duration {
-        // For dimmers, use the effect's own duration field (timing params not used)
-        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
-            return *duration;
-        }
-
-        self.up_time.unwrap_or(Duration::ZERO)
-            + self.hold_time.unwrap_or(Duration::ZERO)
-            + self.down_time.unwrap_or(Duration::ZERO)
+        self.effect_type
+            .total_duration(self.up_time, self.hold_time, self.down_time)
     }
 
     /// Whether the effect has run its course at `elapsed` of its own time:
@@ -547,5 +515,47 @@ mod tests {
             .with_timing(Some(now), Some(Duration::from_secs(10)));
         assert_eq!(inst.start_time, Some(now));
         assert_eq!(inst.hold_time, Some(Duration::from_secs(10)));
+    }
+
+    // ── fade_progress ──────────────────────────────────────────────
+
+    #[test]
+    fn fade_progress_runs_from_zero_to_one_and_holds() {
+        let fade = Duration::from_millis(400);
+        assert_eq!(fade_progress(Duration::ZERO, fade), 0.0);
+        assert_eq!(
+            fade_progress(Duration::from_millis(100), fade).to_bits(),
+            (0.1f64 / 0.4f64).to_bits()
+        );
+        assert_eq!(fade_progress(Duration::from_millis(400), fade), 1.0);
+        assert_eq!(fade_progress(Duration::from_secs(3), fade), 1.0);
+        // No fade is over at once.
+        assert_eq!(fade_progress(Duration::ZERO, Duration::ZERO), 1.0);
+    }
+
+    #[test]
+    fn fade_out_level_is_the_same_with_and_without_a_fade_in() {
+        let hold = Duration::from_secs(2);
+        let down = Duration::from_secs(1);
+        let mut without = make_instance(static_effect(Duration::from_secs(2)));
+        without.hold_time = Some(hold);
+        without.down_time = Some(down);
+        let mut with = make_instance(static_effect(Duration::from_secs(2)));
+        with.up_time = Some(Duration::from_millis(500));
+        with.hold_time = Some(hold);
+        with.down_time = Some(down);
+        for ms in [0, 250, 500, 1000, 2000, 2250, 2500, 2999, 3000, 3001] {
+            let at = Duration::from_millis(ms);
+            let shifted = at + Duration::from_millis(500);
+            assert_eq!(
+                without.calculate_crossfade_multiplier(at).to_bits(),
+                with.calculate_crossfade_multiplier(shifted).to_bits(),
+                "at {ms}ms"
+            );
+        }
+        assert_eq!(
+            with.calculate_crossfade_multiplier(Duration::from_millis(250)),
+            0.5
+        );
     }
 }

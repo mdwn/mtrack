@@ -373,7 +373,10 @@ mod tests {
         );
         // The dimmer byte is the engine's own for 0.5 (it truncates), as
         // `resolve_normalized` writes it for any show.
-        let half = crate::lighting::effects::resolve_normalized(&ChannelDef::at(1), 0.5)[0].1;
+        let half = crate::lighting::effects::resolve_normalized(&ChannelDef::at(1), 0.5)
+            .next()
+            .unwrap()
+            .1;
         assert_eq!(half, 127);
         assert_eq!(
             values(&frame),

@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
+use crate::lighting::engine::{base_channel, is_position_channel};
 
 /// Get the layer suffix for multiplier channel names
 #[inline]
@@ -495,6 +496,23 @@ pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
 }
 
 /// Each additive primary and the subtractive channel that removes it.
+/// Whether a channel map has a dimmer of its own: a fixture's, or a
+/// cell's. Without one, the level is carried on the colour channels.
+pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
+    channels.contains_key("dimmer")
+}
+
+/// The name a pixel fixture's cell registers under beside it: the
+/// fixture's, a slash, the cell's.
+pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
+    format!("{fixture}/{cell}")
+}
+
+/// The cell's own name in a name [`cell_fixture_name`] built.
+pub fn cell_name(sub_fixture: &str) -> &str {
+    sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
+}
+
 pub const CMY_OF_RGB: [(&str, &str); 3] =
     [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
 
@@ -620,17 +638,19 @@ impl FixtureInfo {
         if channels.contains_key("white") {
             capabilities = capabilities.with(FixtureCapabilities::WHITE_COLOR);
         }
-        if channels.contains_key("dimmer") {
+        if has_dimmer_channel(channels) {
             capabilities = capabilities.with(FixtureCapabilities::DIMMING);
         }
         if channels.contains_key("strobe") {
             capabilities = capabilities.with(FixtureCapabilities::STROBING);
         }
-        if channels.contains_key("pan") {
-            capabilities = capabilities.with(FixtureCapabilities::PANNING);
-        }
-        if channels.contains_key("tilt") {
-            capabilities = capabilities.with(FixtureCapabilities::TILTING);
+        // A head moves on any channel that carries where it points: `pan`,
+        // a GDTF profile's `pan:1`, a fine byte.
+        for channel in channels.keys().filter(|c| is_position_channel(c)) {
+            capabilities = capabilities.with(match base_channel(channel) {
+                "pan" => FixtureCapabilities::PANNING,
+                _ => FixtureCapabilities::TILTING,
+            });
         }
         if channels.contains_key("zoom") {
             capabilities = capabilities.with(FixtureCapabilities::ZOOMING);
@@ -682,6 +702,13 @@ impl FixtureInfo {
     #[inline]
     pub fn has_capability(&self, capability: FixtureCapabilities) -> bool {
         self.cached_capabilities.contains(capability)
+    }
+
+    /// Whether the fixture has a dimmer channel of its own. Without one,
+    /// its level is carried on its colour channels.
+    #[inline]
+    pub fn has_dimmer(&self) -> bool {
+        self.has_capability(FixtureCapabilities::DIMMING)
     }
 
     /// Get the cached fixture profile
@@ -1101,5 +1128,62 @@ mod tests {
         assert_eq!(f.fixture_type, "generic_spot");
         assert_eq!(f.max_strobe_frequency, Some(25.0));
         assert_eq!(f.channels.len(), 4);
+    }
+
+    /// A head moves on any channel that carries where it points, by the
+    /// one rule the crossfade and `is_dark` go by: a GDTF profile's
+    /// `pan:1`, or a fine byte on its own, counts; `pan_speed` does not.
+    #[test]
+    fn a_head_moves_on_a_pan_section_or_fine_byte() {
+        let sectioned = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan:1", "tilt_fine"]),
+            None,
+        );
+        assert!(sectioned.has_capability(FixtureCapabilities::PANNING));
+        assert!(sectioned.has_capability(FixtureCapabilities::TILTING));
+        let speed_only = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "pan_speed"]),
+            None,
+        );
+        assert!(!speed_only.has_capability(FixtureCapabilities::PANNING));
+        assert!(!speed_only.has_capability(FixtureCapabilities::TILTING));
+    }
+
+    #[test]
+    fn has_dimmer_is_a_dimmer_channel_of_its_own() {
+        let with = FixtureInfo::new(
+            "a".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["dimmer", "red"]),
+            None,
+        );
+        let without = FixtureInfo::new(
+            "b".to_string(),
+            1,
+            1,
+            "t".to_string(),
+            make_channels(&["red", "green", "blue", "dimmer_fine"]),
+            None,
+        );
+        assert!(with.has_dimmer());
+        assert!(!without.has_dimmer());
+    }
+
+    #[test]
+    fn a_cell_name_is_its_fixture_then_the_cell() {
+        let name = cell_fixture_name("bar", "cell3");
+        assert_eq!(name, "bar/cell3");
+        assert_eq!(cell_name(&name), "cell3");
+        assert_eq!(cell_name("bar"), "bar");
     }
 }

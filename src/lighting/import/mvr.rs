@@ -1049,35 +1049,36 @@ fn find_existing_venue(
 ) -> Result<Option<(PathBuf, Venue)>, Box<dyn Error>> {
     // Wherever the venue lives — any file, any depth — as the lighting
     // system finds it; a merge must patch that file, not seed a twin.
-    if let Some(declared) =
-        crate::lighting::project_files::venues(&project.join(venues_dir)).get(venue_name)
-    {
+    let venues = crate::lighting::project_files::venues(&project.join(venues_dir));
+    if let Some(declared) = venues.get(venue_name) {
         return Ok(Some((declared.file.clone(), declared.item.clone())));
     }
+    // The file the venue would be written to holds something else: other
+    // venues, or text that does not parse (a file that parsed declares its
+    // names, whichever rule set them aside).
     let stem = fixture_filename_stem(venue_name);
     for extension in ["venue", "light"] {
         let path = project.join(venues_dir).join(format!("{stem}.{extension}"));
         if !path.exists() {
             continue;
         }
-        let content = crate::util::read_to_string(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let mut venues = parse_venues(&content)
-            .map_err(|e| format!("{} does not parse: {e}", path.display()))?;
-        return match venues.remove(venue_name) {
-            Some(venue) => Ok(Some((path, venue))),
-            None => Err(format!(
-                "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
-                 import under a different --name",
-                path.display(),
-                venues
-                    .keys()
-                    .map(|k| format!("\"{k}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into()),
-        };
+        let holds = venues.names_in(&path);
+        if holds.is_empty() {
+            if let Some(problem) = venues.problems.iter().find(|p| p.file == path) {
+                return Err(format!("{} does not parse: {}", path.display(), problem.error).into());
+            }
+        }
+        return Err(format!(
+            "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
+             import under a different --name",
+            path.display(),
+            holds
+                .iter()
+                .map(|k| format!("\"{k}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .into());
     }
     Ok(None)
 }
@@ -2544,5 +2545,47 @@ mod tests {
             plan.warnings
         );
         assert_eq!(plan.focus_points[0].name, "Drummer");
+    }
+}
+
+#[cfg(test)]
+mod existing_venue_tests {
+    use super::*;
+
+    /// A venue is found wherever it lives, in one read of the venues
+    /// directory; the file at its own name holding something else is
+    /// reported from that same read.
+    #[test]
+    fn finds_the_venue_or_says_what_its_file_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let venues = dir.path().join("venues");
+        std::fs::create_dir_all(venues.join("tour")).unwrap();
+        std::fs::write(venues.join("tour/anywhere.venue"), "venue \"Club\" {\n}\n").unwrap();
+        std::fs::write(venues.join("house.venue"), "venue \"Other\" {\n}\n").unwrap();
+        std::fs::write(venues.join("broken.venue"), "venue \"Broken\" {\n").unwrap();
+
+        let found = find_existing_venue(dir.path(), "venues", "Club")
+            .unwrap()
+            .expect("found");
+        assert_eq!(found.0, venues.join("tour/anywhere.venue"));
+
+        let error = find_existing_venue(dir.path(), "venues", "House")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "exists but does not define a venue named \"House\" (it holds: \"Other\")"
+            ),
+            "{error}"
+        );
+
+        let error = find_existing_venue(dir.path(), "venues", "Broken")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("broken.venue does not parse: "), "{error}");
+
+        assert!(find_existing_venue(dir.path(), "venues", "Nowhere")
+            .unwrap()
+            .is_none());
     }
 }
