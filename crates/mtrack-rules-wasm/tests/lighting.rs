@@ -619,4 +619,8 @@ fn a_length_that_is_no_time_snaps_to_nothing() {
     let t = dsl(120.0, (4, 4), &[], 0.0);
     assert_eq!(snapped_length(&t, f64::NAN, 500.0, Some(1.0)), None);
     assert_eq!(snapped_length(&t, 0.0, f64::INFINITY, None), None);
+    // A step that is no step, or one whose length is past any song.
+    for step in [f64::NAN, 0.0, -1.0, f64::INFINITY, 1e300] {
+        assert_eq!(snapped_length(&t, 0.0, 500.0, Some(step)), None, "{step}");
+    }
 }

@@ -24,10 +24,13 @@
 //!
 //! A word the parser reads by its own table is written from that table
 //! (effect and layer-command keywords, layer-command parameters, units,
-//! tempo fields, transitions). The words spelled by `grammar.pest` alone,
-//! with no table on the parser's side, are written here as the grammar
-//! spells them: `include`, `show`, `tempo`, `sequence`, `length`,
-//! `offset … measures`, `reset_measures`, `stop` and `loop`.
+//! the `m` of a transition in measures). The words spelled by
+//! `grammar.pest` alone, which the parser matches by rule with no table of
+//! its own, are written as the grammar spells them: `include`, `show`,
+//! `tempo`, `sequence`, `length`, `offset … measures`, `reset_measures`,
+//! `stop`, `loop`, and the tempo fields' and changes' names and `snap`
+//! (named once here and in the document, by `TempoField::keyword`,
+//! `TRANSITION` and `TRANSITION_SNAP`).
 
 use super::super::tempo::{
     parse_signature_in, SignatureRange, TempoTransition, DEFAULT_BPM, DEFAULT_TIME_SIGNATURE,
@@ -38,6 +41,36 @@ use super::document::{
     Timestamp, TimestampKind, TRANSITION,
 };
 use super::tempo_parse::{TRANSITION_MEASURES, TRANSITION_SNAP};
+
+impl TempoSection {
+    /// Whether every number the block holds is one the grammar can write.
+    pub fn numbers_finite(&self) -> bool {
+        [self.start.value, self.bpm].iter().all(|n| n.is_finite())
+            && self
+                .changes
+                .iter()
+                .all(|c| c.bpm.is_none_or(f64::is_finite) && timestamp_finite(&c.timestamp))
+    }
+}
+
+impl Document {
+    /// Whether every number the document holds is one the grammar can
+    /// write: what an edit that set a NaN or an infinity is refused by.
+    pub fn numbers_finite(&self) -> bool {
+        let cues = self
+            .shows
+            .iter()
+            .flat_map(|s| &s.cues)
+            .chain(self.sequences.iter().flat_map(|s| &s.cues));
+        self.tempo.as_ref().is_none_or(TempoSection::numbers_finite)
+            && cues.into_iter().all(|c| timestamp_finite(&c.timestamp))
+    }
+}
+
+/// Whether a timestamp's numbers are numbers.
+fn timestamp_finite(ts: &Timestamp) -> bool {
+    ts.ms.is_none_or(f64::is_finite) && ts.beat.is_none_or(f64::is_finite)
+}
 
 /// The document as DSL text.
 pub fn write(file: &Document) -> String {
@@ -643,7 +676,8 @@ pub fn timestamp(ts: &Timestamp) -> String {
 
 /// An effect line; a line it goes on to starts at `indent`. The flag:
 /// whether its last parameter's comment ends its last line. For an effect
-/// with no group left to name, every comment it held, in order.
+/// with no group left to name, every comment it held up to its line's end
+/// (its `comments_after` the caller writes either way).
 fn effect(eff: &CueEffect, indent: &str) -> Result<(String, bool), Vec<String>> {
     // A group removed leaves its comments where it was (see `dropped`).
     let remarks = eff.group_remarks.as_deref().unwrap_or_default();
@@ -669,7 +703,6 @@ fn effect(eff: &CueEffect, indent: &str) -> Result<(String, bool), Vec<String>> 
             .flatten()
             .cloned()
             .chain(some(&eff.comment).map(str::to_string))
-            .chain(eff.comments_after.iter().flatten().cloned())
             .collect();
         return Err(comments);
     }
@@ -787,8 +820,10 @@ pub fn transition_text(transition: &TempoTransition) -> String {
 }
 
 /// A number as the grammar's `number_value` reads one: the shortest plain
-/// decimal that reads back as it, never an exponent. The grammar has no
-/// spelling for a NaN or an infinity (no form sets one), written as `0`.
+/// decimal that reads back as it, never an exponent (a subnormal is a
+/// long one, but read back as written). The grammar has no spelling for a
+/// NaN or an infinity: a document holding one is refused before it is
+/// written ([`Document::numbers_finite`]); `0` stands in should one come.
 pub fn number(n: f64) -> String {
     if n.is_finite() {
         format!("{}", n + 0.0)
@@ -1263,6 +1298,42 @@ mod tests {
         ] {
             assert_eq!(number(n), text);
         }
+    }
+
+    #[test]
+    fn a_number_that_is_none_is_refused_before_it_is_written() {
+        let doc = read("tempo {\n    bpm: 120\n}\nshow \"S\" {\n    @1/1\n}\n");
+        assert!(doc.numbers_finite());
+        let mut bpm = doc.clone();
+        bpm.tempo.as_mut().unwrap().bpm = f64::NAN;
+        assert!(!bpm.numbers_finite());
+        let mut beat = doc.clone();
+        beat.shows[0].cues[0].timestamp.beat = Some(f64::INFINITY);
+        assert!(!beat.numbers_finite());
+    }
+
+    #[test]
+    fn an_effect_emptied_then_ungrouped_writes_each_comment_once() {
+        // Its parameters removed (their comments become its own lines
+        // after it), then its groups: each comment is written once.
+        let source = show("    front, back: static, # after colon\n        color: \"red\", # c1\n        duration: 1measure # c2\n");
+        let written = edit_cue(&source, |cue| {
+            let emptied = cue.effects[0].edited(&EffectEdit::Remove {
+                names: vec!["color".to_string(), "duration".to_string()],
+            });
+            cue.effects[0] = CueEffect {
+                groups: Vec::new(),
+                ..emptied
+            };
+        });
+        // `# c2` stayed on the effect's line when its parameters went, so
+        // it comes first; none is lost or doubled.
+        assert_eq!(
+            comment_lines(&written),
+            ["# c2", "# after colon", "# c1"],
+            "{written}"
+        );
+        assert!(document(&written, None).error.is_none(), "{written}");
     }
 
     #[test]

@@ -686,11 +686,14 @@ pub fn document(source: &str, path: Option<String>) -> DocumentResult {
 
 /// The document written back as DSL text (`writer::write`): what a save
 /// writes and what the layout reads. `None` for a value that is not a
-/// document.
+/// document, or one holding a number that is none (NaN, an infinity).
 #[wasm_bindgen]
 pub fn document_write(document: DocumentJs) -> Option<String> {
     let document: Document = read(JsValue::from(document))?;
-    Some(lighting::parser::writer::write(&document))
+    // A number the grammar has no spelling for is refused, never written.
+    document
+        .numbers_finite()
+        .then(|| lighting::parser::writer::write(&document))
 }
 
 /// A `tempo { }` block alone, written as [`document_write`] writes it
@@ -699,7 +702,9 @@ pub fn document_write(document: DocumentJs) -> Option<String> {
 #[wasm_bindgen]
 pub fn tempo_write(tempo: TempoSectionJs) -> Option<String> {
     let tempo: TempoSection = read(JsValue::from(tempo))?;
-    Some(lighting::parser::writer::write_tempo(&tempo))
+    tempo
+        .numbers_finite()
+        .then(|| lighting::parser::writer::write_tempo(&tempo))
 }
 
 /// An effect line with a form's edit made (`CueEffect::edited`): the
@@ -761,6 +766,9 @@ pub fn snapped_length(
     duration_ms: f64,
     step: Option<f64>,
 ) -> Option<f64> {
+    if step.is_some_and(|step| !(step.is_finite() && step > 0.0)) {
+        return None;
+    }
     let span = TempoDistance::between(source, at_ms, at_ms + duration_ms)?;
     let map = source.to_tempo_map().ok()?;
     let round = |n: f64| (n + 0.5).floor();
@@ -770,7 +778,9 @@ pub fn snapped_length(
         None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),
         Some(step) => map.beats_to_duration((round(span.beats / step) * step).max(step), from, 0.0),
     };
-    Some(from.saturating_add(length).as_secs_f64() * 1000.0 - at_ms)
+    // A length past any song (a step so fine its count overflows) is none.
+    let end = from.checked_add(length)?.as_secs_f64();
+    bounds::secs(end).then_some(end * 1000.0 - at_ms)
 }
 
 /// [`snapped_length`], for the web UI.
