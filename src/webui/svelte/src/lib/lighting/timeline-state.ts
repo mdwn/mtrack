@@ -253,6 +253,13 @@ export function snapDurationToGrid(
   return durationStringToMs(length, source, atMs);
 }
 
+/** How many of a reference's passes start by `endMs`, by the layout's own
+ *  pass starts (which follow the tempo they run through): the count a
+ *  block dragged to that end stands for, never fewer than one. */
+export function passesBy(passStarts: number[], endMs: number): number {
+  return Math.max(1, passStarts.filter((start) => start <= endMs).length);
+}
+
 /** An offset marker on the ruler: a cue's `offset` or `reset_measures`,
  *  where the cue is drawn. */
 export interface OffsetMarker {

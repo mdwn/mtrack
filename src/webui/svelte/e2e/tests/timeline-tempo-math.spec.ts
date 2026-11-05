@@ -28,6 +28,7 @@ import {
   getGridLines,
   msToDurationString,
   msToTimestamp,
+  passesBy,
   snapDurationToGrid,
   snapToNearestGrid,
   tempoSourceOf,
@@ -165,6 +166,29 @@ test("a length is named in bars, beats or time", () => {
   expect(msToDurationString(750, t, 0)).toBe("750ms");
   expect(msToDurationString(5000, null, 0)).toBe("5s");
   expect(msToDurationString(250, null, 0)).toBe("250ms");
+});
+
+test("a loop's resize counts the passes the drag reaches, under a ramp", () => {
+  // 60 to 240 BPM over three bars: six one-bar passes get shorter and
+  // shorter, so `(end - start) / first pass` is nowhere near six.
+  const source =
+    "tempo {\n    bpm: 60\n    time_signature: 4/4\n    changes: [\n        @1/1 { bpm: 240, transition: 3m }\n    ]\n}\n" +
+    'sequence "s", length: 1measure {\n    @1/1\n    a: static, color: "red", duration: 1beat\n}\n' +
+    'show "S" {\n    @1/1\n    sequence "s", loop: 6\n}\n';
+  const laid = rules.layout({ source, includes: [], until_ms: 60000 });
+  const pass = laid.shows[0].cues[0].passes[0];
+  expect(pass.count).toBe(6);
+  expect(pass.pass_starts).toHaveLength(6);
+  // The block at its own width is all six passes, not the three the first
+  // pass's length would divide it into.
+  expect(passesBy(pass.pass_starts, pass.end_ms)).toBe(6);
+  expect(Math.round((pass.end_ms - pass.start_ms) / pass.pass_ms)).toBeLessThan(
+    6,
+  );
+  // A nudge past the end is still six; a drag back to the fourth start is four.
+  expect(passesBy(pass.pass_starts, pass.end_ms + 1)).toBe(6);
+  expect(passesBy(pass.pass_starts, pass.pass_starts[3])).toBe(4);
+  expect(passesBy(pass.pass_starts, pass.start_ms - 1)).toBe(1);
 });
 
 test("the ruler labels and beat lines thin out as the bars narrow", () => {

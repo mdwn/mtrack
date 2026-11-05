@@ -37,6 +37,7 @@
   import {
     effectTypeColor,
     msToDurationString,
+    passesBy,
     snapDurationToGrid,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
@@ -239,9 +240,12 @@
         // Hold Ctrl/Cmd to bypass snap
         const bypassSnap = e.ctrlKey || e.metaKey;
         if (subLaneType === "sequences") {
-          // Snap to nearest whole pass; a `loop:` has no count to write.
-          if (seqIterMs > 0 && !seqInfinite && onloopchange) {
-            onloopchange(Math.max(1, Math.round(newTotalMs / seqIterMs)));
+          // The passes the dragged end reaches, by the layout's own pass
+          // starts; a `loop:` has no count to write.
+          if (passes.length > 0 && !seqInfinite && onloopchange) {
+            onloopchange(
+              passesBy(passes[0].pass_starts, passes[0].start_ms + newTotalMs),
+            );
           }
         } else if (onresize) {
           const snappedMs =
