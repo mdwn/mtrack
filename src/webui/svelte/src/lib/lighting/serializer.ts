@@ -27,6 +27,7 @@ import type {
   CueLine,
   DocumentItem,
   Param,
+  Remarks,
   TempoField,
 } from "../../gen/rules/mtrack_rules";
 import { rules } from "../rules";
@@ -76,7 +77,7 @@ export function serializeLightFile(file: LightFile): string {
       parts.push("");
     } else if (kind === "sequence") {
       const seq = file.sequences[n];
-      const params = seq.params ? serializeArgList(seq.params) : "";
+      const params = seq.params ? serializeArgList(seq.params, "    ") : "";
       const length = seq.length ? `, length: ${seq.length}` : "";
       parts.push(...own(seq.comments_before, ""));
       parts.push(
@@ -113,6 +114,61 @@ function line(text: string, comment: string | undefined): string {
 /** Comment lines of their own, as written, at an indent. */
 function own(comments: string[] | undefined, indent: string): string[] {
   return (comments ?? []).map((c) => `${indent}${c}`);
+}
+
+/** An element of a list (a parameter, an argument, a group) as text, with
+ *  the comments written around it. */
+type Listed = Remarks & { text: string };
+
+/** A list's elements, `, `-separated on one line, each with its comments
+ *  where they were: a comment after an element ends the line after its
+ *  comma, and comment lines above an element or after the last are lines
+ *  of their own; a line the list goes on to starts at `indent`. `space`:
+ *  whether the first element follows a space. `open` is whether the text
+ *  ends a line, so what closes the list starts the next one. */
+function list(
+  items: Listed[],
+  indent: string,
+  space: boolean,
+): { text: string; open: boolean } {
+  let text = "";
+  let open = false;
+  const newline = () => {
+    text += `\n${indent}`;
+    open = true;
+  };
+  items.forEach((item, i) => {
+    if (item.comments_before?.length) {
+      if (!open) newline();
+      for (const c of item.comments_before) {
+        text += c;
+        newline();
+      }
+    } else if (!open && (i > 0 || space)) text += " ";
+    text += item.text + (i < items.length - 1 ? "," : "");
+    open = false;
+    if (item.comment) {
+      text += ` ${item.comment}`;
+      newline();
+    }
+    for (const c of item.comments_after ?? []) {
+      if (!open) newline();
+      text += c;
+      newline();
+    }
+  });
+  return { text, open };
+}
+
+/** A list that nothing closes, as the end of its line: one that ended a
+ *  line ends there. */
+function ended(listed: { text: string; open: boolean }, indent: string) {
+  return listed.open ? listed.text.slice(0, -(indent.length + 1)) : listed.text;
+}
+
+/** A parameter as written, with its comments. */
+function param(p: Param): Listed {
+  return { ...p, text: `${p.name}: ${p.value}` };
 }
 
 /** The `tempo { }` block alone: what `rules.tempo_query` reads a section
@@ -177,10 +233,10 @@ export function serializeTempo(tempo: TempoSection): string {
     field("changes", "changes: [");
     tempo.changes.forEach((change, i) => {
       const ts = formatTimestamp(change.timestamp);
-      const params = changeParams(change);
+      const params = list(changeParams(change), "            ", true);
       const comma = i < tempo.changes.length - 1 ? "," : "";
       lines.push(...own(change.comments_before, "        "));
-      const text = `        @${ts} { ${params.join(", ")} }`;
+      const text = `        @${ts} {${params.text}${params.open ? "}" : " }"}`;
       if (comma && change.comment && change.comment_before_comma) {
         // The comment was between the `}` and the comma: it stays there.
         lines.push(line(text, change.comment));
@@ -201,7 +257,7 @@ export function serializeTempo(tempo: TempoSection): string {
 
 /** A tempo change's parameters: as written, in order and spelling, while
  *  the values are still those (an edit writes them afresh). */
-function changeParams(change: TempoChange): string[] {
+function changeParams(change: TempoChange): Listed[] {
   const written = change.written ?? [];
   const holds = (p: Param) =>
     (p.name === "bpm" &&
@@ -217,15 +273,16 @@ function changeParams(change: TempoChange): string[] {
     (change.time_signature ? 1 : 0) +
     (change.transition ? 1 : 0);
   if (written.length === count && written.every(holds)) {
-    return written.map((p) => `${p.name}: ${p.value}`);
+    return written.map(param);
   }
-  const params: string[] = [];
-  if (change.bpm !== undefined) params.push(`bpm: ${change.bpm}`);
+  const params: Listed[] = [];
+  if (change.bpm !== undefined) params.push({ text: `bpm: ${change.bpm}` });
   if (change.time_signature)
-    params.push(
-      `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
-    );
-  if (change.transition) params.push(`transition: ${change.transition}`);
+    params.push({
+      text: `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
+    });
+  if (change.transition)
+    params.push({ text: `transition: ${change.transition}` });
   return params;
 }
 
@@ -279,18 +336,22 @@ function serializeCues(cues: Cue[]): string {
       next[kind] = i + 1;
       if (kind === "effect") {
         const eff = cue.effects[i];
-        const s = serializeEffect(eff);
+        const s = serializeEffect(eff, "        ");
         if (!s) continue;
         lines.push(...own(eff.comments_before, "    "));
         lines.push(line(`    ${s}`, eff.comment));
       } else if (kind === "command") {
         const cmd = cue.commands[i];
         lines.push(...own(cmd.comments_before, "    "));
-        lines.push(line(`    ${serializeLayerCommand(cmd)}`, cmd.comment));
+        lines.push(
+          line(`    ${serializeLayerCommand(cmd, "        ")}`, cmd.comment),
+        );
       } else if (kind === "reference") {
         const ref = cue.sequences[i];
         lines.push(...own(ref.comments_before, "    "));
-        lines.push(line(`    ${serializeSequenceRef(ref)}`, ref.comment));
+        lines.push(
+          line(`    ${serializeSequenceRef(ref, "        ")}`, ref.comment),
+        );
       } else if (kind === "offset") {
         if (i === 0) lines.push(...own(cue.offset_comments_before, "    "));
         lines.push(
@@ -339,20 +400,24 @@ export function formatTimestamp(ts: Timestamp): string {
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
 }
 
-function serializeEffect(cueEffect: CueEffect): string {
-  const groups = cueEffect.groups.filter((g) => g.length > 0).join(", ");
-  if (!groups) return ""; // Skip effects with no group names
+/** An effect line; a line it goes on to starts at `indent`. */
+function serializeEffect(cueEffect: CueEffect, indent: string): string {
+  const named = cueEffect.groups
+    .map((g, i) => ({ ...cueEffect.group_remarks?.[i], text: g }))
+    .filter((g) => g.text.length > 0);
+  if (named.length === 0) return ""; // Skip effects with no group names
+  const groups = list(named, indent, false);
   const effect = cueEffect.effect;
+  const head = `${groups.text}: ${effect.type}`;
   // Each parameter as the document holds it, in order.
-  const parts = effect.params.map((p) => `${p.name}: ${p.value}`);
-  if (parts.length > 0) {
-    const sep = effect.no_comma ? " " : ", ";
-    return `${groups}: ${effect.type}${sep}${parts.join(", ")}`;
+  if (effect.params.length > 0) {
+    const params = list(effect.params.map(param), indent, true);
+    return `${head}${effect.no_comma ? "" : ","}${ended(params, indent)}`;
   }
-  return `${groups}: ${effect.type}`;
+  return head;
 }
 
-function serializeLayerCommand(cmd: LayerCommand): string {
+function serializeLayerCommand(cmd: LayerCommand, indent: string): string {
   // As written, in order, while the values are still those.
   const typed: Record<string, string | undefined> = {
     layer: cmd.layer,
@@ -361,29 +426,30 @@ function serializeLayerCommand(cmd: LayerCommand): string {
   };
   const written = cmd.written ?? [];
   const count = Object.values(typed).filter((v) => v).length;
-  const params =
+  const params: Listed[] =
     written.length === count && written.every((p) => typed[p.name] === p.value)
-      ? written.map((p) => `${p.name}: ${p.value}`)
+      ? written.map(param)
       : Object.entries(typed)
           .filter(([, v]) => v)
-          .map(([k, v]) => `${k}: ${v}`);
-  return `${cmd.command}(${params.join(", ")})`;
+          .map(([k, v]) => ({ text: `${k}: ${v}` }));
+  return `${cmd.command}(${list(params, indent, false).text})`;
 }
 
-function serializeSequenceRef(ref: SequenceRef): string {
+function serializeSequenceRef(ref: SequenceRef, indent: string): string {
   const parts: string[] = [];
   if (ref.stop) parts.push("stop ");
   parts.push(`sequence "${ref.name}"`);
-  if (ref.args && !ref.stop) parts.push(serializeArgList(ref.args));
+  if (ref.args && !ref.stop) parts.push(serializeArgList(ref.args, indent));
   if (ref.loop && !ref.stop)
     parts.push(`${ref.loop_comma ? "," : ""} loop: ${ref.loop}`);
   return parts.join("");
 }
 
 /** `(name: value, …)`; a parameter with no default is its name alone. */
-function serializeArgList(args: SequenceArg[]): string {
-  const items = args.map((a) =>
-    a.value === undefined ? a.name : `${a.name}: ${a.value}`,
-  );
-  return `(${items.join(", ")})`;
+function serializeArgList(args: SequenceArg[], indent: string): string {
+  const items = args.map((a) => ({
+    ...a,
+    text: a.value === undefined ? a.name : `${a.name}: ${a.value}`,
+  }));
+  return `(${list(items, indent, false).text})`;
 }

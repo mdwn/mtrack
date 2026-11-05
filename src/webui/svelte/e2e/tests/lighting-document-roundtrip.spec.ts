@@ -81,6 +81,51 @@ test("a time of whole milliseconds is written as read", () => {
   }
 });
 
+// A comment between the elements of each kind of list, the line it sits
+// on as it must be written back.
+const listComments: [string, string][] = [
+  [
+    'tempo {\n    bpm: 100\n    changes: [\n        @2/1 { bpm: 120, # c\n            transition: 2m }\n    ]\n}\nshow "S" {\n    @1/1\n    a: static, color: "red", duration: 1s\n}\n',
+    "@2/1 { bpm: 120, # c",
+  ],
+  [
+    'sequence "x"(\n    hit, # c\n    bed // d\n), length: 1measure {\n    @1/1\n    a: static, color: $hit, duration: 1beat\n}\n',
+    'sequence "x"(hit, # c',
+  ],
+  [
+    'show "S" {\n    @1/1\n    movers: move, pan: 45deg, # c\n        tilt: 10deg, duration: 1s\n}\n',
+    "movers: move, pan: 45deg, # c",
+  ],
+  [
+    'show "S" {\n    @1/1\n    master(layer: background, # c\n        intensity: 50%)\n}\n',
+    "master(layer: background, # c",
+  ],
+  [
+    'show "S" {\n    @1/1\n    sequence "x"(hit: "#FF0000", # c\n        bed: "#0000FF")\n}\n',
+    'sequence "x"(hit: "#FF0000", # c',
+  ],
+  [
+    'show "S" {\n    @1/1\n    front, # c\n    back: static, color: "red", duration: 1s\n}\n',
+    "front, # c",
+  ],
+];
+
+test("a comment between a list's elements is written back in place", () => {
+  for (const [source, onLine] of listComments) {
+    const read = rules.document(source);
+    expect(read.error, source).toBeUndefined();
+    const written = serializeLightFile(read.document!);
+    const again = rules.document(written);
+    expect(again.error, written).toBeUndefined();
+    expect(stripped(again.document)).toEqual(stripped(read.document));
+    expect(commentLines(written)).toEqual(commentLines(source));
+    expect(
+      written.split("\n").map((l) => l.trim()),
+      written,
+    ).toContain(onLine);
+  }
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

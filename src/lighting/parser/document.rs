@@ -308,6 +308,8 @@ pub struct SequenceArg {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub value: Option<String>,
+    #[serde(flatten)]
+    pub remarks: Remarks,
 }
 
 /// A `show "name" { }`.
@@ -441,6 +443,11 @@ pub struct InlineLoop {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct CueEffect {
     pub groups: Vec<String>,
+    /// The comments around each of its groups, one per group, when any
+    /// has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub group_remarks: Option<Vec<Remarks>>,
     pub effect: EffectParams,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -480,6 +487,33 @@ pub struct Param {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub is_ref: Option<bool>,
+    #[serde(flatten)]
+    pub remarks: Remarks,
+}
+
+/// The comments written around one element of a list -- a parameter, an
+/// argument, a group name -- for a save to write back in place.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+pub struct Remarks {
+    /// The comment lines above it, as written (`# …`, `// …`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_before: Option<Vec<String>>,
+    /// A comment on its line, after it (and its comma), as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comment: Option<String>,
+    /// The comment lines after it, when it is the last of its list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_after: Option<Vec<String>>,
+}
+
+impl Remarks {
+    fn is_empty(&self) -> bool {
+        self == &Remarks::default()
+    }
 }
 
 /// The effect keywords of the grammar.
@@ -621,6 +655,7 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         let line = pair.line_col().0 as u32;
         match pair.as_rule() {
             Rule::include => {
+                let inner = pair.clone();
                 let written = pair
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::string)
@@ -629,13 +664,15 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
                 let path = normalize(&folder.join(&written))
                     .to_string_lossy()
                     .into_owned();
-                includes.push(Include {
+                let mut include = Include {
                     written,
                     path,
                     line,
                     comments_before: comments.take(),
                     comment: None,
-                });
+                };
+                comments.keep_inner(&inner, source, &mut include.comment);
+                includes.push(include);
                 last = Last::Include;
                 order.push(DocumentItem::Include);
             }
@@ -696,13 +733,15 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
 /// text between them (a gap holds whitespace, punctuation and comments
 /// alone; the grammar's `gap` rule reads the comments out of it).
 enum Item<'i> {
-    /// A comment as written; `inline` when it is on the same line as what
-    /// came before it in the rule (a token, or the rule's own `{`).
+    /// A comment as written; `inline` when something is written before it
+    /// on its line.
     Comment {
         text: String,
         inline: bool,
         /// Whether a comma came before it in the gap.
         after_comma: bool,
+        /// Where it starts in the source.
+        at: usize,
     },
     Pair(Pair<'i, Rule>),
 }
@@ -714,55 +753,216 @@ fn walk<'i>(parent: &Pair<'i, Rule>, source: &'i str) -> Vec<Item<'i>> {
     let mut items = Vec::new();
     let span = parent.as_span();
     let mut at = span.start();
-    let mut first = true;
     for child in parent.clone().into_inner() {
-        gap_comments(&source[at..child.as_span().start()], first, &mut items);
+        gap_comments(source, at, child.as_span().start(), &mut items);
         at = child.as_span().end();
         items.push(Item::Pair(child));
-        first = false;
     }
-    gap_comments(&source[at..span.end()], first, &mut items);
+    gap_comments(source, at, span.end(), &mut items);
     items
 }
 
-/// The comments in a pair's own tail: a rule that ends in an optional
-/// part or a repetition (`effect`, its `parameters`, `sequence_reference`)
-/// keeps the whitespace and comments skipped before the part that did not
-/// match in its span, so a comment on its line, or on the lines after it,
-/// is inside it, after its last token at any depth.
-fn tail_comments<'i>(pair: &Pair<'i, Rule>, source: &'i str) -> Vec<Item<'i>> {
+/// [`walk`] at every depth: a child `part` picks, or one with no children,
+/// is an item; any other is entered, the gaps between its own children
+/// read too. A value the document keeps as its text (a parameter's value,
+/// an inline loop) is an item: its comments are in that text.
+fn walk_deep<'i>(
+    parent: &Pair<'i, Rule>,
+    source: &'i str,
+    part: &dyn Fn(Rule) -> bool,
+) -> Vec<Item<'i>> {
     let mut items = Vec::new();
-    let from = end_of(pair);
-    if from < pair.as_span().end() {
-        gap_comments(&source[from..pair.as_span().end()], false, &mut items);
+    for item in walk(parent, source) {
+        match item {
+            Item::Pair(child)
+                if !part(child.as_rule())
+                    && !matches!(child.as_rule(), Rule::parameter_value | Rule::inline_loop)
+                    && child.clone().into_inner().next().is_some() =>
+            {
+                items.extend(walk_deep(&child, source, part))
+            }
+            item => items.push(item),
+        }
     }
     items
 }
 
-/// Where a pair's last token ends: its last descendant's end.
-fn end_of(pair: &Pair<Rule>) -> usize {
-    match pair.clone().into_inner().last() {
-        Some(last) => end_of(&last),
-        None => pair.as_span().end(),
+/// Where the text of `pair` ends: after its last token, before the
+/// whitespace and comments a rule that ends in an optional part or a
+/// repetition (`effect`, `sequence_reference`) keeps in its span, skipped
+/// before the part that did not match. What is after it is on the pair's
+/// last line or the lines after it, not inside it.
+fn text_end(pair: &Pair<Rule>, source: &str) -> usize {
+    // The last pair's end; after it, only punctuation (a `)`), whitespace
+    // and comments, which the `gap` rule tells apart.
+    fn last(pair: &Pair<Rule>) -> usize {
+        match pair.clone().into_inner().last() {
+            Some(child) => last(&child),
+            None => pair.as_span().end(),
+        }
     }
+    let from = last(pair);
+    let rest = &source[from..pair.as_span().end()];
+    let comments: Vec<(usize, usize)> = LightingParser::parse(Rule::gap, rest)
+        .map(|pairs| {
+            pairs
+                .flatten()
+                .filter(|p| p.as_rule() == Rule::comment_tok)
+                .map(|p| (p.as_span().start(), p.as_span().end()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let outside = |i: &usize| !comments.iter().any(|(s, e)| (*s..*e).contains(i));
+    rest.char_indices()
+        .rev()
+        .find(|(i, c)| !c.is_whitespace() && outside(i))
+        .map(|(i, c)| from + i + c.len_utf8())
+        .unwrap_or(from)
 }
 
-/// The comments in a gap, by the grammar's `gap` rule. A comment with no
-/// newline before it in the gap is on the line of what the gap follows:
-/// the previous child, or, for a rule's first gap, the rule's own text
-/// before it (`{`), when there is any.
-fn gap_comments(gap: &str, first: bool, items: &mut Vec<Item>) {
+/// The comments in `source[from..to]`, a gap, by the grammar's `gap`
+/// rule; one is `inline` when something is written before it on its line.
+fn gap_comments(source: &str, from: usize, to: usize, items: &mut Vec<Item>) {
+    let gap = &source[from..to];
     let Ok(pairs) = LightingParser::parse(Rule::gap, gap) else {
         return;
     };
     for token in pairs.flatten().filter(|p| p.as_rule() == Rule::comment_tok) {
-        let before = &gap[..token.as_span().start()];
-        let inline = !before.contains('\n') && (!first || !before.trim().is_empty());
+        let at = from + token.as_span().start();
+        let line_start = source[..at].rfind('\n').map_or(0, |i| i + 1);
         items.push(Item::Comment {
             text: token.as_str().trim_end().to_string(),
-            inline,
-            after_comma: before.contains(','),
+            inline: !source[line_start..at].trim().is_empty(),
+            after_comma: gap[..token.as_span().start()].contains(','),
+            at,
         });
+    }
+}
+
+/// The comments around the elements of a rule -- the pairs `element`
+/// picks among `items`, a [`walk_deep`] of it -- one [`Remarks`] per
+/// element, in order: the comment lines above an element are its own, as
+/// is a comment on its line after it (after its comma, or a `)`), and
+/// the comment lines after the last element; a comment inside an element
+/// is that element's (on its line, else above it). The comments of a rule
+/// with no element are returned apart.
+fn remarks(
+    items: Vec<Item>,
+    source: &str,
+    element: &dyn Fn(Rule) -> bool,
+) -> (Vec<(Rule, Remarks)>, Vec<String>) {
+    let mut out: Vec<(Rule, Remarks)> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    // Whether the last pair was an element: a comment on the line after
+    // anything else waits for the next element.
+    let mut after_element = false;
+    for item in items {
+        match item {
+            Item::Comment { text, inline, .. } => match out.last_mut() {
+                Some((_, last)) if inline && after_element && last.comment.is_none() => {
+                    last.comment = Some(text)
+                }
+                _ => pending.push(text),
+            },
+            Item::Pair(pair) if element(pair.as_rule()) => {
+                let mut own = Remarks {
+                    comments_before: take(&mut pending),
+                    ..Remarks::default()
+                };
+                for inner in walk_deep(&pair, source, &|_| false) {
+                    if let Item::Comment { text, inline, .. } = inner {
+                        if inline && own.comment.is_none() {
+                            own.comment = Some(text);
+                        } else {
+                            own.comments_before.get_or_insert_with(Vec::new).push(text);
+                        }
+                    }
+                }
+                out.push((pair.as_rule(), own));
+                after_element = true;
+            }
+            Item::Pair(_) => after_element = false,
+        }
+    }
+    match out.last_mut() {
+        Some((_, last)) => {
+            if let Some(after) = take(&mut pending) {
+                last.comments_after = Some(after);
+            }
+            (out, Vec::new())
+        }
+        None => (out, pending),
+    }
+}
+
+/// The comments inside a pair the document holds as one line or field
+/// (`offset 2 measures`, `start: 0s`), wherever they sit in it: each
+/// with whether it is on a line after something.
+fn inner_comments(pair: &Pair<Rule>, source: &str) -> Vec<(String, bool)> {
+    walk_deep(pair, source, &|_| false)
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Comment { text, inline, .. } => Some((text, inline)),
+            Item::Pair(_) => None,
+        })
+        .collect()
+}
+
+/// The comments of a line the document holds element by element (an
+/// effect, a command, a reference, a tempo change): each element's
+/// [`Remarks`] by its rule, in order (see [`remarks`]); the comments in it
+/// with no element to go to; and those after its text (see [`text_end`]),
+/// which are on its last line or the lines after it.
+struct LineComments<'i> {
+    elements: Vec<(Rule, Remarks)>,
+    loose: Vec<String>,
+    tail: Vec<Item<'i>>,
+}
+
+impl LineComments<'_> {
+    fn read<'i>(
+        pair: &Pair<'i, Rule>,
+        source: &'i str,
+        element: &dyn Fn(Rule) -> bool,
+    ) -> LineComments<'i> {
+        let end = text_end(pair, source);
+        let (tail, body): (Vec<Item>, Vec<Item>) = walk_deep(pair, source, element)
+            .into_iter()
+            .partition(|item| matches!(item, Item::Comment { at, .. } if *at >= end));
+        let (elements, loose) = remarks(body, source, element);
+        LineComments {
+            elements,
+            loose,
+            tail,
+        }
+    }
+
+    /// The remarks of the elements of `rule`, in order.
+    fn of(&mut self, rule: Rule) -> impl Iterator<Item = Remarks> + '_ {
+        self.elements
+            .iter_mut()
+            .filter(move |(r, _)| *r == rule)
+            .map(|(_, remarks)| std::mem::take(remarks))
+    }
+}
+
+/// Comment lines `before` the ones `after`, when there are any.
+fn joined(before: Option<Vec<String>>, after: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (before, after) {
+        (Some(mut before), Some(after)) => {
+            before.extend(after);
+            Some(before)
+        }
+        (before, after) => before.or(after),
+    }
+}
+
+/// `pending`, emptied, when it holds anything.
+fn take(pending: &mut Vec<String>) -> Option<Vec<String>> {
+    if pending.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(pending))
     }
 }
 
@@ -785,10 +985,17 @@ impl Comments {
 
     /// The comment lines waiting, for the line that comes next.
     fn take(&mut self) -> Option<Vec<String>> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            Some(std::mem::take(&mut self.pending))
+        take(&mut self.pending)
+    }
+
+    /// The comments inside a line or a field (see [`inner_comments`]):
+    /// one on its line goes in its slot, the others wait for the next.
+    fn keep_inner(&mut self, pair: &Pair<Rule>, source: &str, slot: &mut Option<String>) {
+        for (text, inline) in inner_comments(pair, source) {
+            match slot {
+                None if inline => *slot = Some(text),
+                _ => self.pending.push(text),
+            }
         }
     }
 }
@@ -883,6 +1090,16 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                     place(comments.take(), TempoField::Start, &mut inner);
                     fields.push(TempoField::Start);
                     last = Some(TempoField::Start);
+                    for (text, inline) in inner_comments(&item, source) {
+                        keep(
+                            text,
+                            inline,
+                            last,
+                            &mut inner,
+                            &mut comments,
+                            &mut section.comment,
+                        );
+                    }
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_parameter)
@@ -894,6 +1111,16 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                     place(comments.take(), TempoField::Bpm, &mut inner);
                     fields.push(TempoField::Bpm);
                     last = Some(TempoField::Bpm);
+                    for (text, inline) in inner_comments(&item, source) {
+                        keep(
+                            text,
+                            inline,
+                            last,
+                            &mut inner,
+                            &mut comments,
+                            &mut section.comment,
+                        );
+                    }
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::number_value)
@@ -906,6 +1133,16 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                     place(comments.take(), TempoField::TimeSignature, &mut inner);
                     fields.push(TempoField::TimeSignature);
                     last = Some(TempoField::TimeSignature);
+                    for (text, inline) in inner_comments(&item, source) {
+                        keep(
+                            text,
+                            inline,
+                            last,
+                            &mut inner,
+                            &mut comments,
+                            &mut section.comment,
+                        );
+                    }
                     if let Some(value) = item
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_sig_value)
@@ -961,6 +1198,7 @@ fn tempo_changes(
                 text,
                 inline,
                 after_comma,
+                ..
             } => {
                 keep(text, inline, after_comma, &mut section.changes, comments);
                 continue;
@@ -976,11 +1214,12 @@ fn tempo_changes(
                     text,
                     inline,
                     after_comma,
+                    ..
                 } => {
                     keep(text, inline, after_comma, &mut section.changes, comments);
                 }
                 Item::Pair(change) if change.as_rule() == Rule::tempo_change => {
-                    let mut change = tempo_change(change)?;
+                    let mut change = tempo_change(change, source)?;
                     change.comments_before = comments.take();
                     section.changes.push(change);
                 }
@@ -992,7 +1231,8 @@ fn tempo_changes(
     Ok(())
 }
 
-fn tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
+fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn Error>> {
+    let mut found = LineComments::read(&pair, source, &|r| r == Rule::tempo_change_param);
     let mut change = TempoChange {
         timestamp: Timestamp {
             kind: TimestampKind::Absolute,
@@ -1043,11 +1283,15 @@ fn tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
                         name: name.to_string(),
                         value: text,
                         is_ref: None,
+                        remarks: Remarks::default(),
                     });
                 }
             }
             _ => {}
         }
+    }
+    for (param, remarks) in written.iter_mut().zip(found.of(Rule::tempo_change_param)) {
+        param.remarks = remarks;
     }
     if !written.is_empty() {
         change.written = Some(written);
@@ -1136,14 +1380,21 @@ fn sequence(pair: Pair<Rule>, source: &str) -> Result<Sequence, Box<dyn Error>> 
         match item.as_rule() {
             Rule::sequence_name => sequence.name = item.as_str().trim_matches('"').to_string(),
             Rule::sequence_param_decls => {
-                sequence.params = Some(
-                    item.into_inner()
-                        .filter(|p| p.as_rule() == Rule::sequence_param_decl)
-                        .map(arg)
-                        .collect(),
-                )
+                let mut found =
+                    LineComments::read(&item, source, &|r| r == Rule::sequence_param_decl);
+                let mut params: Vec<SequenceArg> = item
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::sequence_param_decl)
+                    .map(arg)
+                    .collect();
+                for (param, remarks) in params.iter_mut().zip(found.of(Rule::sequence_param_decl)) {
+                    param.remarks = remarks;
+                }
+                comments.pending.extend(found.loose);
+                sequence.params = Some(params);
             }
             Rule::sequence_length => {
+                comments.keep_inner(&item, source, &mut sequence.comment);
                 sequence.length = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::time_parameter)
@@ -1214,6 +1465,7 @@ fn arg(pair: Pair<Rule>) -> SequenceArg {
             .map(|p| p.as_str().trim().to_string())
             .unwrap_or_default(),
         value: parts.next().map(|p| p.as_str().trim().to_string()),
+        remarks: Remarks::default(),
     }
 }
 
@@ -1329,29 +1581,31 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
         match item.as_rule() {
             Rule::time_string | Rule::measure_time => cue.timestamp = timestamp(item)?,
             Rule::effect => {
-                let mut effect = effect(item.clone())?;
-                effect.comments_before = comments.take();
+                let (mut effect, tail) = effect(item, source)?;
+                effect.comments_before = joined(comments.take(), effect.comments_before);
                 cue.effects.push(effect);
                 cue.last = CueLine::Effect;
                 lines.push(CueLine::Effect);
-                tail(&item, source, &mut cue, &mut comments);
+                cue.keep_tail(tail, &mut comments);
             }
             Rule::layer_command => {
-                let mut command = layer_command(item);
-                command.comments_before = comments.take();
+                let (mut command, tail) = layer_command(item, source);
+                command.comments_before = joined(comments.take(), command.comments_before);
                 cue.commands.push(command);
                 cue.last = CueLine::Command;
                 lines.push(CueLine::Command);
+                cue.keep_tail(tail, &mut comments);
             }
             Rule::sequence_reference => {
-                let mut reference = sequence_ref(item.clone());
-                reference.comments_before = comments.take();
+                let (mut reference, tail) = sequence_ref(item, source);
+                reference.comments_before = joined(comments.take(), reference.comments_before);
                 cue.sequences.push(reference);
                 cue.last = CueLine::Reference;
                 lines.push(CueLine::Reference);
-                tail(&item, source, &mut cue, &mut comments);
+                cue.keep_tail(tail, &mut comments);
             }
             Rule::stop_sequence_command => {
+                let inner = item.clone();
                 let name = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::sequence_name)
@@ -1368,8 +1622,10 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 });
                 cue.last = CueLine::Reference;
                 lines.push(CueLine::Reference);
+                comments.keep_inner(&inner, source, cue.last_line());
             }
             Rule::offset_command => {
+                let inner = item.clone();
                 let measures: u32 = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::number_value)
@@ -1385,6 +1641,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 }
                 cue.last = CueLine::Offset;
                 lines.push(CueLine::Offset);
+                comments.keep_inner(&inner, source, cue.last_line());
             }
             Rule::reset_measures_command => {
                 cue.reset_measures = Some(true);
@@ -1395,6 +1652,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 }
                 cue.last = CueLine::Reset;
                 lines.push(CueLine::Reset);
+                comments.keep_inner(&item, source, cue.last_line());
             }
             Rule::inline_loop => {
                 cue.loops.get_or_insert_with(Vec::new).push(InlineLoop {
@@ -1417,18 +1675,26 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
     Ok((cue, comments.take()))
 }
 
-/// The comments in a cue line's own tail (see [`tail_comments`]), kept
-/// as that line's.
-fn tail(item: &Pair<Rule>, source: &str, cue: &mut Cue, comments: &mut Comments) {
-    for found in tail_comments(item, source) {
-        if let Item::Comment { text, inline, .. } = found {
-            let slot = cue.last_line();
-            comments.keep(text, inline, Some(slot));
+impl Cue {
+    /// The comments after a line's text (see [`LineComments`]): one on
+    /// its line is the line's, the lines after it wait for what follows.
+    fn keep_tail(&mut self, tail: Vec<Item>, comments: &mut Comments) {
+        for found in tail {
+            if let Item::Comment { text, inline, .. } = found {
+                comments.keep(text, inline, Some(self.last_line()));
+            }
         }
     }
 }
 
-fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
+/// An effect line, with the comments after its text (see [`LineComments`]).
+fn effect<'i>(
+    pair: Pair<'i, Rule>,
+    whole: &'i str,
+) -> Result<(CueEffect, Vec<Item<'i>>), Box<dyn Error>> {
+    let mut found = LineComments::read(&pair, whole, &|r| {
+        matches!(r, Rule::group_name | Rule::parameter)
+    });
     let source = pair.as_str();
     let base = pair.as_span().start();
     let mut groups = Vec::new();
@@ -1478,21 +1744,36 @@ fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
                         name: name.as_str().trim().to_string(),
                         value: value.as_str().trim().to_string(),
                         is_ref: is_ref.then_some(true),
+                        remarks: Remarks::default(),
                     });
                 }
             }
             _ => {}
         }
     }
-    Ok(CueEffect {
-        groups,
-        effect: params,
-        comments_before: None,
-        comment: None,
-    })
+    for (param, remarks) in params.params.iter_mut().zip(found.of(Rule::parameter)) {
+        param.remarks = remarks;
+    }
+    let group_remarks: Vec<Remarks> = found.of(Rule::group_name).collect();
+    Ok((
+        CueEffect {
+            groups,
+            group_remarks: group_remarks
+                .iter()
+                .any(|r| !r.is_empty())
+                .then_some(group_remarks),
+            effect: params,
+            comments_before: take(&mut found.loose),
+            comment: None,
+        },
+        found.tail,
+    ))
 }
 
-fn layer_command(pair: Pair<Rule>) -> LayerCommand {
+/// A layer command, with the comments after its text (see
+/// [`LineComments`]).
+fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Vec<Item<'i>>) {
+    let mut found = LineComments::read(&pair, source, &|r| r == Rule::layer_command_param);
     let mut command = LayerCommand {
         command: LayerCommandKind::Clear,
         layer: None,
@@ -1527,6 +1808,7 @@ fn layer_command(pair: Pair<Rule>) -> LayerCommand {
                         name: name.as_str().trim().to_string(),
                         value: text.clone(),
                         is_ref: None,
+                        remarks: Remarks::default(),
                     });
                     let value = Some(text);
                     match name.as_str().trim() {
@@ -1540,13 +1822,20 @@ fn layer_command(pair: Pair<Rule>) -> LayerCommand {
             _ => {}
         }
     }
+    for (param, remarks) in written.iter_mut().zip(found.of(Rule::layer_command_param)) {
+        param.remarks = remarks;
+    }
     if !written.is_empty() {
         command.written = Some(written);
     }
-    command
+    command.comments_before = take(&mut found.loose);
+    (command, found.tail)
 }
 
-fn sequence_ref(pair: Pair<Rule>) -> SequenceRef {
+/// A sequence reference, with the comments after its text (see
+/// [`LineComments`]).
+fn sequence_ref<'i>(pair: Pair<'i, Rule>, whole: &'i str) -> (SequenceRef, Vec<Item<'i>>) {
+    let mut found = LineComments::read(&pair, whole, &|r| r == Rule::sequence_arg);
     let mut reference = SequenceRef {
         name: String::new(),
         args: None,
@@ -1594,7 +1883,13 @@ fn sequence_ref(pair: Pair<Rule>) -> SequenceRef {
             _ => {}
         }
     }
-    reference
+    if let Some(args) = reference.args.as_mut() {
+        for (arg, remarks) in args.iter_mut().zip(found.of(Rule::sequence_arg)) {
+            arg.remarks = remarks;
+        }
+    }
+    reference.comments_before = take(&mut found.loose);
+    (reference, found.tail)
 }
 
 #[cfg(test)]
@@ -1799,6 +2094,64 @@ show "Song" {
             Some("# on loop")
         );
         assert_eq!(doc.comments_after, v(&["# file end"]));
+    }
+
+    /// A file with a comment between the elements of every kind of list:
+    /// a tempo change's parameters, a sequence's declared parameters, a
+    /// reference's arguments, a group list, an effect's parameters and a
+    /// layer command's.
+    const LIST_COMMENTS: &str = "tempo {\n    bpm: 100\n    changes: [\n        @2/1 { bpm: 120, # c1\n            transition: 2m }\n    ]\n}\nsequence \"x\"(\n    hit, # c2\n    bed // d2\n), length: 1measure {\n    @1/1\n    a: static, color: $hit, duration: 1beat\n}\nshow \"S\" {\n    @1/1\n    movers: move, pan: 45deg, # c3\n        tilt: 10deg, duration: 1s\n    master(layer: background, # c4\n        intensity: 50%)\n    sequence \"x\"(hit: \"#FF0000\", # c5\n        bed: \"#0000FF\")\n    front, # c6\n    back: static, color: \"red\", duration: 1s\n}\n";
+
+    #[test]
+    fn a_comment_between_the_elements_of_a_list_is_the_elements() {
+        let doc = document(LIST_COMMENTS, None).document.expect("parses");
+        let c = |text: &str| Some(text.to_string());
+        let change = &doc.tempo.as_ref().unwrap().changes[0];
+        let written = change.written.as_ref().unwrap();
+        assert_eq!(written[0].remarks.comment, c("# c1"));
+        assert_eq!(written[1].remarks, Remarks::default());
+        let params = doc.sequences[0].params.as_ref().unwrap();
+        assert_eq!(params[0].remarks.comment, c("# c2"));
+        assert_eq!(params[1].remarks.comment, c("// d2"));
+        let cue = &doc.shows[0].cues[0];
+        let pan = &cue.effects[0].effect.params[0];
+        assert_eq!(
+            (pan.name.as_str(), &pan.remarks.comment),
+            ("pan", &c("# c3"))
+        );
+        assert_eq!(cue.effects[0].effect.params[1].remarks, Remarks::default());
+        assert_eq!(cue.effects[0].comment, None);
+        let master = cue.commands[0].written.as_ref().unwrap();
+        assert_eq!(master[0].remarks.comment, c("# c4"));
+        assert_eq!(cue.commands[0].comment, None);
+        let args = cue.sequences[0].args.as_ref().unwrap();
+        assert_eq!(args[0].remarks.comment, c("# c5"));
+        assert_eq!(cue.sequences[0].comment, None);
+        let groups = cue.effects[1].group_remarks.as_ref().unwrap();
+        assert_eq!(groups[0].comment, c("# c6"));
+        assert_eq!(groups[1], Remarks::default());
+        assert_eq!(cue.effects[1].comments_before, None);
+    }
+
+    #[test]
+    fn a_comment_inside_a_closed_list_stays_inside_it() {
+        let doc = document(
+            "show \"S\" {\n    @1/1\n    sequence \"x\"(\n        # first\n        hit: 1 # on hit\n        # after\n    ) # on line\n    clear( # opened\n    )\n    offset 2 # mid\n    measures\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let cue = &doc.shows[0].cues[0];
+        let arg = &cue.sequences[0].args.as_ref().unwrap()[0].remarks;
+        assert_eq!(arg.comments_before, Some(vec!["# first".to_string()]));
+        assert_eq!(arg.comment.as_deref(), Some("# on hit"));
+        assert_eq!(arg.comments_after, Some(vec!["# after".to_string()]));
+        assert_eq!(cue.sequences[0].comment.as_deref(), Some("# on line"));
+        assert_eq!(
+            cue.commands[0].comments_before,
+            Some(vec!["# opened".to_string()])
+        );
+        assert_eq!(cue.offset_comment.as_deref(), Some("# mid"));
     }
 
     #[test]
