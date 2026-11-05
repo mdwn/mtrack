@@ -162,6 +162,13 @@ export type AmbientSource = "profile" | "playlist" | "entry" | null;
 /** Ambient light's mode: between songs, held on, or none. */
 export type AmbientMode = "auto" | "on" | "off";
 
+/**
+ * A fixture's channel bytes by canonical name, as the `state` message's
+ * `fixtures` map carries them, plus `strobe_hz`: the rate the player says
+ * the fixture is strobing at (its strobe byte read back through its own
+ * strobe rule, or a software strobe's rate), absent when it is not. The
+ * views flash at it rather than guess a rate from the byte.
+ */
 export interface FixtureChannels {
   [channel: string]: number;
 }

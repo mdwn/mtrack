@@ -291,6 +291,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The stage views strobe at the rig's rate**: the plot, the timeline preview and the 3D view
+  flashed a strobing fixture at a rate guessed from its strobe byte alone (2–20 Hz, the same
+  for every fixture), ignoring the fixture's strobe range and curve, so a PixelBrick at 10 Hz
+  flickered at about 19 Hz on screen. The player now says the rate: each fixture's strobe byte
+  read back through its own strobe rule (`strobe_hz` beside the bytes in the `state` message
+  and in `/api/lighting/evaluate`), and the effect's own rate for a fixture with no strobe
+  channel, whose colour or brightness the player flashes. The views flash at that; the guess
+  is gone.
 - **MCP positions never read `1:60.000`**: `format_duration` rounded the seconds to the
   millisecond on their own, so 119.9996 s came out as `1:60.000`; it is `1:59.999` now, the
   minutes and seconds every surface shows with the milliseconds truncated after them.

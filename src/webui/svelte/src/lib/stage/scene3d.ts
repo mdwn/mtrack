@@ -994,7 +994,8 @@ export class StageScene {
       if (actor.pan) actor.pan.rotation.set(0, 0, panZ);
       if (actor.tilt) actor.tilt.rotation.set(tiltX, 0, 0);
       const channels = this.channels[actor.name];
-      const look = beamLook(channels);
+      const now = Date.now();
+      const look = beamLook(channels, now);
       const lit = look.strobeOn && look.intensity > 0.02;
       color.setRGB(look.rgb[0], look.rgb[1], look.rgb[2]);
       for (const material of actor.lens) {
@@ -1007,7 +1008,14 @@ export class StageScene {
       const cellLooks = new Map<string, ReturnType<typeof beamLook>>();
       if (perCell) {
         for (const [cell, own] of Object.entries(perCell)) {
-          const cellLook = beamLook({ dimmer: channels?.dimmer, ...own });
+          const cellLook = beamLook(
+            {
+              dimmer: channels?.dimmer,
+              strobe_hz: channels?.strobe_hz,
+              ...own,
+            },
+            now,
+          );
           cellLooks.set(cell, cellLook);
           if (!actor.cellLens.has(cell) && !actor.unmatchedCells.has(cell)) {
             // The engine's cell names come from the same GDTF geometry

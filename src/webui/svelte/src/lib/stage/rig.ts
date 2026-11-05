@@ -213,13 +213,30 @@ export function beamLength(
   return { length: options.skyLength, onDeck: false };
 }
 
+/** What the stage views draw a fixture as; see {@link beamLook}. */
+export interface BeamLook {
+  /** The colour at its level, each 0..1. */
+  rgb: [number, number, number];
+  intensity: number;
+  /** False in the dark half of a strobe's cycle. */
+  strobeOn: boolean;
+}
+
 /**
- * The colour and level a fixture's channels show, as the 2D view reads
- * them: `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm
- * white by `dimmer` alone. A CMY fixture's state carries the engine's RGB
- * (its flags take the complement at output), so it shows its colour here
- * too. A colour wheel is not read: the engine sends it no colour, and the
+ * The colour and level a fixture's state shows, the one reading every
+ * stage view (2D plot, timeline preview, 3D scene) draws from:
+ * `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm white by
+ * `dimmer` alone. A CMY fixture's state carries the engine's RGB (its
+ * flags take the complement at output), so it shows its colour here too.
+ * A colour wheel is not read: the engine sends it no colour, and the
  * fixture shows as a dimmer-only white.
+ *
+ * `strobe_hz` is the rate the player says the fixture is flashing at —
+ * its strobe byte read back through its own strobe rule, or a software
+ * strobe's rate — and the look is dark for half of each cycle at `now`
+ * (ms). The view does not guess a rate from the byte: the fixture's
+ * range and curve are the player's to know.
+ *
  * `undefined` (nothing reported for the fixture) is dark, not full.
  */
 export function beamLook(
@@ -229,11 +246,12 @@ export function beamLook(
         green?: number;
         blue?: number;
         dimmer?: number;
-        strobe?: number;
         white?: number;
+        strobe_hz?: number;
       }
     | undefined,
-): { rgb: [number, number, number]; intensity: number; strobeOn: boolean } {
+  now: number = Date.now(),
+): BeamLook {
   // No state at all for the fixture (idle player, nothing reported yet):
   // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
   if (!channels) return { rgb: [0, 0, 0], intensity: 0, strobeOn: true };
@@ -253,13 +271,19 @@ export function beamLook(
     b = Math.min(1, b + w);
   }
   let strobeOn = true;
-  const strobe = channels.strobe ?? 0;
-  if (strobe > 10) {
-    const freq = 2 + (strobe / 255) * 18;
-    strobeOn = Math.sin((Date.now() / 1000) * freq * Math.PI * 2) > 0;
+  const hz = channels.strobe_hz ?? 0;
+  if (hz > 0) {
+    strobeOn = Math.sin((now / 1000) * hz * Math.PI * 2) > 0;
   }
   const intensity = ((r + g + b) / 3) * dimmer;
   return { rgb: [r * dimmer, g * dimmer, b * dimmer], intensity, strobeOn };
+}
+
+/** A look as a canvas colour: its colour, or black in a strobe's dark half. */
+export function beamCss(look: BeamLook): string {
+  if (!look.strobeOn) return "rgb(0,0,0)";
+  const [r, g, b] = look.rgb.map((c) => Math.round(c * 255));
+  return `rgb(${r},${g},${b})`;
 }
 
 /**

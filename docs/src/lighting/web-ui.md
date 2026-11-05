@@ -133,7 +133,10 @@ its two ends. **Period** is for a unit whose firmware is linear in the flash len
 PixelBrick's is: set it there, or a 10 Hz strobe flashes about once every one and a half seconds.
 **Linear in Hz** ignores a table. If a 2 Hz strobe does not flash twice a second when you test the
 fixture, try another curve. See
-[Strobe curve](configuration.md#strobe-curve-strobe_curve).
+[Strobe curve](configuration.md#strobe-curve-strobe_curve). The stage views flash a strobing
+fixture at the rate the player reads back from the byte it sent through this curve (the rate of
+the effect itself for a fixture with no strobe channel, whose colour or brightness the player
+flashes), so the plot and the 3D view show what the rig is asked for, not a guess from the byte.
 
 Deleting a fixture from a GDTF removes its GDTF too, unless another fixture uses the same file.
 If a venue uses it, the confirmation says how many fixtures in which venues, and that those venues
