@@ -343,6 +343,7 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         engine.shown_fixture_states(),
         &has_dimmer,
         registry,
+        crate::state::StrobeRates::Instant,
     );
     fill_dark_fixtures(&mut fixtures, registry.values());
 
@@ -425,6 +426,28 @@ mod tests {
             &times,
             |e| e,
         )
+    }
+
+    /// A single-instant evaluation says a software strobe's rate: the bytes
+    /// of one instant show only its phase (on or off), and the preview
+    /// flashes at the rate. The live stream does not (see `StrobeRates`).
+    #[test]
+    fn an_evaluation_reports_a_software_strobes_rate() {
+        let source = r#"
+show "T" {
+    @00:00.000
+    wash: strobe frequency: 7, duration: 5s
+}
+"#;
+        let results = eval(source, &[rgb_fixture("wash", 1)], &[0.5, 6.0]);
+        let rate = |r: &Evaluation| {
+            r.fixtures
+                .iter()
+                .find(|f| f.name == "wash")
+                .and_then(|f| f.strobe_hz)
+        };
+        assert_eq!(rate(&results[0]), Some(7.0));
+        assert_eq!(rate(&results[1]), None, "over");
     }
 
     fn channel(evaluation: &Evaluation, fixture: &str, channel: &str) -> u8 {

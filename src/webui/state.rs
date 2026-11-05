@@ -1461,7 +1461,8 @@ metronome: {}
 
     /// A strobing fixture's rate rides beside its bytes in the `fixtures`
     /// map, so the stage views flash at it instead of guessing from the
-    /// byte (live message and evaluation alike, through `state_maps`).
+    /// byte (live message and evaluation alike, through `state_maps`;
+    /// which strobes carry a rate is the snapshot's rule, `StrobeRates`).
     #[test]
     fn state_maps_carry_the_strobe_rate_beside_the_bytes() {
         let fixtures = vec![crate::state::FixtureSnapshot {

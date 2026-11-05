@@ -39,10 +39,28 @@ pub struct FixtureSnapshot {
     /// The rate the fixture is strobing at, in hertz, when it is: its
     /// strobe byte read back through its own strobe rule
     /// ([`FixtureInfo::strobe_hz`](crate::lighting::effects::FixtureInfo::strobe_hz)),
-    /// or the rate of the software strobe flashing a fixture that has no
-    /// strobe channel. `None` when it is not strobing. The stage views
-    /// flash at this; the bytes alone do not say.
+    /// which the bytes alone do not say, and — on a single-instant
+    /// snapshot only ([`StrobeRates::Instant`]: an evaluation, the
+    /// preview) — the rate of the software strobe flashing a fixture that
+    /// has no strobe channel, whose bytes show only that instant's phase.
+    /// The live stream ([`StrobeRates::Live`]) leaves a software strobe
+    /// out: its bytes flip on and off on the stream itself, and a view
+    /// that gated them again would flash twice over. `None` when the
+    /// fixture is not strobing. The stage views flash at this.
     pub strobe_hz: Option<f64>,
+}
+
+/// Which strobe rates a snapshot's [`FixtureSnapshot::strobe_hz`] says:
+/// the one rule for where a software strobe's rate is carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrobeRates {
+    /// The live state stream: a strobe channel's rate only. A software
+    /// strobe's bytes flip on the stream frame by frame already.
+    Live,
+    /// A single instant (an evaluation, the preview): a strobe channel's
+    /// rate and a software strobe's, since the bytes of one instant show
+    /// only the phase.
+    Instant,
 }
 
 /// Where a mover is pointing, for the stage plot's beam.
@@ -332,8 +350,12 @@ pub(crate) fn engine_snapshot(
     // fixture's `cells`.
     let registry = engine.get_fixture_registry();
     // What the rig shows: mid-crossfade, the blend going out (#555).
-    let mut fixtures =
-        fixture_snapshots_with_cells(engine.shown_fixture_states(), has_dimmer_map, registry);
+    let mut fixtures = fixture_snapshots_with_cells(
+        engine.shown_fixture_states(),
+        has_dimmer_map,
+        registry,
+        StrobeRates::Live,
+    );
     let mut active_effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
     active_effects.sort();
     let (poses, under_test) = match overlay {
@@ -344,7 +366,7 @@ pub(crate) fn engine_snapshot(
         Some(overlay) => {
             let mut poses = engine.shown_poses().clone();
             let under_test = apply_test_overlay(&mut fixtures, &mut poses, overlay, registry);
-            attach_strobe_rates(&mut fixtures, registry);
+            attach_strobe_rates(&mut fixtures, registry, StrobeRates::Live);
             (compute_pose_snapshots(&poses, registry), under_test)
         }
     };
@@ -471,30 +493,35 @@ pub(crate) fn fixture_snapshots_with_cells(
     states: &HashMap<String, FixtureState>,
     has_dimmer_map: &HashMap<String, bool>,
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    rates: StrobeRates,
 ) -> Vec<FixtureSnapshot> {
     let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
     attach_mirrors(&mut fixtures, registry);
-    attach_strobe_rates(&mut fixtures, registry);
+    attach_strobe_rates(&mut fixtures, registry, rates);
     fixtures
 }
 
 /// Reads each fixture's strobe byte back into the rate it means through
 /// the fixture's own strobe rule, for a fixture with a strobe channel; a
-/// software strobe's rate (no strobe channel) was already set from the
-/// engine's state. Run again after a test overlay changes the bytes.
+/// software strobe's rate (no strobe channel) came with the engine's
+/// state and stays only where `rates` says so ([`StrobeRates`]). Run
+/// again after a test overlay changes the bytes.
 pub(crate) fn attach_strobe_rates(
     fixtures: &mut [FixtureSnapshot],
     registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+    rates: StrobeRates,
 ) {
     for snapshot in fixtures {
         let Some(info) = registry.get(&snapshot.name) else {
             continue;
         };
-        if let Some(byte) = snapshot.channels.get("strobe") {
-            snapshot.strobe_hz = info.strobe_hz(*byte);
+        match snapshot.channels.get("strobe") {
+            Some(byte) => snapshot.strobe_hz = info.strobe_hz(*byte),
+            None if rates == StrobeRates::Live => snapshot.strobe_hz = None,
+            None => {}
         }
     }
 }
@@ -1368,7 +1395,8 @@ mod tests {
         let states: HashMap<String, FixtureState> =
             [("m".to_string(), state)].into_iter().collect();
 
-        let snapshots = fixture_snapshots_with_cells(&states, &HashMap::new(), &registry);
+        let snapshots =
+            fixture_snapshots_with_cells(&states, &HashMap::new(), &registry, StrobeRates::Live);
         let m = &snapshots[0].channels;
         // Pan 0° over ±270° is 32768: 0x80 0x00. Tilt at the top of its
         // range is 65535: 0xFF 0xFF.
@@ -1419,7 +1447,8 @@ mod tests {
         );
         let states: HashMap<String, FixtureState> =
             [("bar".to_string(), state)].into_iter().collect();
-        let snapshots = fixture_snapshots_with_cells(&states, &HashMap::new(), &registry);
+        let snapshots =
+            fixture_snapshots_with_cells(&states, &HashMap::new(), &registry, StrobeRates::Live);
         let bar = &snapshots[0].channels;
         assert_eq!((bar["red"], bar["red#2"], bar["red#3"]), (255, 255, 255));
         assert!(
