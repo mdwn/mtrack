@@ -89,7 +89,7 @@
   /** The beat nearest a time, as the player snaps a time to one. */
   function playheadBeat(time: number) {
     return beatGrid
-      ? rules.grid_query(beatGrid, { secs: time, snap: 1 })
+      ? rules.grid_query(beatGrid, { secs: time, snap: { step: 1 } })
       : undefined;
   }
 

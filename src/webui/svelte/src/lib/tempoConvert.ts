@@ -114,7 +114,7 @@ export function sectionToConfigSnapped(
       const at = beatGrid
         ? rules.grid_query(beatGrid, {
             secs: (c.timestamp.ms ?? 0) / 1000,
-            snap: 1,
+            snap: { step: 1 },
           })
         : undefined;
       if (!at) {

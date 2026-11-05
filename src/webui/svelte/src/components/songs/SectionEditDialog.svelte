@@ -15,7 +15,6 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
-  import { highestBeat } from "../../lib/util/beatGrid";
   import { rules } from "../../lib/rules";
   import type { BeatGrid, TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
@@ -155,13 +154,17 @@
       measure -= 1;
       beat += sectionBeatsIn(measure);
     }
-    const highest = highestBeat(
-      beatGrid,
-      measure,
-      sectionBeatsIn(measure),
-      BEAT_STEP,
-    );
-    return { measure, beat: Math.max(1, Math.min(highest, beat)) };
+    // Held inside the measure by the player's own snapping: the highest
+    // half-beat the measure holds (4½ of a 4/4 bar; only 4 in the bar the
+    // grid ends in). Without a grid there is nothing to hold it to.
+    const held = beatGrid
+      ? rules.grid_query(beatGrid, {
+          measure,
+          beat,
+          snap: { step: BEAT_STEP, within_bar: true },
+        })
+      : undefined;
+    return { measure, beat: held ? held.beat : Math.max(1, beat) };
   }
 
   /** Writes a boundary; beat 1 is the measure line, stored as "unset".

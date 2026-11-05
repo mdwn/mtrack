@@ -26,7 +26,7 @@ use std::time::Duration;
 use mtrack_rules_wasm::metronome_config::{MetronomeChange, MetronomeConfig, Subdivision};
 use mtrack_rules_wasm::tempo_config::{TempoChangeConfig, TempoConfig, TransitionConfig};
 use mtrack_rules_wasm::{
-    signature_parse, BeatGrid, GridQuery, NormalizedTempo, TempoQuery, TempoSource,
+    bounds, signature_parse, BeatGrid, GridQuery, NormalizedTempo, Snap, TempoQuery, TempoSource,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -336,11 +336,30 @@ fn exports_equal_the_players_rules() {
         let mut positions = vec![];
         for measure in 0..=measures as u32 {
             for beat in half_beats(9) {
-                let got = GridQuery::Position { measure, beat }.answer(&grid);
+                let got = GridQuery::Position {
+                    measure,
+                    beat,
+                    snap: None,
+                }
+                .answer(&grid);
+                // `beat_time` and `beats_in_measure` for a bar; the count-in
+                // (measure 0) is `time_of`/`beats_in`, which no section names.
                 let expected = measure.checked_sub(1).and_then(|m| {
                     let secs = grid.beat_time(m as usize, beat)?;
                     Some((secs, grid.beats_in_measure(m as usize)? as u32))
                 });
+                if measure == 0 {
+                    let count_in = grid
+                        .point(0, beat)
+                        .map(|p| (grid.time_of(&p).unwrap(), grid.beats_in(0).unwrap() as u32));
+                    assert_eq!(
+                        got.map(|p| (p.secs, p.beats_in_measure)),
+                        count_in,
+                        "{name}: count-in position {beat}"
+                    );
+                    positions.push(((measure, beat), got));
+                    continue;
+                }
                 assert_eq!(
                     got.map(|p| (p.secs, p.beats_in_measure)),
                     expected,
@@ -353,6 +372,24 @@ fn exports_equal_the_players_rules() {
                         grid.beat_time(measure as usize - 1, beat.floor()).unwrap(),
                         "{name}: beat_index is the whole beat's"
                     );
+                    // Snapped within the bar, every step up to the bar's end
+                    // resolves and nothing past it moves out of the bar.
+                    let within = GridQuery::Position {
+                        measure,
+                        beat: beat + 0.3,
+                        snap: Some(Snap {
+                            step: 0.5,
+                            within_bar: true,
+                        }),
+                    }
+                    .answer(&grid)
+                    .expect("a held position snaps within its bar");
+                    assert_eq!(
+                        within.measure, measure,
+                        "{name}: within bar {measure}/{beat}"
+                    );
+                    assert_eq!((within.beat - 1.0) % 0.5, 0.0);
+                    assert!(within.beat < p.beats_in_measure as f64 + 1.0);
                 }
                 positions.push(((measure, beat), got));
             }
@@ -364,12 +401,12 @@ fn exports_equal_the_players_rules() {
         sweep.extend(grid.beats.iter().flat_map(|b| [*b, b + 1e-4, b - 1e-4]));
         for secs in sweep {
             let got = GridQuery::Time { secs, snap: None }.answer(&grid);
-            let expected = grid.position_at(secs).map(|(m, b)| {
+            let expected = grid.position_at(secs).map(|p| {
                 (
-                    m as u32 + 1,
-                    b,
-                    grid.beat_time(m, b).expect("the position resolves"),
-                    grid.beats_in_measure(m).expect("its measure exists") as u32,
+                    p.measure as u32,
+                    p.beat,
+                    grid.time_of(&p).expect("the position resolves"),
+                    grid.beats_in(p.measure).expect("its measure exists") as u32,
                 )
             });
             assert_eq!(
@@ -386,12 +423,15 @@ fn exports_equal_the_players_rules() {
             for step in [1.0, 0.5] {
                 let snapped = GridQuery::Time {
                     secs,
-                    snap: Some(step),
+                    snap: Some(Snap {
+                        step,
+                        within_bar: false,
+                    }),
                 }
                 .answer(&grid);
                 let expected = grid
-                    .snapped_position_at(secs, step)
-                    .map(|(m, b)| (m as u32 + 1, b));
+                    .snapped_position_at(secs, step, false)
+                    .map(|p| (p.measure as u32, p.beat));
                 assert_eq!(
                     snapped.map(|p| (p.measure, p.beat)),
                     expected,
@@ -410,7 +450,10 @@ fn exports_equal_the_players_rules() {
                 secs,
                 GridQuery::Time {
                     secs,
-                    snap: Some(1.0),
+                    snap: Some(Snap {
+                        step: 1.0,
+                        within_bar: false,
+                    }),
                 }
                 .answer(&grid),
             ));
@@ -587,7 +630,7 @@ fn exports_equal_the_players_rules() {
         "4/4", "7/8", "6/8", " 3 / 4 ", "5/3", "0/4", "4/0", "4", "", "abc", "12/16", "33/8",
         "4/64",
     ] {
-        let got = signature_parse(raw).map(|s| s.0);
+        let got = signature_parse(Some(raw.into())).map(|s| s.0);
         let expected = mtrack_rules_wasm::tempo_config::parse_time_signature(raw)
             .ok()
             .map(|s| (s.numerator, s.denominator));
@@ -614,6 +657,8 @@ fn values_that_are_not_their_type_are_refused_not_coerced() {
         json!({ "measure": "1", "beat": 1 }),
         json!({ "secs": "now" }),
         json!({ "secs": 1, "snap": "nearest" }),
+        json!({ "secs": 1, "snap": 1 }),
+        json!({ "secs": 1, "snap": { "within_bar": true } }),
         json!({}),
     ] {
         assert!(
@@ -649,12 +694,16 @@ fn values_that_are_not_their_type_are_refused_not_coerced() {
             .is_err()
     );
     // What the types do take, through the same door.
-    let query: GridQuery = serde_json::from_value(json!({ "secs": 1.25, "snap": 0.5 })).unwrap();
+    let query: GridQuery =
+        serde_json::from_value(json!({ "secs": 1.25, "snap": { "step": 0.5 } })).unwrap();
     assert_eq!(
         query,
         GridQuery::Time {
             secs: 1.25,
-            snap: Some(0.5)
+            snap: Some(Snap {
+                step: 0.5,
+                within_bar: false
+            })
         }
     );
     let query: GridQuery = serde_json::from_value(json!({ "secs": 1.25 })).unwrap();
@@ -670,6 +719,126 @@ fn values_that_are_not_their_type_are_refused_not_coerced() {
     // Values that are their type but make no map: the verdict, not a trap.
     let config: TempoConfig = serde_json::from_value(json!({ "bpm": 0 })).unwrap();
     assert!(config.validate().is_err());
-    let query: GridQuery = serde_json::from_value(json!({ "secs": 1.0, "snap": -1 })).unwrap();
+    let query: GridQuery =
+        serde_json::from_value(json!({ "secs": 1.0, "snap": { "step": -1 } })).unwrap();
     assert_eq!(query.answer(&steady_grid(0.0, 120.0, &[4])), None);
+}
+
+/// Magnitudes no song has are refused before the player's functions walk
+/// them bar by bar or turn them into a `Duration` that cannot hold them.
+#[test]
+fn absurd_magnitudes_are_refused_not_walked() {
+    let grid = steady_grid(0.0, 120.0, &[4, 4]);
+    for query in [
+        GridQuery::Time {
+            secs: 1e300,
+            snap: None,
+        },
+        GridQuery::Time {
+            secs: f64::INFINITY,
+            snap: None,
+        },
+        GridQuery::Time {
+            secs: 1.0,
+            snap: Some(Snap {
+                step: 1e300,
+                within_bar: true,
+            }),
+        },
+        GridQuery::Position {
+            measure: u32::MAX,
+            beat: 1.0,
+            snap: None,
+        },
+        GridQuery::Position {
+            measure: 1,
+            beat: 1e300,
+            snap: None,
+        },
+        GridQuery::Position {
+            measure: 1,
+            beat: f64::NAN,
+            snap: None,
+        },
+    ] {
+        assert_eq!(query.answer(&grid), None, "{query:?}");
+    }
+    let far = BeatGrid {
+        beats: vec![0.0, 1e300],
+        measure_starts: vec![0],
+    };
+    assert_eq!(
+        GridQuery::Time {
+            secs: 0.0,
+            snap: None
+        }
+        .answer(&far),
+        None
+    );
+    assert!(TempoSource::Grid { grid: far }.to_tempo_map().is_err());
+
+    let config = TempoConfig {
+        bpm: 120.0,
+        time_signature: "4/4".into(),
+        start: None,
+        changes: vec![],
+    };
+    let source = TempoSource::Config {
+        config: config.clone(),
+    };
+    for query in [
+        TempoQuery::Time { ms: 1e300 },
+        TempoQuery::Time { ms: 1e18 },
+        TempoQuery::Time { ms: f64::NAN },
+        TempoQuery::Position {
+            measure: u32::MAX,
+            beat: 1.0,
+        },
+        TempoQuery::Position {
+            measure: 1,
+            beat: 1e300,
+        },
+    ] {
+        assert_eq!(query.answer(&source), None, "{query:?}");
+    }
+    assert!(TempoQuery::Time { ms: 1e12 }.answer(&source).is_some());
+    let beyond = [
+        TempoConfig {
+            start: Some(1e300),
+            ..config.clone()
+        },
+        TempoConfig {
+            changes: vec![TempoChangeConfig {
+                bpm: Some(100.0),
+                ..change(u32::MAX, None)
+            }],
+            ..config.clone()
+        },
+        TempoConfig {
+            changes: vec![TempoChangeConfig {
+                bpm: Some(100.0),
+                ..change(2, Some(1e300))
+            }],
+            ..config.clone()
+        },
+        TempoConfig {
+            changes: vec![TempoChangeConfig {
+                bpm: Some(100.0),
+                transition: Some(TransitionConfig::Measures(1e300)),
+                ..change(2, None)
+            }],
+            ..config.clone()
+        },
+    ];
+    for config in beyond {
+        let why = bounds::tempo_config(&config);
+        assert!(why.is_some(), "{config:?}");
+        assert_eq!(TempoSource::Config { config }.to_tempo_map().err(), why);
+    }
+    assert_eq!(bounds::tempo_config(&config), None);
+    assert_eq!(signature_parse(None), None);
+    assert_eq!(
+        signature_parse(Some("7/8".into())).map(|s| s.0),
+        Some((7, 8))
+    );
 }

@@ -361,7 +361,9 @@
     snap = 0.5,
   ): { measure: number; beat: number } | null {
     const grid = song.beat_grid;
-    const at = grid ? rules.grid_query(grid, { secs: ms / 1000, snap }) : null;
+    const at = grid
+      ? rules.grid_query(grid, { secs: ms / 1000, snap: { step: snap } })
+      : null;
     return at ? { measure: at.measure, beat: at.beat } : null;
   }
 
@@ -492,10 +494,17 @@
       if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
       if (tc?.time_signature) parts.push(tc.time_signature);
       const sig = sigAt(pos.measure, pos.beat);
+      // The glyph is sized to the metre the marker sets (`sig_set`), as the
+      // dialog's pads are; `sig` is the bar's, for the subdivision chip.
+      const set =
+        rules.tempo_query(
+          { config: tempo },
+          { measure: pos.measure, beat: pos.beat },
+        )?.sig_set ?? sig;
       if (mc?.accents && metronome)
         parts.push(
           accentsGlyph(
-            rules.accent_pattern(metronome, pos.measure, sig[0]) ?? [],
+            rules.accent_pattern(metronome, pos.measure, set[0]) ?? [],
           ),
         );
       if (mc?.subdivision !== undefined) {
@@ -611,7 +620,7 @@
   ): { measure: number; beat?: number } | null {
     const grid = song.beat_grid;
     const at = grid
-      ? rules.grid_query(grid, { secs: ms / 1000, snap: 1 })
+      ? rules.grid_query(grid, { secs: ms / 1000, snap: { step: 1 } })
       : undefined;
     if (!at) return null;
     return at.beat > 1

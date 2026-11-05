@@ -12,43 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { BeatGrid } from "../../gen/rules/mtrack_rules";
-import { rules } from "../rules";
-
-/**
- * The highest beat on a `step` grid that still resolves inside a measure
- * (1-based) holding `beats` of them, asked of the player's grid.
- *
- * Beat 4½ of a 4/4 measure is inside it — between the last beat and the next
- * downbeat — but beat 5 is the downbeat itself and belongs to the measure
- * after, so the search starts one step short of `beats + 1`. In the measure
- * the grid ends in there is no next beat to interpolate towards, and
- * `BeatGrid::beat_time` refuses the fractional positions there (the section
- * would vanish from the resolved timeline), so the search steps down until
- * the grid answers. Without a grid there is nothing to refuse.
- *
- * The count is passed in because it is not always the grid's: where a
- * `tempo:` block exists it is the meter in effect, which is what the ruler
- * labels and what the grid was built from.
- */
-export function highestBeat(
-  grid: BeatGrid | null | undefined,
-  measure: number,
-  beats: number,
-  step = 0.5,
-): number {
-  let beat = beats + 1 - step;
-  if (grid) {
-    while (
-      beat > 1 &&
-      rules.grid_query(grid, { measure, beat }) === undefined
-    ) {
-      beat -= step;
-    }
-  }
-  return Math.max(1, beat);
-}
-
 /** "1:23.456" — the format the position readout shows and accepts. */
 export function formatSeconds(seconds: number): string {
   const minutes = Math.floor(seconds / 60);

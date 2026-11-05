@@ -281,7 +281,10 @@
   let playheadTarget = $derived(
     playheadTime === null || !beatGrid
       ? null
-      : (rules.grid_query(beatGrid, { secs: playheadTime, snap: 1 }) ?? null),
+      : (rules.grid_query(beatGrid, {
+          secs: playheadTime,
+          snap: { step: 1 },
+        }) ?? null),
   );
 
   /** Whether another change already holds a position: the player's own

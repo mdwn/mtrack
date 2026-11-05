@@ -18,7 +18,6 @@
   import {
     formatSeconds,
     formatSecondsShort,
-    highestBeat,
     parseSeconds,
   } from "../../lib/util/beatGrid";
   import type { BeatGrid } from "../../lib/api/songs";
@@ -204,14 +203,24 @@
     return out;
   }
 
-  function clampBeat(m: number, b: number): number {
-    const highest = highestBeat(beatGrid, m, beatsIn(m), step);
-    return Math.max(1, Math.min(highest, Math.round(b / step) * step));
+  /** A beat snapped to the step and held inside its measure, by the
+   * player's own snapping (`within_bar`: the highest step the measure
+   * holds, so beat 4½ of a 4/4 bar but not 5, and only beat 4 in the bar
+   * the grid ends in). Without a grid there is nothing to hold it to. */
+  function snapWithin(m: number, b: number): number {
+    const at = beatGrid
+      ? rules.grid_query(beatGrid, {
+          measure: m,
+          beat: b,
+          snap: { step, within_bar: true },
+        })
+      : undefined;
+    return at ? at.beat : Math.max(1, Math.round(b / step) * step);
   }
 
   function emit(m: number, b: number) {
     const mm = Math.max(1, Math.min(lastMeasure, Math.round(m)));
-    const bb = clampBeat(mm, b);
+    const bb = snapWithin(mm, b);
     if (decoupled) {
       const t = secondsAt(mm, bb);
       if (t !== null) emitTime(t);
@@ -243,7 +252,7 @@
       const t = secondsAt(measure, beat);
       if (t !== null) onchange({ kind: "time", time: t });
     } else {
-      onchange({ kind: "beat", measure, beat: clampBeat(measure, beat) });
+      onchange({ kind: "beat", measure, beat: snapWithin(measure, beat) });
     }
   }
 

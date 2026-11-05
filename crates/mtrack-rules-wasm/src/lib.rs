@@ -17,10 +17,13 @@
 //! The module is the player's own `src/tempo.rs`, `src/config/tempo.rs`,
 //! `src/config/metronome.rs` and `src/audio/beat_grid.rs`, compiled as they
 //! are, so the UI places measures, beats, signatures and accents exactly
-//! where the player does. Nothing here does any arithmetic of its own; each
-//! export only carries values across the boundary to one of the player's
-//! functions, and the one conversion it makes is between the UI's 1-based
-//! measures and the grid's 0-based ones. The TypeScript types of the
+//! where the player does. No rule lives here: each export carries values
+//! across the boundary to one of the player's functions. What little logic
+//! it holds is the boundary's own -- reading the page's values leniently,
+//! refusing magnitudes no song has (see [`bounds`]), milliseconds to and
+//! from seconds, which of the player's two signature lookups a tempo point
+//! reports (the bar's, by its time, and the one the changes have set), and
+//! the beats-in-measure of a count-in. The TypeScript types of the
 //! arguments and results are generated from the Rust structs (`tsify`), so
 //! the UI has no copy of them to drift.
 //!
@@ -79,11 +82,75 @@ use tempo::TempoMap;
 pub use tempo_config::TempoConfig;
 
 /// Reads a value the page handed over. One that is not what its type says
-/// (a measure of 1.5 or -1, a bpm that is not a number) is an error here,
-/// never a trap: the export answers `None`, or hands the message on as a
-/// verdict.
-fn read<T: DeserializeOwned>(value: JsValue) -> Result<T, String> {
-    serde_wasm_bindgen::from_value(value).map_err(|error| error.to_string())
+/// (a measure of 1.5 or -1, a bpm that is not a number, a list where an
+/// object should be) is an error here, never a trap: the export answers
+/// `None`, or [`tempo_validate`] says the value is not a tempo config.
+fn read<T: DeserializeOwned>(value: JsValue) -> Option<T> {
+    serde_wasm_bindgen::from_value(value).ok()
+}
+
+/// The magnitudes past which a question is refused rather than asked: no
+/// song is longer than [`bounds::MAX_SECS`] (about 31 years), has more than
+/// [`bounds::MAX_MEASURES`] bars, or counts beats past [`bounds::MAX_BEAT`];
+/// a `tempo:` block's start, measures, beats and transition lengths are
+/// held to the same. Past them the player's own functions would walk bar
+/// by bar for minutes, or turn a time into a `Duration` that cannot hold
+/// it, so the answer is `None` (or the verdict) before they are reached.
+pub mod bounds {
+    pub const MAX_SECS: f64 = 1.0e9;
+    pub const MAX_MEASURES: u32 = 1_000_000;
+    pub const MAX_BEAT: f64 = 1.0e6;
+    /// The most beats an accent pattern is asked for at once.
+    pub const MAX_PATTERN_BEATS: u32 = 64;
+
+    pub fn secs(secs: f64) -> bool {
+        secs.is_finite() && secs.abs() <= MAX_SECS
+    }
+
+    pub fn beat(beat: f64) -> bool {
+        beat.is_finite() && beat.abs() <= MAX_BEAT
+    }
+
+    /// Why a tempo config is beyond any song, or `None` when it is within
+    /// bounds (which says nothing about whether it makes a map).
+    pub fn tempo_config(config: &crate::TempoConfig) -> Option<String> {
+        if let Some(start) = config.start {
+            if !secs(start) {
+                return Some(format!("tempo start {start:e} is beyond any song"));
+            }
+        }
+        for change in &config.changes {
+            if change.measure > MAX_MEASURES {
+                return Some(format!(
+                    "tempo change at measure {} is beyond any song",
+                    change.measure
+                ));
+            }
+            if change.beat.is_some_and(|b| !beat(b)) {
+                return Some(format!(
+                    "tempo change at measure {} has a beat beyond any bar",
+                    change.measure
+                ));
+            }
+            let length = match change.transition {
+                Some(crate::tempo_config::TransitionConfig::Beats(n))
+                | Some(crate::tempo_config::TransitionConfig::Measures(n)) => n,
+                None => 0.0,
+            };
+            if !beat(length) {
+                return Some(format!(
+                    "tempo change at measure {} has a transition beyond any song",
+                    change.measure
+                ));
+            }
+        }
+        None
+    }
+
+    /// Whether a grid's times are all within bounds.
+    pub fn grid(grid: &crate::BeatGrid) -> bool {
+        grid.beats.iter().all(|b| secs(*b))
+    }
 }
 
 type BeatGridJs = <BeatGrid as Tsify>::JsType;
@@ -95,21 +162,38 @@ type MetronomeConfigJs = <MetronomeConfig as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
+/// How a position snaps to a beat: to the nearest `step` of a beat (1 for
+/// whole beats, 0.5 for halves), rolling into the next measure when the
+/// rounding leaves this one -- or, `within_bar`, staying at the highest
+/// step this measure holds (`BeatGrid::snap`).
+#[derive(Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
+pub struct Snap {
+    pub step: f64,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub within_bar: bool,
+}
+
 /// A question to a beat grid: where a position is, or what position a time
-/// is at.
+/// is at; either snapped to a beat on request.
 #[derive(Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum GridQuery {
-    /// A measure (1-based) and a possibly fractional beat (1-based).
-    Position { measure: u32, beat: f64 },
-    /// A time in seconds: its fractional position, or with `snap`, the
-    /// nearest beat on that step (1 = whole beats, 0.5 = half beats), as
-    /// the player snaps a time to one (`BeatGrid::snapped_position_at`).
+    /// A measure (1-based; 0 the count-in before bar 1) and a possibly
+    /// fractional beat (1-based).
+    Position {
+        measure: u32,
+        beat: f64,
+        #[serde(default)]
+        #[tsify(optional)]
+        snap: Option<Snap>,
+    },
+    /// A time in seconds: its fractional position, or snapped.
     Time {
         secs: f64,
         #[serde(default)]
         #[tsify(optional)]
-        snap: Option<f64>,
+        snap: Option<Snap>,
     },
 }
 
@@ -117,14 +201,15 @@ pub enum GridQuery {
 #[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
 #[tsify(into_wasm_abi)]
 pub struct GridPosition {
-    /// The measure, 1-based.
+    /// The measure, 1-based; 0 for the count-in before bar 1, whose clicks
+    /// the click track plays but no section or marker can name.
     pub measure: u32,
-    /// The beat within the measure, 1-based; fractional for a time query
-    /// without `snap`.
+    /// The beat within the measure (click within the count-in), 1-based;
+    /// fractional for a time query without `snap`.
     pub beat: f64,
     /// The time of the position in seconds.
     pub secs: f64,
-    /// How many beats the measure holds.
+    /// How many beats the measure holds (clicks, for the count-in).
     pub beats_in_measure: u32,
     /// The index into `beats` of the whole beat the position is on (the one
     /// a fractional beat is counted from): what the accent levels the
@@ -133,27 +218,47 @@ pub struct GridPosition {
 }
 
 impl GridQuery {
-    /// The grid's answer, by `BeatGrid::beat_time`, `position_at`,
-    /// `snapped_position_at` and `beats_in_measure`; `None` for a position
-    /// the grid does not hold (off its end, past its measure's last beat,
-    /// before measure 1).
+    /// The grid's answer, by `BeatGrid::point`, `position_at`, `snap`,
+    /// `time_of` and `beats_in`; `None` for a position the grid does not
+    /// hold (off its end, past its measure's last beat) or a question
+    /// beyond [`bounds`].
     pub fn answer(&self, grid: &BeatGrid) -> Option<GridPosition> {
-        let (measure, beat) = match *self {
-            GridQuery::Position { measure, beat } => (measure.checked_sub(1)? as usize, beat),
-            GridQuery::Time { secs, snap: None } => grid.position_at(secs)?,
-            GridQuery::Time {
-                secs,
-                snap: Some(step),
-            } => grid.snapped_position_at(secs, step)?,
+        if !bounds::grid(grid) {
+            return None;
+        }
+        let in_bounds = |snap: Option<Snap>| {
+            snap.is_none_or(|s| s.step.is_finite() && s.step > 0.0 && s.step <= bounds::MAX_BEAT)
         };
-        let secs = grid.beat_time(measure, beat)?;
-        let beat_index = grid.measure_starts.get(measure)? + (beat - 1.0).floor() as usize;
+        let point = match *self {
+            GridQuery::Position {
+                measure,
+                beat,
+                snap,
+            } => {
+                if measure > bounds::MAX_MEASURES || !bounds::beat(beat) || !in_bounds(snap) {
+                    return None;
+                }
+                match snap {
+                    None => grid.point(measure as usize, beat)?,
+                    Some(snap) => grid.snap(measure as usize, beat, snap.step, snap.within_bar)?,
+                }
+            }
+            GridQuery::Time { secs, snap } => {
+                if !bounds::secs(secs) || !in_bounds(snap) {
+                    return None;
+                }
+                match snap {
+                    None => grid.position_at(secs)?,
+                    Some(snap) => grid.snapped_position_at(secs, snap.step, snap.within_bar)?,
+                }
+            }
+        };
         Some(GridPosition {
-            measure: u32::try_from(measure + 1).ok()?,
-            beat,
-            secs,
-            beats_in_measure: u32::try_from(grid.beats_in_measure(measure)?).ok()?,
-            beat_index: u32::try_from(beat_index).ok()?,
+            measure: u32::try_from(point.measure).ok()?,
+            beat: point.beat,
+            secs: grid.time_of(&point)?,
+            beats_in_measure: u32::try_from(grid.beats_in(point.measure)?).ok()?,
+            beat_index: u32::try_from(point.index).ok()?,
         })
     }
 }
@@ -161,8 +266,8 @@ impl GridQuery {
 /// [`GridQuery::answer`], for the web UI.
 #[wasm_bindgen]
 pub fn grid_query(grid: BeatGridJs, query: GridQueryJs) -> Option<GridPosition> {
-    let grid: BeatGrid = read(JsValue::from(grid)).ok()?;
-    let query: GridQuery = read(JsValue::from(query)).ok()?;
+    let grid: BeatGrid = read(JsValue::from(grid))?;
+    let query: GridQuery = read(JsValue::from(query))?;
     query.answer(&grid)
 }
 
@@ -182,13 +287,21 @@ pub enum TempoSource {
 }
 
 impl TempoSource {
-    /// The tempo map the source makes, or why it makes none.
+    /// The tempo map the source makes, or why it makes none -- including a
+    /// source beyond [`bounds`], which is never handed to the player.
     pub fn to_tempo_map(&self) -> Result<TempoMap, String> {
         match self {
-            TempoSource::Config { config } => config.to_tempo_map(),
-            TempoSource::Grid { grid } => grid
-                .to_tempo_map()
-                .ok_or_else(|| "the beat grid holds no complete measure".to_string()),
+            TempoSource::Config { config } => match bounds::tempo_config(config) {
+                Some(beyond) => Err(beyond),
+                None => config.to_tempo_map(),
+            },
+            TempoSource::Grid { grid } => {
+                if !bounds::grid(grid) {
+                    return Err("the beat grid's times are beyond any song".to_string());
+                }
+                grid.to_tempo_map()
+                    .ok_or_else(|| "the beat grid holds no complete measure".to_string())
+            }
         }
     }
 }
@@ -232,13 +345,13 @@ pub struct TempoPoint {
 
 impl TempoQuery {
     /// The map's answer, by the player's `TempoMap`; `None` when the source
-    /// makes no tempo map (see [`tempo_validate`]) or the position lies
-    /// before measure 1.
+    /// makes no tempo map (see [`tempo_validate`]), the position lies
+    /// before measure 1, or the question is beyond [`bounds`].
     pub fn answer(&self, source: &TempoSource) -> Option<TempoPoint> {
         let map = source.to_tempo_map().ok()?;
         let (at, measure, beat, label, sig) = match *self {
             TempoQuery::Time { ms } => {
-                if !ms.is_finite() || ms < 0.0 {
+                if ms < 0.0 || !bounds::secs(ms / 1000.0) {
                     return None;
                 }
                 let at = Duration::from_secs_f64(ms / 1000.0);
@@ -247,7 +360,7 @@ impl TempoQuery {
                 (at, measure, beat, map.position_label(at), sig)
             }
             TempoQuery::Position { measure, beat } => {
-                if !beat.is_finite() {
+                if measure > bounds::MAX_MEASURES || !bounds::beat(beat) {
                     return None;
                 }
                 let at = map.measure_to_time_with_offset(measure, beat, 0, 0.0)?;
@@ -279,19 +392,19 @@ impl TempoQuery {
 /// [`TempoQuery::answer`], for the web UI.
 #[wasm_bindgen]
 pub fn tempo_query(source: TempoSourceJs, query: TempoQueryJs) -> Option<TempoPoint> {
-    let source: TempoSource = read(JsValue::from(source)).ok()?;
-    let query: TempoQuery = read(JsValue::from(query)).ok()?;
+    let source: TempoSource = read(JsValue::from(source))?;
+    let query: TempoQuery = read(JsValue::from(query))?;
     query.answer(&source)
 }
 
 /// Why a tempo config cannot be saved (`TempoConfig::validate`, the verdict
-/// a save gets -- or, for a value that is not a tempo config at all, what
-/// is wrong with it), or `None` when it can.
+/// a save gets; a value beyond [`bounds`] or not a tempo config at all is
+/// said so), or `None` when it can.
 #[wasm_bindgen]
 pub fn tempo_validate(config: TempoConfigJs) -> Option<String> {
     match read::<TempoConfig>(JsValue::from(config)) {
-        Ok(config) => config.validate().err(),
-        Err(error) => Some(error),
+        Some(config) => bounds::tempo_config(&config).or_else(|| config.validate().err()),
+        None => Some("not a tempo config".to_string()),
     }
 }
 
@@ -312,7 +425,7 @@ pub struct NormalizedTempo {
 /// for a value that is not a tempo config.
 #[wasm_bindgen]
 pub fn tempo_normalize(config: TempoConfigJs) -> Option<NormalizedTempo> {
-    let config: TempoConfig = read(JsValue::from(config)).ok()?;
+    let config: TempoConfig = read(JsValue::from(config))?;
     let (config, duplicates) = config.normalized();
     Some(NormalizedTempo {
         config,
@@ -328,10 +441,10 @@ pub struct Signature(pub (u32, u32));
 
 /// A `4/4`-style string as `[numerator, denominator]`, by the rule a song's
 /// `tempo:` block parses it (`parse_time_signature`); `None` when it is not
-/// a signature the player accepts.
+/// a signature the player accepts, or not a string.
 #[wasm_bindgen]
-pub fn signature_parse(raw: &str) -> Option<Signature> {
-    tempo_config::parse_time_signature(raw)
+pub fn signature_parse(raw: Option<String>) -> Option<Signature> {
+    tempo_config::parse_time_signature(&raw?)
         .ok()
         .map(|sig| Signature((sig.numerator, sig.denominator)))
 }
@@ -346,14 +459,18 @@ pub struct AccentPattern(pub Vec<u8>);
 
 /// The accent pattern a measure (1-based) of `beats` beats plays, by
 /// `MetronomeConfig::accent_pattern_at`: the rule the click renderer applies
-/// bar by bar. `None` for a value that is not a metronome config.
+/// bar by bar. `None` for a value that is not a metronome config, or a
+/// measure or beat count beyond [`bounds`].
 #[wasm_bindgen]
 pub fn accent_pattern(
     metronome: MetronomeConfigJs,
     measure: u32,
     beats: u32,
 ) -> Option<AccentPattern> {
-    let metronome: MetronomeConfig = read(JsValue::from(metronome)).ok()?;
+    if measure > bounds::MAX_MEASURES || beats > bounds::MAX_PATTERN_BEATS {
+        return None;
+    }
+    let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
     Some(AccentPattern(
         metronome.accent_pattern_at(measure, beats as usize),
     ))
@@ -365,6 +482,9 @@ pub fn accent_pattern(
 /// metronome config.
 #[wasm_bindgen]
 pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Subdivision> {
-    let metronome: MetronomeConfig = read(JsValue::from(metronome)).ok()?;
+    if measure > bounds::MAX_MEASURES {
+        return None;
+    }
+    let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
     Some(metronome.subdivision_at(measure).0.clone())
 }
