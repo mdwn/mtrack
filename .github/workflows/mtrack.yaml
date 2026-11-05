@@ -30,7 +30,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -80,7 +82,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -140,7 +144,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo-tarpaulin"
@@ -158,7 +164,7 @@ jobs:
       with:
         tool: cargo-tarpaulin
     - name: Test mtrack
-      run: cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
+      run: cargo tarpaulin --workspace --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v7
       with:
@@ -186,7 +192,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -226,7 +234,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install and generate
       run: make install-ui gen-proto gen-wasm
     - name: Lint
@@ -253,7 +263,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install and generate
       run: make install-ui gen-proto gen-wasm
     - name: Install Playwright browsers
@@ -292,7 +304,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install, generate and build the UI
       run: make build-ui
     - uses: actions/download-artifact@v8

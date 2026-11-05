@@ -55,8 +55,12 @@ gen-proto:
 
 ## Compile the player's rules (beat grid, tempo map, metronome) to WebAssembly for the
 ## web UI, with their TypeScript types. Generated into src/gen like the proto bindings.
+## wasm-pack uses the wasm-bindgen CLI on PATH (pinned to the crate's wasm-bindgen; setup.sh
+## and CI install it) and the module is optimised with the pinned wasm-opt
+## (scripts/install-binaryen.sh), so nothing is downloaded at build time.
 gen-wasm:
 	cd $(WASM_CRATE_DIR) && wasm-pack build --release --target web --out-dir $(WASM_GEN_DIR) --out-name mtrack_rules
+	wasm-opt -Os -o $(WASM_GEN_DIR)/mtrack_rules_bg.wasm $(WASM_GEN_DIR)/mtrack_rules_bg.wasm
 
 ## Build the Svelte frontend (skips if sources unchanged)
 build-ui:
@@ -72,9 +76,9 @@ build-ui:
 build-rust:
 	cargo build --release --manifest-path $(ROOT_DIR)/Cargo.toml
 
-## Run all tests
+## Run all tests (the player's, the harness's and the rules crate's equality test)
 test: test-ui
-	cargo test --manifest-path $(ROOT_DIR)/Cargo.toml
+	cargo test --workspace --manifest-path $(ROOT_DIR)/Cargo.toml
 
 ## Run Playwright UI tests (mock server)
 test-ui:
