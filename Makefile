@@ -13,9 +13,11 @@
 #
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
+WASM_CRATE_DIR := $(ROOT_DIR)/crates/mtrack-rules-wasm
+WASM_GEN_DIR := $(SVELTE_DIR)/src/gen/rules
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto gen-wasm install-ui build-ui build-rust test test-ui test-journeys test-systemd deb test-deb test-pi-image test-pi-image-boot lint lint-ui lint-rust lint-shell fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -30,10 +32,17 @@ setup-dev:
 ## Build everything
 build: build-ui build-rust
 
-## Compute a hash of all frontend inputs (source, proto, lockfile).
-# src/gen is generated from src/proto (hashed here already) and gitignored, so it is left
-# out: a checkout that has never run buf would otherwise never match a stamp built elsewhere.
-FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
+## The player sources the rules crate compiles into the web UI's WebAssembly
+## module: read off the crate's `#[path]` includes, so the list lives in its
+## lib.rs alone.
+WASM_SOURCES := $(shell grep -o '\[path = "[^"]*"\]' $(WASM_CRATE_DIR)/src/lib.rs | sed 's|.*"\(.*\)"\]|$(WASM_CRATE_DIR)/src/\1|')
+
+## Compute a hash of all frontend inputs (source, proto, lockfile, the rules crate and the
+## player sources it compiles).
+# src/gen is generated from src/proto and the rules crate (hashed here already) and gitignored,
+# so it is left out: a checkout that has never run buf would otherwise never match a stamp
+# built elsewhere.
+FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto $(WASM_CRATE_DIR) $(WASM_SOURCES) -type f -not -path '$(SVELTE_DIR)/src/gen/*' 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
 FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
 
 ## Install frontend dependencies
@@ -44,12 +53,17 @@ install-ui:
 gen-proto:
 	cd $(SVELTE_DIR) && npx @bufbuild/buf generate
 
+## Compile the player's rules (beat grid, tempo map, metronome) to WebAssembly for the
+## web UI, with their TypeScript types. Generated into src/gen like the proto bindings.
+gen-wasm:
+	cd $(WASM_CRATE_DIR) && wasm-pack build --release --target web --out-dir $(WASM_GEN_DIR) --out-name mtrack_rules
+
 ## Build the Svelte frontend (skips if sources unchanged)
 build-ui:
 	@if [ -f "$(FRONTEND_STAMP)" ] && [ "$$(cat "$(FRONTEND_STAMP)")" = "$(FRONTEND_HASH)" ]; then \
 		echo "Frontend up to date, skipping build."; \
 	else \
-		$(MAKE) install-ui gen-proto && \
+		$(MAKE) install-ui gen-proto gen-wasm && \
 		cd $(SVELTE_DIR) && MTRACK_UI_BUILD=$(FRONTEND_HASH) npm run build && \
 		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
 	fi
@@ -203,4 +217,4 @@ docs-clean:
 ## Clean build artifacts
 clean: docs-clean
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml
-	rm -rf $(SVELTE_DIR)/dist
+	rm -rf $(SVELTE_DIR)/dist $(WASM_GEN_DIR)

@@ -124,6 +124,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         if: env.SOURCE_BUILD == 'true'
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         if: env.SOURCE_BUILD == 'true'
         with:
@@ -143,7 +145,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: env.SOURCE_BUILD == 'true'
         with:
-          tool: cargo-deb
+          tool: cargo-deb,wasm-pack
       - name: Package it
         if: env.SOURCE_BUILD == 'true'
         run: |

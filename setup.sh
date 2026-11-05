@@ -203,6 +203,13 @@ check_rust() {
 
   # Ensure clippy and rustfmt are installed.
   rustup component add clippy rustfmt 2>/dev/null || true
+
+  # The web UI compiles the player's rules to WebAssembly (make gen-wasm).
+  rustup target add wasm32-unknown-unknown
+  if ! command -v wasm-pack &>/dev/null; then
+    echo "Installing wasm-pack..."
+    cargo install wasm-pack
+  fi
 }
 
 # --- Main ---
