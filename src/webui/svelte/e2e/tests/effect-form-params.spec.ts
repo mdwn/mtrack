@@ -24,6 +24,8 @@
 // actually reads survived the deletion.
 
 import { test, expect } from "@playwright/test";
+import { loadRules } from "./rules-node";
+import { rules } from "../../src/lib/rules";
 
 /** Opens the timeline editor's properties panel for the first cue. */
 async function openFirstCue(page: import("@playwright/test").Page) {
@@ -121,4 +123,43 @@ test.describe("Effect form parameters", () => {
     expect(shown).not.toContain("Direction");
     expect(shown).not.toContain("Loop");
   });
+});
+
+test("an edited effect switched to another type keeps its parameters", async ({
+  page,
+}) => {
+  // The edit comes back from the player's writer (`rules.effect_edit`); a
+  // result handed over as JS Maps lost every parameter on the type switch,
+  // and the file was written as `dimmer` with no duration.
+  await loadRules();
+  let saved = "";
+  await page.route("**/api/lighting/**", async (route) => {
+    if (route.request().method() === "PUT") {
+      saved = route.request().postData() ?? "";
+      await route.fulfill({ status: 200, body: "{}" });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
+    if (route.request().method() === "PUT") {
+      await route.fulfill({ status: 200, body: "{}" });
+    } else {
+      await route.continue();
+    }
+  });
+  await openFirstCue(page);
+  const duration = page
+    .locator(".param", { hasText: "Duration" })
+    .locator("input");
+  await duration.fill("3s");
+  await duration.press("Tab");
+  await setType(page, "dimmer");
+  await expect(
+    page.locator(".param", { hasText: "Duration" }).locator("input"),
+  ).toHaveValue("3s");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => saved).toContain("dimmer");
+  expect(saved).toContain("duration: 3s");
+  expect(rules.document(saved, "show.light").error).toBeUndefined();
 });

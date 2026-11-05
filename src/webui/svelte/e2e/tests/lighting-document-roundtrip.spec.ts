@@ -350,6 +350,39 @@ test("an effect's parameters all removed leave their comments after it", () => {
   expect(rules.document(cleared).error).toBeUndefined();
 });
 
+test("the writer's results are plain objects, as the UI spreads them", () => {
+  // A Map has no `name`: `{ ...effect }` and `params.filter(p => p.name)`
+  // lost every parameter of a result handed over as one.
+  const plain = (v: unknown) =>
+    v !== null &&
+    typeof v === "object" &&
+    !(v instanceof Map) &&
+    Object.getPrototypeOf(v) === Object.prototype;
+  const added = rules.effect_new("foreground", true);
+  expect(plain(added)).toBe(true);
+  expect(added.effect.params.every(plain)).toBe(true);
+  expect(added.effect.params.map((p) => p.name)).toEqual(["duration", "layer"]);
+  const edited = rules.effect_edit(added, {
+    op: "set",
+    name: "dimmer",
+    value: "50%",
+  })!;
+  expect(edited.effect.params.every(plain)).toBe(true);
+  expect(edited.effect.params.map((p) => p.name)).toEqual([
+    "duration",
+    "layer",
+    "dimmer",
+  ]);
+  const read = rules.document(
+    'show "S" {\n    @1/1\n    sequence "x"(hit: "#FF0000", # c\n        bed: "#0000FF")\n}\n',
+  ).document!;
+  const looped = rules.reference_loop(read.shows[0].cues[0].sequences[0], 3)!;
+  expect(plain(looped)).toBe(true);
+  expect(looped.args!.every(plain)).toBe(true);
+  expect(looped.args!.map((a) => a.name)).toEqual(["hit", "bed"]);
+  expect(looped.args![0].comment).toBe("# c");
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

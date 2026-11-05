@@ -475,7 +475,11 @@ pub struct InlineLoop {
 }
 
 /// An effect line: its groups and its parameters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, hashmap_as_object)
+)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CueEffect {
     pub groups: Vec<String>,
@@ -589,7 +593,11 @@ pub struct LayerCommand {
 
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
 /// "name"`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, hashmap_as_object)
+)]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceRef {
     pub name: String,
