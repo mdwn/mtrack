@@ -59,6 +59,7 @@ import type {
   FixtureChannels,
   FixtureMetadata,
   FixturePose,
+  StrobeRates,
   Vec3,
   VenueMetadata,
 } from "../ws/stores";
@@ -299,6 +300,7 @@ export class StageScene {
   private labels = true;
   private channels: Record<string, FixtureChannels> = {};
   private cells: CellChannels = {};
+  private strobeRates: StrobeRates = {};
   private poses: Record<string, FixturePose> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
   /** The longest beam drawn, meters, once `frameFixtures` has set one. */
@@ -447,6 +449,11 @@ export class StageScene {
   /** Per-cell values for fixtures a per-cell effect drives (design §17.4). */
   setCells(cells: CellChannels) {
     this.cells = cells;
+  }
+
+  /** The rate each strobing fixture flashes at, from the player. */
+  setStrobeRates(rates: StrobeRates) {
+    this.strobeRates = rates;
   }
 
   /** Rebuilds the fixtures and focus markers from the metadata. The camera
@@ -994,8 +1001,9 @@ export class StageScene {
       if (actor.pan) actor.pan.rotation.set(0, 0, panZ);
       if (actor.tilt) actor.tilt.rotation.set(tiltX, 0, 0);
       const channels = this.channels[actor.name];
+      const strobeHz = this.strobeRates[actor.name];
       const now = Date.now();
-      const look = beamLook(channels, now);
+      const look = beamLook(channels, strobeHz, now);
       const lit = look.strobeOn && look.intensity > 0.02;
       color.setRGB(look.rgb[0], look.rgb[1], look.rgb[2]);
       for (const material of actor.lens) {
@@ -1011,9 +1019,9 @@ export class StageScene {
           const cellLook = beamLook(
             {
               dimmer: channels?.dimmer,
-              strobe_hz: channels?.strobe_hz,
               ...own,
             },
+            strobeHz,
             now,
           );
           cellLooks.set(cell, cellLook);

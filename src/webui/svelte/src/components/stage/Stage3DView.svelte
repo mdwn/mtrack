@@ -53,6 +53,7 @@
     fixtureStore,
     metadataStore,
     poseStore,
+    strobeRateStore,
     underTestStore,
     venueStore,
   } from "../../lib/ws/stores";
@@ -197,10 +198,15 @@
   /** What the scene draws: the engine's state, or the previewed moment. */
   const shown = $derived(
     fromFile
-      ? { fixtures: fileLight, poses: {}, cells: {} }
+      ? { fixtures: fileLight, poses: {}, cells: {}, strobe_rates: {} }
       : previewFrame
         ? previewFrame
-        : { fixtures: $fixtureStore, poses: $poseStore, cells: $cellStore },
+        : {
+            fixtures: $fixtureStore,
+            poses: $poseStore,
+            cells: $cellStore,
+            strobe_rates: $strobeRateStore,
+          },
   );
   const wheels = $derived(wheelFixtureCount(shownMeta));
   const noState = $derived(
@@ -320,6 +326,9 @@
   });
   $effect(() => {
     scene?.setCells(shown.cells);
+  });
+  $effect(() => {
+    scene?.setStrobeRates(shown.strobe_rates);
   });
   $effect(() => {
     scene?.setLabels(labels ?? fixtureCount <= 40);

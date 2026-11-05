@@ -231,13 +231,15 @@ export interface BeamLook {
  * A colour wheel is not read: the engine sends it no colour, and the
  * fixture shows as a dimmer-only white.
  *
- * `strobe_hz` is the rate the player says the fixture is flashing at —
- * its strobe byte read back through its own strobe rule, or a software
- * strobe's rate — and the look is dark for half of each cycle at `now`
- * (ms). The view does not guess a rate from the byte: the fixture's
- * range and curve are the player's to know.
+ * `strobeHz` is the rate the player says the fixture is flashing at (the
+ * state's `strobe_rates`: its strobe byte read back through its own strobe
+ * rule, or in an evaluation a software strobe's rate), and the look is
+ * dark for half of each cycle at `now` (ms). The view does not guess a
+ * rate from the byte: the fixture's range and curve are the player's to
+ * know.
  *
- * `undefined` (nothing reported for the fixture) is dark, not full.
+ * `undefined` channels (nothing reported for the fixture) is dark, not
+ * full.
  */
 export function beamLook(
   channels:
@@ -247,9 +249,9 @@ export function beamLook(
         blue?: number;
         dimmer?: number;
         white?: number;
-        strobe_hz?: number;
       }
     | undefined,
+  strobeHz?: number,
   now: number = Date.now(),
 ): BeamLook {
   // No state at all for the fixture (idle player, nothing reported yet):
@@ -271,7 +273,7 @@ export function beamLook(
     b = Math.min(1, b + w);
   }
   let strobeOn = true;
-  const hz = channels.strobe_hz ?? 0;
+  const hz = strobeHz ?? 0;
   if (hz > 0) {
     strobeOn = Math.sin((now / 1000) * hz * Math.PI * 2) > 0;
   }

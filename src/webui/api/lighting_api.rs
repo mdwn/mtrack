@@ -2122,8 +2122,7 @@ pub(super) async fn evaluate_lighting(
         .evaluations
         .iter()
         .map(|evaluation| {
-            let (fixtures, poses, cells) =
-                super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
+            let maps = super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
             let active: Vec<serde_json::Value> = evaluation
                 .active_effects
                 .iter()
@@ -2141,9 +2140,10 @@ pub(super) async fn evaluate_lighting(
                 .collect();
             json!({
                 "time": evaluation.time.as_secs_f64(),
-                "fixtures": fixtures,
-                "poses": poses,
-                "cells": cells,
+                "fixtures": maps.fixtures,
+                "poses": maps.poses,
+                "cells": maps.cells,
+                "strobe_rates": maps.strobe_rates,
                 "active_effects": active,
             })
         })
@@ -8164,9 +8164,10 @@ show "test" {
             },
         );
         for (got, want) in evaluations.iter().zip(&direct) {
-            let (fixtures, poses, cells) =
-                crate::webui::state::state_maps(&want.fixtures, &want.poses);
-            assert_eq!(got["fixtures"], json!(fixtures));
+            let maps = crate::webui::state::state_maps(&want.fixtures, &want.poses);
+            let (poses, cells) = (maps.poses, maps.cells);
+            assert_eq!(got["fixtures"], json!(maps.fixtures));
+            assert_eq!(got["strobe_rates"], json!(maps.strobe_rates));
             // Pan and tilt are exact; the beam's direction and footprint are
             // trigonometry, which two evaluations agree on to the last bit or
             // two, not always the last.

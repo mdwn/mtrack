@@ -23,6 +23,7 @@
     fixtureStore,
     cellStore,
     reloadStore,
+    strobeRateStore,
     venueStore,
     poseStore,
     underTestStore,
@@ -172,7 +173,12 @@
   );
   /** The previewed moment; null until the first evaluation. */
   let feed = $state<PreviewFrame | null>(null);
-  const EMPTY_FRAME: PreviewFrame = { fixtures: {}, poses: {}, cells: {} };
+  const EMPTY_FRAME: PreviewFrame = {
+    fixtures: {},
+    poses: {},
+    cells: {},
+    strobe_rates: {},
+  };
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -568,9 +574,10 @@
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
-    // Per-cell values ride the same state message as the channels; read
-    // here so a redraw for either shows both.
+    // Per-cell values and strobe rates ride the same state message as
+    // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);
+    const strobeRates = get(strobeRateStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -628,7 +635,8 @@
       const isUnplaced = frame !== null && meta.position == null;
 
       const state = fixtureStates[name];
-      const look = beamLook(state, now);
+      const strobeHz = strobeRates[name];
+      const look = beamLook(state, strobeHz, now);
       const strobeVisible = look.strobeOn;
       const [finalR, finalG, finalB] = look.rgb.map((c) =>
         strobeVisible ? Math.round(c * 255) : 0,
@@ -671,10 +679,7 @@
         // A cell without a dimmer of its own takes the fixture's, and
         // every cell flashes with the fixture.
         return beamCss(
-          beamLook(
-            { dimmer: state?.dimmer, strobe_hz: state?.strobe_hz, ...own },
-            now,
-          ),
+          beamLook({ dimmer: state?.dimmer, ...own }, strobeHz, now),
         );
       };
       const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;

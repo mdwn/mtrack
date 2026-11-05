@@ -163,13 +163,15 @@ test.describe("stage rig math", () => {
   test("a strobe flashes at the rate the player reports, not one read off the byte", () => {
     const on = { red: 255, green: 0, blue: 0, dimmer: 255 };
     // A strobe byte alone says nothing: the view does not know the
-    // fixture's range or curve.
-    expect(beamLook({ ...on, strobe: 200 }, 150).strobeOn).toBe(true);
+    // fixture's range or curve. The rate comes beside the bytes.
+    expect(beamLook({ ...on, strobe: 200 }, undefined, 150).strobeOn).toBe(
+      true,
+    );
     // 5 Hz: lit through the first 100 ms of each cycle, dark the next.
-    expect(beamLook({ ...on, strobe_hz: 5 }, 50).strobeOn).toBe(true);
-    expect(beamLook({ ...on, strobe_hz: 5 }, 150).strobeOn).toBe(false);
-    expect(beamCss(beamLook({ ...on, strobe_hz: 5 }, 50))).toBe("rgb(255,0,0)");
-    expect(beamCss(beamLook({ ...on, strobe_hz: 5 }, 150))).toBe("rgb(0,0,0)");
+    expect(beamLook(on, 5, 50).strobeOn).toBe(true);
+    expect(beamLook(on, 5, 150).strobeOn).toBe(false);
+    expect(beamCss(beamLook(on, 5, 50))).toBe("rgb(255,0,0)");
+    expect(beamCss(beamLook(on, 5, 150))).toBe("rgb(0,0,0)");
   });
 
   test("a fixture with no reported state is dark; one without a dimmer is not", () => {

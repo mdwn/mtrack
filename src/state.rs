@@ -51,7 +51,13 @@ pub struct FixtureSnapshot {
 }
 
 /// Which strobe rates a snapshot's [`FixtureSnapshot::strobe_hz`] says:
-/// the one rule for where a software strobe's rate is carried.
+/// the one rule for where a software strobe's rate is carried. The MCP
+/// `get_fixture_state` tool and the evaluate CLI snapshot the engine the
+/// `Instant` way (the same `evaluate::snapshot`); their JSON serialises
+/// the bytes only, so the rate changes nothing they say. Mid-crossfade on
+/// the `Instant` path a software strobe's rate snaps from the outgoing
+/// song's to the incoming one's at half way, while its bytes lerp — a
+/// rate cannot be halfway between two strobes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StrobeRates {
     /// The live state stream: a strobe channel's rate only. A software

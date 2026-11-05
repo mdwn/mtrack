@@ -20,6 +20,7 @@
     metadataStore,
     fixtureStore,
     effectsStore,
+    strobeRateStore,
     venueStore,
     poseStore,
   } from "../../../lib/ws/stores";
@@ -194,11 +195,12 @@
     );
 
     const now = Date.now();
+    const strobeRates = get(strobeRateStore);
     for (const name of Object.keys($metadataStore)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
 
-      const look = beamLook(fixtureStates[name], now);
+      const look = beamLook(fixtureStates[name], strobeRates[name], now);
       const strobeVisible = look.strobeOn;
       const [finalR, finalG, finalB] = look.rgb.map((c) =>
         strobeVisible ? Math.round(c * 255) : 0,

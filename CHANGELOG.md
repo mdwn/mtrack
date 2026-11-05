@@ -295,8 +295,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flashed a strobing fixture at a rate guessed from its strobe byte alone (2–20 Hz, the same
   for every fixture), ignoring the fixture's strobe range and curve, so a PixelBrick at 10 Hz
   flickered at about 19 Hz on screen. The player now says the rate: each fixture's strobe byte
-  read back through its own strobe rule (`strobe_hz` beside the bytes in the `state` message
-  and in `/api/lighting/evaluate`), and, in an evaluation only, the effect's own rate for a
+  read back through its own strobe rule (a `strobe_rates` map beside the bytes in the `state`
+  message and in `/api/lighting/evaluate`), and, in an evaluation only, the effect's own rate for a
   fixture with no strobe channel, whose colour or brightness the player flashes (on the live
   stream those bytes flash by themselves, so no rate rides with them). The views flash at
   that; the guess is gone.
