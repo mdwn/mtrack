@@ -40,6 +40,7 @@ use tracing::warn;
 
 use super::gdtf::{self, Description, RigModel, RIG_VERSION};
 use super::mvr::{self, Matrix, Scene};
+pub use super::stage_model::{SceneryMesh, SceneryModel, SceneryObject};
 use super::types::{Cell, ChannelDef, FixtureType, GdtfSource, MovementLimits};
 
 /// The asset store's directory under the cache.
@@ -50,45 +51,6 @@ pub const SCENERY_VERSION: u32 = 1;
 
 /// The most bytes of meshes copied out of one MVR.
 const MAX_SCENERY_BYTES_TOTAL: u64 = 256 * 1024 * 1024;
-
-/// A venue's scenery as the store writes it (design §16.3): every scene
-/// object with its transform in stage space and the meshes it draws.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryModel {
-    pub version: u32,
-    /// The objects, in document order.
-    pub objects: Vec<SceneryObject>,
-    /// Mesh files by extension: how much of the scenery each format holds,
-    /// drawn or not.
-    pub formats: BTreeMap<String, usize>,
-    /// What was skipped and why.
-    #[serde(default)]
-    pub warnings: Vec<String>,
-}
-
-/// One piece of scenery.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryObject {
-    pub name: String,
-    /// `SceneObject`, `Truss`, `Support`, ...
-    pub kind: String,
-    pub layer: String,
-    /// Row-major 4×4 in stage space: the MVR basis (scale and all) with
-    /// the translation in meters, re-origined like the fixtures.
-    pub transform: [[f64; 4]; 4],
-    /// Meshes the store holds, by path relative to the scenery file.
-    pub meshes: Vec<SceneryMesh>,
-    /// Mesh files the 3D view cannot draw (`.3ds` and the like), by name.
-    pub skipped: Vec<String>,
-}
-
-/// A drawable mesh of an object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SceneryMesh {
-    pub file: String,
-    /// Row-major 4×4 relative to the object, translation in meters.
-    pub transform: [[f64; 4]; 4],
-}
 
 /// A name reduced to its lowercase ASCII letters and digits — what two
 /// spellings of one non-ASCII name agree on.

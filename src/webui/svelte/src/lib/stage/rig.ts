@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Matrix4, RigModel } from "../../gen/rules/mtrack_rules";
+
 /**
  * The rig model as the asset store writes it (design §16.2), and the
  * math that turns a rig plus a pose into rotations — kept free of three.js
@@ -35,77 +37,6 @@
  * applied outside the joints as R = Rz·Ry·Rx, so a fixture's beam is
  * `R · Rz(pan) · Rx(tilt) · (0, 0, −1)`.
  */
-
-export type Mat4 = [
-  [number, number, number, number],
-  [number, number, number, number],
-  [number, number, number, number],
-  [number, number, number, number],
-];
-
-export type RigRole =
-  | { kind: "body" }
-  | { kind: "pan" }
-  | { kind: "tilt" }
-  | { kind: "beam" }
-  | { kind: "cell"; index: number };
-
-export type RigShape =
-  /** A mesh, with its Model's declared Length, Width, Height in meters:
-   *  the scene fits the mesh to it (`fit.ts`); 0 means not stated. */
-  | { shape: "model"; file: string; size: [number, number, number] }
-  | { shape: "primitive"; kind: string; size: [number, number, number] }
-  | { shape: "empty" };
-
-export interface RigNode {
-  name: string;
-  parent: number | null;
-  role: RigRole;
-  /** Row-major 4×4, translation in the fourth column, meters. */
-  transform: Mat4;
-  shape: RigShape;
-}
-
-export interface RigBeam {
-  node: number;
-  angle_deg: number;
-  field_deg: number | null;
-  kind: string;
-  flux_lm: number | null;
-  cct_k: number | null;
-  radius_m: number | null;
-}
-
-export interface RigModel {
-  version: number;
-  fixture_type: string;
-  mode: string;
-  nodes: RigNode[];
-  pan: number | null;
-  tilt: number | null;
-  beams: RigBeam[];
-  thumbnail: string | null;
-  warnings?: string[];
-}
-
-/** A venue's scenery as the asset store writes it (design §16.3). */
-export interface SceneryModel {
-  version: number;
-  objects: SceneryObject[];
-  formats: Record<string, number>;
-  warnings?: string[];
-}
-
-export interface SceneryObject {
-  name: string;
-  kind: string;
-  layer: string;
-  /** Row-major 4×4 in stage space, translation in meters. */
-  transform: Mat4;
-  meshes: { file: string; transform: Mat4 }[];
-  /** Mesh files the store could not hold (formats it does not draw). */
-  skipped: string[];
-}
 
 /** The beam angle a rig without photometrics is drawn with, degrees. */
 export const GENERIC_BEAM_DEG = 20;
@@ -159,7 +90,7 @@ export function genericRig(typeName: string): RigModel {
   };
 }
 
-export function identity(): Mat4 {
+export function identity(): Matrix4 {
   return [
     [1, 0, 0, 0],
     [0, 1, 0, 0],

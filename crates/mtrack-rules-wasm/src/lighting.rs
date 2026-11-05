@@ -29,6 +29,8 @@ mod fixture_test_types;
 #[path = "../../../src/lighting/geometry.rs"]
 pub mod geometry;
 pub mod parser;
+#[path = "../../../src/lighting/stage_model.rs"]
+pub mod stage_model;
 
 pub mod fit {
     pub use super::fit_types::*;

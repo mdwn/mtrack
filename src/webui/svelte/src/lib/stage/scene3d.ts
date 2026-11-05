@@ -30,7 +30,10 @@
 
 import type {
   FixtureMetadata,
+  Matrix4,
   PoseSnapshot,
+  RigModel,
+  SceneryModel,
   StageValues,
   Vec3,
   VenueMetadata,
@@ -47,9 +50,6 @@ import {
   genericRig,
   poseRotations,
   trayPositions,
-  type Mat4,
-  type RigModel,
-  type SceneryModel,
 } from "./rig";
 import { fittedMesh } from "./fit";
 import {
@@ -203,7 +203,7 @@ class RigCache {
   }
 }
 
-function matrixOf(node: { transform: Mat4 }): THREE.Matrix4 {
+function matrixOf(node: { transform: Matrix4 }): THREE.Matrix4 {
   const t = node.transform;
   // prettier-ignore
   return new THREE.Matrix4().set(

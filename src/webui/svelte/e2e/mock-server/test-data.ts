@@ -19,6 +19,8 @@ import type {
   MidiDeviceInfo,
   FixtureMetadata,
   Readiness,
+  RigModel,
+  SceneryModel,
   SocketMessage,
   SongList,
   Status,
@@ -569,7 +571,7 @@ export const PIXEL_STATE = {
 
 /** A mover's rig as the asset store writes it: base, yoke (pan), head
  *  (tilt), one beam. */
-export const TEST_RIG = {
+export const TEST_RIG: RigModel = {
   version: 1,
   fixture_type: "Test Mover",
   mode: "Mode 1",
@@ -642,7 +644,7 @@ export const TEST_RIG = {
 
 /** A venue's scenery as the store writes it: a 7.5 × 4 × 0.8 m deck
  *  (a unit box scaled by its transform) and a truss whose mesh is .3ds. */
-export const TEST_SCENERY = {
+export const TEST_SCENERY: SceneryModel = {
   version: 1,
   objects: [
     {
