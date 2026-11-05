@@ -302,10 +302,7 @@ impl SequenceLibrary {
     /// map it plays to (its own `tempo` block, flagged, else the file's):
     /// what the web UI's sequence editor lays out. One with a parameter
     /// that has no default cannot be laid out alone.
-    pub(super) fn structure(
-        &self,
-        name: &str,
-    ) -> Result<(Vec<ParsedCue>, Option<TempoMap>, bool), Box<dyn Error>> {
+    pub(super) fn structure(&self, name: &str) -> Result<SequenceStructure, Box<dyn Error>> {
         let template = self
             .templates
             .get(name)
@@ -315,8 +312,21 @@ impl SequenceLibrary {
         let tempo = definition.block.effective_tempo.clone();
         definition.declared_length(tempo.as_ref())?;
         let own_tempo = definition.block.own_tempo;
-        Ok((definition.block.place_each(self)?, tempo, own_tempo))
+        Ok(SequenceStructure {
+            cues: definition.block.place_each(self)?,
+            tempo_map: tempo,
+            own_tempo,
+        })
     }
+}
+
+/// A sequence as [`SequenceLibrary::structure`] has it.
+pub(super) struct SequenceStructure {
+    /// Its written cues, each with what it puts on the timeline.
+    pub(super) cues: Vec<ParsedCue>,
+    /// The map it plays to: its own `tempo` block, else the file's.
+    pub(super) tempo_map: Option<TempoMap>,
+    pub(super) own_tempo: bool,
 }
 
 /// The values a use of `name` binds: each default, overridden by the

@@ -254,7 +254,9 @@ pub fn layout(
                 .map(|p| p.as_str().trim_matches('"').to_string())
         })
         .map(|name| match parsed.library.structure(&name) {
-            Ok((cues, tempo_map, own_tempo)) => {
+            Ok(structure) => {
+                let (cues, tempo_map, own_tempo) =
+                    (structure.cues, structure.tempo_map, structure.own_tempo);
                 let end = written_end(&cues);
                 let horizon = end.saturating_add(TAIL).max(Duration::from_secs(15));
                 let steps = offset_steps(&cues);
