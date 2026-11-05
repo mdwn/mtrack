@@ -13,6 +13,7 @@
 //
 
 import type {
+  AimPoints,
   AudioDeviceInfo,
   AudioProbe,
   ChannelCalibration,
@@ -26,6 +27,10 @@ import type {
   LightingFileError,
   MidiDeviceInfo,
   MovementLimits,
+  MvrExportSummary,
+  MvrImportAnswer,
+  MvrInspection,
+  MvrKeep,
   NoiseFloor,
   Readiness,
   SettingsSaved,
@@ -340,107 +345,6 @@ export async function importGdtf(
 
 // --- MVR import and export (lighting UI design section 11) ---
 
-export type Vec3Mm = [number, number, number];
-
-export interface MvrBoundsMm {
-  min: Vec3Mm;
-  max: Vec3Mm;
-}
-
-/** The file seen from above, in the file's own millimeters. */
-export interface MvrSceneView {
-  fixtures: {
-    name: string;
-    layer: string;
-    position_mm: Vec3Mm | null;
-  }[];
-  focus_points: { name: string; position_mm: Vec3Mm | null }[];
-  scenery: {
-    name: string;
-    kind: string;
-    deck: boolean;
-    bounds_mm: MvrBoundsMm | null;
-  }[];
-  /** The stage floor's bounds, when the scenery carries one. */
-  deck_mm: MvrBoundsMm | null;
-}
-
-export interface MvrPlannedType {
-  name: string;
-  archive: string;
-  /** Every mode the file patches the type's fixtures in, sorted. */
-  modes: string[];
-  existing: boolean;
-}
-
-/** A hand-edited field a merge would overwrite with the MVR's value. */
-export interface MvrHandEdit {
-  /** "position", "rotation", "patch", "mode" or "type". */
-  field: string;
-  mine: string;
-  mvr: string;
-}
-
-/** The hand edits a merge keeps instead of overwriting. */
-export interface MvrKeep {
-  fixtures: Record<string, string[]>;
-  focus_points: string[];
-}
-
-export interface MvrPlannedFixture {
-  name: string;
-  layer: string;
-  fixture_type: string | null;
-  /** The mode the venue line names (null for a TODO). */
-  mode?: string | null;
-  patch: [number, number] | null;
-  position: Vec3 | null;
-  rotation: Vec3 | null;
-  tags: string[];
-  todo: string | null;
-  change: string | null;
-  /** On a merge: hand-edited fields the import would overwrite. */
-  overwrites?: MvrHandEdit[];
-  /** Hand-edited fields the request keeps. */
-  kept_edits?: string[];
-}
-
-/** What an import would do (and, after a write, did): the MCP plan. */
-export interface MvrPlan {
-  venue_name: string;
-  venue_file: string;
-  archive: string;
-  merge: boolean;
-  origin: Vec3;
-  fixture_types: MvrPlannedType[];
-  fixtures: MvrPlannedFixture[];
-  removed_fixtures: { name: string; tags: string[] }[];
-  kept_fixtures: string[];
-  focus_points: {
-    name: string;
-    point: Vec3;
-    change: string | null;
-    overwrites?: MvrHandEdit[];
-    kept_edit?: boolean;
-  }[];
-  removed_focus_points: string[];
-  kept_focus_points: string[];
-  scenery_objects: number;
-  scenery_meshes_undrawn: number;
-  warnings: string[];
-}
-
-export interface MvrImportReport extends MvrPlan {
-  written: string[];
-  distillation_warnings: Record<string, string[]>;
-}
-
-export interface MvrInspection {
-  file_name: string;
-  report: MvrPlan;
-  scene: MvrSceneView;
-}
-
 /** Where the lighting directories are, when a profile moves them. */
 export interface MvrDirs {
   venuesDir?: string;
@@ -478,27 +382,12 @@ export async function inspectMvr(
   return res.json();
 }
 
-/** A venue that will not load: the fixture that fails it, and why. While it
- *  stands, no fixture of the venue lights. */
-export interface MvrVenueError {
-  venue: string;
-  fixture: string;
-  reason: string;
-}
-
 /** The import's plan (`write` false) or its report (`write` true). */
 export async function importMvr(
   file: File,
-  options: { name: string; origin: Vec3Mm; write: boolean; keep?: MvrKeep },
+  options: { name: string; origin: Vec3; write: boolean; keep?: MvrKeep },
   dirs: MvrDirs = {},
-): Promise<{
-  write: boolean;
-  plan?: MvrPlan;
-  report?: MvrImportReport;
-  reloaded?: boolean;
-  /** After a write: the current venue no longer loads, and why. */
-  venue_error?: MvrVenueError | null;
-}> {
+): Promise<MvrImportAnswer> {
   const res = await fetch("/api/lighting/mvr/import", {
     method: "POST",
     body: mvrForm(
@@ -519,20 +408,6 @@ export async function importMvr(
     venueChanged(null);
   }
   return res.json();
-}
-
-export interface MvrExportSummary {
-  venue: string;
-  /** The name a download would carry. */
-  file_name: string;
-  fixtures: number;
-  positioned_fixtures: number;
-  focus_points: number;
-  embedded_gdtfs: string[];
-  generated_gdtfs: Record<string, string>;
-  /** Positioned fixed fixtures, each with the focus point it links to. */
-  fixed_fixtures: { name: string; focus: string | null }[];
-  warnings: string[];
 }
 
 function exportParams(
@@ -618,22 +493,13 @@ export async function keepMvrExport(
   return { status: "kept", path: String(body.kept) };
 }
 
-export interface AimPointsResult {
-  created: { name: string; fixture: string; point: Vec3 }[];
-  reloaded: boolean;
-  /** The venue file's version after the change. */
-  version?: string;
-  /** The current venue no longer loads after the change. */
-  venue_error?: VenueError | null;
-}
-
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam
  *  meets the deck. */
 export async function addAimPoints(
   venue: string,
   dirs: MvrDirs = {},
   version?: string,
-): Promise<AimPointsResult> {
+): Promise<AimPoints> {
   const params = new URLSearchParams();
   if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
   if (dirs.fixtureTypesDir)

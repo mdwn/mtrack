@@ -131,6 +131,9 @@ pub mod wire_fixture_types;
 /// The websocket's messages.
 #[path = "../../../src/webui/wire/messages.rs"]
 pub mod wire_messages;
+/// The MVR import and export payloads.
+#[path = "../../../src/webui/wire/mvr.rs"]
+pub mod wire_mvr;
 /// A song's shows evaluated offline (the 3D view's Preview mode).
 #[path = "../../../src/webui/wire/preview.rs"]
 pub mod wire_preview;

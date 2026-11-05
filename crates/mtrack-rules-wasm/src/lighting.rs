@@ -32,6 +32,8 @@ mod fixture_test_types;
 pub mod geometry;
 #[path = "../../../src/lighting/import/report.rs"]
 pub mod import_report;
+#[path = "../../../src/lighting/mvr_types.rs"]
+pub mod mvr_types;
 pub mod parser;
 #[path = "../../../src/lighting/stage_model.rs"]
 pub mod stage_model;

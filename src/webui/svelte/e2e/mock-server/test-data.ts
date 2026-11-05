@@ -17,6 +17,8 @@ import type {
   AudioProbe,
   FitReport,
   MidiDeviceInfo,
+  MvrExportSummary,
+  MvrInspection,
   FixtureMetadata,
   Readiness,
   RigModel,
@@ -728,7 +730,7 @@ export const LOG_LINES = {
 /** An MVR as the inspect endpoint reports it (lighting UI design section 11):
  *  a three-fixture rig over a deck 6 m wide and 4 m deep, whose front edge is
  *  at y = 1000 mm and whose top is 500 mm up. One fixture has no usable GDTF. */
-export const MVR_INSPECTION = {
+export const MVR_INSPECTION: MvrInspection = {
   file_name: "Kellys.mvr",
   report: {
     venue_name: "Kellys",
@@ -743,6 +745,7 @@ export const MVR_INSPECTION = {
         // One type per GDTF; every fixture line names its own mode.
         modes: ["8: RGBS", "9: RGBWS"],
         existing: false,
+        fixture_file: null,
       },
     ],
     fixtures: [
@@ -757,6 +760,8 @@ export const MVR_INSPECTION = {
         tags: [],
         todo: null,
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
       {
         name: "Brick 2",
@@ -769,22 +774,35 @@ export const MVR_INSPECTION = {
         tags: [],
         todo: null,
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
       {
         name: "Lost",
         layer: "Front",
         fixture_type: null,
+        mode: null,
         patch: [2, 1],
         position: null,
         rotation: null,
         tags: [],
         todo: 'GDTF "Missing.gdtf" is not embedded in the MVR',
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
     ],
     removed_fixtures: [],
     kept_fixtures: [],
-    focus_points: [{ name: "Drummer", point: [0, 5.3, 1.4], change: null }],
+    focus_points: [
+      {
+        name: "Drummer",
+        point: [0, 5.3, 1.4],
+        change: null,
+        overwrites: [],
+        kept_edit: false,
+      },
+    ],
     removed_focus_points: [],
     kept_focus_points: [],
     scenery_objects: 2,
@@ -812,7 +830,7 @@ export const MVR_INSPECTION = {
 };
 
 /** The export summary of a venue with two fixed fixtures, one unlinked. */
-export const MVR_EXPORT_SUMMARY = {
+export const MVR_EXPORT_SUMMARY: MvrExportSummary = {
   venue: "kellys",
   file_name: "kellys.mvr",
   output: "kellys.mvr",

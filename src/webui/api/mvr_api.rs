@@ -22,6 +22,9 @@
 //! each step. Every write goes through a directory proven to be inside the
 //! project (the same containment the GDTF import and the venue save use).
 
+use crate::webui::wire::mvr::{
+    AimPoint, AimPoints, MvrExportSummary, MvrImportAnswer, MvrInspection, MvrKept,
+};
 use std::collections::HashMap;
 
 use axum::{
@@ -221,7 +224,11 @@ pub(super) async fn inspect_mvr(
     Ok::<_, Response>(
         (
             StatusCode::OK,
-            Json(json!({"file_name": file_name, "report": report, "scene": scene})),
+            Json(MvrInspection {
+                file_name,
+                report,
+                scene,
+            }),
         )
             .into_response(),
     )
@@ -268,7 +275,7 @@ pub(super) async fn import_mvr(
         Ok::<_, String>(
             if write {
                 lighting::import::import_mvr_bytes(&form.bytes, &form.file_name, &options, &project)
-                    .map(|report| serde_json::to_value(&report).unwrap_or_default())
+                    .map(Imported::Report)
             } else {
                 lighting::import::inspect_mvr_bytes(
                     &form.bytes,
@@ -276,38 +283,43 @@ pub(super) async fn import_mvr(
                     &options,
                     &project,
                 )
-                .map(|plan| serde_json::to_value(&plan).unwrap_or_default())
+                .map(Imported::Plan)
             }
             .map_err(|e| e.to_string()),
         )
     })
     .await?
     .map_err(bad_request)?;
-    if !write {
-        return Ok::<_, Response>(
-            (
-                StatusCode::OK,
-                Json(json!({"write": false, "plan": outcome})),
-            )
-                .into_response(),
-        );
-    }
-    let venue = outcome["venue_name"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let report = match outcome {
+        Imported::Plan(plan) => {
+            let answer = MvrImportAnswer {
+                write: false,
+                plan: Some(plan),
+                report: None,
+                reloaded: None,
+                venue_error: None,
+            };
+            return Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response());
+        }
+        Imported::Report(report) => report,
+    };
+    let venue = report.plan.venue_name.clone();
     let reloaded = reload_if_current_venue(&state, &venue).await;
     let venue_error = venue_error_after_save(&state, &venue, &venues_path).await;
-    Ok((
-        StatusCode::OK,
-        Json(json!({
-            "write": true,
-            "report": outcome,
-            "reloaded": reloaded,
-            "venue_error": venue_error,
-        })),
-    )
-        .into_response())
+    let answer = MvrImportAnswer {
+        write: true,
+        plan: None,
+        report: Some(report),
+        reloaded: Some(reloaded),
+        venue_error: Some(venue_error),
+    };
+    Ok((StatusCode::OK, Json(answer)).into_response())
+}
+
+/// An import's outcome: the plan, or what the import did.
+enum Imported {
+    Plan(lighting::import::MvrPlan),
+    Report(lighting::import::MvrImport),
 }
 
 /// Query for the export endpoints.
@@ -359,10 +371,11 @@ pub(super) async fn export_summary(
     })
     .await?
     .map_err(bad_request)?;
-    let file_name = report.output.clone();
-    let mut body = serde_json::to_value(&report).unwrap_or_default();
-    body["file_name"] = json!(file_name);
-    Ok::<_, Response>((StatusCode::OK, Json(body)).into_response())
+    let summary = MvrExportSummary {
+        file_name: report.output.clone(),
+        export: report,
+    };
+    Ok::<_, Response>((StatusCode::OK, Json(summary)).into_response())
 }
 
 /// GET /api/lighting/mvr/export?venue=&layers_from_tags=&file= — the
@@ -427,7 +440,13 @@ pub(super) async fn keep_export(
     .await?;
     match result {
         Ok(report) => Ok::<_, Response>(
-            (StatusCode::OK, Json(json!({"kept": report.output}))).into_response(),
+            (
+                StatusCode::OK,
+                Json(MvrKept {
+                    kept: report.output,
+                }),
+            )
+                .into_response(),
         ),
         Err(KeepError::Exists(existing)) => Ok((
             StatusCode::CONFLICT,
@@ -530,24 +549,21 @@ pub(super) async fn add_aim_points(
         reload_if_current_venue(&state, &name).await
     };
     let venue_error = venue_error_after_save(&state, &name, &venues_path).await;
-    let created: Vec<serde_json::Value> = created
+    let created = created
         .into_iter()
-        .map(|(point_name, fixture, point)| {
-            json!({"name": point_name, "fixture": fixture, "point": point})
+        .map(|(name, fixture, point)| AimPoint {
+            name,
+            fixture,
+            point,
         })
         .collect();
-    Ok::<_, Response>(
-        (
-            StatusCode::OK,
-            Json(json!({
-                "created": created,
-                "reloaded": reloaded,
-                "version": version,
-                "venue_error": venue_error,
-            })),
-        )
-            .into_response(),
-    )
+    let answer = AimPoints {
+        created,
+        reloaded,
+        version,
+        venue_error,
+    };
+    Ok::<_, Response>((StatusCode::OK, Json(answer)).into_response())
 }
 
 /// The points created: (focus point name, fixture, position).

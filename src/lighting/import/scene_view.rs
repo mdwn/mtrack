@@ -30,10 +30,11 @@
 //! not readable `.glb`, has no deck: the answer is `None` and the wizard
 //! falls back to the fixtures' footprint.
 
+pub use crate::lighting::mvr_types::{
+    BoundsMm, SceneView, ViewFixture, ViewFocusPoint, ViewScenery,
+};
 use std::collections::HashSet;
 use std::error::Error;
-
-use serde::Serialize;
 
 use crate::lighting::mvr::{self, Matrix, MvrSceneObject};
 
@@ -44,13 +45,6 @@ const DECK_WORDS: &[&str] = &[
 
 /// Scenery kinds that are never a deck, whatever they are called.
 const NOT_DECK_KINDS: &[&str] = &["Truss", "Support", "VideoScreen", "Projector"];
-
-/// An axis-aligned box in scene millimeters.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub struct BoundsMm {
-    pub min: [f64; 3],
-    pub max: [f64; 3],
-}
 
 impl BoundsMm {
     fn include(&mut self, point: [f64; 3]) {
@@ -64,43 +58,6 @@ impl BoundsMm {
         self.include(other.min);
         self.include(other.max);
     }
-}
-
-/// A fixture as the file places it.
-#[derive(Debug, Serialize)]
-pub struct ViewFixture {
-    pub name: String,
-    pub layer: String,
-    /// The fixture's position in the file's millimeters, when it has one.
-    pub position_mm: Option<[f64; 3]>,
-}
-
-/// A focus point as the file places it.
-#[derive(Debug, Serialize)]
-pub struct ViewFocusPoint {
-    pub name: String,
-    pub position_mm: Option<[f64; 3]>,
-}
-
-/// A piece of scenery, with its bounds when they could be read.
-#[derive(Debug, Serialize)]
-pub struct ViewScenery {
-    pub name: String,
-    pub kind: String,
-    /// Whether this object was recognised as (part of) the stage floor.
-    pub deck: bool,
-    /// Its extent in the file's millimeters, when a `.glb` mesh gave one.
-    pub bounds_mm: Option<BoundsMm>,
-}
-
-/// The file seen from above.
-#[derive(Debug, Serialize)]
-pub struct SceneView {
-    pub fixtures: Vec<ViewFixture>,
-    pub focus_points: Vec<ViewFocusPoint>,
-    pub scenery: Vec<ViewScenery>,
-    /// The stage floor's bounds, when the scenery carries one.
-    pub deck_mm: Option<BoundsMm>,
 }
 
 /// Reads an MVR's positions and scenery bounds. Writes nothing.

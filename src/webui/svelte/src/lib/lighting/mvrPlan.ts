@@ -1,3 +1,4 @@
+import type { BoundsMm, SceneView, Vec3 } from "../../gen/rules/mtrack_rules";
 // Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -20,8 +21,6 @@
  * the page.
  */
 
-import type { MvrBoundsMm, MvrSceneView, Vec3Mm } from "../api/config";
-
 export interface PlanBox {
   minX: number;
   maxX: number;
@@ -31,7 +30,7 @@ export interface PlanBox {
 
 /** The suggested origin and what it was taken from. */
 export interface OriginSuggestion {
-  origin: Vec3Mm;
+  origin: Vec3;
   /** `deck`: the front edge of the scenery's stage floor. `footprint`: the
    *  front edge of the fixtures' footprint. */
   basis: "deck" | "footprint";
@@ -43,7 +42,7 @@ export interface OriginSuggestion {
  * front edge of the fixtures' footprint at the floor. Null when the file has
  * nothing positioned to go by.
  */
-export function suggestOrigin(scene: MvrSceneView): OriginSuggestion | null {
+export function suggestOrigin(scene: SceneView): OriginSuggestion | null {
   const deck = scene.deck_mm;
   if (deck) {
     return {
@@ -57,7 +56,7 @@ export function suggestOrigin(scene: MvrSceneView): OriginSuggestion | null {
   }
   const points = scene.fixtures
     .map((f) => f.position_mm)
-    .filter((p): p is Vec3Mm => p !== null);
+    .filter((p): p is Vec3 => p !== null);
   if (points.length === 0) return null;
   const xs = points.map((p) => p[0]);
   const ys = points.map((p) => p[1]);
@@ -73,16 +72,16 @@ export function suggestOrigin(scene: MvrSceneView): OriginSuggestion | null {
 
 /** Everything the plan draws, padded, so nothing sits on the edge. Null when
  *  there is nothing to draw. */
-export function planBox(scene: MvrSceneView): PlanBox | null {
+export function planBox(scene: SceneView): PlanBox | null {
   const xs: number[] = [];
   const ys: number[] = [];
-  const add = (p: Vec3Mm | null) => {
+  const add = (p: Vec3 | null) => {
     if (p) {
       xs.push(p[0]);
       ys.push(p[1]);
     }
   };
-  const addBounds = (b: MvrBoundsMm | null) => {
+  const addBounds = (b: BoundsMm | null) => {
     if (b) {
       add(b.min);
       add(b.max);

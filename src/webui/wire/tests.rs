@@ -143,3 +143,16 @@ fn a_refused_gdtf_mode_says_only_why() {
         json!({"name": "bad", "footprint": 1, "refused": "no"})
     );
 }
+
+#[test]
+fn an_mvr_plan_answer_carries_only_the_plan() {
+    use super::mvr::MvrImportAnswer;
+    let answer = json!(MvrImportAnswer {
+        write: false,
+        plan: None,
+        report: None,
+        reloaded: None,
+        venue_error: None,
+    });
+    assert_eq!(answer, json!({"write": false}));
+}

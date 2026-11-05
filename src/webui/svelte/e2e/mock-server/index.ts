@@ -14,7 +14,9 @@
 
 import type { saveVenue } from "../../src/lib/api/config";
 import type {
+  AimPoints,
   ChannelCalibration,
+  MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeEntry,
   FixtureTypeGdtf,
@@ -626,7 +628,7 @@ app.post("/api/lighting/mvr/import", (_req, res) => {
   res.json({
     write: false,
     plan: { ...MVR_INSPECTION.report, origin: [0, 1, 0.5] },
-  });
+  } satisfies MvrImportAnswer);
 });
 
 app.get("/api/lighting/mvr/export/summary", (_req, res) => {
@@ -660,7 +662,9 @@ app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
   res.json({
     created: [{ name: "Brick 2 aim", fixture: "Brick 2", point: [2, 2.5, 0] }],
     reloaded: false,
-  });
+    version: "mock-v2",
+    venue_error: null,
+  } satisfies AimPoints);
 });
 
 // The one mesh the mock store serves, read once at startup (the server

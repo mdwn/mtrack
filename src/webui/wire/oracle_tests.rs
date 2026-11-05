@@ -1621,3 +1621,137 @@ mod fixture_types {
         );
     }
 }
+
+mod mvr {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+
+    use crate::lighting::findings::VenueError;
+    use crate::lighting::mvr_types::*;
+    use crate::webui::wire::mvr::*;
+
+    fn plan() -> MvrPlan {
+        MvrPlan {
+            venue_name: "club".to_string(),
+            venue_file: "lighting/venues/club.venue".to_string(),
+            archive: "lighting/mvr/club.mvr".to_string(),
+            merge: false,
+            origin: [0.0, 1.0, 0.0],
+            fixture_types: vec![],
+            fixtures: vec![],
+            removed_fixtures: vec![],
+            kept_fixtures: vec![],
+            focus_points: vec![],
+            removed_focus_points: vec![],
+            kept_focus_points: vec![],
+            scenery_objects: 0,
+            scenery_meshes_undrawn: 0,
+            warnings: vec!["w".to_string()],
+        }
+    }
+
+    fn export() -> MvrExport {
+        MvrExport {
+            venue: "club".to_string(),
+            output: "club.mvr".to_string(),
+            fixtures: 1,
+            focus_points: 0,
+            embedded_gdtfs: vec![],
+            generated_gdtfs: BTreeMap::new(),
+            positioned_fixtures: 1,
+            fixed_fixtures: vec![FixedFixture {
+                name: "p1".to_string(),
+                focus: None,
+            }],
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn mvr_answers_match_the_old_json() {
+        let scene = SceneView {
+            fixtures: vec![],
+            focus_points: vec![],
+            scenery: vec![],
+            deck_mm: None,
+        };
+        let old_scene = json!(scene);
+        assert_eq!(
+            json!(MvrInspection {
+                file_name: "club.mvr".to_string(),
+                report: plan(),
+                scene,
+            }),
+            json!({"file_name": "club.mvr", "report": plan(), "scene": old_scene})
+        );
+        assert_eq!(
+            json!(MvrImportAnswer {
+                write: false,
+                plan: Some(plan()),
+                report: None,
+                reloaded: None,
+                venue_error: None,
+            }),
+            json!({"write": false, "plan": plan()})
+        );
+        let report = || MvrImport {
+            plan: plan(),
+            written: vec!["a".to_string()],
+            distillation_warnings: BTreeMap::new(),
+        };
+        let error = VenueError {
+            venue: "club".to_string(),
+            fixture: "p1".to_string(),
+            reason: "r".to_string(),
+        };
+        assert_eq!(
+            json!(MvrImportAnswer {
+                write: true,
+                plan: None,
+                report: Some(report()),
+                reloaded: Some(true),
+                venue_error: Some(Some(error.clone())),
+            }),
+            json!({
+                "write": true,
+                "report": report(),
+                "reloaded": true,
+                "venue_error": {"venue": "club", "fixture": "p1", "reason": "r"},
+            })
+        );
+        let mut old_summary = serde_json::to_value(export()).unwrap();
+        old_summary["file_name"] = json!("club.mvr");
+        assert_eq!(
+            json!(MvrExportSummary {
+                file_name: "club.mvr".to_string(),
+                export: export(),
+            }),
+            old_summary
+        );
+        assert_eq!(
+            json!(MvrKept {
+                kept: "club.mvr".to_string()
+            }),
+            json!({"kept": "club.mvr"})
+        );
+        assert_eq!(
+            json!(AimPoints {
+                created: vec![AimPoint {
+                    name: "p1 aim".to_string(),
+                    fixture: "p1".to_string(),
+                    point: [1.0, 2.0, 0.0],
+                }],
+                reloaded: false,
+                version: "v".to_string(),
+                venue_error: None,
+            }),
+            json!({
+                "created": [json!({"name": "p1 aim", "fixture": "p1", "point": [1.0, 2.0, 0.0]})],
+                "reloaded": false,
+                "version": "v",
+                "venue_error": null,
+            })
+        );
+    }
+}

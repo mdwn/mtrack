@@ -13,19 +13,18 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    HandEdit,
+    MvrImport,
+    MvrInspection,
+    MvrKeep,
+    MvrPlan,
+    PlannedFixtureType,
+    Vec3,
+    VenueError,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import {
-    importMvr,
-    inspectMvr,
-    type MvrHandEdit,
-    type MvrImportReport,
-    type MvrInspection,
-    type MvrKeep,
-    type MvrPlan,
-    type MvrPlannedType,
-    type MvrVenueError,
-    type Vec3Mm,
-  } from "../../lib/api/config";
+  import { importMvr, inspectMvr } from "../../lib/api/config";
   import {
     defaultVenueName,
     fromPage,
@@ -63,7 +62,7 @@
   let originX = $state<number | null>(null);
   let originY = $state<number | null>(null);
   let originZ = $state<number | null>(null);
-  let origin = $derived<Vec3Mm | null>(
+  let origin = $derived<Vec3 | null>(
     originX !== null && originY !== null && originZ !== null
       ? [originX, originY, originZ]
       : null,
@@ -74,15 +73,15 @@
    *  "\u0000focus\u0000name"). Position and rotation start kept; patch and
    *  type are rig facts the venue owns, so they start as the MVR's. */
   let keeping = $state<Record<string, boolean>>({});
-  let report = $state<MvrImportReport | null>(null);
+  let report = $state<MvrImport | null>(null);
   /** After the write: the current venue no longer loads, and why. */
-  let venueError = $state<MvrVenueError | null>(null);
+  let venueError = $state<VenueError | null>(null);
 
   let scene = $derived(inspection?.scene ?? null);
   let suggestion = $derived(scene ? suggestOrigin(scene) : null);
   let box = $derived(scene ? planBox(scene) : null);
 
-  function setOrigin(o: Vec3Mm) {
+  function setOrigin(o: Vec3) {
     [originX, originY, originZ] = o;
   }
 
@@ -195,7 +194,7 @@
     return { fixtures, focus_points };
   }
 
-  function fieldLabel(e: MvrHandEdit): string {
+  function fieldLabel(e: HandEdit): string {
     return $t(`lighting.mvr.field.${e.field}`);
   }
 
@@ -300,7 +299,7 @@
   let moded = $derived(plan?.fixtures.filter((f) => !f.todo && f.mode) ?? []);
 
   /** The modes the file patches a fixture type in, in words. */
-  function typeModes(ft: MvrPlannedType): string {
+  function typeModes(ft: PlannedFixtureType): string {
     return $t("lighting.mvr.review.typeModes", {
       values: { modes: (ft.modes ?? []).join(", ") },
     });

@@ -50,11 +50,14 @@
 //! by, or (for the fixture type) the type cannot be traced, any difference
 //! counts.
 
+use crate::lighting::mvr_types::TypeKey;
+pub use crate::lighting::mvr_types::{
+    HandEdit, MvrImport, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
+    RemovedFixture,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
 
 use super::{
     create_dir, fixture_filename_stem, place_in_library, write, write_library_entry, LibraryEntry,
@@ -65,37 +68,12 @@ use crate::lighting::parser::parse_venues;
 use crate::lighting::types::{fmt_vec3, Fixture, Vec3, Venue, VenueSource};
 use crate::lighting::venue_patch::{patch_venue_with, PatchNotes};
 
-/// The hand edits a merge should keep instead of overwriting with the MVR's
-/// values. A field that is not a listed overwrite is ignored.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct MvrKeep {
-    /// Fixture name → the fields to keep: `position`, `rotation`, `patch`,
-    /// `mode`, `type`.
-    #[serde(default)]
-    pub fixtures: BTreeMap<String, Vec<String>>,
-    /// Focus points whose position to keep.
-    #[serde(default)]
-    pub focus_points: Vec<String>,
-}
-
 impl MvrKeep {
     fn keeps(&self, fixture: &str, field: &str) -> bool {
         self.fixtures
             .get(fixture)
             .is_some_and(|fields| fields.iter().any(|f| f == field))
     }
-}
-
-/// A field of the venue that the merge would replace with the MVR's value,
-/// though it was edited by hand.
-#[derive(Debug, Serialize)]
-pub struct HandEdit {
-    /// `position`, `rotation`, `patch`, `mode` or `type`.
-    pub field: String,
-    /// The venue file's value, as the file spells it.
-    pub mine: String,
-    /// The MVR's value.
-    pub mvr: String,
 }
 
 /// The choices an MVR import takes from the user.
@@ -126,139 +104,6 @@ impl Default for MvrImportOptions {
             venues_dir: crate::config::lighting::DEFAULT_VENUES_DIR.to_string(),
         }
     }
-}
-
-/// Everything an import would do, resolved but not written.
-#[derive(Debug, Serialize)]
-pub struct MvrPlan {
-    /// The venue's name.
-    pub venue_name: String,
-    /// The venue file, project-relative.
-    pub venue_file: String,
-    /// Where the MVR lands, project-relative.
-    pub archive: String,
-    /// Whether an MVR-seeded venue of this name already exists and is being
-    /// merged rather than created.
-    pub merge: bool,
-    /// The stage origin in MVR space, meters.
-    pub origin: Vec3,
-    /// The fixture types the patch references.
-    pub fixture_types: Vec<PlannedFixtureType>,
-    /// The patched fixtures, in the order the venue file will list them.
-    pub fixtures: Vec<PlannedFixture>,
-    /// Fixtures the venue itself removed since the last import (present in
-    /// the previous MVR, absent from this one). Dropped, with their tags.
-    pub removed_fixtures: Vec<RemovedFixture>,
-    /// Fixtures in the existing venue the MVR never knew about — hand
-    /// additions, kept as they are.
-    pub kept_fixtures: Vec<String>,
-    /// The scene's focus points.
-    pub focus_points: Vec<PlannedFocusPoint>,
-    /// Focus points the previous MVR had that this one does not. Dropped.
-    pub removed_focus_points: Vec<String>,
-    /// Focus points of the existing venue the MVR never knew about. Kept.
-    pub kept_focus_points: Vec<String>,
-    /// Scenery objects in the scene (trusses, decks, screens), which the
-    /// 3D view draws from the MVR's meshes.
-    pub scenery_objects: usize,
-    /// Scenery meshes in formats the 3D view does not draw (`.3ds`).
-    pub scenery_meshes_undrawn: usize,
-    /// What was skipped, approximated or guessed.
-    pub warnings: Vec<String>,
-}
-
-/// A fixture type the patch references: an embedded GDTF, which the
-/// library makes a fixture (design §22).
-#[derive(Debug, Serialize)]
-pub struct PlannedFixtureType {
-    /// The fixture type's name.
-    pub name: String,
-    /// The GDTF archive, project-relative.
-    pub archive: String,
-    /// Every mode this file patches the type's fixtures in, sorted; each
-    /// fixture's line names its own.
-    pub modes: Vec<String>,
-    /// Whether the archive is already in the library (so nothing is written
-    /// for it).
-    pub existing: bool,
-    /// mtrack's record of the type, project-relative, when one is written:
-    /// only to pin a name another fixture already had.
-    pub fixture_file: Option<String>,
-}
-
-/// A patched fixture as the venue file will state it.
-#[derive(Debug, Serialize)]
-pub struct PlannedFixture {
-    /// The fixture's name.
-    pub name: String,
-    /// The MVR layer it sits on.
-    pub layer: String,
-    /// The resolved fixture type; `None` when the fixture is a TODO.
-    pub fixture_type: Option<String>,
-    /// The mode its venue line names, as the GDTF spells it; `None` only
-    /// for a TODO (or a kept hand edit that has none).
-    pub mode: Option<String>,
-    /// The embedded GDTF and the mode the MVR patches it in, as the GDTF
-    /// spells it — what a merge compares the venue's fixture against.
-    #[serde(skip)]
-    gdtf: Option<TypeKey>,
-    /// Universe and address; `None` when the MVR patched nothing.
-    pub patch: Option<(u16, u16)>,
-    /// Stage position, meters.
-    pub position: Option<Vec3>,
-    /// Mounting rotation, degrees.
-    pub rotation: Option<Vec3>,
-    /// The beam angle the venue states, in degrees. The MVR has no place for
-    /// it, so it is never the import's to set: a first import leaves it
-    /// `None` and a merge carries the venue's own value over, always.
-    #[serde(skip)]
-    beam_angle: Option<f64>,
-    /// Tags — empty on a fresh seed, the venue's own on a merge.
-    pub tags: Vec<String>,
-    /// Why this fixture could not be resolved, when it could not.
-    pub todo: Option<String>,
-    /// On a merge, what changed against the existing venue.
-    pub change: Option<String>,
-    /// On a merge, hand-edited fields this import overwrites with the MVR's
-    /// values (empty when none, or when the request keeps them).
-    pub overwrites: Vec<HandEdit>,
-    /// Hand-edited fields this import keeps, as the request asked.
-    pub kept_edits: Vec<String>,
-}
-
-/// A fixture the venue removed, with the tags that go with it.
-#[derive(Debug, Serialize)]
-pub struct RemovedFixture {
-    pub name: String,
-    pub tags: Vec<String>,
-}
-
-/// A focus point as the venue file will state it.
-#[derive(Debug, Serialize)]
-pub struct PlannedFocusPoint {
-    pub name: String,
-    /// Stage position, meters.
-    pub point: Vec3,
-    /// On a merge, what changed against the existing venue.
-    pub change: Option<String>,
-    /// On a merge, the venue's hand-moved position this import overwrites
-    /// (empty when none, or when the request keeps it).
-    pub overwrites: Vec<HandEdit>,
-    /// Whether the request keeps a hand-moved position.
-    pub kept_edit: bool,
-}
-
-/// What an import did.
-#[derive(Debug, Serialize)]
-pub struct MvrImport {
-    /// The plan that was carried out.
-    #[serde(flatten)]
-    pub plan: MvrPlan,
-    /// Every file written, project-relative.
-    pub written: Vec<String>,
-    /// GDTF distillation warnings per fixture type, for the modes the venue
-    /// uses ("mode: warning").
-    pub distillation_warnings: BTreeMap<String, Vec<String>>,
 }
 
 /// A plan plus the bytes it needs to carry out.
@@ -365,13 +210,6 @@ fn read_archive(mvr_path: &Path) -> Result<(Vec<u8>, String), Box<dyn Error>> {
         .to_string_lossy()
         .into_owned();
     Ok((bytes, file_name))
-}
-
-/// The key a fixture type is unique by: which embedded archive, which mode.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct TypeKey {
-    entry: String,
-    mode: String,
 }
 
 /// An embedded GDTF, parsed once however many fixtures reference it.

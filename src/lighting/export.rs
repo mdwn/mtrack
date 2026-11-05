@@ -30,12 +30,12 @@
 
 pub mod gdtf;
 
+pub use super::mvr_types::{FixedFixture, MvrExport};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
 use std::path::Path;
 
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::effects::out_of_frame;
@@ -72,40 +72,6 @@ impl MvrExportOptions {
             layers_from_tags: false,
         }
     }
-}
-
-/// What an export produced, for reporting.
-#[derive(Debug, Serialize)]
-pub struct MvrExport {
-    /// The venue's name.
-    pub venue: String,
-    /// The `.mvr` written, project-relative.
-    pub output: String,
-    /// Fixtures in the scene.
-    pub fixtures: usize,
-    /// Focus points in the scene.
-    pub focus_points: usize,
-    /// GDTF archives embedded from the library, by entry name.
-    pub embedded_gdtfs: Vec<String>,
-    /// GDTF archives generated for native fixture types: entry name →
-    /// fixture type.
-    pub generated_gdtfs: BTreeMap<String, String>,
-    /// Fixtures with a position (so with a transform in the scene).
-    pub positioned_fixtures: usize,
-    /// The fixed fixtures (types with no pan or tilt) that have a position,
-    /// each with the focus point it is aimed at, if any. A pre-viz tool aims
-    /// the unlinked ones at the origin.
-    pub fixed_fixtures: Vec<FixedFixture>,
-    /// What was skipped or approximated.
-    pub warnings: Vec<String>,
-}
-
-/// A fixed fixture and the focus point the export links it to.
-#[derive(Clone, Debug, Serialize)]
-pub struct FixedFixture {
-    pub name: String,
-    /// The focus point its rest beam passes within a degree of, if any.
-    pub focus: Option<String>,
 }
 
 /// Exports a venue to a `.mvr` in the project. All validation runs before

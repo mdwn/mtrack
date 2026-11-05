@@ -36,6 +36,7 @@ mod layering_tests;
 pub mod library;
 pub mod lint;
 pub mod mvr;
+pub mod mvr_types;
 pub mod parser;
 pub mod patch;
 pub mod project_files;
