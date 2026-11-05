@@ -648,9 +648,13 @@ async function rig(page: Page, status: StatusExtras = {}) {
       })),
       overlaps: [
         {
+          first: "Brick 4",
+          second: "Brick 5",
+          first_gang: ["Brick 4"],
+          second_gang: ["Brick 5"],
           universe: 1,
-          fixtures: ["Brick 4", "Brick 5"],
-          addresses: [16, 16],
+          from: 16,
+          to: 16,
         },
       ],
       overruns: [],

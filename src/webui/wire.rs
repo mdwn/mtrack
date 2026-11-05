@@ -24,3 +24,4 @@ pub mod preview;
 pub mod readiness;
 pub mod songs;
 pub mod status;
+pub mod venue;

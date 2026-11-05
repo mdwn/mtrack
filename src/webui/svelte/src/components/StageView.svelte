@@ -18,6 +18,7 @@
     PoseSnapshot,
     StageValues,
     Vec3,
+    VenueError,
     VenueMetadata,
   } from "../gen/rules/mtrack_rules";
   import {
@@ -42,7 +43,6 @@
     saveVenue,
     type FixtureTypeEntry,
     type VenueData,
-    type VenueError,
   } from "../lib/api/config";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
@@ -70,7 +70,7 @@
   // Types only: the 3D view and the preview panel load the first time 3D
   // is pressed, and three.js with them.
   import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
-    import { t } from "svelte-i18n";
+  import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
 

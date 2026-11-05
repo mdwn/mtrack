@@ -581,7 +581,7 @@ pub(super) async fn post_settings(
     let (plan, new_name) = outcome.map_err(|(status, message)| error(status, message))?;
 
     let renamed = new_name != name;
-    let mut venue_error = serde_json::Value::Null;
+    let mut venue_error = None;
     if write {
         // One reload after every write: types and venues together, so the
         // engine never sees a venue naming a type it has not read yet.

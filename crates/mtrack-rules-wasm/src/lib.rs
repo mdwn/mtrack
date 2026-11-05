@@ -132,6 +132,9 @@ pub mod wire_songs;
 /// The status API's payloads.
 #[path = "../../../src/webui/wire/status.rs"]
 pub mod wire_status;
+/// The venue API's payloads.
+#[path = "../../../src/webui/wire/venue.rs"]
+pub mod wire_venue;
 
 // The player's module paths the included sources name each other by
 // (`crate::audio::beat_grid`, `crate::config::Section`, …), so each

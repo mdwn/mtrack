@@ -17,7 +17,10 @@ import type {
   FixtureMetadata,
   Readiness,
   Vec3,
+  VenueError,
   VenueMetadata,
+  VenuePatch,
+  VenueSaved,
 } from "../../gen/rules/mtrack_rules";
 import type { ConfigReload } from "../configReload";
 import { readAnswer } from "../lighting/answer";
@@ -1109,19 +1112,11 @@ export async function saveVenue(
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
   venueChanged(name);
-  const body = await res.json().catch(() => ({}));
+  const body: Partial<VenueSaved> = await res.json().catch(() => ({}));
   return {
-    version: body?.version ?? null,
-    venueError: body?.venue_error ?? null,
+    version: body.version ?? null,
+    venueError: body.venue_error ?? null,
   };
-}
-
-/** Why the current venue does not load after a save: the first fixture
- *  that cannot be driven. A venue that does not load lights nothing. */
-export interface VenueError {
-  venue: string;
-  fixture: string;
-  reason: string;
 }
 
 /** What a venue save answers: the file's new version, and the venue's
@@ -1129,40 +1124,6 @@ export interface VenueError {
 export interface SavedVenue {
   version: string | null;
   venueError: VenueError | null;
-}
-
-/** One fixture's addresses, as `GET /api/lighting/venues/{name}/patch`
- *  reports them; `footprint` is null when its type or mode does not load. */
-export interface PatchSpan {
-  fixture: string;
-  universe: number;
-  address: number;
-  footprint: number | null;
-  type: string;
-  /** The mode the fixture line names; null is its type's default. */
-  mode: string | null;
-}
-
-export interface PatchOverlapInfo {
-  a: string;
-  b: string;
-  a_gang: string[];
-  b_gang: string[];
-  universe: number;
-  from: number;
-  to: number;
-}
-
-export interface VenuePatch {
-  spans: PatchSpan[];
-  overlaps: PatchOverlapInfo[];
-  overruns: {
-    fixture: string;
-    universe: number;
-    address: number;
-    footprint: number;
-    last: number;
-  }[];
 }
 
 /** The addresses a venue's fixtures occupy, from the files (no engine). */

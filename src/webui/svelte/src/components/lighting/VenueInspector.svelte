@@ -23,6 +23,7 @@
     FixtureMetadata,
     Vec3,
     VenueMetadata,
+    VenuePatch,
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
@@ -39,7 +40,6 @@
     type FixtureTypeEntry,
     type FixtureTypeGdtf,
     type VenueData,
-    type VenuePatch,
   } from "../../lib/api/config";
   import {
     listed,

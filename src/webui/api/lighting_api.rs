@@ -2630,13 +2630,13 @@ pub(super) async fn put_venue(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "saved",
-                "name": name,
-                "reloaded": reloaded,
-                "version": version,
-                "venue_error": venue_error,
-            })),
+            Json(crate::webui::wire::venue::VenueSaved {
+                status: "saved".to_string(),
+                name,
+                reloaded,
+                version,
+                venue_error,
+            }),
         )
             .into_response(),
     )
@@ -2653,7 +2653,7 @@ pub(super) async fn venue_error_after_save(
     state: &WebUiState,
     name: &str,
     venues_dir: &std::path::Path,
-) -> serde_json::Value {
+) -> Option<crate::lighting::findings::VenueError> {
     let player = state.player.clone();
     let config_path = state.config_path.clone();
     let venue = name.to_string();
@@ -2680,10 +2680,11 @@ pub(super) async fn venue_error_after_save(
     .await
     .ok()
     .flatten();
-    match found {
-        Some((fixture, reason)) => json!({"venue": name, "fixture": fixture, "reason": reason}),
-        None => serde_json::Value::Null,
-    }
+    found.map(|(fixture, reason)| crate::lighting::findings::VenueError {
+        venue: name.to_string(),
+        fixture,
+        reason,
+    })
 }
 
 /// After a venue file changed on disk: if it is the venue the running engine
@@ -2877,7 +2878,7 @@ pub(super) async fn get_venue_patch(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_patch_json(&system, venue)))
+        Ok(Some(venue_patch(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2995,45 +2996,32 @@ pub(super) fn system_from_files(
 }
 
 /// The patch answer for one venue of a loaded system.
-fn venue_patch_json(
+fn venue_patch(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures = venue.fixtures_by_patch();
-    let spans: Vec<serde_json::Value> = fixtures
-        .iter()
-        .map(|fixture| {
-            let footprint = system
+) -> crate::webui::wire::venue::VenuePatch {
+    use crate::webui::wire::venue::{PatchedFixture, VenuePatch};
+    let spans = venue
+        .fixtures_by_patch()
+        .into_iter()
+        .map(|fixture| PatchedFixture {
+            fixture: fixture.name().to_string(),
+            universe: fixture.universe(),
+            address: fixture.start_channel(),
+            footprint: system
                 .resolve_fixture_type(fixture)
                 .ok()
-                .map(|t| t.footprint());
-            json!({
-                "fixture": fixture.name(),
-                "universe": fixture.universe(),
-                "address": fixture.start_channel(),
-                "footprint": footprint,
-                "type": fixture.fixture_type(),
-                "mode": fixture.mode(),
-            })
+                .map(|t| t.footprint()),
+            fixture_type: fixture.fixture_type().to_string(),
+            mode: fixture.mode().map(String::from),
         })
         .collect();
     let known = system.patch_spans(venue);
-    let overlaps: Vec<serde_json::Value> = lighting::patch::venue_overlaps(&known)
-        .into_iter()
-        .map(|o| {
-            json!({
-                "a": o.first,
-                "b": o.second,
-                "a_gang": o.first_gang,
-                "b_gang": o.second_gang,
-                "universe": o.universe,
-                "from": o.from,
-                "to": o.to,
-            })
-        })
-        .collect();
-    let overruns = lighting::patch::venue_overruns(&known);
-    json!({"spans": spans, "overlaps": overlaps, "overruns": overruns})
+    VenuePatch {
+        spans,
+        overlaps: lighting::patch::venue_overlaps(&known),
+        overruns: lighting::patch::venue_overruns(&known),
+    }
 }
 
 /// Converts a JSON venue definition to DSL format.
@@ -6223,8 +6211,8 @@ show "test" {
         // The gang is quiet; the partial overlap names the gang once.
         let overlaps = parsed["overlaps"].as_array().unwrap();
         assert_eq!(overlaps.len(), 1, "{parsed}");
-        assert_eq!(overlaps[0]["a_gang"], serde_json::json!(["G1", "G2"]));
-        assert_eq!(overlaps[0]["b"], "Part");
+        assert_eq!(overlaps[0]["first_gang"], serde_json::json!(["G1", "G2"]));
+        assert_eq!(overlaps[0]["second"], "Part");
         let overruns = parsed["overruns"].as_array().unwrap();
         assert_eq!(overruns.len(), 1, "{parsed}");
         assert_eq!(overruns[0]["fixture"], "End");
@@ -8823,6 +8811,96 @@ mod wire_tests {
                     })],
                     "untouched": ["q"],
                     "venue_error": null,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn venue_patch_and_save_match_the_old_json() {
+        use crate::lighting::findings::VenueError;
+        use crate::lighting::patch::{PatchOverlap, PatchOverrun};
+        use crate::webui::wire::venue::*;
+
+        let overrun = PatchOverrun {
+            fixture: "End".to_string(),
+            universe: 1,
+            address: 510,
+            footprint: 8,
+            last: 517,
+        };
+        let overlap = PatchOverlap {
+            first: "A".to_string(),
+            second: "B".to_string(),
+            first_gang: vec!["A".to_string()],
+            second_gang: vec!["B".to_string(), "C".to_string()],
+            universe: 1,
+            from: 3,
+            to: 4,
+        };
+        let patch = VenuePatch {
+            spans: vec![PatchedFixture {
+                fixture: "A".to_string(),
+                universe: 1,
+                address: 1,
+                footprint: None,
+                fixture_type: "par".to_string(),
+                mode: Some("8ch".to_string()),
+            }],
+            overlaps: vec![overlap.clone()],
+            overruns: vec![overrun.clone()],
+        };
+        // The overlap as the player's type names its fields: the one shape
+        // change, from `a`, `b`, `a_gang`, `b_gang`.
+        assert_eq!(
+            json!(patch),
+            json!({
+                "spans": [json!({
+                    "fixture": "A",
+                    "universe": 1,
+                    "address": 1,
+                    "footprint": null,
+                    "type": "par",
+                    "mode": "8ch",
+                })],
+                "overlaps": [json!({
+                    "first": "A",
+                    "second": "B",
+                    "first_gang": ["A"],
+                    "second_gang": ["B", "C"],
+                    "universe": 1,
+                    "from": 3,
+                    "to": 4,
+                })],
+                "overruns": [overrun],
+            })
+        );
+        for venue_error in [
+            None,
+            Some(VenueError {
+                venue: "v".to_string(),
+                fixture: "B".to_string(),
+                reason: "no type".to_string(),
+            }),
+        ] {
+            let old_error = match &venue_error {
+                Some(e) => json!({"venue": e.venue, "fixture": e.fixture, "reason": e.reason}),
+                None => serde_json::Value::Null,
+            };
+            assert_eq!(
+                json!(VenueSaved {
+                    status: "saved".to_string(),
+                    name: "v".to_string(),
+                    reloaded: true,
+                    version: "abc".to_string(),
+                    venue_error,
+                }),
+                json!({
+                    "status": "saved",
+                    "name": "v",
+                    "reloaded": true,
+                    "version": "abc",
+                    "venue_error": old_error,
                 })
             );
         }
