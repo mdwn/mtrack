@@ -794,7 +794,7 @@
           ctx,
           from,
           end,
-          fixtureStates[name] || {},
+          beamLook(fixtureStates[name], strobeRates[name], now),
           pose.floor !== null,
           {
             dark: isDark,

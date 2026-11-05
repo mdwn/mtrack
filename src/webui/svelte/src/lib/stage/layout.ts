@@ -25,6 +25,8 @@
  * region, everything else lands on the front row.
  */
 
+import type { BeamLook } from "./rig";
+
 export type Vec3 = [number, number, number];
 
 export interface Pt {
@@ -244,33 +246,25 @@ export function beamEnd(
   ];
 }
 
-/** The channels a beam's look is read from. */
-export interface BeamChannels {
-  red?: number;
-  green?: number;
-  blue?: number;
-  dimmer?: number;
-}
-
 /**
  * Draws a mover's beam on a canvas: from the fixture to `end` in the color
- * the fixture is showing, solid with a footprint dot when the beam meets
- * the deck, dashed when it points up or level, neutral when the fixture
- * is dark.
+ * the fixture is showing (its {@link beamLook}: the one reading of a
+ * fixture's state every view draws from, so the beam is lit, coloured and
+ * strobed as the fixture's dot is), solid with a footprint dot when the
+ * beam meets the deck, dashed when it points up or level, neutral when the
+ * fixture is dark or in a strobe's dark half.
  */
 export function drawBeam(
   ctx: CanvasRenderingContext2D,
   from: Pt,
   end: Pt,
-  channels: BeamChannels,
+  look: BeamLook,
   hasFloor: boolean,
   options: { dark: boolean; width: number; dot: number },
 ): void {
-  const k = (channels.dimmer ?? 255) / 255;
-  const r = Math.round((channels.red ?? 0) * k);
-  const g = Math.round((channels.green ?? 0) * k);
-  const b = Math.round((channels.blue ?? 0) * k);
-  const lit = r + g + b > 24;
+  const [r, g, b] = look.rgb.map((c) => Math.round(c * 255));
+  // Lit from a 24/765 mean: the threshold the byte sum had.
+  const lit = look.strobeOn && look.intensity > 24 / 765;
   const neutral = options.dark ? "255,255,255" : "0,0,0";
   ctx.strokeStyle = lit ? `rgba(${r},${g},${b},0.55)` : `rgba(${neutral},0.18)`;
   ctx.lineWidth = lit ? options.width : Math.max(1, options.width / 2);
