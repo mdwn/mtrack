@@ -25,6 +25,7 @@ import { resolve } from "node:path";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 import { serializeLightFile } from "../../src/lib/lighting/serializer";
+import { withParam } from "../../src/lib/lighting/params";
 
 test.beforeAll(async () => {
   await loadRules();
@@ -160,6 +161,70 @@ test("each offset line keeps its own comments", () => {
   expect(edited).toBe(
     'show "S" {\n    @1/1\n    # a\n    # between\n    offset 5 measures # b\n}\n',
   );
+});
+
+test("an edit changes only the edited parameter's text", () => {
+  const source =
+    'tempo {\n    bpm: 100\n    changes: [\n        @2/1 { transition: 2m, bpm: 120.0 } # last\n    ]\n}\nshow "S" {\n    @1/1\n    master(intensity: 50%, # c\n        layer: background)\n}\n';
+  const read = rules.document(source).document!;
+  const tempo = read.tempo!;
+  const show = read.shows[0];
+  const cue = show.cues[0];
+  const written = serializeLightFile({
+    ...read,
+    tempo: {
+      ...tempo,
+      changes: [
+        { ...tempo.changes[0], bpm: 140 },
+        // A change added after a last one with a comment after its `}`.
+        {
+          timestamp: { type: "measure_beat", measure: 9, beat: 1 },
+          bpm: 90,
+        },
+      ],
+    },
+    shows: [
+      {
+        ...show,
+        cues: [
+          {
+            ...cue,
+            commands: [{ ...cue.commands[0], intensity: "80%", speed: "2" }],
+          },
+        ],
+      },
+    ],
+  });
+  const lines = written.split("\n").map((l) => l.trim());
+  expect(lines, written).toContain("@2/1 { transition: 2m, bpm: 140 }, # last");
+  expect(lines, written).toContain("@9/1 { bpm: 90 }");
+  expect(lines, written).not.toContain(",");
+  expect(lines, written).toContain("master(intensity: 80%, # c");
+  expect(lines, written).toContain("layer: background, speed: 2)");
+  expect(rules.document(written).error).toBeUndefined();
+
+  // An effect's parameter set by a form keeps the comment after it.
+  const moved = rules.document(
+    'show "S" {\n    @1/1\n    movers: move, pan: 45deg, # c\n        tilt: 10deg, duration: 1s\n}\n',
+  ).document!;
+  const effect = moved.shows[0].cues[0].effects[0];
+  const panned = serializeLightFile({
+    ...moved,
+    shows: [
+      {
+        ...moved.shows[0],
+        cues: [
+          {
+            ...moved.shows[0].cues[0],
+            effects: [
+              { ...effect, effect: withParam(effect.effect, "pan", "50deg") },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  expect(panned).toContain("movers: move, pan: 50deg, # c\n");
 });
 
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];

@@ -256,34 +256,50 @@ export function serializeTempo(tempo: TempoSection): string {
   return lines.join("\n");
 }
 
-/** A tempo change's parameters: as written, in order and spelling, while
- *  the values are still those (an edit writes them afresh). */
+/** A tempo change's parameters: as written, in order, spelling and with
+ *  their comments, an edited one's value replaced where it was (see
+ *  `edited`). */
 function changeParams(change: TempoChange): Listed[] {
-  const written = change.written ?? [];
-  const holds = (p: Param) =>
-    (p.name === "bpm" &&
-      change.bpm !== undefined &&
-      parseFloat(p.value) === change.bpm) ||
-    (p.name === "time_signature" &&
-      change.time_signature !== undefined &&
-      p.value.replace(/\s+/g, "") ===
-        `${change.time_signature[0]}/${change.time_signature[1]}`) ||
-    (p.name === "transition" && p.value === change.transition);
-  const count =
-    (change.bpm !== undefined ? 1 : 0) +
-    (change.time_signature ? 1 : 0) +
-    (change.transition ? 1 : 0);
-  if (written.length === count && written.every(holds)) {
-    return written.map(param);
-  }
+  const sig = change.time_signature
+    ? `${change.time_signature[0]}/${change.time_signature[1]}`
+    : undefined;
+  return edited(
+    change.written ?? [],
+    {
+      bpm: change.bpm !== undefined ? `${change.bpm}` : undefined,
+      time_signature: sig,
+      transition: change.transition,
+    },
+    (p) =>
+      (p.name === "bpm" && parseFloat(p.value) === change.bpm) ||
+      (p.name === "time_signature" && p.value === sig) ||
+      (p.name === "transition" && p.value === change.transition),
+  );
+}
+
+/** Written parameters with the values now `set`: each as written while
+ *  it `holds` (its value still the one set), else its value replaced in
+ *  place -- the last of a name, which is the one that counts; a name set
+ *  to nothing is dropped, and one newly set is added at the end. */
+function edited(
+  written: Param[],
+  set: Record<string, string | undefined>,
+  holds: (p: Param) => boolean,
+): Listed[] {
+  const last = (name: string) => {
+    for (let i = written.length - 1; i >= 0; i--)
+      if (written[i].name === name) return i;
+    return -1;
+  };
   const params: Listed[] = [];
-  if (change.bpm !== undefined) params.push({ text: `bpm: ${change.bpm}` });
-  if (change.time_signature)
-    params.push({
-      text: `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
-    });
-  if (change.transition)
-    params.push({ text: `transition: ${change.transition}` });
+  written.forEach((p, i) => {
+    const value = set[p.name];
+    if (value === undefined || value === "") return;
+    params.push(param(i === last(p.name) && !holds(p) ? { ...p, value } : p));
+  });
+  for (const [name, value] of Object.entries(set)) {
+    if (value && last(name) < 0) params.push({ text: `${name}: ${value}` });
+  }
   return params;
 }
 
@@ -428,20 +444,13 @@ function serializeEffect(cueEffect: CueEffect, indent: string): string {
 }
 
 function serializeLayerCommand(cmd: LayerCommand, indent: string): string {
-  // As written, in order, while the values are still those.
-  const typed: Record<string, string | undefined> = {
+  // As written, an edited value replaced where it was.
+  const set: Record<string, string | undefined> = {
     layer: cmd.layer,
     intensity: cmd.intensity,
     speed: cmd.speed,
   };
-  const written = cmd.written ?? [];
-  const count = Object.values(typed).filter((v) => v).length;
-  const params: Listed[] =
-    written.length === count && written.every((p) => typed[p.name] === p.value)
-      ? written.map(param)
-      : Object.entries(typed)
-          .filter(([, v]) => v)
-          .map(([k, v]) => ({ text: `${k}: ${v}` }));
+  const params = edited(cmd.written ?? [], set, (p) => p.value === set[p.name]);
   return `${cmd.command}(${list(params, indent, false).text})`;
 }
 

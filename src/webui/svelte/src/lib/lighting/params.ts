@@ -70,7 +70,8 @@ export function withParam(
   if (value === undefined || value === "") {
     return { ...effect, params: params.filter((p) => p.name !== name) };
   }
-  if (last >= 0) params[last] = { name, value };
+  // Its text alone changes: the comments around it stay.
+  if (last >= 0) params[last] = { ...params[last], value, is_ref: undefined };
   else params.push({ name, value });
   return { ...effect, params };
 }
@@ -95,7 +96,14 @@ export function withColors(
   const first = effect.params.findIndex((p) => p.name === "color");
   const rest = effect.params.filter((p) => p.name !== "color");
   const at = first < 0 ? 0 : first;
-  const entries = colors.map((c) => ({ name: "color", value: quoted(c) }));
+  // Each colour keeps the comments of the one it replaces.
+  const was = effect.params.filter((p) => p.name === "color");
+  const entries = colors.map((c, i) => ({
+    ...was[i],
+    name: "color",
+    value: quoted(c),
+    is_ref: undefined,
+  }));
   return {
     ...effect,
     params: [...rest.slice(0, at), ...entries, ...rest.slice(at)],

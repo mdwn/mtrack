@@ -1245,6 +1245,12 @@ fn tempo_changes(
             }
         }
     }
+    // The last change has no comma for a comment to sit before: one on
+    // its line follows it, and one written after it follows its comma
+    // when a change is added after it.
+    if let Some(last) = section.changes.last_mut() {
+        last.comment_before_comma = None;
+    }
     section.changes_comments_after = comments.take();
     Ok(())
 }
@@ -2216,6 +2222,20 @@ show "Song" {
             Some(vec!["# between".to_string()])
         );
         assert_eq!(lines[1].comment.as_deref(), Some("# b"));
+    }
+
+    #[test]
+    fn only_a_change_a_comma_follows_has_a_comment_before_its_comma() {
+        let doc = document(
+            "tempo {\n    changes: [\n        @2/1 { bpm: 90 } # a\n        , @3/1 { bpm: 100 } # b\n    ]\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let changes = &doc.tempo.unwrap().changes;
+        assert_eq!(changes[0].comment_before_comma, Some(true));
+        assert_eq!(changes[1].comment.as_deref(), Some("# b"));
+        assert_eq!(changes[1].comment_before_comma, None);
     }
 
     #[test]

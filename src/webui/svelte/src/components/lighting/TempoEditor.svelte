@@ -17,6 +17,7 @@
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import TimestampInput from "./TimestampInput.svelte";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     tempo: TempoSection | undefined;
@@ -86,10 +87,12 @@
   let expanded = $state(true);
 
   function enableTempo() {
+    // The player's own defaults: what a block that says nothing plays at.
+    const defaults = rules.tempo_defaults();
     onchange({
       start: { value: 0, unit: "s" },
-      bpm: 120,
-      time_signature: [4, 4],
+      bpm: defaults.bpm,
+      time_signature: [...defaults.time_signature],
       changes: [],
     });
   }
