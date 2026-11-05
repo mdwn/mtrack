@@ -169,12 +169,15 @@
       : [],
   );
 
-  /** How many whole passes the block's end dragged by `offsetPx` reaches:
-   *  those of the passes the layout laid on to the end of the timeline
-   *  that end by then (the player's `passes_by`). The ghost shows it and a
-   *  drop writes it. */
+  /** How many whole passes the dragged reference's end, moved by
+   *  `offsetPx`, reaches: those of the passes the layout laid on to the
+   *  end of the timeline that end by then (the player's `passes_by`). The
+   *  drag starts at that reference's own end, not the block's (which is
+   *  as long as its longest reference, and never narrower than it can be
+   *  grabbed), so the smallest drag keeps the count. The ghost shows it
+   *  and a drop writes it. */
   function passesReached(offsetPx: number): number {
-    const endMs = passes[0].start_ms + (blockWidth + offsetPx) / pixelsPerMs;
+    const endMs = passes[0].end_ms + offsetPx / pixelsPerMs;
     return rules.passes_by(passes[0].pass_ends, endMs) ?? 1;
   }
 

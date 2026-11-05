@@ -432,10 +432,12 @@
     const shows = [...lightFile.shows];
     const cues = [...shows[showIndex].cues];
     const cue = { ...cues[cueIndex] };
-    cue.sequences = cue.sequences.map((ref) => {
-      if (ref.stop) return ref;
-      return { ...ref, loop: String(newLoopCount) };
-    });
+    // The reference the block's passes are drawn from, its first that
+    // plays: the others keep their counts.
+    const dragged = cue.sequences.findIndex((ref) => !ref.stop);
+    cue.sequences = cue.sequences.map((ref, i) =>
+      i === dragged ? { ...ref, loop: String(newLoopCount) } : ref,
+    );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
     onchange({ ...lightFile, shows });

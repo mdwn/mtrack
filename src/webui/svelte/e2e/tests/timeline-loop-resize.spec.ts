@@ -67,3 +67,38 @@ test("the ghost's count is the count a drop writes", async ({ page }) => {
     await timeline.click();
   }
 });
+
+test("a small drag keeps the count of a cue's first reference", async ({
+  page,
+}) => {
+  // Two references: the block is as long as the longer, a bar; the
+  // dragged one, the first, is two passes of a beat.
+  const source =
+    "tempo {\n    bpm: 120\n    time_signature: 4/4\n}\n" +
+    'sequence "s", length: 1beat {\n    @1/1\n    a: static, color: "red", duration: 1beat\n}\n' +
+    'sequence "t", length: 4beats {\n    @1/1\n    b: static, color: "blue", duration: 4beats\n}\n' +
+    'show "S" {\n    @1/1\n    sequence "s", loop: 2\n    sequence "t", loop: 1\n}\n';
+  await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
+  await expect(page.locator(".lighting-section")).toBeVisible();
+  const raw = page.locator(".tab-btn", { hasText: "Raw DSL" });
+  const textarea = page.locator(".raw-textarea");
+  await raw.click();
+  await textarea.fill(source);
+  await page.locator(".tab-btn", { hasText: "Timeline" }).click();
+
+  const handle = page.locator(".cue-block:has(.seq-label) .resize-handle");
+  await handle.scrollIntoViewIfNeeded();
+  const box = (await handle.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 5, y, { steps: 3 });
+  await expect(page.locator(".ghost-label")).toHaveText("2x");
+  await page.mouse.up();
+
+  await raw.click();
+  const read = rules.document(await textarea.inputValue()).document!;
+  const refs = read.shows[0].cues[0].sequences;
+  expect(refs.map((r) => r.loop)).toEqual(["2", "1"]);
+});
