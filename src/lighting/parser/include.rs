@@ -18,16 +18,98 @@
 //! sequences then play as if the including file defined them, under that
 //! file's tempo.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 
 use pest::iterators::Pair;
 use pest::Parser;
 
 use super::error::describe_pest_error;
-use super::grammar::{items, LightingParser, Rule};
+use super::grammar::{LightingParser, Rule};
 use super::sequences::SequenceLibrary;
+use super::utils::items;
+
+/// Where the files an `include` names come from. The player reads them
+/// off the disk (`DiskReader`, in the parser's root module); the web UI
+/// fetches them itself and hands them over as [`Sources`]. The one parse
+/// path reads through whichever it is given, so a show lays out in the
+/// editor exactly as it loads in the player.
+pub trait IncludeReader {
+    /// What stands for the file at `path` wherever it is reached from --
+    /// its canonical path on disk -- so a file included twice is read
+    /// once and an include cycle ends; or why it cannot be reached.
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf>;
+    /// The file's text.
+    fn read(&self, path: &Path) -> io::Result<String>;
+}
+
+/// Sources held in memory under the paths they would have on disk:
+/// the web UI's, which fetched them. A file it could not fetch is held
+/// with the reason, so the include that names it reports as the player
+/// would, with that reason where the player has the file system's.
+#[derive(Default)]
+pub struct Sources {
+    files: HashMap<PathBuf, Result<String, String>>,
+}
+
+impl Sources {
+    /// No sources at all: for content with no path, whose includes cannot
+    /// resolve anyway.
+    pub fn none() -> Self {
+        Sources::default()
+    }
+
+    /// Holds `source` as the file at `path`.
+    pub fn add(&mut self, path: impl AsRef<Path>, source: String) {
+        self.files.insert(normalize(path.as_ref()), Ok(source));
+    }
+
+    /// Records that the file at `path` could not be fetched, and why.
+    pub fn add_missing(&mut self, path: impl AsRef<Path>, reason: String) {
+        self.files.insert(normalize(path.as_ref()), Err(reason));
+    }
+
+    fn get(&self, path: &Path) -> io::Result<&str> {
+        match self.files.get(&normalize(path)) {
+            Some(Ok(source)) => Ok(source),
+            Some(Err(reason)) => Err(io::Error::new(io::ErrorKind::NotFound, reason.clone())),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No such file or directory",
+            )),
+        }
+    }
+}
+
+impl IncludeReader for Sources {
+    fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        self.get(path).map(|_| normalize(path))
+    }
+
+    fn read(&self, path: &Path) -> io::Result<String> {
+        self.get(path).map(str::to_string)
+    }
+}
+
+/// A path with its `.` and `..` components folded away, as the file
+/// system would reach it: what stands for a file held in memory.
+pub(super) fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 /// An `include` as written: its path and the line it is on.
 pub(super) struct Include {
@@ -70,6 +152,7 @@ pub(super) fn add_included(
     library: &mut SequenceLibrary,
     includes: Vec<Include>,
     from: IncludingFile,
+    reader: &dyn IncludeReader,
     seen: &mut HashSet<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     let in_file = |e: String| -> Box<dyn Error> {
@@ -93,7 +176,7 @@ pub(super) fn add_included(
         }
         let folder = from_path.parent().unwrap_or(Path::new(""));
         let path = folder.join(&written);
-        let canonical = path.canonicalize().map_err(|e| {
+        let canonical = reader.resolve(&path).map_err(|e| {
             in_file(format!(
                 "line {line}: include \"{written}\": cannot read {}: {e}",
                 path.display()
@@ -113,7 +196,7 @@ pub(super) fn add_included(
             Some(parent) => parent.parent().unwrap_or(Path::new("")).join(&written),
             None => PathBuf::from(&written),
         };
-        let content = crate::util::read_to_string(&canonical).map_err(|e| {
+        let content = reader.read(&canonical).map_err(|e| {
             in_file(format!(
                 "line {line}: include \"{written}\": cannot read {}: {e}",
                 path.display()
@@ -122,7 +205,7 @@ pub(super) fn add_included(
         // Nested includes resolve from the path as written, not the
         // canonical one, so a symlinked file includes what its link's folder
         // holds, the same however the file was reached.
-        add_file(library, &content, &path, display, from.root, seen)?;
+        add_file(library, &content, &path, display, from.root, reader, seen)?;
     }
     Ok(())
 }
@@ -135,6 +218,7 @@ fn add_file(
     path: &Path,
     display: PathBuf,
     root: Option<&Path>,
+    reader: &dyn IncludeReader,
     seen: &mut HashSet<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     let shown = display.display().to_string();
@@ -174,41 +258,8 @@ fn add_file(
             display: Some(display),
             root,
         },
+        reader,
         seen,
     )?;
     library.add(sequences, Some(&shown))
-}
-
-/// Every file `path` includes, directly or through another included file,
-/// canonicalized for watching alongside it. Best effort: a file that does not read or
-/// parse ends the search along that branch, and parsing reports why.
-pub fn included_files(path: &Path) -> Vec<PathBuf> {
-    let mut seen: HashSet<PathBuf> = path.canonicalize().into_iter().collect();
-    let mut found = Vec::new();
-    collect(path, &mut seen, &mut found);
-    found
-}
-
-fn collect(path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<PathBuf>) {
-    let Ok(content) = crate::util::read_to_string(path) else {
-        return;
-    };
-    let Ok(pairs) = LightingParser::parse(Rule::file, &content) else {
-        return;
-    };
-    let folder = path.parent().unwrap_or(Path::new(""));
-    for pair in items(pairs) {
-        if pair.as_rule() != Rule::include {
-            continue;
-        }
-        let include = Include::from_pair(pair);
-        let written = folder.join(&include.written);
-        let Ok(included) = written.canonicalize() else {
-            continue;
-        };
-        if seen.insert(included.clone()) {
-            found.push(included);
-            collect(&written, seen, found);
-        }
-    }
 }

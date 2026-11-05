@@ -1,24 +1,52 @@
+<script lang="ts" module>
+  /** An effect as a block shows it: its type, groups and colours, from the
+   *  document for the cue's own effects, from the layout for a pass's. */
+  export interface BlockEffect {
+    type: string;
+    groups: string[];
+    colors: string[];
+  }
+
+  /** One block of a lane: a cue's own effects, a pass of a sequence it
+   *  references or a loop it holds, its commands, or its references. */
+  export interface Block {
+    /** The written cue it belongs to. */
+    index: number;
+    /** Where it is drawn, and where it ends. */
+    ms: number;
+    endMs: number;
+    /** The cue's place in the tempo map before any offset: what its
+     *  durations are timed from. */
+    scoreMs: number;
+    effects: BlockEffect[];
+    /** The sequence a pass is of (`""` for an inline loop's). */
+    fromSequence?: string;
+    px: number;
+    visible: boolean;
+  }
+</script>
+
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import type { Cue, SubLaneType } from "../../../lib/lighting/types";
   import type {
-    Cue,
-    Sequence,
-    SubLaneType,
-    TempoSection,
-  } from "../../../lib/lighting/types";
+    PassLayout,
+    TempoSource,
+  } from "../../../gen/rules/mtrack_rules";
   import {
     effectTypeColor,
-    durationStringToMs,
     msToDurationString,
-    getSequenceIterationMs,
     snapDurationToGrid,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     cue: Cue;
-    positionPx: number;
+    block: Block;
+    /** The passes of the sequences the cue references, from the layout. */
+    passes?: PassLayout[];
     selected: boolean;
     onselect: () => void;
     onmove: (deltaMs: number) => void;
@@ -28,16 +56,15 @@
     onedit?: () => void;
     pixelsPerMs: number;
     subLaneType?: SubLaneType;
-    tempo?: TempoSection;
-    cueMs?: number;
-    sequenceDefs?: Sequence[];
+    tempoSource?: TempoSource | null;
     snapEnabled?: boolean;
     snapResolution?: SnapResolution;
   }
 
   let {
     cue,
-    positionPx,
+    block,
+    passes = [],
     selected,
     onselect,
     onmove,
@@ -47,31 +74,22 @@
     onedit,
     pixelsPerMs,
     subLaneType,
-    tempo,
-    cueMs = 0,
-    sequenceDefs = [],
+    tempoSource = null,
     snapEnabled = false,
     snapResolution = "beat",
   }: Props = $props();
 
+  let positionPx = $derived(block.px);
+  let cueMs = $derived(block.scoreMs);
+
   let dragging = $state(false);
   let dragOffsetPx = $state(0);
   let dragStartX = 0;
-
   let resizing = $state(false);
   let resizeOffsetPx = $state(0);
   let resizeStartX = 0;
 
-  // Filter effects to the current layer lane (if applicable)
-  let visibleEffects = $derived.by(() => {
-    if (subLaneType?.startsWith("effects:")) {
-      const layer = subLaneType.split(":")[1];
-      return cue.effects.filter(
-        (e) => (e.effect.layer ?? "background") === layer,
-      );
-    }
-    return cue.effects;
-  });
+  let visibleEffects = $derived(block.effects);
 
   let isEffectLane = $derived(
     !subLaneType ||
@@ -79,17 +97,15 @@
       subLaneType.startsWith("effects:"),
   );
 
-  // Check if any visible effect comes from a sequence
-  let isFromSequence = $derived(
-    visibleEffects.some((e) => e.sequenceName != null),
-  );
+  // A pass of a sequence or a loop, as the player placed it.
+  let isFromSequence = $derived(block.fromSequence !== undefined);
 
   // Derive visual properties from cue content, branching on subLaneType
   let primaryColor = $derived.by(() => {
     if (subLaneType === "commands") return "#eab308";
     if (subLaneType === "sequences") return "#ef60a3";
     if (visibleEffects.length === 0) return "#555";
-    const firstEffect = visibleEffects[0].effect;
+    const firstEffect = visibleEffects[0];
     if (firstEffect.colors.length > 0) {
       const c = firstEffect.colors[0];
       if (c.startsWith("#") || c.startsWith("rgb")) return c;
@@ -111,9 +127,10 @@
       const parts: string[] = [];
       for (const eff of visibleEffects) {
         const groups = eff.groups.filter((g) => g).join(", ");
-        parts.push(groups ? `${groups}: ${eff.effect.type}` : eff.effect.type);
+        parts.push(groups ? `${groups}: ${eff.type}` : eff.type);
       }
-      return parts.join(" | ");
+      const from = block.fromSequence ? `${block.fromSequence}: ` : "";
+      return from + parts.join(" | ");
     }
     // Combined mode (no subLaneType — e.g. SequenceEditorModal)
     if (visibleEffects.length === 0 && cue.commands.length > 0) {
@@ -123,87 +140,68 @@
     const parts: string[] = [];
     for (const eff of visibleEffects) {
       const groups = eff.groups.filter((g) => g).join(", ");
-      parts.push(groups ? `${groups}: ${eff.effect.type}` : eff.effect.type);
+      parts.push(groups ? `${groups}: ${eff.type}` : eff.type);
     }
     return parts.join(" | ");
   });
 
-  // For sequence lanes: find the first non-stop sequence ref and compute its total duration
-  let seqTotalMs = $derived.by(() => {
-    if (subLaneType !== "sequences") return 0;
-    for (const ref of cue.sequences) {
-      if (ref.stop) continue;
-      const def = sequenceDefs.find((s) => s.name === ref.name);
-      if (!def) continue;
-      const iterMs = getSequenceIterationMs(def, cueMs, tempo);
-      const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
-      return iterMs * loopCount;
-    }
-    return 0;
-  });
+  // For sequence lanes: the first reference's passes, as the player laid
+  // them: how long they run in all, how long one pass is, whether they
+  // have an end (`loop:` runs to the timeline's horizon), and where each
+  // starts.
+  let seqTotalMs = $derived(
+    subLaneType === "sequences" && passes.length > 0
+      ? passes[0].end_ms - passes[0].start_ms
+      : 0,
+  );
+  let seqIterMs = $derived(
+    subLaneType === "sequences" && passes.length > 0 ? passes[0].pass_ms : 0,
+  );
+  let seqInfinite = $derived(
+    subLaneType === "sequences" && passes.length > 0 && passes[0].infinite,
+  );
+  /** Where the passes after the first begin, as a fraction of the block. */
+  let passDividers = $derived(
+    subLaneType === "sequences" && passes.length > 0 && seqTotalMs > 0
+      ? passes[0].pass_starts
+          .slice(1)
+          .map((start) => (start - passes[0].start_ms) / seqTotalMs)
+      : [],
+  );
 
-  // For sequence lanes: the iteration duration (for snapping resize to whole iterations)
-  let seqIterMs = $derived.by(() => {
-    if (subLaneType !== "sequences") return 0;
-    for (const ref of cue.sequences) {
-      if (ref.stop) continue;
-      const def = sequenceDefs.find((s) => s.name === ref.name);
-      if (!def) continue;
-      return getSequenceIterationMs(def, cueMs, tempo);
-    }
-    return 0;
-  });
+  /** How many whole passes the dragged reference's end, moved by
+   *  `offsetPx`, reaches: those of the passes the layout laid on to the
+   *  end of the timeline that end by then (the player's `passes_by`). The
+   *  drag starts at that reference's own end, not the block's (which is
+   *  as long as its longest reference, and never narrower than it can be
+   *  grabbed), so the smallest drag keeps the count. The ghost shows it
+   *  and a drop writes it. */
+  function passesReached(offsetPx: number): number {
+    const endMs = passes[0].end_ms + offsetPx / pixelsPerMs;
+    return rules.passes_by(passes[0].pass_ends, endMs) ?? 1;
+  }
 
-  // For sequence lanes: the current loop count
-  let seqLoopCount = $derived.by(() => {
-    if (subLaneType !== "sequences" || seqIterMs <= 0) return 0;
-    return Math.round(seqTotalMs / seqIterMs);
-  });
-
-  // During resize: the snapped preview loop count and width
-  let resizePreviewLoopCount = $derived.by(() => {
-    if (!resizing || subLaneType !== "sequences" || seqIterMs <= 0) return 0;
-    const currentWidthMs = blockWidth / pixelsPerMs;
-    const newTotalMs = Math.max(
-      seqIterMs,
-      currentWidthMs + resizeOffsetPx / pixelsPerMs,
-    );
-    return Math.max(1, Math.round(newTotalMs / seqIterMs));
-  });
-
-  let resizePreviewWidth = $derived(
-    resizePreviewLoopCount > 0
-      ? resizePreviewLoopCount * seqIterMs * pixelsPerMs
+  // During resize: the passes the drag reaches, and where the last ends.
+  let resizePreviewLoopCount = $derived(
+    resizing && subLaneType === "sequences" && passes.length > 0 && !seqInfinite
+      ? passesReached(resizeOffsetPx)
       : 0,
   );
 
-  // Compute block width from effect/sequence duration
-  let blockWidth = $derived.by(() => {
-    if (subLaneType === "commands") {
-      return Math.max(24, pixelsPerMs * 500);
-    }
-    if (subLaneType === "sequences") {
-      if (seqTotalMs > 0) return Math.max(24, pixelsPerMs * seqTotalMs);
-      return Math.max(24, pixelsPerMs * 500);
-    }
-    if (!isEffectLane) {
-      return Math.max(24, pixelsPerMs * 500);
-    }
-    // For effect blocks, derive width from the maximum duration across all effects
-    if (visibleEffects.length > 0) {
-      let maxDurMs = 0;
-      for (const eff of visibleEffects) {
-        const durStr = eff.effect.duration ?? eff.effect.extra?.hold_time;
-        const durMs = durationStringToMs(durStr, tempo, cueMs);
-        if (durMs > maxDurMs) maxDurMs = durMs;
-      }
-      if (maxDurMs > 0) {
-        return Math.max(24, pixelsPerMs * maxDurMs);
-      }
-    }
-    // Fallback for effects without duration
-    return Math.max(24, pixelsPerMs * 500);
-  });
+  let resizePreviewWidth = $derived(
+    resizePreviewLoopCount > 0
+      ? ((passes[0].pass_ends[resizePreviewLoopCount - 1] ??
+          passes[0].start_ms + seqIterMs) -
+          passes[0].start_ms) *
+          pixelsPerMs
+      : 0,
+  );
+
+  // The block is as long as the layout says: the longest of its effects,
+  // or the passes it references.
+  let blockWidth = $derived(
+    Math.max(24, pixelsPerMs * (block.endMs - block.ms)),
+  );
 
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
@@ -244,20 +242,25 @@
           100,
           currentWidthMs + deltaPx / pixelsPerMs,
         );
-
         // Hold Ctrl/Cmd to bypass snap
         const bypassSnap = e.ctrlKey || e.metaKey;
-
-        if (subLaneType === "sequences" && seqIterMs > 0 && onloopchange) {
-          // Snap to nearest whole iteration
-          const newLoopCount = Math.max(1, Math.round(newTotalMs / seqIterMs));
-          onloopchange(newLoopCount);
+        if (subLaneType === "sequences") {
+          // The passes the dragged end reaches, as the ghost showed them;
+          // a `loop:` has no count to write.
+          if (passes.length > 0 && !seqInfinite && onloopchange) {
+            onloopchange(passesReached(deltaPx));
+          }
         } else if (onresize) {
           const snappedMs =
-            snapEnabled && tempo && !bypassSnap
-              ? snapDurationToGrid(newTotalMs, cueMs, tempo, snapResolution)
+            snapEnabled && tempoSource && !bypassSnap
+              ? snapDurationToGrid(
+                  newTotalMs,
+                  cueMs,
+                  tempoSource,
+                  snapResolution,
+                )
               : newTotalMs;
-          onresize(msToDurationString(snappedMs, tempo, cueMs));
+          onresize(msToDurationString(snappedMs, tempoSource, cueMs));
         }
       }
     }
@@ -315,8 +318,8 @@
         {#each visibleEffects.slice(0, 3) as eff, ei (ei)}
           <span
             class="effect-dot"
-            style:background={effectTypeColor(eff.effect.type)}
-            title={eff.effect.type}
+            style:background={effectTypeColor(eff.type)}
+            title={eff.type}
           ></span>
         {/each}
         {#if visibleEffects.length > 3}
@@ -344,17 +347,14 @@
       <span class="cue-label seq-label">{label}</span>
     {/if}
   </div>
-  {#if subLaneType === "sequences" && seqLoopCount > 1}
+  {#if passDividers.length > 0}
     <div class="seq-iter-markers">
-      {#each Array.from({ length: seqLoopCount - 1 }, (_, k) => k) as i (i)}
-        <div
-          class="seq-iter-divider"
-          style:left="{((i + 1) / seqLoopCount) * 100}%"
-        ></div>
+      {#each passDividers as at, i (i)}
+        <div class="seq-iter-divider" style:left="{at * 100}%"></div>
       {/each}
     </div>
   {/if}
-  {#if isEffectLane || subLaneType === "sequences"}
+  {#if (isEffectLane && !isFromSequence) || (subLaneType === "sequences" && !seqInfinite)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="resize-handle" onpointerdown={handleResizePointerDown}></div>
   {/if}

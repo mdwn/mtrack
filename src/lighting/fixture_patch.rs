@@ -24,8 +24,9 @@
 
 use pest::Parser;
 
-use super::parser::grammar::{items, LightingParser, Rule};
+use super::parser::grammar::{LightingParser, Rule};
 use super::parser::parse_fixture_types;
+use super::parser::utils::items;
 use super::types::{MovementLimits, StrobeCurve};
 
 /// What the fixture page's settings form owns in a type's file.

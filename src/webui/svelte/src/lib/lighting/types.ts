@@ -12,49 +12,39 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/** Timestamp — either absolute (MM:SS.mmm) or measure/beat (@M/B) */
-export interface Timestamp {
-  type: "absolute" | "measure_beat";
-  /** For absolute: total milliseconds */
-  ms?: number;
-  /** For measure/beat */
-  measure?: number;
-  beat?: number;
-}
+// The editor's model of a `.light` file is the player's own document model
+// (`src/lighting/parser/document.rs`), read off the one grammar by
+// `rules.document` and written back by `serializer.ts`; its types are
+// generated from the Rust structs. What is here is the editor's own: the
+// option lists its controls offer, and the constructors its forms use.
 
-/** Duration with unit */
-export interface Duration {
-  value: number;
-  unit: "ms" | "s" | "beats" | "measures";
-}
+import type {
+  Cue,
+  EffectKind,
+  EffectParams,
+  Timestamp,
+} from "../../gen/rules/mtrack_rules";
 
-/** Tempo definition */
-export interface TempoSection {
-  start: Duration;
-  bpm: number;
-  time_signature: [number, number];
-  changes: TempoChange[];
-}
+export type {
+  Cue,
+  CueEffect,
+  Document as LightFile,
+  Param,
+  DurationValue as Duration,
+  EffectKind as EffectType,
+  EffectParams,
+  Include,
+  LayerCommand,
+  LightShow,
+  Sequence,
+  SequenceArg,
+  SequenceRef,
+  TempoChange,
+  TempoSection,
+  Timestamp,
+} from "../../gen/rules/mtrack_rules";
 
-/** Tempo change at a specific point */
-export interface TempoChange {
-  timestamp: Timestamp;
-  bpm?: number;
-  time_signature?: [number, number];
-  transition?: string;
-}
-
-export type EffectType =
-  | "static"
-  | "cycle"
-  | "strobe"
-  | "pulse"
-  | "chase"
-  | "dimmer"
-  | "rainbow"
-  | "move";
-
-export const EFFECT_TYPES: EffectType[] = [
+export const EFFECT_TYPES: EffectKind[] = [
   "static",
   "cycle",
   "strobe",
@@ -67,17 +57,17 @@ export const EFFECT_TYPES: EffectType[] = [
 
 export const EASINGS = ["smooth", "linear"];
 
-export type Layer = "background" | "midground" | "foreground";
-export const LAYERS: Layer[] = ["background", "midground", "foreground"];
+export const LAYERS = ["background", "midground", "foreground"] as const;
+export type Layer = (typeof LAYERS)[number];
 
-export type BlendMode = "replace" | "multiply" | "add" | "overlay" | "screen";
-export const BLEND_MODES: BlendMode[] = [
+export const BLEND_MODES = [
   "replace",
   "multiply",
   "add",
   "overlay",
   "screen",
-];
+] as const;
+export type BlendMode = (typeof BLEND_MODES)[number];
 
 export const CURVES = [
   "linear",
@@ -100,77 +90,6 @@ export const CHASE_DIRECTIONS = [
 ];
 export const CHASE_PATTERNS = ["linear", "snake", "random"];
 
-/** Effect parameters */
-export interface EffectParams {
-  type: EffectType;
-  colors: string[];
-  intensity?: number;
-  dimmer?: string;
-  frequency?: string;
-  speed?: string;
-  direction?: string;
-  transition?: string;
-  duration?: string;
-  up_time?: string;
-  hold_time?: string;
-  down_time?: string;
-  start_level?: number;
-  end_level?: number;
-  curve?: string;
-  layer?: Layer;
-  blend_mode?: BlendMode;
-  loop?: string;
-  base_level?: number;
-  pulse_amplitude?: number;
-  duty_cycle?: string;
-  pattern?: string;
-  saturation?: number;
-  brightness?: number;
-  /** `move`: the focus point to aim at (`focus:` / `to:`). */
-  focus?: string;
-  /** `move`: the focus point to start from. */
-  from?: string;
-  /** `move`: explicit angles, written with their unit (`45deg`). */
-  pan?: string;
-  tilt?: string;
-  from_pan?: string;
-  from_tilt?: string;
-  easing?: string;
-  extra: Record<string, string>;
-}
-
-/** A single effect targeting one or more groups */
-export interface CueEffect {
-  groups: string[];
-  effect: EffectParams;
-  /** Set when this effect was expanded from a sequence reference */
-  sequenceName?: string;
-}
-
-/** Layer command (clear/freeze/unfreeze/master) */
-export interface LayerCommand {
-  command: "clear" | "freeze" | "unfreeze" | "master";
-  layer?: string;
-  intensity?: string;
-  speed?: string;
-}
-
-/** Reference to a named sequence */
-export interface SequenceRef {
-  name: string;
-  /** Parameters bound here, in source order, values as written. */
-  args?: SequenceArg[];
-  loop?: string;
-  stop?: boolean;
-}
-
-/** A `name: value` in a sequence's parameter list or a reference's arguments. */
-export interface SequenceArg {
-  name: string;
-  /** As written: a quoted colour, a group, a number, a `$param`… */
-  value?: string;
-}
-
 /** Sub-lane content type for multi-lane show rendering */
 export type SubLaneType =
   | "effects"
@@ -178,45 +97,9 @@ export type SubLaneType =
   | "commands"
   | "sequences";
 
-/** A cue = one timestamp + all effects/commands at that time */
-export interface Cue {
-  timestamp: Timestamp;
-  effects: CueEffect[];
-  commands: LayerCommand[];
-  sequences: SequenceRef[];
-  comment?: string;
-  offset_measures?: number;
-  reset_measures?: boolean;
-}
-
-/** A named sequence of cues */
-export interface Sequence {
-  name: string;
-  /** Parameters (`$name` in the body), with their defaults if any. */
-  params?: SequenceArg[];
-  /** Declared pass length (`length: 1measure`), as written. */
-  length?: string;
-  cues: Cue[];
-}
-
-/** A named show of cues */
-export interface LightShow {
-  name: string;
-  cues: Cue[];
-}
-
-/** Top-level parsed light file */
-export interface LightFile {
-  /** `include "…"` paths, relative to this file's folder, as written. */
-  includes?: string[];
-  tempo?: TempoSection;
-  sequences: Sequence[];
-  shows: LightShow[];
-}
-
 /** Creates an empty EffectParams of a given type */
-export function emptyEffect(type: EffectType): EffectParams {
-  return { type, colors: [], extra: {} };
+export function emptyEffect(type: EffectKind): EffectParams {
+  return { type, params: [] };
 }
 
 /** Creates an empty cue at a given timestamp */

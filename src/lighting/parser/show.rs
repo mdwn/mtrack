@@ -22,8 +22,8 @@ use super::super::effects::EffectLayer;
 use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, describe_pest_error};
-use super::grammar::{items, LightingParser, Rule};
-use super::include::{add_included, Include, IncludingFile};
+use super::grammar::{LightingParser, Rule};
+use super::include::{add_included, Include, IncludeReader, IncludingFile, Sources};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
@@ -31,7 +31,7 @@ use super::types::{
     SequenceCall, SequenceLoop,
 };
 use super::utils::{
-    parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
+    items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
     parse_time_string,
 };
 use crate::tempo::{snap_beats, DEFAULT_BPM};
@@ -42,26 +42,81 @@ use pest::Parser;
 /// itself, and the sequences it references, placed by [`CueBlock::place`]
 /// once the block's cues are all parsed -- a sequence's `length:` is
 /// checked against its cues as written before any reference expands.
-struct ParsedCue {
+pub(super) struct ParsedCue {
     /// Its time, with the offset in force.
-    time: Duration,
+    pub(super) time: Duration,
     /// The offset in force at it, in seconds.
-    offset_secs: f64,
+    pub(super) offset_secs: f64,
     /// The cues it puts on the timeline of itself: its own cue, when it
-    /// holds anything of its own, and its inline loops' passes.
-    cues: Vec<Cue>,
+    /// holds anything of its own, and its inline loops' passes; once
+    /// placed (see [`CueBlock::place`]), the passes of the sequences it
+    /// references too, in time order.
+    pub(super) cues: Vec<Cue>,
     /// Its own cue's place in `cues`, when it holds anything of its own.
-    base: Option<usize>,
+    pub(super) base: Option<usize>,
+    /// How many of that cue's effects are the written cue's own (the
+    /// rest were merged in from a pass at the same time).
+    pub(super) own_effects: usize,
     /// The sequences it references, in order.
     references: Vec<SequenceCall>,
+    /// The passes of the sequences it references, once placed: where each
+    /// reference's passes run.
+    pub(super) passes: Vec<PlacedPasses>,
     /// The offset in seconds the cues after it start from, if its `offset`
     /// or `reset` commands changed it.
-    new_offset: Option<f64>,
+    pub(super) new_offset: Option<f64>,
     /// The measure offset the cues after it start from.
     measure_offset: u32,
+    /// The measures its own `offset` commands add up to, as written.
+    pub(super) offset_measures: u32,
+    /// Whether it holds a `reset_measures`.
+    pub(super) reset: bool,
     /// The latest cue time it produces, the passes it references included:
     /// what a standalone `offset` in a zero-time cue after it anchors to.
     last_time: Duration,
+}
+
+/// Where the passes of one sequence reference run, as [`Passes`] laid
+/// them: for the web UI's timeline, which draws the reference as a block.
+pub(super) struct PlacedPasses {
+    pub(super) name: String,
+    /// How many passes: 10,000 for `loop`, which stands for no end.
+    pub(super) count: usize,
+    pub(super) infinite: bool,
+    /// When the first pass starts: the cue's time.
+    pub(super) start: Duration,
+    /// When the first pass ends, and when the last does.
+    pub(super) first_end: Duration,
+    pub(super) end: Duration,
+    /// The sequence the passes are of, and the show offset they were laid
+    /// under: what lays them again (see [`PlacedPasses::boundaries`]).
+    sequence: Rc<Sequence>,
+    offset_secs: f64,
+}
+
+impl PlacedPasses {
+    /// Where pass after pass of the sequence starts, laid as the player
+    /// lays them on `tempo_map` (the block's, which placed them) from the
+    /// first, up to `until` however many the reference asks for (each
+    /// pass ends where the next starts), but no more passes than the
+    /// reference's or a `loop`'s, whichever is more.
+    pub(super) fn boundaries(
+        &self,
+        tempo_map: &Option<TempoMap>,
+        until: Duration,
+    ) -> Vec<Duration> {
+        let passes = Passes::of(
+            self.sequence.clone(),
+            0,
+            tempo_map,
+            self.start,
+            self.offset_secs,
+        );
+        (0..=self.count.max(LOOP_PASSES))
+            .map(|i| passes.time_of(i, passes.base_time))
+            .take_while(|&at| at <= until)
+            .collect()
+    }
 }
 
 impl ParsedCue {
@@ -86,6 +141,8 @@ pub(super) struct CueBlock {
     /// The tempo map the cues were parsed under: the block's own `tempo`
     /// block, else the file's. The one place that is decided.
     pub(super) effective_tempo: Option<TempoMap>,
+    /// Whether that is the block's own.
+    pub(super) own_tempo: bool,
 }
 
 impl CueBlock {
@@ -98,6 +155,15 @@ impl CueBlock {
     /// references placed from it (see [`Passes`] and [`place_passes`]), in
     /// time order within each.
     pub(super) fn place(self, library: &SequenceLibrary) -> Result<Vec<Cue>, Box<dyn Error>> {
+        Ok(flatten(self.place_each(library)?))
+    }
+
+    /// [`CueBlock::place`], each written cue kept apart with what it put
+    /// on the timeline (see [`flatten`]).
+    pub(super) fn place_each(
+        self,
+        library: &SequenceLibrary,
+    ) -> Result<Vec<ParsedCue>, Box<dyn Error>> {
         let mut cues = Vec::new();
         for mut parsed in self.cues {
             for call in &parsed.references {
@@ -108,15 +174,31 @@ impl CueBlock {
                     parsed.time,
                     parsed.offset_secs,
                 )?;
+                parsed.passes.push(PlacedPasses {
+                    name: call.name.clone(),
+                    count: passes.count,
+                    infinite: call.loop_param == Some(SequenceLoop::Loop),
+                    start: passes.at,
+                    first_end: passes.time_of(1, passes.base_time),
+                    end: passes.time_of(passes.count, passes.base_time),
+                    sequence: passes.sequence.clone(),
+                    offset_secs: passes.offset_secs,
+                });
                 place_passes(&passes, Some(&call.name), &mut parsed.cues, parsed.base);
             }
             // Generated cues come in source order, not time order (an
             // inline loop may write @0.5 before @0.0).
             parsed.cues.sort_by_key(|c| c.time);
-            cues.extend(parsed.cues);
+            cues.push(parsed);
         }
         Ok(cues)
     }
+}
+
+/// The cues a block's written cues put on the timeline, in the order
+/// [`CueBlock::place`] has them.
+pub(super) fn flatten(cues: Vec<ParsedCue>) -> Vec<Cue> {
+    cues.into_iter().flat_map(|parsed| parsed.cues).collect()
 }
 
 /// Parses light shows from DSL content.
@@ -135,29 +217,125 @@ pub fn parse_light_shows_with_tempo(
     content: &str,
     external: Option<&TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file(content, None, external)
+    // Content with no path has no folder for an include to resolve against:
+    // the reader is never asked.
+    parse_light_file_with(content, None, None, external, &Sources::none())
 }
 
-/// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does.
-/// `path` is where the content lives, which its `include`s resolve against;
-/// content with an `include` and no path is an error.
-pub fn parse_light_file(
-    content: &str,
-    path: Option<&Path>,
-    external: Option<&TempoMap>,
-) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file_within(content, path, None, external)
-}
-
-/// Parses a `.light` file as `parse_light_file` does, its `include`s
-/// confined to `root` when one is given: for source from somewhere that may
-/// not read the whole disk, such as the web UI or an MCP client.
-pub fn parse_light_file_within(
+/// Parses a `.light` file's shows as `parse_light_shows_with_tempo` does,
+/// its `include`s read through `reader` -- the disk for the player, the
+/// sources it fetched for the web UI -- and confined to `root` when one is
+/// given (for source from somewhere that may not read the whole disk, such
+/// as the web UI or an MCP client). `path` is where the content lives,
+/// which its `include`s resolve against; content with an `include` and no
+/// path is an error. The one parse path: every caller, the player loading
+/// a song, the MCP service, the web UI's editor, comes through here.
+pub fn parse_light_file_with(
     content: &str,
     path: Option<&Path>,
     root: Option<&Path>,
     external: Option<&TempoMap>,
+    reader: &dyn IncludeReader,
 ) -> Result<LightShows, Box<dyn Error>> {
+    Ok(parse_file_with(content, path, root, external, reader)?
+        .shows
+        .into_iter()
+        .map(|(name, show)| (name, show.into_show()))
+        .collect())
+}
+
+/// A file as parsed: its tempo map and its shows, each written cue kept
+/// apart with what it put on the timeline. What [`parse_light_file_with`]
+/// flattens into [`LightShows`], and what the web UI's timeline lays out.
+pub(super) struct ParsedFile<'i> {
+    /// The map the file's shows play to unless they carry their own: the
+    /// file's `tempo` block (the last, if several), else the song's.
+    pub(super) tempo_map: Option<TempoMap>,
+    /// The shows by name, in file order, a later show of a name
+    /// replacing an earlier (`LightShows` holds one per name).
+    pub(super) shows: indexmap::IndexMap<String, ParsedShow>,
+    /// The library the shows' references were placed from.
+    pub(super) library: SequenceLibrary,
+    /// The file's own sequence definitions, in file order.
+    pub(super) sequence_pairs: Vec<Pair<'i, Rule>>,
+}
+
+/// A show as parsed, its written cues kept apart.
+pub(super) struct ParsedShow {
+    pub(super) name: String,
+    /// The map it plays to: its own, else the file's.
+    pub(super) tempo_map: Option<TempoMap>,
+    /// Whether that map is its own `tempo` block.
+    pub(super) own_tempo: bool,
+    pub(super) cues: Vec<ParsedCue>,
+}
+
+impl ParsedShow {
+    fn into_show(self) -> LightShow {
+        LightShow {
+            name: self.name,
+            cues: flatten(self.cues),
+            tempo_map: self.tempo_map,
+        }
+    }
+}
+
+/// The file-level items of `content`, parsed: what [`parse_file_with`]
+/// and the web UI's tempo questions start from.
+pub(crate) struct FileItems<'i> {
+    /// The file's `tempo` block (the last, if several), over `external`.
+    pub(crate) tempo_map: Option<TempoMap>,
+    pub(super) sequences: Vec<Pair<'i, Rule>>,
+    pub(super) shows: Vec<Pair<'i, Rule>>,
+    pub(super) includes: Vec<Include>,
+}
+
+/// Parses `content`'s file-level items, the song's tempo map `external`
+/// standing in for a file with no tempo block of its own.
+pub(crate) fn file_items<'i>(
+    content: &'i str,
+    external: Option<&TempoMap>,
+) -> Result<FileItems<'i>, Box<dyn Error>> {
+    let pairs =
+        LightingParser::parse(Rule::file, content).map_err(|e| describe_pest_error(&e, content))?;
+
+    // Seeded with the song's map so a file with no tempo block inherits it; a
+    // file-level `tempo { }` overwrites this below.
+    let mut items_found = FileItems {
+        tempo_map: external.cloned(),
+        sequences: Vec::new(),
+        shows: Vec::new(),
+        includes: Vec::new(),
+    };
+
+    // First pass: collect tempo sections, sequences, and show pairs
+    for pair in items(pairs) {
+        match pair.as_rule() {
+            Rule::tempo => {
+                // Parse tempo at file level (applies to all shows if no show-specific tempo)
+                items_found.tempo_map = Some(parse_tempo_definition(pair)?);
+            }
+            Rule::sequence => {
+                items_found.sequences.push(pair);
+            }
+            Rule::light_show => {
+                items_found.shows.push(pair);
+            }
+            Rule::include => items_found.includes.push(Include::from_pair(pair)),
+            _ => {}
+        }
+    }
+    Ok(items_found)
+}
+
+/// [`parse_light_file_with`], the shows' written cues kept apart.
+pub(super) fn parse_file_with<'i>(
+    content: &'i str,
+    path: Option<&Path>,
+    root: Option<&Path>,
+    external: Option<&TempoMap>,
+    reader: &dyn IncludeReader,
+) -> Result<ParsedFile<'i>, Box<dyn Error>> {
     let root = match root {
         Some(root) => Some(
             root.canonicalize()
@@ -165,38 +343,16 @@ pub fn parse_light_file_within(
         ),
         None => None,
     };
-    let pairs =
-        LightingParser::parse(Rule::file, content).map_err(|e| describe_pest_error(&e, content))?;
-
-    let mut shows = LightShows::new();
-    // Seeded with the song's map so a file with no tempo block inherits it; a
-    // file-level `tempo { }` overwrites this below.
-    let mut global_tempo: Option<TempoMap> = external.cloned();
-    let mut show_pairs = Vec::new();
-    let mut sequence_pairs = Vec::new();
-    let mut includes = Vec::new();
-
-    // First pass: collect tempo sections, sequences, and show pairs
-    for pair in items(pairs) {
-        match pair.as_rule() {
-            Rule::tempo => {
-                // Parse tempo at file level (applies to all shows if no show-specific tempo)
-                global_tempo = Some(parse_tempo_definition(pair)?);
-            }
-            Rule::sequence => {
-                sequence_pairs.push(pair);
-            }
-            Rule::light_show => {
-                show_pairs.push(pair);
-            }
-            Rule::include => includes.push(Include::from_pair(pair)),
-            _ => {}
-        }
-    }
+    let FileItems {
+        tempo_map: global_tempo,
+        sequences: sequence_pairs,
+        shows: show_pairs,
+        includes,
+    } = file_items(content, external)?;
 
     let mut library = SequenceLibrary::new(&global_tempo);
     let mut seen: HashSet<PathBuf> = path
-        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| reader.resolve(p).ok())
         .into_iter()
         .collect();
     add_included(
@@ -207,9 +363,10 @@ pub fn parse_light_file_within(
             display: None,
             root: root.as_deref(),
         },
+        reader,
         &mut seen,
     )?;
-    library.add(sequence_pairs, None)?;
+    library.add(sequence_pairs.clone(), None)?;
     library.check_all()?;
 
     // Second pass: parse shows with tempo and sequences available
@@ -229,6 +386,7 @@ pub fn parse_light_file_within(
     // Enforce naming rules:
     // - If there's exactly one show and it has no name, synthesize a default name.
     // - If there are multiple shows, all must have explicit names.
+    let mut shows = indexmap::IndexMap::new();
     if parsed_shows.len() == 1 {
         let mut show = parsed_shows.remove(0);
         if show.name.trim().is_empty() {
@@ -253,18 +411,24 @@ pub fn parse_light_file_within(
         return Err(analyze_parsing_failure(content).into());
     }
 
-    Ok(shows)
+    Ok(ParsedFile {
+        tempo_map: global_tempo,
+        shows,
+        library,
+        sequence_pairs,
+    })
 }
 
 fn parse_light_show_definition(
     pair: Pair<Rule>,
     global_tempo: &Option<TempoMap>,
     library: &SequenceLibrary,
-) -> Result<LightShow, Box<dyn Error>> {
+) -> Result<ParsedShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
     // The map the show plays to: its own, else the file's.
     let mut tempo_map = global_tempo.clone();
+    let mut own_tempo = false;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -274,17 +438,19 @@ fn parse_light_show_definition(
             Rule::show_content => {
                 let block = parse_cue_block(inner_pair.into_inner(), global_tempo, library)?;
                 tempo_map = block.effective_tempo.clone();
-                cues = block.place(library)?;
+                own_tempo = block.own_tempo;
+                cues = block.place_each(library)?;
             }
 
             _ => {}
         }
     }
 
-    Ok(LightShow {
+    Ok(ParsedShow {
         name,
-        cues,
         tempo_map,
+        own_tempo,
+        cues,
     })
 }
 /// A sequence definition as written, its cues expanded.
@@ -398,7 +564,8 @@ fn parse_cue_block<'i>(
             _ => {}
         }
     }
-    let effective_tempo = tempo_map.clone().or_else(|| global_tempo.clone());
+    let own_tempo = tempo_map.is_some();
+    let effective_tempo = tempo_map.or_else(|| global_tempo.clone());
 
     let mut cues = Vec::new();
     // What the cues so far leave in force: the offset in seconds, the
@@ -425,6 +592,7 @@ fn parse_cue_block<'i>(
     Ok(CueBlock {
         cues,
         effective_tempo,
+        own_tempo,
     })
 }
 /// Calculate relative time from an absolute time and base time
@@ -446,10 +614,13 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 }
 
 /// Determine loop count from a SequenceLoop parameter
+/// How many passes a `loop` reference lays: a practical infinity.
+const LOOP_PASSES: usize = 10000;
+
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
         Some(SequenceLoop::Once) => Ok(1),
-        Some(SequenceLoop::Loop) => Ok(10000), // Practical infinity
+        Some(SequenceLoop::Loop) => Ok(LOOP_PASSES), // Practical infinity
         Some(SequenceLoop::PingPong) => {
             Err("PingPong loop mode not yet implemented for sequences".into())
         }
@@ -866,6 +1037,8 @@ fn parse_cue(
     // Track cumulative measure offset for playback measure calculations
     // Start with the passed-in cumulative offset from previous cues
     let mut cumulative_measure_offset = cumulative_measure_offset;
+    let mut written_offset: u32 = 0;
+    let reset = !reset_commands.is_empty();
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
@@ -878,6 +1051,7 @@ fn parse_cue(
         for offset_pair in &offset_commands {
             let offset_measures = parse_offset_command(offset_pair.clone())?;
             cumulative_measure_offset += offset_measures; // Track cumulative measure offset
+            written_offset += offset_measures;
             if let Some(tm) = tempo_map {
                 total_offset += tm.offset_duration(offset_measures, score_anchor);
             } else {
@@ -929,6 +1103,7 @@ fn parse_cue(
     let has_base_content = !base.effects.is_empty()
         || !base.layer_commands.is_empty()
         || !base.stop_sequences.is_empty();
+    let own_effects = base.effects.len();
     let mut cues = Vec::new();
     let mut base_index = None;
     if has_base_content || (inline_loop_pairs.is_empty() && sequence_ref_pairs.is_empty()) {
@@ -971,9 +1146,13 @@ fn parse_cue(
         offset_secs: applied_offset_secs,
         cues,
         base: base_index,
+        own_effects,
         references,
+        passes: Vec::new(),
         new_offset,
         measure_offset: cumulative_measure_offset,
+        offset_measures: written_offset,
+        reset,
         last_time: last_time.max(abs_time),
     })
 }

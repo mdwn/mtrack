@@ -15,19 +15,25 @@
 <script lang="ts">
   import type {
     LightFile,
+    LightShow,
     Cue,
     Sequence,
     SubLaneType,
     TempoSection,
   } from "../../../lib/lighting/types";
   import type { WaveformTrack } from "../../../lib/api/songs";
+  import type {
+    Layout,
+    ShowLayout,
+    TempoSource,
+  } from "../../../gen/rules/mtrack_rules";
   import {
     timestampToMs,
     msToPixel,
-    computeAdjustedCuePositions,
     offsetMarkers,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
+  import { withParam } from "../../../lib/lighting/params";
   import TimelineToolbar from "./TimelineToolbar.svelte";
   import TimeRuler from "./TimeRuler.svelte";
   import WaveformLane from "./WaveformLane.svelte";
@@ -43,6 +49,12 @@
 
   interface Props {
     lightFile: LightFile;
+    /** The player's layout of `lightFile`: where every cue, effect and
+     *  pass lands, and the tempo map's lines and stretches. */
+    layout: Layout;
+    /** The tempo map the editor snaps and places against: the file's own
+     *  tempo block, else the song's; none without either. */
+    tempoSource: TempoSource | null;
     groups: string[];
     sequenceNames: string[];
     songDurationMs: number;
@@ -63,6 +75,8 @@
 
   let {
     lightFile,
+    layout,
+    tempoSource,
     groups,
     sequenceNames,
     songDurationMs,
@@ -182,8 +196,21 @@
   let scrollContainer: HTMLDivElement | undefined = $state();
 
   let totalDurationMs = $derived(
-    Math.max(songDurationMs || 60000, getMaxShowCueTime(lightFile) + 5000),
+    Math.max(songDurationMs || 60000, layout.end_ms + 5000),
   );
+
+  /** The layout of a show of the file, by name (a show written without a
+   *  name plays as `default`); none while the file does not lay out. */
+  function laidShow(show: LightShow): ShowLayout | undefined {
+    const name = show.name || "default";
+    return layout.shows.find((s) => s.name === name);
+  }
+
+  /** The tempo layout the ruler and tempo lane draw: the first show's
+   *  own (under its offsets) when it has one, else the file's. */
+  let rulerTempo = $derived(layout.shows[0]?.tempo ?? layout.tempo);
+
+  let offsets = $derived(offsetMarkers(layout));
 
   function getTotalWidthPx(): number {
     return msToPixel(totalDurationMs, pixelsPerMs);
@@ -225,30 +252,6 @@
     const show = lightFile.shows[selectedShowIndex];
     if (!show || selectedCueIndex >= show.cues.length) return null;
     return { cue: show.cues[selectedCueIndex], laneName: show.name };
-  }
-
-  // Compute offset markers from all show cues using adjusted positions
-  function getOffsetMarkers(): OffsetMarker[] {
-    const markers: OffsetMarker[] = [];
-    for (let si = 0; si < lightFile.shows.length; si++) {
-      const show = lightFile.shows[si];
-      markers.push(...offsetMarkers(show.cues, lightFile.tempo, si));
-    }
-    return markers.sort((a, b) => a.ms - b.ms);
-  }
-
-  function getMaxShowCueTime(lf: LightFile): number {
-    let max = 0;
-    for (const show of lf.shows) {
-      const adjusted = computeAdjustedCuePositions(show.cues, lf.tempo);
-      for (const ap of adjusted) {
-        let end = ap.adjustedMs;
-        // Include the offset duration after the last cue
-        end += ap.offsetMs;
-        max = Math.max(max, end);
-      }
-    }
-    return max;
   }
 
   // --- Scroll ---
@@ -412,10 +415,9 @@
     const shows = [...lightFile.shows];
     const cues = [...shows[showIndex].cues];
     const cue = { ...cues[cueIndex] };
-    cue.effects = cue.effects.map((eff) => ({
-      ...eff,
-      effect: { ...eff.effect, duration: newDurationStr },
-    }));
+    cue.effects = cue.effects.map((eff) =>
+      withParam(eff, "duration", newDurationStr),
+    );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
     onchange({ ...lightFile, shows });
@@ -429,10 +431,12 @@
     const shows = [...lightFile.shows];
     const cues = [...shows[showIndex].cues];
     const cue = { ...cues[cueIndex] };
-    cue.sequences = cue.sequences.map((ref) => {
-      if (ref.stop) return ref;
-      return { ...ref, loop: String(newLoopCount) };
-    });
+    // The reference the block's passes are drawn from, its first that
+    // plays: the others keep their counts.
+    const dragged = cue.sequences.findIndex((ref) => !ref.stop);
+    cue.sequences = cue.sequences.map((ref, i) =>
+      i === dragged ? { ...ref, loop: String(newLoopCount) } : ref,
+    );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
     onchange({ ...lightFile, shows });
@@ -453,8 +457,8 @@
     const cues = [...shows[showIndex].cues, cue];
     cues.sort(
       (a, b) =>
-        timestampToMs(a.timestamp, lightFile.tempo) -
-        timestampToMs(b.timestamp, lightFile.tempo),
+        timestampToMs(a.timestamp, tempoSource) -
+        timestampToMs(b.timestamp, tempoSource),
     );
     shows[showIndex] = { ...shows[showIndex], cues };
     onchange({ ...lightFile, shows });
@@ -493,11 +497,11 @@
     if (isNaN(measures) || measures <= 0) return;
 
     const show = lightFile.shows[showIndex];
-    const adjusted = computeAdjustedCuePositions(show.cues, lightFile.tempo);
+    const laid = laidShow(show)?.cues ?? [];
     let targetIndex = -1;
-    for (let i = adjusted.length - 1; i >= 0; i--) {
-      if (adjusted[i].adjustedMs <= offsetMenu!.ms) {
-        targetIndex = i;
+    for (let i = laid.length - 1; i >= 0; i--) {
+      if (laid[i].ms <= offsetMenu!.ms) {
+        targetIndex = laid[i].index;
         break;
       }
     }
@@ -643,10 +647,10 @@
           <TimeRuler
             {pixelsPerMs}
             {totalDurationMs}
-            tempo={lightFile.tempo}
+            grid={rulerTempo?.grid ?? []}
             {scrollLeft}
             {viewportWidth}
-            offsets={getOffsetMarkers()}
+            {offsets}
             {playheadMs}
             {playCursorMs}
             onclick={(ms) => {
@@ -668,14 +672,13 @@
           ? $t("tempo.title") + " - click to edit"
           : "Click to add tempo"}
       >
-        {#if lightFile.tempo}
+        {#if lightFile.tempo && rulerTempo}
           <TempoLane
-            tempo={lightFile.tempo}
+            spans={rulerTempo.spans}
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}
             {totalDurationMs}
-            offsets={getOffsetMarkers()}
           />
         {:else}
           <div class="no-tempo-lane">
@@ -701,18 +704,18 @@
           <ShowGroup
             name={show.name}
             cues={show.cues}
-            sequences={lightFile.sequences}
+            laidCues={laidShow(show)?.cues ?? []}
+            grid={(laidShow(show)?.tempo ?? layout.tempo)?.grid ?? []}
+            {tempoSource}
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}
-            tempo={lightFile.tempo}
             selectedCueIndex={selectedShowIndex === si
               ? selectedCueIndex
               : null}
             selectedSubLane={selectedShowIndex === si ? selectedSubLane : null}
             {snapEnabled}
             {snapResolution}
-            offsets={getOffsetMarkers()}
             {playheadMs}
             onselect={(ci, subLane) => selectShowCue(si, ci, subLane)}
             oncuechange={(ci, cue) => handleShowCueChange(si, ci, cue)}
@@ -769,7 +772,11 @@
               laneName={selCue.laneName}
               {groups}
               {sequenceNames}
-              tempo={lightFile.tempo}
+              cueMs={selectedShowIndex !== null && selectedCueIndex !== null
+                ? (laidShow(lightFile.shows[selectedShowIndex])?.cues[
+                    selectedCueIndex
+                  ]?.ms ?? 0)
+                : 0}
               focusTab={selectedSubLane}
               onchange={handleSelectedCueChange}
               ondelete={handleSelectedCueDelete}
@@ -880,9 +887,13 @@
 {#if editingSequenceIndex !== null && lightFile.sequences[editingSequenceIndex]}
   <SequenceEditorModal
     sequence={lightFile.sequences[editingSequenceIndex]}
+    laid={layout.sequences.find(
+      (s) => s.name === lightFile.sequences[editingSequenceIndex!].name,
+    )}
+    fileTempo={layout.tempo}
+    {tempoSource}
     {groups}
     {sequenceNames}
-    tempo={lightFile.tempo}
     onchange={handleSequenceChange}
     ondelete={() => deleteSequence(editingSequenceIndex!)}
     onclose={() => (editingSequenceIndex = null)}

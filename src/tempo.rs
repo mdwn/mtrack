@@ -1077,6 +1077,38 @@ impl TempoMap {
         self.segments().state_at(time).metre
     }
 
+    /// The gradual transition in progress at a score time, if one is: when
+    /// it ends and the tempo it reaches. Read by the web UI's rules crate
+    /// for the timeline's tempo lane; the player has no caller.
+    #[allow(dead_code)]
+    pub(crate) fn transition_at(&self, time: Duration) -> Option<(Duration, f64)> {
+        let state = self.segments().state_at(time);
+        let ramp = state.ramp?;
+        let elapsed = ramp.elapsed_secs + time.saturating_sub(state.time).as_secs_f64();
+        // Its end, reached through the time's nanoseconds, is not in it.
+        (ramp.total_secs - elapsed > 1e-9).then(|| {
+            (
+                state
+                    .time
+                    .saturating_add(duration_from_secs(ramp.total_secs - ramp.elapsed_secs)),
+                ramp.new_bpm,
+            )
+        })
+    }
+
+    /// The measures from `from` to `to` (score times), as the position
+    /// walk counts them, fractional within a bar: [`Self::beats_between`]
+    /// in bars of the metres between. Read by the web UI's rules crate; the
+    /// player has no caller.
+    #[allow(dead_code)]
+    pub(crate) fn measures_between(&self, from: Duration, to: Duration) -> f64 {
+        let segments = self.segments();
+        snap_beats(
+            segments.metres.measures_at(segments.beats_at(to))
+                - segments.metres.measures_at(segments.beats_at(from)),
+        )
+    }
+
     /// The time signature in effect at a measure (1-indexed), as the beat
     /// grid has it: a change anchored mid-bar governs from the next bar.
     pub(crate) fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {

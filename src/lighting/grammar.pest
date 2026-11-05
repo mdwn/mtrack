@@ -269,7 +269,26 @@ tempo_transition_beats = { number_value }
 
 tempo_transition_snap = { "snap" }
 
-COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
+// A comment, to the end of its line: `# …` or `// …`. The one rule that
+// says what a comment is. The grammar skips comments as whitespace
+// (`COMMENT`, silent and atomic, so a parse and its errors are exactly as
+// they were without this rule); the web UI's document model reads the
+// comments of a file by parsing the text between a rule's children with
+// `gap`, whose `comment_tok` leaves a pair behind. The player never
+// invokes `gap`.
+comment_body = { ("//" | "#") ~ (!"\n" ~ ANY)* }
+
+COMMENT = _{ comment_body }
+
+comment_tok = @{ comment_body }
+
+gap = ${ SOI ~ (comment_tok | !comment_tok ~ ANY)* ~ EOI }
+
+// A whole value that is a sequence parameter reference: what the web UI
+// asks of text typed into a form. Atomic, so nothing is skipped around the
+// reference: `$x # c` is a reference and a comment, not a reference. The
+// player never invokes it.
+param_ref_only = @{ SOI ~ param_ref ~ EOI }
 
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ gdtf_source? ~ "{" ~ fixture_type_content ~ "}" }

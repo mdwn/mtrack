@@ -150,6 +150,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
+  reads a `.light` file through the player's grammar (its document model, compiled to
+  WebAssembly with the parser) and places every cue, effect and sequence pass where the player
+  fires it, under the player's own tempo map; it no longer re-derives the DSL, the tempo map
+  or sequence expansion in TypeScript. What this corrects on the timeline: a sequence placed by
+  its earliest cue rather than its first-written one; a pass as long as its effects' fade in,
+  hold and fade out (`up_time`/`down_time` counted, as the player counts them); nested sequence
+  references and inline `loop { }` blocks drawn; a `loop:` reference running to the song's end;
+  several `offset`s under one cue added up. A file the player refuses -- an effect with no
+  duration, a cue past its sequence's length, a bar-and-beat cue with no tempo, a missing
+  include, an unquoted `#` colour (a comment, to the grammar) -- is refused in the editor with
+  the player's words, where the old timeline drew it anyway. A file that defines a fixture type or a
+  venue, or gives a show its own `tempo` block, is edited as text. Inline loops and every
+  parameter a line carries are written back as read, where a save used to drop them.
+  Included files are fetched for the layout (each file's resolve against its own folder), and a
+  file's `include` lines survive a save. One difference from the player remains: it reads an
+  included file by its canonical path, so one reached through a symlink is read once and must
+  lie inside the songs folder; the editor resolves the path as written (`..` folded) and asks
+  the server for it, so a symlinked include is fetched by its written path. Comments are kept
+  where they were, as written, and written back; parameters as written, repeats included.
+
 - **A Format 1 MIDI file's tempo lives on its conductor track**: the web UI's tempo guess read
   tempo and time-signature events from every track; it reads the conductor track (track 0) as
   playback does, so a file with its tempo events elsewhere now gets no suggestion from the
@@ -291,6 +312,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A tempo start keeps its time when its unit is switched**: in the web UI's tempo editor,
+  switching a light show's tempo `start:` between ms and s relabelled the number, so `500ms`
+  became `500s` and the tempo map moved by minutes. The switch now converts the value
+  (`500ms` is `0.5s`, `1.5s` is `1500ms`) to the same time as the player reads it.
+- **Resizing one loop on the timeline changes only that loop**: dropping a resized loop block
+  wrote its pass count to every sequence reference in the cue; it now writes it to the dragged
+  reference alone.
 - **The stage views strobe at the rig's rate**: the plot, the timeline preview and the 3D view
   flashed a strobing fixture at a rate guessed from its strobe byte alone (2–20 Hz, the same
   for every fixture), ignoring the fixture's strobe range and curve, so a PixelBrick at 10 Hz
