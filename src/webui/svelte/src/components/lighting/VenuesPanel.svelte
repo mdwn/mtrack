@@ -22,7 +22,8 @@
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
-  import { collisions, lastAddress, nextPatch } from "../../lib/lighting/patch";
+  import { overlaps } from "../../lib/lighting/patch";
+  import { rules } from "../../lib/rules";
   import { isRefused } from "../../lib/lighting/modes";
   import { untrack } from "svelte";
   import { lightingHref } from "../../lib/lightingRoute";
@@ -30,6 +31,7 @@
   import {
     nextFixtureName,
     rowProblems,
+    nextPatch,
     type RowProblem,
   } from "../../lib/lighting/venueRows";
   import {
@@ -340,29 +342,34 @@
     );
   }
 
-  /** Each row's span, for the strip of words under it and the overlap check. */
+  /** Each row's span, for the strip of words under it and the overlap
+   *  check; a footprint not known yet is nothing occupied. */
   let rowSpans = $derived(
     editVenueFixtures.map((row, i) => ({
       fixture: String(i),
       universe: Number(row.universe),
       address: Number(row.start_channel),
-      footprint: rowFootprint(row),
+      footprint: rowFootprint(row) ?? 0,
     })),
   );
 
-  /** What each row runs into: other rows it partly overlaps (identical spans
-   *  gang, as on the server), and the end of the universe. */
-  let rowClashes = $derived(
-    rowSpans.map((span) => {
-      const hits = collisions(rowSpans, span).map((c) => ({
-        row: Number(c.fixture),
-        from: c.from,
-        to: c.to,
-      }));
-      const last = lastAddress(span);
-      return { hits, overrun: last !== null && last > 512 ? last : null };
-    }),
-  );
+  /** What each row runs into, by the player's patch rules: other rows it
+   *  partly overlaps (identical spans gang), and the end of the universe. */
+  let rowClashes = $derived.by(() => {
+    const overruns = new Map(
+      (rules.patch_overruns(rowSpans) ?? []).map((o) => [o.fixture, o.last]),
+    );
+    return rowSpans.map((span) => ({
+      hits: overlaps(rowSpans, span).flatMap((h) =>
+        h.second_gang.map((row) => ({
+          row: Number(row),
+          from: h.from,
+          to: h.to,
+        })),
+      ),
+      overrun: overruns.get(span.fixture) ?? null,
+    }));
+  });
 
   /** A changed type takes its own default mode: a mode names a mode of one
    *  archive. */

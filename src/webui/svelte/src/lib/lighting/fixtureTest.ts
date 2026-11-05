@@ -20,6 +20,8 @@
  * on, and releases them when it stops.
  */
 
+import { rules } from "../rules";
+
 /** Why testing cannot happen now. */
 export type TestUnavailable = "locked" | "playing" | "no_dmx" | "no_universes";
 
@@ -170,9 +172,13 @@ export function testBody(
   };
 }
 
-/** The last address the fixture takes. */
+/** The last address the fixture takes (`PatchSpan::last`); a mode that
+ *  writes nothing is shown at its own address. */
 export function lastAddress(address: number, footprint: number): number {
-  return address + Math.max(1, footprint) - 1;
+  return (
+    rules.patch_last({ fixture: "", universe: 1, address, footprint }) ??
+    address
+  );
 }
 
 /** The named values the 3D view's live inputs take (0–255), from a frame. */

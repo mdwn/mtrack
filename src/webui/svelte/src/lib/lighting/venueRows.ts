@@ -13,9 +13,9 @@
 //
 
 /**
- * The venue editor's rows: a name for a new one, and what stops a save. A
- * row the user added is never dropped without a word — a row that cannot be
- * saved blocks the save and says why.
+ * The venue editor's rows: a name and an address for a new one, and what
+ * stops a save. A row the user added is never dropped without a word — a
+ * row that cannot be saved blocks the save and says why.
  */
 
 /** The first `Fixture N` (N from 1) no row is called. */
@@ -25,6 +25,29 @@ export function nextFixtureName(names: string[], base = "Fixture"): string {
     const name = `${base} ${n}`;
     if (!taken.has(name)) return name;
   }
+}
+
+/** Where the editor puts a fixture added after `previous` (the last row,
+ *  not the highest address): the same universe, straight after it — its
+ *  address plus its footprint, or plus one when that is not known. A
+ *  fixture that would run past 512 starts the next universe. The first
+ *  fixture of a venue goes at 1:1. */
+export function nextPatch(
+  previous: {
+    universe: number;
+    address: number;
+    footprint: number | null;
+  } | null,
+  footprint: number | null,
+): { universe: number; address: number } {
+  if (!previous) return { universe: 1, address: 1 };
+  const step =
+    previous.footprint && previous.footprint > 0 ? previous.footprint : 1;
+  const own = footprint && footprint > 0 ? footprint : 1;
+  const address = previous.address + step;
+  if (address + own - 1 > 512)
+    return { universe: previous.universe + 1, address: 1 };
+  return { universe: previous.universe, address };
 }
 
 /** Why a row cannot be saved, as the suffix of a
