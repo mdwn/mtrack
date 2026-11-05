@@ -729,9 +729,9 @@ pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
 /// A sequence reference set to play `count` passes, as its block dragged
 /// to a length says (`SequenceRef::with_loop_count`).
 #[wasm_bindgen]
-pub fn reference_loop(reference: SequenceRefJs, count: u32) -> Option<SequenceRef> {
+pub fn reference_loop(reference: SequenceRefJs, count: f64) -> Option<SequenceRef> {
     let reference: SequenceRef = read(JsValue::from(reference))?;
-    Some(reference.with_loop_count(count))
+    reference.with_loop_count(count)
 }
 
 /// The duration an effect dragged to `ms` long from `at_ms` is written as
@@ -753,20 +753,16 @@ pub fn duration_text(source: Option<TempoSourceJs>, at_ms: f64, ms: f64) -> Stri
 
 /// A length dragged from `at_ms`, snapped to whole measures (`step`
 /// `None`) or to whole steps of a beat, in milliseconds as the parser
-/// reads that length there. The length as dragged when the source makes
-/// no tempo map.
+/// reads that length there. `None` when the source makes no tempo map or
+/// a time is not one.
 pub fn snapped_length(
     source: &TempoSource,
     at_ms: f64,
     duration_ms: f64,
     step: Option<f64>,
-) -> f64 {
-    let Some(span) = TempoDistance::between(source, at_ms, at_ms + duration_ms) else {
-        return duration_ms;
-    };
-    let Ok(map) = source.to_tempo_map() else {
-        return duration_ms;
-    };
+) -> Option<f64> {
+    let span = TempoDistance::between(source, at_ms, at_ms + duration_ms)?;
+    let map = source.to_tempo_map().ok()?;
     let round = |n: f64| (n + 0.5).floor();
     let from = Duration::from_secs_f64(at_ms / 1000.0);
     // The player's own length of that many bars or beats from there.
@@ -774,7 +770,7 @@ pub fn snapped_length(
         None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),
         Some(step) => map.beats_to_duration((round(span.beats / step) * step).max(step), from, 0.0),
     };
-    from.saturating_add(length).as_secs_f64() * 1000.0 - at_ms
+    Some(from.saturating_add(length).as_secs_f64() * 1000.0 - at_ms)
 }
 
 /// [`snapped_length`], for the web UI.
@@ -784,11 +780,9 @@ pub fn duration_snap(
     at_ms: f64,
     duration_ms: f64,
     step: Option<f64>,
-) -> f64 {
-    match read::<TempoSource>(JsValue::from(source)) {
-        Some(source) => snapped_length(&source, at_ms, duration_ms, step),
-        None => duration_ms,
-    }
+) -> Option<f64> {
+    let source = read::<TempoSource>(JsValue::from(source))?;
+    snapped_length(&source, at_ms, duration_ms, step)
 }
 
 /// A song tempo change's transition as a light show's `transition:`

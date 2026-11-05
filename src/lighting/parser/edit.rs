@@ -28,7 +28,7 @@ use super::document::DurationUnit;
 use super::document::{CueEffect, EffectKind, EffectParams, Param, Remarks, SequenceRef};
 use super::grammar::{LightingParser, Rule};
 use super::utils::unquoted;
-use super::writer::{dropped, length_text};
+use super::writer::{dropped, length_text, number};
 
 /// An edit of an effect line's parameters, as a form makes it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -252,12 +252,16 @@ impl EffectParams {
 }
 
 impl SequenceRef {
-    /// The reference playing `count` passes.
-    pub fn with_loop_count(&self, count: u32) -> SequenceRef {
-        SequenceRef {
-            loop_: Some(count.to_string()),
-            ..self.clone()
+    /// The reference playing `count` passes; `None` for a count the
+    /// player refuses (none, or not a whole number).
+    pub fn with_loop_count(&self, count: f64) -> Option<SequenceRef> {
+        if !(count >= 1.0 && count.fract() == 0.0 && count <= f64::from(u32::MAX)) {
+            return None;
         }
+        Some(SequenceRef {
+            loop_: Some(number(count)),
+            ..self.clone()
+        })
     }
 }
 
@@ -415,6 +419,21 @@ mod tests {
         assert_eq!(view.values["dimmer"], "20%");
         assert_eq!(unquoted("\"x"), "x");
         assert_eq!(unquoted("\"\""), "");
+    }
+
+    #[test]
+    fn a_loop_count_the_player_refuses_is_never_written() {
+        let r = document("show \"S\" {\n    @1/1\n    sequence \"x\"\n}\n", None)
+            .document
+            .unwrap()
+            .shows[0]
+            .cues[0]
+            .sequences[0]
+            .clone();
+        assert_eq!(r.with_loop_count(3.0).unwrap().loop_.as_deref(), Some("3"));
+        for count in [0.0, -1.0, 1.5, f64::NAN, 1e10] {
+            assert!(r.with_loop_count(count).is_none(), "{count}");
+        }
     }
 
     #[test]

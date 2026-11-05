@@ -590,8 +590,14 @@ fn cue_lines(cue: &Cue, lines: &mut Vec<String>) {
         match kind {
             CueLine::Effect => {
                 let eff = &cue.effects[i];
-                let Some((text, open)) = effect(eff, "        ") else {
-                    continue;
+                let (text, open) = match effect(eff, "        ") {
+                    Ok(written) => written,
+                    // No group left to name: the line goes, its comments
+                    // stay where it was.
+                    Err(comments) => {
+                        lines.extend(comments.iter().map(|c| format!("    {c}")));
+                        continue;
+                    }
                 };
                 lines.extend(own(&eff.comments_before, "    "));
                 match some(&eff.comment) {
@@ -671,9 +677,9 @@ pub fn timestamp(ts: &Timestamp) -> String {
 }
 
 /// An effect line; a line it goes on to starts at `indent`. The flag:
-/// whether its last parameter's comment ends its last line. `None` for an
-/// effect with no group left to name.
-fn effect(eff: &CueEffect, indent: &str) -> Option<(String, bool)> {
+/// whether its last parameter's comment ends its last line. For an effect
+/// with no group left to name, every comment it held, in order.
+fn effect(eff: &CueEffect, indent: &str) -> Result<(String, bool), Vec<String>> {
     // A group removed leaves its comments where it was (see `dropped`).
     let remarks = eff.group_remarks.as_deref().unwrap_or_default();
     let mut groups: Vec<Listed> = eff
@@ -689,14 +695,23 @@ fn effect(eff: &CueEffect, indent: &str) -> Option<(String, bool)> {
         text: String::new(),
         remarks: r.clone(),
     }));
-    let (named, _) = dropped(groups, |g, _| g.text.is_empty());
+    let (named, orphans) = dropped(groups, |g, _| g.text.is_empty());
     if named.is_empty() {
-        return None;
+        let (_, params) = dropped(eff.effect.params.clone(), |_, _| true);
+        let comments = [&eff.comments_before, &Some(orphans), &Some(params)]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .cloned()
+            .chain(some(&eff.comment).map(str::to_string))
+            .chain(eff.comments_after.iter().flatten().cloned())
+            .collect();
+        return Err(comments);
     }
     let (groups, _) = list(&named, indent, false);
     let head = format!("{groups}: {}", eff.effect.kind.keyword());
     if eff.effect.params.is_empty() {
-        return Some((head, false));
+        return Ok((head, false));
     }
     let params: Vec<Listed> = eff.effect.params.iter().map(param).collect();
     let listed = list(&params, indent, true);
@@ -706,7 +721,7 @@ fn effect(eff: &CueEffect, indent: &str) -> Option<(String, bool)> {
     } else {
         ","
     };
-    Some((format!("{head}{comma}{}", ended(listed, indent)), open))
+    Ok((format!("{head}{comma}{}", ended(listed, indent)), open))
 }
 
 /// A layer command, and the comments of parameters it no longer has when
@@ -806,27 +821,15 @@ pub fn transition_text(transition: &TempoTransition) -> String {
     }
 }
 
-/// A number as the editor has always written one (JavaScript's
-/// `Number.prototype.toString`): the shortest decimal that reads back as
-/// it, in exponent form below 1e-6 and from 1e21.
+/// A number as the grammar's `number_value` reads one: the shortest plain
+/// decimal that reads back as it, never an exponent. The grammar has no
+/// spelling for a NaN or an infinity (no form sets one), written as `0`.
 pub fn number(n: f64) -> String {
-    if n == 0.0 {
-        return "0".to_string();
+    if n.is_finite() {
+        format!("{}", n + 0.0)
+    } else {
+        "0".to_string()
     }
-    if n.is_nan() {
-        return "NaN".to_string();
-    }
-    if n.is_infinite() {
-        return if n > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
-    }
-    if n.abs() >= 1e21 || n.abs() < 1e-6 {
-        let text = format!("{n:e}");
-        return match text.split_once('e') {
-            Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-            _ => text,
-        };
-    }
-    format!("{n}")
 }
 
 /// `Math.round`: to the nearest integer, a half up.
@@ -1282,17 +1285,31 @@ mod tests {
     }
 
     #[test]
-    fn numbers_are_written_as_the_editor_always_wrote_them() {
+    fn numbers_are_written_as_the_grammar_reads_them() {
         for (n, text) in [
             (120.0, "120"),
             (120.5, "120.5"),
             (0.1 + 0.2, "0.30000000000000004"),
             (-0.0, "0"),
-            (1e21, "1e+21"),
-            (1.5e-7, "1.5e-7"),
-            (0.000001, "0.000001"),
+            (1e21, "1000000000000000000000"),
+            (1.5e-7, "0.00000015"),
+            (f64::NAN, "0"),
+            (f64::INFINITY, "0"),
         ] {
             assert_eq!(number(n), text);
         }
+    }
+
+    #[test]
+    fn an_effect_with_no_group_left_leaves_its_comments_where_it_was() {
+        let written = edit_cue(
+            &show("    # above\n    front, # g\n        back: static, # p\n        color: \"red\" # last\n    clear(layer: background)\n"),
+            |cue| cue.effects[0].groups.clear(),
+        );
+        assert_eq!(
+            written,
+            show("    # above\n    # g\n    # p\n    # last\n    clear(layer: background)\n")
+        );
+        assert!(document(&written, None).error.is_none());
     }
 }

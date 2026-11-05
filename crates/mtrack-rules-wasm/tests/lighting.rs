@@ -573,15 +573,19 @@ fn a_snapped_beat_or_bar_is_named_as_one_wherever_it_starts() {
                 let what = format!("{bpm} @{m}/{b}");
                 // A drag a little past each length, snapped back to it.
                 let beat =
-                    snapped_length(&t, from, span(Some(&t), from, "1beat") + 20.0, Some(1.0));
+                    snapped_length(&t, from, span(Some(&t), from, "1beat") + 20.0, Some(1.0))
+                        .unwrap();
                 assert_eq!(length_name(Some(&t), from, beat), "1beat", "{what}");
-                let bar = snapped_length(&t, from, span(Some(&t), from, "1measure") + 20.0, None);
+                let bar = snapped_length(&t, from, span(Some(&t), from, "1measure") + 20.0, None)
+                    .unwrap();
                 assert_eq!(length_name(Some(&t), from, bar), "1measure", "{what}");
                 let two =
-                    snapped_length(&t, from, span(Some(&t), from, "2beats") - 20.0, Some(1.0));
+                    snapped_length(&t, from, span(Some(&t), from, "2beats") - 20.0, Some(1.0))
+                        .unwrap();
                 assert_eq!(length_name(Some(&t), from, two), "2beats", "{what}");
                 let half =
-                    snapped_length(&t, from, span(Some(&t), from, "0.5beats") + 5.0, Some(0.5));
+                    snapped_length(&t, from, span(Some(&t), from, "0.5beats") + 5.0, Some(0.5))
+                        .unwrap();
                 close(half, span(Some(&t), from, "0.5beats"), &what);
             }
         }
@@ -608,4 +612,11 @@ fn a_dragged_length_is_named_in_bars_beats_or_time() {
     assert_eq!(length_name(Some(&t), 0.0, 750.0), "750ms");
     assert_eq!(length_name(None, 0.0, 5000.0), "5s");
     assert_eq!(length_name(None, 0.0, 250.0), "250ms");
+}
+
+#[test]
+fn a_length_that_is_no_time_snaps_to_nothing() {
+    let t = dsl(120.0, (4, 4), &[], 0.0);
+    assert_eq!(snapped_length(&t, f64::NAN, 500.0, Some(1.0)), None);
+    assert_eq!(snapped_length(&t, 0.0, f64::INFINITY, None), None);
 }

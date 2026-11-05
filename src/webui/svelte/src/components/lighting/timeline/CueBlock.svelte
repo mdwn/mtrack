@@ -252,12 +252,12 @@
         } else if (onresize) {
           const snappedMs =
             snapEnabled && tempoSource && !bypassSnap
-              ? rules.duration_snap(
+              ? (rules.duration_snap(
                   tempoSource,
                   cueMs,
                   newTotalMs,
                   SNAP_BEATS[snapResolution],
-                )
+                ) ?? newTotalMs)
               : newTotalMs;
           onresize(
             rules.duration_text(tempoSource ?? undefined, cueMs, snappedMs),

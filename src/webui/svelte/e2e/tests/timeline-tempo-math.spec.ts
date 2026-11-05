@@ -63,7 +63,7 @@ const snapDurationToGrid = (
   atMs: number,
   source: TempoSource,
   resolution: "beat" | "measure",
-) => rules.duration_snap(source, atMs, ms, SNAP_BEATS[resolution]);
+) => rules.duration_snap(source, atMs, ms, SNAP_BEATS[resolution]) ?? ms;
 
 function tempo(
   bpm: number,
