@@ -160,8 +160,9 @@ export function formatTimestamp(ts: Timestamp): string {
     return `${ts.measure ?? 1}/${beat}`;
   }
 
-  // Absolute: format as MM:SS.mmm
-  const totalMs = ts.ms ?? 0;
+  // Absolute: format as MM:SS.mmm, in whole milliseconds (the document
+  // holds whole ones; an edit's fraction is rounded away).
+  const totalMs = Math.max(0, Math.round(ts.ms ?? 0));
   const mins = Math.floor(totalMs / 60000);
   const secs = Math.floor((totalMs % 60000) / 1000);
   const ms = totalMs % 1000;

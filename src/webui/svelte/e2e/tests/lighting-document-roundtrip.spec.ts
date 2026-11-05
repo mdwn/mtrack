@@ -50,6 +50,18 @@ function lightFilesIn(dir: string): string[] {
     .map((f) => resolve(dir, f));
 }
 
+test("a time of whole milliseconds is written as read", () => {
+  for (const written of ["@1.005", "@0.001", "@00:00.003", "@2:03.5"]) {
+    const source = `show "S" {\n    ${written}\n    a: static, color: "red", duration: 1s\n}\n`;
+    const read = rules.document(source);
+    const again = rules.document(serializeLightFile(read.document!));
+    expect(again.error).toBeUndefined();
+    expect(again.document!.shows[0].cues[0].timestamp).toEqual(
+      read.document!.shows[0].cues[0].timestamp,
+    );
+  }
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

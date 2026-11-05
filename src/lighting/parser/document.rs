@@ -604,9 +604,12 @@ fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {
                 beat: Some(beat),
             }
         }
+        // Whole milliseconds, the parser's own precision: a fraction of a
+        // millisecond is never written, and `1.005` as seconds times a
+        // thousand is not 1005.
         _ => Timestamp {
             kind: TimestampKind::Absolute,
-            ms: Some(parse_time_string(pair.as_str())?.as_secs_f64() * 1000.0),
+            ms: Some(parse_time_string(pair.as_str())?.as_millis() as f64),
             measure: None,
             beat: None,
         },
@@ -1100,6 +1103,22 @@ show "Song" {
             Some("50%")
         );
         assert_eq!(effect.colors, vec!["#FF0000"]);
+    }
+
+    #[test]
+    fn a_time_is_whole_milliseconds() {
+        for (written, ms) in [
+            ("@1.005", 1005.0),
+            ("@0.001", 1.0),
+            ("@00:00.003", 3.0),
+            ("@2:03.5", 123500.0),
+            ("@00:01.4999", 1499.0),
+        ] {
+            let doc = document(&format!("show \"S\" {{\n    {written}\n}}\n"), None)
+                .document
+                .unwrap();
+            assert_eq!(doc.shows[0].cues[0].timestamp.ms, Some(ms), "{written}");
+        }
     }
 
     #[test]
