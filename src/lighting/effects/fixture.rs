@@ -496,6 +496,12 @@ pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
 }
 
 /// Each additive primary and the subtractive channel that removes it.
+/// Whether a channel map has a dimmer of its own: a fixture's, or a
+/// cell's. Without one, the level is carried on the colour channels.
+pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
+    channels.contains_key("dimmer")
+}
+
 /// The name a pixel fixture's cell registers under beside it: the
 /// fixture's, a slash, the cell's.
 pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
@@ -632,7 +638,7 @@ impl FixtureInfo {
         if channels.contains_key("white") {
             capabilities = capabilities.with(FixtureCapabilities::WHITE_COLOR);
         }
-        if channels.contains_key("dimmer") {
+        if has_dimmer_channel(channels) {
             capabilities = capabilities.with(FixtureCapabilities::DIMMING);
         }
         if channels.contains_key("strobe") {

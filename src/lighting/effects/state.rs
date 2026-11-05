@@ -248,7 +248,7 @@ impl FixtureState {
         cell: &crate::lighting::types::Cell,
         own: Option<&FixtureState>,
     ) -> Vec<(String, f64)> {
-        let cell_has_dimmer = cell.channels.contains_key("dimmer");
+        let cell_has_dimmer = cell.has_dimmer();
         let read = |k: &str| {
             own.and_then(|o| o.channels.get(k))
                 .or_else(|| self.channels.get(k))

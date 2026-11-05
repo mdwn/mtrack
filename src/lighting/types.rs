@@ -90,6 +90,14 @@ pub struct Cell {
     pub offset: Vec3,
 }
 
+impl Cell {
+    /// Whether the cell has a dimmer of its own (see
+    /// [`has_dimmer_channel`](crate::lighting::effects::has_dimmer_channel)).
+    pub fn has_dimmer(&self) -> bool {
+        crate::lighting::effects::has_dimmer_channel(&self.channels)
+    }
+}
+
 /// A structured channel definition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChannelDef {
