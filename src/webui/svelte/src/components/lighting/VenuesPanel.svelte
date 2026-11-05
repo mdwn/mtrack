@@ -22,7 +22,7 @@
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
-  import { overlaps } from "../../lib/lighting/patch";
+  import { listed } from "../../lib/lighting/patch";
   import { rules } from "../../lib/rules";
   import { isRefused } from "../../lib/lighting/modes";
   import { untrack } from "svelte";
@@ -360,13 +360,11 @@
       (rules.patch_overruns(rowSpans) ?? []).map((o) => [o.fixture, o.last]),
     );
     return rowSpans.map((span) => ({
-      hits: overlaps(rowSpans, span).flatMap((h) =>
-        h.second_gang.map((row) => ({
-          row: Number(row),
-          from: h.from,
-          to: h.to,
-        })),
-      ),
+      hits: listed(rules.patch_overlaps(rowSpans, span) ?? []).map((h) => ({
+        row: Number(h.fixture),
+        from: h.from,
+        to: h.to,
+      })),
       overrun: overruns.get(span.fixture) ?? null,
     }));
   });

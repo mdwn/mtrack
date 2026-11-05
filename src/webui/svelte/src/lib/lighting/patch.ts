@@ -37,6 +37,20 @@ export function overlaps(
   return rules.patch_overlaps(spans, candidate) ?? [];
 }
 
+/** One entry per fixture the hits name, with the addresses it shares, in
+ *  the order the editor lists them: by the first shared address, then by
+ *  name as the locale orders it. Display order only; the rule's own is by
+ *  gang, in byte order of the gang's first name. */
+export function listed(
+  hits: PatchOverlap[],
+): { fixture: string; from: number; to: number }[] {
+  return hits
+    .flatMap((h) =>
+      h.second_gang.map((fixture) => ({ fixture, from: h.from, to: h.to })),
+    )
+    .sort((a, b) => a.from - b.from || a.fixture.localeCompare(b.fixture));
+}
+
 /** How many addresses fit at the candidate's start before another
  *  fixture's (ganged ones aside): the largest footprint that would not
  *  collide. Zero when the start itself is taken. */

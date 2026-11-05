@@ -37,6 +37,7 @@
     type VenuePatch,
   } from "../../lib/api/config";
   import {
+    listed,
     overlaps,
     room,
     stripCells,
@@ -460,7 +461,7 @@
       };
       const hits = overlaps(spans, candidate);
       if (hits.length > 0 && candidate.footprint) {
-        const names = hits.flatMap((h) => h.second_gang);
+        const names = listed(hits).map((h) => h.fixture);
         patchMsg = {
           ok: false,
           text: get(t)("venues.inspector.addressRefused", {
@@ -612,7 +613,7 @@
       if (hits.length > 0) {
         // Refused before the save: the select goes back to what is saved.
         select.value = previous;
-        const names = hits.flatMap((h) => h.second_gang);
+        const names = listed(hits).map((h) => h.fixture);
         const fits = room(spans, candidate);
         patchMsg = {
           ok: false,
