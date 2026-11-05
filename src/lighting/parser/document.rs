@@ -609,6 +609,15 @@ pub struct SequenceRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub loop_comma: Option<bool>,
+    /// A comment after its arguments' `)` (or its name, and the comma),
+    /// on that line, with `loop:` on a later one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub loop_comment: Option<String>,
+    /// The comment lines between its arguments and its `loop:`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub loop_comments_before: Option<Vec<String>>,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -821,7 +830,18 @@ fn text_end(pair: &Pair<Rule>, source: &str) -> usize {
     }
     let from = last(pair);
     let rest = &source[from..pair.as_span().end()];
-    let comments: Vec<(usize, usize)> = LightingParser::parse(Rule::gap, rest)
+    let comments = comment_spans(rest);
+    let outside = |i: &usize| !comments.iter().any(|(s, e)| (*s..*e).contains(i));
+    rest.char_indices()
+        .rev()
+        .find(|(i, c)| !c.is_whitespace() && outside(i))
+        .map(|(i, c)| from + i + c.len_utf8())
+        .unwrap_or(from)
+}
+
+/// Where the comments of `gap` are, by the grammar's `gap` rule.
+fn comment_spans(gap: &str) -> Vec<(usize, usize)> {
+    LightingParser::parse(Rule::gap, gap)
         .map(|pairs| {
             pairs
                 .flatten()
@@ -829,13 +849,17 @@ fn text_end(pair: &Pair<Rule>, source: &str) -> usize {
                 .map(|p| (p.as_span().start(), p.as_span().end()))
                 .collect()
         })
-        .unwrap_or_default();
-    let outside = |i: &usize| !comments.iter().any(|(s, e)| (*s..*e).contains(i));
-    rest.char_indices()
-        .rev()
-        .find(|(i, c)| !c.is_whitespace() && outside(i))
-        .map(|(i, c)| from + i + c.len_utf8())
-        .unwrap_or(from)
+        .unwrap_or_default()
+}
+
+/// `gap`'s text with its comments (by the grammar's `gap` rule) left
+/// out: its whitespace and punctuation.
+fn outside_comments(gap: &str) -> String {
+    let comments = comment_spans(gap);
+    gap.char_indices()
+        .filter(|(i, _)| !comments.iter().any(|(s, e)| (*s..*e).contains(i)))
+        .map(|(_, c)| c)
+        .collect()
 }
 
 /// The comments in `source[from..to]`, a gap, by the grammar's `gap`
@@ -935,6 +959,7 @@ struct LineComments<'i> {
     elements: Vec<(Rule, Remarks)>,
     loose: Vec<String>,
     tail: Vec<Item<'i>>,
+    after_close: Vec<(String, bool)>,
 }
 
 impl LineComments<'_> {
@@ -943,15 +968,39 @@ impl LineComments<'_> {
         source: &'i str,
         element: &dyn Fn(Rule) -> bool,
     ) -> LineComments<'i> {
+        Self::read_closed(pair, source, element, None)
+    }
+
+    /// [`LineComments::read`] of a line whose elements are a list closed
+    /// at `close` (after its `)`) with more of the line after it: the
+    /// comments after the close are the line's (`after_close`, each with
+    /// whether it is on a line after something), not the last element's.
+    fn read_closed<'i>(
+        pair: &Pair<'i, Rule>,
+        source: &'i str,
+        element: &dyn Fn(Rule) -> bool,
+        close: Option<usize>,
+    ) -> LineComments<'i> {
         let end = text_end(pair, source);
-        let (tail, body): (Vec<Item>, Vec<Item>) = walk_deep(pair, source, element)
-            .into_iter()
-            .partition(|item| matches!(item, Item::Comment { at, .. } if *at >= end));
+        let close = close.unwrap_or(end);
+        let mut tail = Vec::new();
+        let mut body = Vec::new();
+        let mut after_close = Vec::new();
+        for item in walk_deep(pair, source, element) {
+            match item {
+                Item::Comment { at, .. } if at >= end => tail.push(item),
+                Item::Comment {
+                    at, text, inline, ..
+                } if at >= close => after_close.push((text, inline)),
+                item => body.push(item),
+            }
+        }
         let (elements, loose) = remarks(body, source, element);
         LineComments {
             elements,
             loose,
             tail,
+            after_close,
         }
     }
 
@@ -1651,6 +1700,8 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                     loop_: None,
                     stop: Some(true),
                     loop_comma: None,
+                    loop_comment: None,
+                    loop_comments_before: None,
                     comments_before: comments.take(),
                     comment: None,
                 });
@@ -1865,16 +1916,34 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
 /// A sequence reference, with the comments after its text (see
 /// [`LineComments`]).
 fn sequence_ref<'i>(pair: Pair<'i, Rule>, whole: &'i str) -> (SequenceRef, Vec<Item<'i>>) {
-    let mut found = LineComments::read(&pair, whole, &|r| r == Rule::sequence_arg);
+    // Its arguments close at their `)`, or its name ends the list.
+    let close = pair
+        .clone()
+        .into_inner()
+        .filter(|p| matches!(p.as_rule(), Rule::sequence_name | Rule::sequence_args))
+        .last()
+        .map(|p| p.as_span().end());
+    let mut found = LineComments::read_closed(&pair, whole, &|r| r == Rule::sequence_arg, close);
     let mut reference = SequenceRef {
         name: String::new(),
         args: None,
         loop_: None,
         stop: None,
         loop_comma: None,
+        loop_comment: None,
+        loop_comments_before: None,
         comments_before: None,
         comment: None,
     };
+    for (text, inline) in std::mem::take(&mut found.after_close) {
+        match &mut reference.loop_comment {
+            slot @ None if inline => *slot = Some(text),
+            _ => reference
+                .loop_comments_before
+                .get_or_insert_with(Vec::new)
+                .push(text),
+        }
+    }
     let source = pair.as_str();
     let base = pair.as_span().start();
     let mut before_params = 0;
@@ -1894,7 +1963,9 @@ fn sequence_ref<'i>(pair: Pair<'i, Rule>, whole: &'i str) -> (SequenceRef, Vec<I
                 )
             }
             Rule::sequence_params => {
-                if source[before_params..item.as_span().start() - base].contains(',') {
+                if outside_comments(&source[before_params..item.as_span().start() - base])
+                    .contains(',')
+                {
                     reference.loop_comma = Some(true);
                 }
                 for param in item
@@ -2236,6 +2307,30 @@ show "Song" {
         assert_eq!(changes[0].comment_before_comma, Some(true));
         assert_eq!(changes[1].comment.as_deref(), Some("# b"));
         assert_eq!(changes[1].comment_before_comma, None);
+    }
+
+    #[test]
+    fn a_comment_after_a_references_arguments_is_before_its_loop() {
+        let doc = document(
+            "show \"S\" {\n    @1/1\n    sequence \"x\"(hit: \"#FF0000\"), # c, d\n        # above\n        loop: 2\n    sequence \"y\" # e\n        loop: 3\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let refs = &doc.shows[0].cues[0].sequences;
+        assert_eq!(
+            refs[0].args.as_ref().unwrap()[0].remarks,
+            Remarks::default()
+        );
+        assert_eq!(refs[0].loop_comment.as_deref(), Some("# c, d"));
+        assert_eq!(
+            refs[0].loop_comments_before,
+            Some(vec!["# above".to_string()])
+        );
+        assert_eq!(refs[0].loop_comma, Some(true));
+        assert_eq!(refs[1].loop_comment.as_deref(), Some("# e"));
+        assert_eq!(refs[1].loop_comma, None);
+        assert_eq!(refs[1].comments_before, None);
     }
 
     #[test]

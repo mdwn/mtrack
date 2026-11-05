@@ -274,6 +274,12 @@ test("a last parameter's comment and the effect's stay two comments", () => {
   expect(commentLines(coloured)).toEqual(["# first", "# second"]);
 });
 
+test("a comment after a reference's arguments stays before its loop", () => {
+  const source =
+    'show "S" {\n    @1/1\n    sequence "x"(hit: "#FF0000"), # c\n        loop: 2\n    sequence "y" # e\n        # above\n        loop: 3\n}\n';
+  expect(serializeLightFile(rules.document(source).document!)).toBe(source);
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

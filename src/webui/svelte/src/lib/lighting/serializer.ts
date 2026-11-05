@@ -470,8 +470,17 @@ function serializeSequenceRef(ref: SequenceRef, indent: string): string {
   if (ref.stop) parts.push("stop ");
   parts.push(`sequence "${ref.name}"`);
   if (ref.args && !ref.stop) parts.push(serializeArgList(ref.args, indent));
-  if (ref.loop && !ref.stop)
-    parts.push(`${ref.loop_comma ? "," : ""} loop: ${ref.loop}`);
+  if (ref.loop && !ref.stop) {
+    parts.push(ref.loop_comma ? "," : "");
+    // A comment after the arguments, and comment lines before `loop:`,
+    // put `loop:` on a line of its own.
+    const before = ref.loop_comments_before ?? [];
+    if (ref.loop_comment || before.length) {
+      if (ref.loop_comment) parts.push(` ${ref.loop_comment}`);
+      for (const c of before) parts.push(`\n${indent}${c}`);
+      parts.push(`\n${indent}loop: ${ref.loop}`);
+    } else parts.push(` loop: ${ref.loop}`);
+  }
   return parts.join("");
 }
 
