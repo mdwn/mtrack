@@ -42,7 +42,9 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: taiki-e/install-action@v2
       with:
-        tool: wasm-pack
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: actions/setup-node@v7
       with:
         node-version: '22'
@@ -129,7 +131,9 @@ jobs:
           targets: ${{ matrix.target }},wasm32-unknown-unknown
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+      - name: Install wasm-opt
+        run: ./scripts/install-binaryen.sh
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "release-${{ matrix.target }}"

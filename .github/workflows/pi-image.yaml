@@ -145,7 +145,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: env.SOURCE_BUILD == 'true'
         with:
-          tool: cargo-deb,wasm-pack
+          tool: cargo-deb,wasm-pack@0.15.1,wasm-bindgen@0.2.122
+      - name: Install wasm-opt (source builds only)
+        if: env.SOURCE_BUILD == 'true'
+        run: ./mtrack/scripts/install-binaryen.sh
       - name: Package it
         if: env.SOURCE_BUILD == 'true'
         run: |
