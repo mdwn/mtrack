@@ -348,14 +348,17 @@
     });
   });
 
-  /** The measure and whole beat at the playhead, from the player's grid. */
+  /** The measure and whole beat at the playhead, from the player's grid;
+   * nothing during the count-in (measure 0), which no position names. */
   let currentBeatInfo = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     if (!grid) return null;
     const at = rules.grid_query(grid, {
       secs: $playbackStore.elapsed_ms / 1000,
     });
-    return at ? { measure: at.measure, beat: Math.floor(at.beat) } : null;
+    return at && at.measure > 0
+      ? { measure: at.measure, beat: Math.floor(at.beat) }
+      : null;
   });
 </script>
 

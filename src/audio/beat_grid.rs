@@ -41,6 +41,17 @@ pub struct BeatGrid {
     pub measure_starts: Vec<usize>,
 }
 
+/// A point on a beat grid: `measure` 1-based, 0 for the count-in before
+/// bar 1; `beat` 1-based within the measure (or click within the count-in),
+/// possibly fractional; `index` the index into `beats` of the whole beat
+/// the point is on. See [`BeatGrid::position_at`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridPoint {
+    pub measure: usize,
+    pub beat: f64,
+    pub index: usize,
+}
+
 impl BeatGrid {
     /// Returns the number of beats.
     pub fn beat_count(&self) -> usize {
@@ -96,18 +107,19 @@ impl BeatGrid {
         Some(t0 + (t1 - t0) * frac)
     }
 
-    /// The position of a time in seconds, as (measure, beat): measure
-    /// 0-indexed, beat 1-based and fractional, the way [`BeatGrid::beat_time`]
-    /// takes them -- the beat at or before the time plus how far through it
-    /// the time lies, so `beat_time` of the result is the time again. This
-    /// is the one rule for reading a time off the grid; a time that has to
-    /// land on a beat goes through [`BeatGrid::snapped_position_at`]. A time
-    /// before the grid is its first beat and a time past it is its last.
-    /// `None` for an empty grid, a time that is not a number, or a beat
-    /// before the first downbeat (a pickup), which has no measure to be
-    /// counted in.
-    pub fn position_at(&self, secs: f64) -> Option<(usize, f64)> {
-        if !secs.is_finite() {
+    /// Where a time in seconds lies on the grid: the beat at or before it
+    /// plus the fraction through that beat, so [`BeatGrid::time_of`] the
+    /// point is the time again. This is the one rule for reading a time off
+    /// the grid; a time that has to land on a beat goes through
+    /// [`BeatGrid::snapped_position_at`]. A time before the grid is its
+    /// first beat and a time past it is its last. A time in the count-in --
+    /// the clicks before the first downbeat, `measure_starts[0]` -- is
+    /// measure 0, its beat the 1-based click within the count-in: a bar
+    /// the player never names (a section cannot start there) but one the
+    /// click track plays through. `None` for an empty grid, one with no
+    /// measures, or a time that is not a number.
+    pub fn position_at(&self, secs: f64) -> Option<GridPoint> {
+        if !secs.is_finite() || self.measure_starts.is_empty() {
             return None;
         }
         let index = self
@@ -120,37 +132,125 @@ impl BeatGrid {
             Some(t1) if *t1 > t0 && secs > t0 => ((secs - t0) / (t1 - t0)).clamp(0.0, 1.0),
             _ => 0.0,
         };
-        let measure = self
+        let (measure, first) = match self
             .measure_starts
             .iter()
-            .rposition(|&start| start <= index)?;
-        Some((
+            .rposition(|&start| start <= index)
+        {
+            Some(m) => (m + 1, self.measure_starts[m]),
+            None => (0, 0),
+        };
+        Some(GridPoint {
             measure,
-            (index - self.measure_starts[measure]) as f64 + 1.0 + frac,
-        ))
+            beat: (index - first) as f64 + 1.0 + frac,
+            index,
+        })
     }
 
-    /// [`BeatGrid::position_at`] rounded to the nearest `step` of a beat (1
-    /// for whole beats, 0.5 for halves): the rule a time snaps to a beat by,
-    /// so a tempo change or a pilot hint captured from the playhead lands on
-    /// the nearest beat and a section boundary on the nearest half. The
-    /// rounded position is asked of the grid again: one rounded past the end
-    /// of its measure is the next measure's downbeat, not a beat the measure
-    /// does not hold, and one rounded past the grid's end is the last beat
-    /// it does.
-    pub fn snapped_position_at(&self, secs: f64, step: f64) -> Option<(usize, f64)> {
-        if !step.is_finite() || step <= 0.0 {
+    /// The point at a measure (1-based; 0 the count-in) and a possibly
+    /// fractional beat, when the grid holds it: [`BeatGrid::beat_time`]'s
+    /// terms, with the count-in's clicks counted the same way.
+    pub fn point(&self, measure: usize, beat: f64) -> Option<GridPoint> {
+        if !beat.is_finite() || beat < 1.0 {
             return None;
         }
-        let (measure, beat) = self.position_at(secs)?;
-        let rounded = 1.0 + ((beat - 1.0) / step).round() * step;
-        if self.beat_time(measure, rounded).is_some() {
-            return Some((measure, rounded));
+        let first = match measure.checked_sub(1) {
+            Some(m) => *self.measure_starts.get(m)?,
+            None => 0,
+        };
+        let index = first.checked_add((beat - 1.0).floor() as usize)?;
+        let point = GridPoint {
+            measure,
+            beat,
+            index,
+        };
+        self.time_of(&point)?;
+        Some(point)
+    }
+
+    /// The time of a point: [`BeatGrid::beat_time`] for a measure, and for
+    /// the count-in (measure 0) the same rule over its clicks -- a click
+    /// must be one of the count-in's, and a fraction interpolates towards
+    /// the next click or the first downbeat.
+    pub fn time_of(&self, point: &GridPoint) -> Option<f64> {
+        match point.measure.checked_sub(1) {
+            Some(measure) => self.beat_time(measure, point.beat),
+            None => {
+                if !point.beat.is_finite() || point.beat < 1.0 {
+                    return None;
+                }
+                let count_in = *self.measure_starts.first()?;
+                let offset = point.beat - 1.0;
+                if offset.floor() as usize >= count_in {
+                    return None;
+                }
+                let base = offset.floor() as usize;
+                let t0 = *self.beats.get(base)?;
+                let frac = offset.fract();
+                if frac == 0.0 {
+                    return Some(t0);
+                }
+                let t1 = *self.beats.get(base + 1)?;
+                Some(t0 + (t1 - t0) * frac)
+            }
         }
-        if self.beat_time(measure + 1, 1.0).is_some() {
-            return Some((measure + 1, 1.0));
+    }
+
+    /// How many beats a point's measure holds: the count-in's clicks for
+    /// measure 0, else [`BeatGrid::beats_in_measure`].
+    pub fn beats_in(&self, measure: usize) -> Option<usize> {
+        match measure.checked_sub(1) {
+            Some(measure) => self.beats_in_measure(measure),
+            None => self.measure_starts.first().copied(),
         }
-        Some((measure, beat.floor()))
+    }
+
+    /// A position rounded to the nearest `step` of a beat (1 for whole
+    /// beats, 0.5 for halves): the one rule a position snaps by. The
+    /// rounded position is asked of the grid again. One rounded past the
+    /// end of its measure is the next measure's downbeat, not a beat the
+    /// measure does not hold -- or, `within_bar`, the highest step the
+    /// measure does hold (a section boundary stepping along stays in its
+    /// bar; in the bar the grid ends in no fraction past the last beat
+    /// resolves, so that one stops at the last beat). One rounded past the
+    /// grid's end is the last beat it holds.
+    pub fn snap(
+        &self,
+        measure: usize,
+        beat: f64,
+        step: f64,
+        within_bar: bool,
+    ) -> Option<GridPoint> {
+        if !step.is_finite() || step <= 0.0 || !beat.is_finite() {
+            return None;
+        }
+        let rounded = (1.0 + ((beat - 1.0) / step).round() * step).max(1.0);
+        if let Some(point) = self.point(measure, rounded) {
+            return Some(point);
+        }
+        if within_bar {
+            let mut candidate = rounded - step;
+            while candidate >= 1.0 {
+                if let Some(point) = self.point(measure, candidate) {
+                    return Some(point);
+                }
+                candidate -= step;
+            }
+            return self.point(measure, 1.0);
+        }
+        if let Some(point) = self.point(measure + 1, 1.0) {
+            return Some(point);
+        }
+        self.point(measure, beat.floor())
+    }
+
+    /// [`BeatGrid::position_at`] then [`BeatGrid::snap`]: the rule a time
+    /// snaps to a beat by, so a tempo change or a pilot hint captured from
+    /// the playhead lands on the nearest beat and a section boundary on the
+    /// nearest half.
+    pub fn snapped_position_at(&self, secs: f64, step: f64, within_bar: bool) -> Option<GridPoint> {
+        let point = self.position_at(secs)?;
+        self.snap(point.measure, point.beat, step, within_bar)
     }
 
     /// Returns the time range (start, end) of the given measure (0-indexed).
@@ -727,50 +827,106 @@ mod position_at_tests {
         }
     }
 
-    #[test]
-    fn position_is_the_beat_and_the_fraction_through_it() {
-        let grid = grid();
-        assert_eq!(grid.position_at(0.0), Some((0, 1.0)));
-        assert_eq!(grid.position_at(0.25), Some((0, 1.5)));
-        assert_eq!(grid.position_at(1.9), Some((0, 4.8)));
-        assert_eq!(grid.position_at(2.0), Some((1, 1.0)));
-        assert_eq!(grid.position_at(3.75), Some((1, 4.5)));
+    fn at(measure: usize, beat: f64) -> Option<(usize, f64)> {
+        Some((measure, beat))
+    }
+
+    fn mb(point: Option<GridPoint>) -> Option<(usize, f64)> {
+        point.map(|p| (p.measure, p.beat))
     }
 
     #[test]
-    fn position_round_trips_through_beat_time() {
+    fn position_is_the_beat_and_the_fraction_through_it() {
+        let grid = grid();
+        assert_eq!(mb(grid.position_at(0.0)), at(1, 1.0));
+        assert_eq!(mb(grid.position_at(0.25)), at(1, 1.5));
+        assert_eq!(mb(grid.position_at(1.9)), at(1, 4.8));
+        assert_eq!(mb(grid.position_at(2.0)), at(2, 1.0));
+        assert_eq!(mb(grid.position_at(3.75)), at(2, 4.5));
+        assert_eq!(grid.position_at(3.75).unwrap().index, 7);
+    }
+
+    #[test]
+    fn position_round_trips_through_time_of() {
         let grid = grid();
         for i in 0..80 {
             let secs = i as f64 * 0.05;
-            let (measure, beat) = grid.position_at(secs).expect("on the grid");
-            let back = grid.beat_time(measure, beat).expect("resolves");
-            assert!(
-                (back - secs).abs() < 1e-9,
-                "{secs} -> {measure}/{beat} -> {back}"
-            );
+            let point = grid.position_at(secs).expect("on the grid");
+            let back = grid.time_of(&point).expect("resolves");
+            assert!((back - secs).abs() < 1e-9, "{secs} -> {point:?} -> {back}");
+            assert_eq!(grid.point(point.measure, point.beat), Some(point));
         }
     }
 
     #[test]
     fn clamps_to_the_grid() {
-        assert_eq!(grid().position_at(-5.0), Some((0, 1.0)));
-        assert_eq!(grid().position_at(99.0), Some((2, 1.0)));
+        assert_eq!(mb(grid().position_at(-5.0)), at(1, 1.0));
+        assert_eq!(mb(grid().position_at(99.0)), at(3, 1.0));
     }
 
     #[test]
     fn snaps_to_the_nearest_step_and_rolls_into_the_next_measure() {
         let grid = grid();
-        assert_eq!(grid.snapped_position_at(0.2, 1.0), Some((0, 1.0)));
-        assert_eq!(grid.snapped_position_at(0.3, 1.0), Some((0, 2.0)));
-        assert_eq!(grid.snapped_position_at(0.3, 0.5), Some((0, 1.5)));
+        assert_eq!(mb(grid.snapped_position_at(0.2, 1.0, false)), at(1, 1.0));
+        assert_eq!(mb(grid.snapped_position_at(0.3, 1.0, false)), at(1, 2.0));
+        assert_eq!(mb(grid.snapped_position_at(0.3, 0.5, false)), at(1, 1.5));
         // Three quarters through beat 4: nearest beat is the next downbeat,
         // never "beat 5" of a four-beat measure.
-        assert_eq!(grid.snapped_position_at(1.9, 1.0), Some((1, 1.0)));
-        assert_eq!(grid.snapped_position_at(1.8, 0.5), Some((0, 4.5)));
-        assert_eq!(grid.snapped_position_at(1.9, 0.5), Some((1, 1.0)));
+        assert_eq!(mb(grid.snapped_position_at(1.9, 1.0, false)), at(2, 1.0));
+        assert_eq!(mb(grid.snapped_position_at(1.8, 0.5, false)), at(1, 4.5));
+        assert_eq!(mb(grid.snapped_position_at(1.9, 0.5, false)), at(2, 1.0));
         // Past the grid there is nothing to roll into.
-        assert_eq!(grid.snapped_position_at(99.0, 1.0), Some((2, 1.0)));
-        assert_eq!(grid.snapped_position_at(1.0, 0.0), None);
+        assert_eq!(mb(grid.snapped_position_at(99.0, 1.0, false)), at(3, 1.0));
+        assert_eq!(grid.snapped_position_at(1.0, 0.0, false), None);
+    }
+
+    #[test]
+    fn snapping_within_the_bar_stays_at_its_highest_step() {
+        let grid = grid();
+        // A position stepped past the bar's end stays at the last step the
+        // bar holds: beat 4.5 of a 4/4 bar, or beat 4 when nothing follows
+        // the bar's last beat to interpolate towards.
+        assert_eq!(mb(grid.snap(1, 5.0, 0.5, true)), at(1, 4.5));
+        assert_eq!(mb(grid.snap(1, 5.0, 1.0, true)), at(1, 4.0));
+        assert_eq!(mb(grid.snap(1, 7.3, 0.5, true)), at(1, 4.5));
+        assert_eq!(mb(grid.snap(3, 1.5, 0.5, true)), at(3, 1.0));
+        assert_eq!(mb(grid.snap(1, 2.3, 0.5, true)), at(1, 2.5));
+        assert_eq!(mb(grid.snap(1, 0.2, 0.5, true)), at(1, 1.0));
+        // Without the flag the same positions roll over.
+        assert_eq!(mb(grid.snap(1, 5.0, 0.5, false)), at(2, 1.0));
+        assert_eq!(mb(grid.snapped_position_at(1.9, 1.0, true)), at(1, 4.0));
+        // Off the grid altogether there is nothing to stay inside of.
+        assert_eq!(grid.snap(9, 1.0, 1.0, true), None);
+    }
+
+    #[test]
+    fn the_count_in_is_measure_zero() {
+        // Four count-in clicks, then two 4/4 bars and a trailing downbeat.
+        let grid = BeatGrid {
+            beats: (0..13).map(|i| i as f64 * 0.5).collect(),
+            measure_starts: vec![4, 8, 12],
+        };
+        assert_eq!(mb(grid.position_at(0.0)), at(0, 1.0));
+        assert_eq!(mb(grid.position_at(1.25)), at(0, 3.5));
+        assert_eq!(mb(grid.position_at(1.75)), at(0, 4.5));
+        assert_eq!(mb(grid.position_at(2.0)), at(1, 1.0));
+        assert_eq!(grid.position_at(1.25).unwrap().index, 2);
+        assert_eq!(grid.beats_in(0), Some(4));
+        assert_eq!(grid.beats_in(1), Some(4));
+        // Its clicks resolve like beats, and the last one interpolates
+        // towards the first downbeat; a fifth click is not one of them.
+        assert_eq!(grid.time_of(&grid.position_at(1.25).unwrap()), Some(1.25));
+        assert_eq!(
+            grid.point(0, 4.5).map(|p| grid.time_of(&p)),
+            Some(Some(1.75))
+        );
+        assert_eq!(grid.point(0, 5.0), None);
+        // The player still names no bar 0: `beat_time` is unchanged.
+        assert_eq!(grid.beat_time(0, 1.0), Some(2.0));
+        // Snapping in the count-in rolls into bar 1 like any bar.
+        assert_eq!(mb(grid.snapped_position_at(1.9, 1.0, false)), at(1, 1.0));
+        assert_eq!(mb(grid.snapped_position_at(1.1, 1.0, false)), at(0, 3.0));
+        assert_eq!(mb(grid.snap(0, 9.0, 1.0, true)), at(0, 4.0));
     }
 
     #[test]
@@ -785,13 +941,6 @@ mod position_at_tests {
             measure_starts: vec![],
         };
         assert_eq!(unmeasured.position_at(0.0), None);
-        // A pickup beat before the first downbeat has no measure.
-        let pickup = BeatGrid {
-            beats: vec![0.0, 0.5, 1.0, 1.5],
-            measure_starts: vec![1],
-        };
-        assert_eq!(pickup.position_at(0.0), None);
-        assert_eq!(pickup.position_at(0.5), Some((0, 1.0)));
         assert_eq!(grid().position_at(f64::NAN), None);
     }
 }
