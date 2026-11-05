@@ -18,7 +18,7 @@
 // it) and set only the one they edit; what they did not touch is written
 // back as it was.
 
-import type { EffectParams } from "../../gen/rules/mtrack_rules";
+import type { EffectParams, Remarks } from "../../gen/rules/mtrack_rules";
 import { rules } from "../rules";
 
 /** The value of the last `name` parameter, as written. */
@@ -67,9 +67,7 @@ export function withParam(
       break;
     }
   }
-  if (value === undefined || value === "") {
-    return { ...effect, params: params.filter((p) => p.name !== name) };
-  }
+  if (value === undefined || value === "") return withoutParams(effect, [name]);
   // Its text alone changes: the comments around it stay.
   if (last >= 0) params[last] = { ...params[last], value, is_ref: undefined };
   else params.push({ name, value });
@@ -83,8 +81,44 @@ export function withoutParams(
 ): EffectParams {
   return {
     ...effect,
-    params: effect.params.filter((p) => !names.includes(p.name)),
+    params: dropped(effect.params, (p) => names.includes(p.name)).kept,
   };
+}
+
+/** `items` without those `drop` picks, the comments written around each
+ *  one dropped kept as comment lines where it was: above the next item
+ *  kept, else after the one before. `orphans`: those with no item left to
+ *  go to. */
+export function dropped<T extends Remarks>(
+  items: T[],
+  drop: (item: T, index: number) => boolean,
+): { kept: T[]; orphans: string[] } {
+  const kept: T[] = [];
+  let pending: string[] = [];
+  items.forEach((item, i) => {
+    if (drop(item, i)) {
+      pending.push(
+        ...(item.comments_before ?? []),
+        ...(item.comment ? [item.comment] : []),
+        ...(item.comments_after ?? []),
+      );
+    } else if (pending.length > 0) {
+      kept.push({
+        ...item,
+        comments_before: [...pending, ...(item.comments_before ?? [])],
+      });
+      pending = [];
+    } else kept.push(item);
+  });
+  if (pending.length > 0 && kept.length > 0) {
+    const last = kept[kept.length - 1];
+    kept[kept.length - 1] = {
+      ...last,
+      comments_after: [...(last.comments_after ?? []), ...pending],
+    };
+    pending = [];
+  }
+  return { kept, orphans: pending };
 }
 
 /** The effect with these `color:` values and no other, where the first
@@ -104,8 +138,12 @@ export function withColors(
     value: quoted(c),
     is_ref: undefined,
   }));
+  // A colour no longer there leaves its comments where it was.
+  const gone = was.slice(colors.length);
+  const params = [...rest.slice(0, at), ...entries, ...gone, ...rest.slice(at)];
+  const from = at + entries.length;
   return {
     ...effect,
-    params: [...rest.slice(0, at), ...entries, ...rest.slice(at)],
+    params: dropped(params, (_, i) => i >= from && i < from + gone.length).kept,
   };
 }

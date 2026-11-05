@@ -32,6 +32,7 @@ import type {
   TempoField,
 } from "../../gen/rules/mtrack_rules";
 import { rules } from "../rules";
+import { dropped } from "./params";
 
 /**
  * Serialize a LightFile structure back to DSL text: what the document
@@ -234,9 +235,11 @@ export function serializeTempo(tempo: TempoSection): string {
     field("changes", "changes: [");
     tempo.changes.forEach((change, i) => {
       const ts = formatTimestamp(change.timestamp);
-      const params = list(changeParams(change), "            ", true);
+      const edit = changeParams(change);
+      const params = list(edit.params, "            ", true);
       const comma = i < tempo.changes.length - 1 ? "," : "";
       lines.push(...own(change.comments_before, "        "));
+      lines.push(...own(edit.orphans, "        "));
       const text = `        @${ts} {${params.text}${params.open ? "}" : " }"}`;
       if (comma && change.comment && change.comment_before_comma) {
         // The comment was between the `}` and the comma: it stays there.
@@ -259,7 +262,10 @@ export function serializeTempo(tempo: TempoSection): string {
 /** A tempo change's parameters: as written, in order, spelling and with
  *  their comments, an edited one's value replaced where it was (see
  *  `edited`). */
-function changeParams(change: TempoChange): Listed[] {
+function changeParams(change: TempoChange): {
+  params: Listed[];
+  orphans: string[];
+} {
   const sig = change.time_signature
     ? `${change.time_signature[0]}/${change.time_signature[1]}`
     : undefined;
@@ -280,27 +286,29 @@ function changeParams(change: TempoChange): Listed[] {
 /** Written parameters with the values now `set`: each as written while
  *  it `holds` (its value still the one set), else its value replaced in
  *  place -- the last of a name, which is the one that counts; a name set
- *  to nothing is dropped, and one newly set is added at the end. */
+ *  to nothing is dropped, its comments kept where it was (see `dropped`;
+ *  `orphans` when no parameter is left), and one newly set is added at
+ *  the end. */
 function edited(
   written: Param[],
   set: Record<string, string | undefined>,
   holds: (p: Param) => boolean,
-): Listed[] {
+): { params: Listed[]; orphans: string[] } {
   const last = (name: string) => {
     for (let i = written.length - 1; i >= 0; i--)
       if (written[i].name === name) return i;
     return -1;
   };
-  const params: Listed[] = [];
-  written.forEach((p, i) => {
+  const replaced = written.map((p, i) => {
     const value = set[p.name];
-    if (value === undefined || value === "") return;
-    params.push(param(i === last(p.name) && !holds(p) ? { ...p, value } : p));
+    return value && i === last(p.name) && !holds(p) ? { ...p, value } : p;
   });
+  const { kept, orphans } = dropped(replaced, (p) => !set[p.name]);
+  const params: Listed[] = kept.map(param);
   for (const [name, value] of Object.entries(set)) {
     if (value && last(name) < 0) params.push({ text: `${name}: ${value}` });
   }
-  return params;
+  return { params, orphans };
 }
 
 function serializeCues(cues: Cue[]): string {
@@ -334,11 +342,13 @@ function serializeCues(cues: Cue[]): string {
               },
             ]
           : [];
+    // Offset lines all removed leave their comments where they were.
+    const removed = cue.offset_measures === undefined ? read : [];
     const kinds = {
       effect: cue.effects.length,
       command: cue.commands.length,
       reference: cue.sequences.length,
-      offset: offsets.length,
+      offset: offsets.length + removed.length,
       reset: cue.reset_measures ? 1 : 0,
       loop: cue.loops?.length ?? 0,
     };
@@ -374,10 +384,10 @@ function serializeCues(cues: Cue[]): string {
         } else lines.push(line(`    ${s.text}`, eff.comment));
       } else if (kind === "command") {
         const cmd = cue.commands[i];
+        const written = serializeLayerCommand(cmd, "        ");
         lines.push(...own(cmd.comments_before, "    "));
-        lines.push(
-          line(`    ${serializeLayerCommand(cmd, "        ")}`, cmd.comment),
-        );
+        lines.push(...own(written.orphans, "    "));
+        lines.push(line(`    ${written.text}`, cmd.comment));
       } else if (kind === "reference") {
         const ref = cue.sequences[i];
         lines.push(...own(ref.comments_before, "    "));
@@ -385,6 +395,14 @@ function serializeCues(cues: Cue[]): string {
           line(`    ${serializeSequenceRef(ref, "        ")}`, ref.comment),
         );
       } else if (kind === "offset") {
+        const gone = removed[i];
+        if (gone) {
+          lines.push(
+            ...own(gone.comments_before, "    "),
+            ...own(gone.comment ? [gone.comment] : [], "    "),
+          );
+          continue;
+        }
         const offset = offsets[i];
         lines.push(...own(offset.comments_before, "    "));
         lines.push(
@@ -436,9 +454,17 @@ function serializeEffect(
   cueEffect: CueEffect,
   indent: string,
 ): { text: string; open: boolean } | undefined {
-  const named = cueEffect.groups
-    .map((g, i) => ({ ...cueEffect.group_remarks?.[i], text: g }))
-    .filter((g) => g.text.length > 0);
+  // A group removed leaves its comments where it was (see `dropped`).
+  const remarks = cueEffect.group_remarks ?? [];
+  const named = dropped(
+    [
+      ...cueEffect.groups.map((g, i) => ({ ...remarks[i], text: g })),
+      ...remarks
+        .slice(cueEffect.groups.length)
+        .map((r) => ({ ...r, text: "" })),
+    ],
+    (g) => g.text.length === 0,
+  ).kept;
   if (named.length === 0) return undefined; // Skip effects with no group names
   const groups = list(named, indent, false);
   const effect = cueEffect.effect;
@@ -454,15 +480,27 @@ function serializeEffect(
   return { text: head, open: false };
 }
 
-function serializeLayerCommand(cmd: LayerCommand, indent: string): string {
+/** A layer command, and the comments of parameters it no longer has
+ *  when none is left to keep them (see `edited`). */
+function serializeLayerCommand(
+  cmd: LayerCommand,
+  indent: string,
+): { text: string; orphans: string[] } {
   // As written, an edited value replaced where it was.
   const set: Record<string, string | undefined> = {
     layer: cmd.layer,
     intensity: cmd.intensity,
     speed: cmd.speed,
   };
-  const params = edited(cmd.written ?? [], set, (p) => p.value === set[p.name]);
-  return `${cmd.command}(${list(params, indent, false).text})`;
+  const { params, orphans } = edited(
+    cmd.written ?? [],
+    set,
+    (p) => p.value === set[p.name],
+  );
+  return {
+    text: `${cmd.command}(${list(params, indent, false).text})`,
+    orphans,
+  };
 }
 
 function serializeSequenceRef(ref: SequenceRef, indent: string): string {

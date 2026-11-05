@@ -26,7 +26,7 @@ import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 import { serializeLightFile } from "../../src/lib/lighting/serializer";
 import { withColors, withParam } from "../../src/lib/lighting/params";
-import type { EffectParams } from "../../src/lib/lighting/types";
+import type { Cue, EffectParams } from "../../src/lib/lighting/types";
 
 test.beforeAll(async () => {
   await loadRules();
@@ -278,6 +278,49 @@ test("a comment after a reference's arguments stays before its loop", () => {
   const source =
     'show "S" {\n    @1/1\n    sequence "x"(hit: "#FF0000"), # c\n        loop: 2\n    sequence "y" # e\n        # above\n        loop: 3\n}\n';
   expect(serializeLightFile(rules.document(source).document!)).toBe(source);
+});
+
+test("an element removed leaves its comments where it was", () => {
+  const show = (body: string) => `show "S" {\n    @1/1\n${body}}\n`;
+  const editCue = (source: string, edit: (cue: Cue) => Cue) => {
+    const read = rules.document(source).document!;
+    const s = read.shows[0];
+    return serializeLightFile({
+      ...read,
+      shows: [{ ...s, cues: [edit(s.cues[0])] }],
+    });
+  };
+  const master = editCue(
+    show("    master(layer: background, # c\n        intensity: 50%)\n"),
+    (cue) => ({
+      ...cue,
+      commands: [{ ...cue.commands[0], layer: undefined }],
+    }),
+  );
+  expect(master).toBe(
+    show("    master(\n        # c\n        intensity: 50%)\n"),
+  );
+  const panned = editedEffect(
+    show(
+      "    movers: move, pan: 45deg, # c\n        tilt: 10deg, duration: 1s\n",
+    ),
+    (e) => withParam(e, "pan", ""),
+  );
+  expect(panned).toBe(
+    show("    movers: move,\n        # c\n        tilt: 10deg, duration: 1s\n"),
+  );
+  const offset = editCue(
+    show(
+      '    offset 1 measures # a\n    a: static, color: "red", duration: 1s\n',
+    ),
+    (cue) => ({ ...cue, offset_measures: undefined }),
+  );
+  expect(offset).toBe(
+    show('    # a\n    a: static, color: "red", duration: 1s\n'),
+  );
+  for (const written of [master, panned, offset]) {
+    expect(rules.document(written).error, written).toBeUndefined();
+  }
 });
 
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
