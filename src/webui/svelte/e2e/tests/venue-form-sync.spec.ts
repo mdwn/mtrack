@@ -296,6 +296,39 @@ test.describe("A mode per fixture in the venue form", () => {
     ]);
   });
 
+  test("a row the patch rule cannot read gets its own word and mutes no other", async ({
+    page,
+  }) => {
+    await serve(page, {
+      rig: [
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("B", 5), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("C", 20), fixture_type: "brick", mode: "8: RGBS" },
+      ],
+    });
+    await card(page, "rig").locator('[data-testid^="venue-edit-"]').click();
+    await rows(page)
+      .nth(0)
+      .getByTestId("venue-row-mode")
+      .selectOption("9: RGBWS");
+    await page.locator("#fix-channel-2").fill("70000");
+    await expect(rows(page).nth(0).getByTestId("venue-row-overlap")).toHaveText(
+      "Runs into B (addresses 5–5).",
+    );
+    await expect(rows(page).nth(1).getByTestId("venue-row-overlap")).toHaveText(
+      "Runs into A (addresses 5–5).",
+    );
+    await expect(rows(page).nth(2).getByTestId("venue-row-overlap")).toHaveText(
+      /Beyond any DMX patch/,
+    );
+    await save(page);
+    const dialog = page.locator(".dialog-overlay");
+    await expect(dialog).toContainText("Save anyway?");
+    await expect(dialog).toContainText("Runs into B");
+    await expect(dialog).toContainText("Beyond any DMX patch");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+  });
+
   test("an overlap is marked, and the save asks first", async ({ page }) => {
     const { puts } = await serve(page, {
       rig: [

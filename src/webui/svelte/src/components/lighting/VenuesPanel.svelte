@@ -353,21 +353,40 @@
     })),
   );
 
+  /** The rows the patch rule can read (a universe and address that are
+   *  whole numbers to 65535: the rule, asked with nothing to overlap, says
+   *  so). A row it cannot read gets its own word, and is kept out of the
+   *  list the others are checked against, so it never mutes them. */
+  let readableSpans = $derived(
+    rowSpans.filter((s) => rules.patch_overlaps([], s) !== undefined),
+  );
+
   /** What each row runs into, by the player's patch rules: other rows it
-   *  partly overlaps (identical spans gang), and the end of the universe. */
+   *  partly overlaps (identical spans gang), and the end of the universe;
+   *  or that the rule cannot read it. */
   let rowClashes = $derived.by(() => {
     const overruns = new Map(
-      (rules.patch_overruns(rowSpans) ?? []).map((o) => [o.fixture, o.last]),
+      (rules.patch_overruns(readableSpans) ?? []).map((o) => [
+        o.fixture,
+        o.last,
+      ]),
     );
-    return rowSpans.map((span) => ({
-      hits: listed(rules.patch_overlaps(rowSpans, span) ?? []).map((h) => ({
-        row: Number(h.fixture),
-        from: h.from,
-        to: h.to,
-      })),
-      overrun: overruns.get(span.fixture) ?? null,
-    }));
+    return rowSpans.map((span) => {
+      const hits = rules.patch_overlaps(readableSpans, span);
+      return {
+        hits: listed(hits ?? []).map((h) => ({
+          row: Number(h.fixture),
+          from: h.from,
+          to: h.to,
+        })),
+        overrun: overruns.get(span.fixture) ?? null,
+        unreadable: hits === undefined,
+      };
+    });
   });
+
+  const clashing = (c: (typeof rowClashes)[number]) =>
+    c.hits.length > 0 || c.overrun !== null || c.unreadable;
 
   /** A changed type takes its own default mode: a mode names a mode of one
    *  archive. */
@@ -431,6 +450,7 @@
   function clashMessage(i: number): string {
     const clash = rowClashes[i];
     if (!clash) return "";
+    if (clash.unreadable) return get(t)("lighting.venueRow.outOfRange");
     const parts = clash.hits.map((h) =>
       get(t)("lighting.venueRow.runsInto", {
         values: {
@@ -482,11 +502,11 @@
     }
     // Overlaps and overruns do not block (a hand-made venue may have them),
     // but a save with any asks first, naming them.
-    const clashing = rowClashes
+    const clashes = rowClashes
       .map((c, i) => ({ c, i }))
-      .filter(({ c }) => c.hits.length > 0 || c.overrun !== null);
-    if (clashing.length > 0) {
-      const list = clashing
+      .filter(({ c }) => clashing(c));
+    if (clashes.length > 0) {
+      const list = clashes
         .map(
           ({ i }) =>
             `${editVenueFixtures[i].name || `#${i + 1}`}: ${clashMessage(i)}`,
@@ -778,7 +798,7 @@
                     })}
               </p>
             {/if}
-            {#if (rowClashes[i]?.hits.length ?? 0) > 0 || rowClashes[i]?.overrun}
+            {#if rowClashes[i] && clashing(rowClashes[i])}
               <p class="row-warning" data-testid="venue-row-overlap">
                 {clashMessage(i)}
               </p>

@@ -771,6 +771,7 @@
   "lighting.venueRow.spanOne": "Address {from}",
   "lighting.venueRow.runsInto": "Runs into {name} (addresses {from}–{to}).",
   "lighting.venueRow.overrun": "Runs past address 512 (to {last}).",
+  "lighting.venueRow.outOfRange": "Beyond any DMX patch: the universe and address must be whole numbers no greater than 65535.",
   "lighting.venueRow.unknownMode": "{mode} — not in this archive",
   "lighting.venueRow.saveAnyway": "Some fixtures overlap or run past address 512:\n{list}\n\nSave anyway?",
   "lighting.venueRow.noName": "Give this fixture a name.",
