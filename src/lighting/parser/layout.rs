@@ -367,7 +367,10 @@ fn show_layout(show: &ParsedShow, horizon: Duration) -> ShowLayout {
 /// The latest written end over `cues`: a cue's time, the gap its own
 /// offset opens, its effects' ends and its passes' ends -- a `loop`'s
 /// first pass only, and nothing its later passes put on the timeline, as
-/// it runs until the song ends.
+/// it runs until the song ends. Neither the timeline's `show_end` (where
+/// playback ends: a loop's every pass, an end cap, a held look) nor
+/// `pass_length` (one pass, from its earliest cue): what the score
+/// writes, measured from zero, offsets and all.
 fn written_end(cues: &[ParsedCue]) -> Duration {
     let mut end = Duration::ZERO;
     for cue in cues {

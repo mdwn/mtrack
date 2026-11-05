@@ -228,12 +228,8 @@ impl MetronomeConfig {
     /// and the one the web UI's accent pads show.
     pub fn accent_pattern_at(&self, measure: u32, beats: usize) -> Vec<u8> {
         let group_starts = self.accent_group_starts();
-        let mut sorted_changes: Vec<&MetronomeChange> = self.changes.iter().collect();
-        sorted_changes.sort_by_key(|c| c.measure);
-        let active_accents: &[u8] = sorted_changes
-            .iter()
-            .filter(|c| c.measure >= 1 && c.measure <= measure)
-            .rev()
+        let active_accents: &[u8] = self
+            .changes_back_from(measure)
             .find_map(|c| c.accents.as_deref())
             .unwrap_or(&self.accents);
         (0..beats)
@@ -260,14 +256,21 @@ impl MetronomeConfig {
     /// click renderer applies bar by bar and the one the web UI's marker
     /// dialog starts a subdivision change from.
     pub fn subdivision_at(&self, measure: u32) -> (&Subdivision, u32) {
-        let mut sorted_changes: Vec<&MetronomeChange> = self.changes.iter().collect();
-        sorted_changes.sort_by_key(|c| c.measure);
-        sorted_changes
-            .iter()
-            .filter(|c| c.measure >= 1 && c.measure <= measure)
-            .rev()
+        self.changes_back_from(measure)
             .find_map(|c| c.subdivision.as_ref().map(|s| (s, c.measure)))
             .unwrap_or((&self.subdivision, 1))
+    }
+
+    /// The positional changes at or before a measure (1-indexed), the
+    /// last first: the first that sets a thing sets what the measure has.
+    fn changes_back_from(&self, measure: u32) -> impl Iterator<Item = &MetronomeChange> {
+        let mut changes: Vec<&MetronomeChange> = self
+            .changes
+            .iter()
+            .filter(|c| c.measure >= 1 && c.measure <= measure)
+            .collect();
+        changes.sort_by_key(|c| c.measure);
+        changes.into_iter().rev()
     }
 
     /// Beat indices (0-based) that start an accent group: beat 0, then the

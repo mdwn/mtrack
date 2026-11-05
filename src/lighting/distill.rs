@@ -114,7 +114,7 @@ fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
 /// A mesh entry name as a file name in the store: the archive's own name
 /// reduced to safe characters, made unique by a hash when two reduce alike.
 fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) -> String {
-    let base = entry.rsplit('/').next().unwrap_or(entry);
+    let base = super::mvr::entry_basename(entry);
     let (stem, ext) = match base.rsplit_once('.') {
         Some((s, e)) => (s, e.to_ascii_lowercase()),
         None => (base, String::new()),
