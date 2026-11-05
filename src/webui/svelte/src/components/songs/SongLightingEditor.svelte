@@ -35,7 +35,6 @@
     Sequence,
     TempoSection,
   } from "../../lib/lighting/types";
-  import { serializeLightFile } from "../../lib/lighting/serializer";
   import { tempoSourceOf } from "../../lib/lighting/timeline-state";
   import { rules } from "../../lib/rules";
   import type {
@@ -278,13 +277,23 @@
    *  `include`s resolve against its own folder, as the player resolves
    *  them), the files it includes and the song's tempo, as loading the
    *  song would; the files' shows and sequences side by side. */
+  /** Why a document is not written: the editor made one the writer
+   *  cannot read (never a file's own). */
+  const unwritable =
+    "the editor's document of this file is not one it can write";
+
   let layout = $derived.by(() => {
     const merged: Layout = { shows: [], sequences: [], end_ms: 0 };
     const errors: string[] = [];
     for (const lf of lightFiles) {
       if (lf.parseError) continue;
+      const source = rules.document_write(lf.parsed);
+      if (source === undefined) {
+        errors.push(`${lf.path}: ${unwritable}`);
+        continue;
+      }
       const laid = rules.layout({
-        source: serializeLightFile(lf.parsed),
+        source,
         path: lf.path,
         song_tempo: songTempoSource ?? undefined,
         includes: includeSources,
@@ -538,7 +547,8 @@
   }
 
   async function writeLightFile(lf: LoadedLightFile) {
-    const content = serializeLightFile(lf.parsed);
+    const content = rules.document_write(lf.parsed);
+    if (content === undefined) throw new Error(`${lf.path}: ${unwritable}`);
     await saveLightingFile(lf.path, content);
     lf.raw = content;
   }
@@ -579,7 +589,9 @@
 
   function switchToRaw() {
     if (lightFiles.length > 0 && !lightFiles[rawFileIndex]?.parseError) {
-      rawContent = serializeLightFile(lightFiles[rawFileIndex].parsed);
+      rawContent =
+        rules.document_write(lightFiles[rawFileIndex].parsed) ??
+        lightFiles[rawFileIndex].raw;
     }
     tab = "raw";
   }

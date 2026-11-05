@@ -12,8 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// The editor's serializer writes back what the player's document model
-// read (no browser): a file read as a document, written out and read
+// The player's writer (`rules.document_write`) writes back what its
+// document model read (no browser): a file read as a document, written out and read
 // again is the same document, line numbers aside, for every example show
 // and, with `MTRACK_LIGHT_CORPUS=<dir>`, every `.light` file in a folder.
 // A file the editor cannot hold (one that defines a venue, or gives a
@@ -24,17 +24,26 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
-import { serializeLightFile } from "../../src/lib/lighting/serializer";
-import {
-  withColors,
-  withParam,
-  withoutParams,
-} from "../../src/lib/lighting/params";
-import type { Cue, CueEffect } from "../../src/lib/lighting/types";
+import type { Cue, CueEffect, LightFile } from "../../src/lib/lighting/types";
 
 test.beforeAll(async () => {
   await loadRules();
 });
+
+/** The document as the player's writer writes it. */
+function serializeLightFile(document: LightFile): string {
+  const text = rules.document_write(document);
+  expect(text, "a document the writer reads").toBeDefined();
+  return text!;
+}
+
+/** The effect with a form's edits made (`rules.effect_edit`). */
+const withParam = (e: CueEffect, name: string, value?: string) =>
+  rules.effect_edit(e, { op: "set", name, value })!;
+const withoutParams = (e: CueEffect, names: string[]) =>
+  rules.effect_edit(e, { op: "remove", names })!;
+const withColors = (e: CueEffect, colors: string[]) =>
+  rules.effect_edit(e, { op: "colors", colors })!;
 
 /** The document with what the text's layout alone decides removed. */
 function stripped(value: unknown): unknown {

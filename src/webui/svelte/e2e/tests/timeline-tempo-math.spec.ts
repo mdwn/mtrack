@@ -15,20 +15,18 @@
 // The lighting timeline's drawing helpers over the player's own tempo map
 // (no browser): where a click snaps, what a dragged length is called, which
 // bar and beat a new cue gets, and which lines the ruler has room for. The
-// positions themselves are the player's (`rules.tempo_query`,
-// `rules.tempo_distance`, `rules.layout`), held to it by the Rust tests in
-// `crates/mtrack-rules-wasm/tests/lighting.rs`; what is checked here is
-// the UI's rounding and labelling on top of them.
+// positions and the lengths' names are the player's (`rules.tempo_query`,
+// `rules.duration_text`, `rules.duration_snap`, `rules.layout`), held to
+// it by the Rust tests in `crates/mtrack-rules-wasm/tests/lighting.rs`;
+// what is checked here is the UI's rounding and labelling on top of them.
 
 import { test, expect } from "@playwright/test";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 import {
-  durationStringToMs,
   getGridLines,
-  msToDurationString,
   msToTimestamp,
-  snapDurationToGrid,
+  SNAP_BEATS,
   snapToNearestGrid,
   tempoSourceOf,
   timestampToMs,
@@ -40,6 +38,32 @@ import type { TempoSource } from "../../src/gen/rules/mtrack_rules";
 test.beforeAll(async () => {
   await loadRules();
 });
+
+/** How long a written duration lasts from a time, as the parser reads it
+ *  there. */
+function durationStringToMs(
+  duration: string,
+  source: TempoSource | null,
+  atMs: number,
+): number {
+  const end = rules.tempo_query(source, { from_ms: atMs, duration });
+  return end ? end.ms - atMs : 0;
+}
+
+/** A dragged length's name, as the timeline writes it. */
+const msToDurationString = (
+  ms: number,
+  source: TempoSource | null,
+  atMs: number,
+) => rules.duration_text(source ?? undefined, atMs, ms);
+
+/** A dragged length snapped to the grid, as the timeline snaps it. */
+const snapDurationToGrid = (
+  ms: number,
+  atMs: number,
+  source: TempoSource,
+  resolution: "beat" | "measure",
+) => rules.duration_snap(source, atMs, ms, SNAP_BEATS[resolution]);
 
 function tempo(
   bpm: number,

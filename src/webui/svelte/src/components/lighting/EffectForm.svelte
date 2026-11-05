@@ -26,51 +26,28 @@
     CHASE_PATTERNS,
   } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
-  import {
-    colorsOf,
-    isParam,
-    quoted,
-    unquoted,
-    withColors,
-    withParam,
-    withoutParams,
-  } from "../../lib/lighting/params";
+  import type {
+    EffectEdit,
+    MoveStart,
+    MoveTarget,
+  } from "../../gen/rules/mtrack_rules";
+  import { rules } from "../../lib/rules";
   import { venueStore } from "../../lib/ws/stores";
+
+  /** The effect with a form's edit made, the value written by the
+   *  player's writer (`rules.effect_edit`): only the edited text changes. */
+  function edit(change: EffectEdit) {
+    onchange(rules.effect_edit(effect, change) ?? effect);
+  }
 
   /** A `move` aims at a focus point or at angles, never both: setting one
    *  clears the other, so the form always shows what will be written. */
-  function updateMoveTarget(key: "focus" | "pan" | "tilt", value?: string) {
-    let next = effect;
-    if (key === "focus") {
-      if (value) next = withoutParams(next, ["pan", "tilt", "to"]);
-      next = withParam(next, "focus", value ? quoted(value) : undefined);
-    } else {
-      if (value) next = withoutParams(next, ["focus", "to"]);
-      next = withParam(next, key, value ? withDeg(value) : undefined);
-    }
-    onchange(next);
+  function updateMoveTarget(key: MoveTarget, value?: string) {
+    edit({ op: "move_target", key, value });
   }
 
-  function updateMoveStart(
-    key: "from" | "from_pan" | "from_tilt",
-    value?: string,
-  ) {
-    let next = effect;
-    if (key === "from") {
-      if (value) next = withoutParams(next, ["from_pan", "from_tilt"]);
-      next = withParam(next, "from", value ? quoted(value) : undefined);
-    } else {
-      if (value) next = withoutParams(next, ["from"]);
-      next = withParam(next, key, value ? withDeg(value) : undefined);
-    }
-    onchange(next);
-  }
-
-  /** An angle as the DSL wants it, for the form's own edit: `45deg`; a
-   *  bare number gets the unit. */
-  function withDeg(value: string): string {
-    const v = value.trim();
-    return v.endsWith("deg") || isParam(v) ? v : `${v}deg`;
+  function updateMoveStart(key: MoveStart, value?: string) {
+    edit({ op: "move_start", key, value });
   }
 
   /** The current venue's focus points, offered as `move` targets. */
@@ -88,16 +65,11 @@
   let { effect, groups = [], onchange, ondelete }: Props = $props();
 
   /** The parameters by name, the last of each as written, for the
-   *  controls (a `to:` reads as `focus`; a focus point without its quotes). */
-  let p = $derived.by(() => {
-    const view: Record<string, string> = {};
-    for (const entry of effect.effect.params) view[entry.name] = entry.value;
-    if (view.to !== undefined && view.focus === undefined) view.focus = view.to;
-    view.focus = unquoted(view.focus) ?? "";
-    view.from = unquoted(view.from) ?? "";
-    return view;
-  });
-  let colors = $derived(colorsOf(effect.effect));
+   *  controls (a `to:` reads as `focus`; a focus point without its
+   *  quotes), and the colours: `rules.effect_view`. */
+  let view = $derived(rules.effect_view(effect.effect));
+  let p = $derived<Record<string, string | undefined>>(view?.values ?? {});
+  let colors = $derived(view?.colors ?? []);
 
   let expanded = $state(false);
 
@@ -180,11 +152,11 @@
   function updateParam(key: string, value: unknown) {
     const text =
       value === undefined || value === "" ? undefined : String(value);
-    onchange(withParam(effect, key, text));
+    edit({ op: "set", name: key, value: text });
   }
 
   function updateColors(colors: string[]) {
-    onchange(withColors(effect, colors));
+    edit({ op: "colors", colors });
   }
 
   // Only the effect types that actually use a colour. `EffectType::Strobe`,

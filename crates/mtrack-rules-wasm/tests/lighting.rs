@@ -15,16 +15,17 @@
 //! answer: the positions, ramps, metres and offsets the web UI's timeline
 //! used to work out for itself (its `timeline-tempo-math` cases, held to
 //! the server's values), now read off the player through `tempo_query`,
-//! `tempo_distance`, `layout` and `document`.
+//! `TempoDistance`, `layout`, `document` and the length names.
 
 use std::time::Duration;
 
 use mtrack_rules_wasm::lighting::parser::document::document;
 use mtrack_rules_wasm::{
-    IncludeSource, Layout, LayoutRequest, TempoDistance, TempoQuery, TempoSource,
+    length_name, snapped_length, IncludeSource, Layout, LayoutRequest, TempoDistance, TempoQuery,
+    TempoSource,
 };
 
-/// A light show `tempo { }` block, as the editor's serializer writes one.
+/// A light show `tempo { }` block, as the player's writer writes one.
 fn dsl(bpm: f64, sig: (u32, u32), changes: &[&str], start_ms: f64) -> TempoSource {
     let mut block = format!(
         "tempo {{\n    start: {}ms\n    bpm: {bpm}\n    time_signature: {}/{}\n",
@@ -542,9 +543,69 @@ fn a_file_is_read_as_written_and_laid_out_with_its_includes() {
 
 #[test]
 fn a_parameter_reference_is_the_whole_value_and_nothing_after_it() {
-    assert!(mtrack_rules_wasm::param_ref("$x"));
-    assert!(mtrack_rules_wasm::param_ref(" $level "));
+    assert!(mtrack_rules_wasm::lighting::parser::edit::param_ref("$x"));
+    assert!(mtrack_rules_wasm::lighting::parser::edit::param_ref(
+        " $level "
+    ));
     for text in ["$x # c", "$x // c", "$x\n# c", "$x y", "x", "$", "\"$x\""] {
-        assert!(!mtrack_rules_wasm::param_ref(text), "{text:?}");
+        assert!(
+            !mtrack_rules_wasm::lighting::parser::edit::param_ref(text),
+            "{text:?}"
+        );
     }
+}
+
+#[test]
+fn a_snapped_beat_or_bar_is_named_as_one_wherever_it_starts() {
+    for bpm in [97.0, 120.0, 133.7] {
+        let t = dsl(
+            bpm,
+            (4, 4),
+            &[&format!(
+                "        @9/1 {{ bpm: {}, transition: 2m }}",
+                bpm + 40.0
+            )],
+            0.0,
+        );
+        for m in 1..=40 {
+            for b in 1..=4 {
+                let from = at(&t, m, b as f64);
+                let what = format!("{bpm} @{m}/{b}");
+                // A drag a little past each length, snapped back to it.
+                let beat =
+                    snapped_length(&t, from, span(Some(&t), from, "1beat") + 20.0, Some(1.0));
+                assert_eq!(length_name(Some(&t), from, beat), "1beat", "{what}");
+                let bar = snapped_length(&t, from, span(Some(&t), from, "1measure") + 20.0, None);
+                assert_eq!(length_name(Some(&t), from, bar), "1measure", "{what}");
+                let two =
+                    snapped_length(&t, from, span(Some(&t), from, "2beats") - 20.0, Some(1.0));
+                assert_eq!(length_name(Some(&t), from, two), "2beats", "{what}");
+                let half =
+                    snapped_length(&t, from, span(Some(&t), from, "0.5beats") + 5.0, Some(0.5));
+                close(half, span(Some(&t), from, "0.5beats"), &what);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_dragged_length_is_named_in_bars_beats_or_time() {
+    for sig in [(4, 4), (3, 4), (6, 8), (7, 8)] {
+        let t = dsl(
+            120.0,
+            sig,
+            &["        @3/1 { bpm: 180, transition: 2m }"],
+            0.0,
+        );
+        let bar3 = at(&t, 3, 1.0);
+        assert_eq!(
+            length_name(Some(&t), bar3, at(&t, 5, 1.0) - bar3),
+            "2measures"
+        );
+        assert_eq!(length_name(Some(&t), bar3, at(&t, 3, 2.0) - bar3), "1beat");
+    }
+    let t = dsl(120.0, (4, 4), &[], 0.0);
+    assert_eq!(length_name(Some(&t), 0.0, 750.0), "750ms");
+    assert_eq!(length_name(None, 0.0, 5000.0), "5s");
+    assert_eq!(length_name(None, 0.0, 250.0), "250ms");
 }

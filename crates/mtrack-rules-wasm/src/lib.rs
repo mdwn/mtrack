@@ -94,13 +94,16 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
 pub use beat_grid::BeatGrid;
-pub use lighting::parser::document::{Document, DocumentResult};
+pub use lighting::parser::document::{
+    CueEffect, Document, DocumentResult, EffectParams, SequenceRef, TempoSection,
+};
+pub use lighting::parser::edit::{EffectEdit, EffectView};
 pub use lighting::parser::layout::Layout;
 use lighting::parser::Sources;
 pub use metronome_config::{MetronomeConfig, Subdivision};
 pub use patch::{PatchOverlap, PatchOverrun, PatchSpan};
 use tempo::TempoMap;
-pub use tempo_config::TempoConfig;
+pub use tempo_config::{TempoConfig, TransitionConfig};
 
 /// Reads a value the page handed over. One that is not what its type says
 /// (a measure of 1.5 or -1, a bpm that is not a number, a list where an
@@ -192,6 +195,13 @@ type PatchSpanJs = <PatchSpan as Tsify>::JsType;
 type PatchSpansJs = <PatchSpans as Tsify>::JsType;
 type LayoutRequestJs = <LayoutRequest as Tsify>::JsType;
 type PassEndsJs = <PassEnds as Tsify>::JsType;
+type DocumentJs = <Document as Tsify>::JsType;
+type TempoSectionJs = <TempoSection as Tsify>::JsType;
+type CueEffectJs = <CueEffect as Tsify>::JsType;
+type EffectParamsJs = <EffectParams as Tsify>::JsType;
+type EffectEditJs = <EffectEdit as Tsify>::JsType;
+type SequenceRefJs = <SequenceRef as Tsify>::JsType;
+type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -523,13 +533,6 @@ impl TempoDistance {
     }
 }
 
-/// [`TempoDistance::between`], for the web UI.
-#[wasm_bindgen]
-pub fn tempo_distance(source: TempoSourceJs, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
-    let source: TempoSource = read(JsValue::from(source))?;
-    TempoDistance::between(&source, from_ms, to_ms)
-}
-
 /// Why a tempo config cannot be saved (`TempoConfig::validate`, the verdict
 /// a save gets; a value beyond [`bounds`] or not a tempo config at all is
 /// said so), or `None` when it can.
@@ -681,6 +684,143 @@ pub fn document(source: &str, path: Option<String>) -> DocumentResult {
     lighting::parser::document::document(source, path.as_deref().map(Path::new))
 }
 
+/// The document written back as DSL text (`writer::write`): what a save
+/// writes and what the layout reads. `None` for a value that is not a
+/// document.
+#[wasm_bindgen]
+pub fn document_write(document: DocumentJs) -> Option<String> {
+    let document: Document = read(JsValue::from(document))?;
+    Some(lighting::parser::writer::write(&document))
+}
+
+/// A `tempo { }` block alone, written as [`document_write`] writes it
+/// (`writer::write_tempo`): the `{ dsl }` tempo source of a show whose
+/// block is being edited. `None` for a value that is not a tempo block.
+#[wasm_bindgen]
+pub fn tempo_write(tempo: TempoSectionJs) -> Option<String> {
+    let tempo: TempoSection = read(JsValue::from(tempo))?;
+    Some(lighting::parser::writer::write_tempo(&tempo))
+}
+
+/// An effect line with a form's edit made (`CueEffect::edited`): the
+/// value written as the grammar wants it, only the edited text changed,
+/// a removed parameter's comments kept in place. `None` for a value that
+/// is not an effect or an edit.
+#[wasm_bindgen]
+pub fn effect_edit(effect: CueEffectJs, edit: EffectEditJs) -> Option<CueEffect> {
+    let effect: CueEffect = read(JsValue::from(effect))?;
+    let edit: EffectEdit = read(JsValue::from(edit))?;
+    Some(effect.edited(&edit))
+}
+
+/// An effect's parameters as its form shows them (`EffectParams::view`).
+#[wasm_bindgen]
+pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
+    let effect: EffectParams = read(JsValue::from(effect))?;
+    Some(effect.view())
+}
+
+/// The effect a click on a timeline lane adds (`edit::new_effect`).
+#[wasm_bindgen]
+pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
+    lighting::parser::edit::new_effect(layer.as_deref(), by_bars)
+}
+
+/// A sequence reference set to play `count` passes, as its block dragged
+/// to a length says (`SequenceRef::with_loop_count`).
+#[wasm_bindgen]
+pub fn reference_loop(reference: SequenceRefJs, count: u32) -> Option<SequenceRef> {
+    let reference: SequenceRef = read(JsValue::from(reference))?;
+    Some(reference.with_loop_count(count))
+}
+
+/// The duration an effect dragged to `ms` long from `at_ms` is written as
+/// (`writer::duration_text`): whole measures or beats of the tempo map
+/// there when it is some, else time.
+pub fn length_name(source: Option<&TempoSource>, at_ms: f64, ms: f64) -> String {
+    let span = source
+        .and_then(|s| TempoDistance::between(s, at_ms, at_ms + ms))
+        .map(|d| (d.measures, d.beats));
+    lighting::parser::writer::duration_text(span, ms)
+}
+
+/// [`length_name`], for the web UI.
+#[wasm_bindgen]
+pub fn duration_text(source: Option<TempoSourceJs>, at_ms: f64, ms: f64) -> String {
+    let source = source.and_then(|s| read::<TempoSource>(JsValue::from(s)));
+    length_name(source.as_ref(), at_ms, ms)
+}
+
+/// A length dragged from `at_ms`, snapped to whole measures (`step`
+/// `None`) or to whole steps of a beat, in milliseconds as the parser
+/// reads that length there. The length as dragged when the source makes
+/// no tempo map.
+pub fn snapped_length(
+    source: &TempoSource,
+    at_ms: f64,
+    duration_ms: f64,
+    step: Option<f64>,
+) -> f64 {
+    use lighting::parser::document::DurationUnit;
+    use lighting::parser::writer::length_text;
+    let Some(span) = TempoDistance::between(source, at_ms, at_ms + duration_ms) else {
+        return duration_ms;
+    };
+    let round = |n: f64| (n + 0.5).floor();
+    let length = match step {
+        None => length_text(round(span.measures).max(1.0), DurationUnit::Measures),
+        Some(step) => length_text(
+            (round(span.beats / step) * step).max(step),
+            DurationUnit::Beats,
+        ),
+    };
+    TempoQuery::Span {
+        from_ms: at_ms,
+        duration: length,
+    }
+    .answer(Some(source))
+    .map_or(0.0, |end| end.ms - at_ms)
+}
+
+/// [`snapped_length`], for the web UI.
+#[wasm_bindgen]
+pub fn duration_snap(
+    source: TempoSourceJs,
+    at_ms: f64,
+    duration_ms: f64,
+    step: Option<f64>,
+) -> f64 {
+    match read::<TempoSource>(JsValue::from(source)) {
+        Some(source) => snapped_length(&source, at_ms, duration_ms, step),
+        None => duration_ms,
+    }
+}
+
+/// A song tempo change's transition as a light show's `transition:`
+/// value (`writer::transition_text`): `4` beats, `2m` measures.
+#[wasm_bindgen]
+pub fn transition_text(transition: TransitionConfigJs) -> Option<String> {
+    use tempo::{TempoTransition, TransitionCurve};
+    let transition = match read::<TransitionConfig>(JsValue::from(transition))? {
+        TransitionConfig::Beats(n) => TempoTransition::Beats(n, TransitionCurve::Linear),
+        TransitionConfig::Measures(n) => TempoTransition::Measures(n, TransitionCurve::Linear),
+    };
+    Some(lighting::parser::writer::transition_text(&transition))
+}
+
+/// A light show's `transition:` value as a song tempo change's
+/// transition, as the player reads it (`document::transition`); `None`
+/// for `snap` and for text that is not a transition.
+#[wasm_bindgen]
+pub fn transition_read(text: &str) -> Option<TransitionConfig> {
+    use tempo::TempoTransition;
+    match lighting::parser::document::transition(text)? {
+        TempoTransition::Snap => None,
+        TempoTransition::Beats(n, _) => Some(TransitionConfig::Beats(n)),
+        TempoTransition::Measures(n, _) => Some(TransitionConfig::Measures(n)),
+    }
+}
+
 /// `value` in `from` (`s` or `ms`) written in `to` instead, the same time
 /// as the player reads it (`document::time_in`): what a tempo block's
 /// start becomes when its unit is switched.
@@ -705,23 +845,10 @@ pub fn passes_by(pass_ends: PassEndsJs, until_ms: f64) -> Option<u32> {
     Some(lighting::parser::layout::passes_by(&ends.0, until_ms))
 }
 
-/// Whether `text`, whole, is a sequence parameter reference (`$name`) by
-/// the grammar's `param_ref`: what a form asks of a value typed into it,
-/// so it stays bare where a string would be quoted.
-#[wasm_bindgen]
-pub fn param_ref(text: &str) -> bool {
-    use pest::Parser;
-    lighting::parser::grammar::LightingParser::parse(
-        lighting::parser::grammar::Rule::param_ref_only,
-        text.trim(),
-    )
-    .is_ok()
-}
-
 /// What a light show's tempo block says when it says nothing: the
 /// player's default tempo and metre (`DEFAULT_BPM`,
-/// `DEFAULT_TIME_SIGNATURE`), which the editor's serializer leaves
-/// unwritten when a block never wrote them.
+/// `DEFAULT_TIME_SIGNATURE`): what the editor's new tempo block starts
+/// at.
 #[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
 #[tsify(into_wasm_abi)]
 pub struct TempoDefaults {

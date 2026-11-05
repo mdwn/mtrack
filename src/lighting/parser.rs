@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use pest::Parser;
 
 pub mod document;
+pub mod edit;
 mod effect_parse;
 mod error;
 pub(crate) mod fixture_venue; // Make accessible for tests
@@ -31,6 +32,7 @@ mod show;
 mod tempo_parse;
 mod types;
 pub(crate) mod utils; // Make utils accessible for tests
+pub mod writer;
 
 #[cfg(test)]
 mod tests;

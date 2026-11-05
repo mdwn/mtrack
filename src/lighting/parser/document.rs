@@ -15,12 +15,12 @@
 //! one grammar (`grammar.pest`) so the editor and the player agree on what
 //! a line says. Nothing here is resolved -- a `@bar/beat` stays a bar and
 //! a beat, a `2beats` stays the text `2beats`, a parameter is its name and
-//! its value as written -- so the editor's serializer can write the file
-//! back; where a line lands in time is [`super::layout`]'s business.
+//! its value as written -- so [`super::writer`] can write the file back;
+//! where a line lands in time is [`super::layout`]'s business.
 //!
 //! The types' TypeScript declarations are generated from them (`tsify`)
-//! for the web UI, which holds and edits a [`Document`] and never parses
-//! the DSL itself.
+//! for the web UI, which holds a [`Document`], edits it through
+//! [`super::edit`] and never parses or writes the DSL itself.
 
 use std::error::Error;
 use std::path::Path;
@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use pest::iterators::Pair;
 use pest::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
@@ -40,7 +40,7 @@ use super::utils::{parse_measure_time, parse_time_string, parse_time_value, Time
     derive(tsify_next::Tsify),
     tsify(into_wasm_abi, hashmap_as_object)
 )]
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Document {
     /// Its `include`s, in order, when it has any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,7 +66,7 @@ pub struct Document {
 
 /// The kinds of item a file holds.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentItem {
     Include,
@@ -83,7 +83,7 @@ pub enum DocumentItem {
     derive(tsify_next::Tsify),
     tsify(into_wasm_abi, hashmap_as_object)
 )]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DocumentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -95,7 +95,7 @@ pub struct DocumentResult {
 
 /// An `include "…"` as written, and the file it names.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Include {
     /// The path as written, relative to the file's folder.
     pub written: String,
@@ -115,7 +115,7 @@ pub struct Include {
 
 /// A `tempo { }` block as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoSection {
     pub start: DurationValue,
     pub bpm: f64,
@@ -159,7 +159,7 @@ pub struct TempoSection {
 /// A comment inside a `tempo { }` block: above the field it names (or on
 /// that field's line, `inline`); `end` for one after the last field.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoComment {
     pub at: TempoField,
     pub inline: bool,
@@ -167,7 +167,7 @@ pub struct TempoComment {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TempoField {
     Start,
@@ -179,7 +179,7 @@ pub enum TempoField {
 
 /// One entry of a tempo block's `changes:`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TempoChange {
     pub timestamp: Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,7 +213,7 @@ pub struct TempoChange {
 
 /// A number with its unit, as a tempo block's `start:` is written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DurationValue {
     pub value: f64,
     pub unit: DurationUnit,
@@ -227,7 +227,7 @@ pub struct DurationValue {
 /// A duration as written (`0.0s`, `500ms`) and the value and unit it reads
 /// as.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WrittenDuration {
     pub text: String,
     pub value: f64,
@@ -235,7 +235,7 @@ pub struct WrittenDuration {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DurationUnit {
     Ms,
@@ -244,10 +244,22 @@ pub enum DurationUnit {
     Measures,
 }
 
+impl DurationUnit {
+    /// The unit as the grammar writes it after a number.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            DurationUnit::Ms => "ms",
+            DurationUnit::S => "s",
+            DurationUnit::Beats => "beats",
+            DurationUnit::Measures => "measures",
+        }
+    }
+}
+
 /// A cue's or a tempo change's position: a time (`@MM:SS.mmm`, `@S.sss`)
 /// in milliseconds, or a bar and beat (`@bar/beat`).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Timestamp {
     #[serde(rename = "type")]
     pub kind: TimestampKind,
@@ -268,7 +280,7 @@ pub struct Timestamp {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampKind {
     Absolute,
@@ -277,7 +289,7 @@ pub enum TimestampKind {
 
 /// A `sequence "name"(params), length: … { }` definition.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Sequence {
     pub name: String,
     /// Its parameters (`$name` in the body), each with its default if any.
@@ -313,7 +325,7 @@ pub struct Sequence {
 /// A `name: value` in a sequence's parameter list or a reference's
 /// arguments; a declared parameter with no default is its name alone.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceArg {
     pub name: String,
     /// As written: a quoted colour, a group, a number, a `$param`…
@@ -326,7 +338,7 @@ pub struct SequenceArg {
 
 /// A `show "name" { }`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LightShow {
     /// As written; `""` for a show written without a name (the only show
     /// of a file may be, and plays as `default`).
@@ -359,7 +371,7 @@ pub struct LightShow {
 
 /// One `@time` and everything written under it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Cue {
     pub timestamp: Timestamp,
     pub effects: Vec<CueEffect>,
@@ -414,7 +426,7 @@ pub struct Cue {
 
 /// An `offset N measures` line as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct OffsetLine {
     pub measures: u32,
     /// The comment lines above it, as written (`# …`, `// …`).
@@ -429,7 +441,7 @@ pub struct OffsetLine {
 
 /// The kinds of line a cue holds.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CueLine {
     #[default]
@@ -444,7 +456,7 @@ pub enum CueLine {
 
 /// An inline `loop { } repeats: n` block, as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct InlineLoop {
     pub text: String,
     /// The comment lines above it, as written (`# …`, `// …`).
@@ -458,8 +470,8 @@ pub struct InlineLoop {
 }
 
 /// An effect line: its groups and its parameters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CueEffect {
     pub groups: Vec<String>,
     /// The comments around each of its groups, one per group, when any
@@ -487,9 +499,9 @@ pub struct CueEffect {
 /// An effect's parameters as written: each `name: value` in order, the
 /// value as its text (a colour with its quotes, `50%`, `$level`), so a
 /// repeated name and a spelling survive a save. The editor's forms read
-/// and set them by name (`lib/lighting/params.ts`).
+/// and set them by name ([`super::edit`]).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct EffectParams {
     #[serde(rename = "type")]
     pub kind: EffectKind,
@@ -503,7 +515,7 @@ pub struct EffectParams {
 
 /// A `name: value` parameter as written.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
     pub value: String,
@@ -519,7 +531,7 @@ pub struct Param {
 /// The comments written around one element of a list -- a parameter, an
 /// argument, a group name -- for a save to write back in place.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Remarks {
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -543,7 +555,7 @@ impl Remarks {
 
 /// The effect keywords of the grammar.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectKind {
     Static,
@@ -556,9 +568,25 @@ pub enum EffectKind {
     Move,
 }
 
+impl EffectKind {
+    /// The effect's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            EffectKind::Static => "static",
+            EffectKind::Cycle => "cycle",
+            EffectKind::Strobe => "strobe",
+            EffectKind::Pulse => "pulse",
+            EffectKind::Chase => "chase",
+            EffectKind::Dimmer => "dimmer",
+            EffectKind::Rainbow => "rainbow",
+            EffectKind::Move => "move",
+        }
+    }
+}
+
 /// A `clear(…)`, `freeze(…)`, `unfreeze(…)` or `master(…)`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LayerCommand {
     pub command: LayerCommandKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -586,7 +614,7 @@ pub struct LayerCommand {
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerCommandKind {
     Clear,
@@ -595,10 +623,22 @@ pub enum LayerCommandKind {
     Master,
 }
 
+impl LayerCommandKind {
+    /// The command's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            LayerCommandKind::Clear => "clear",
+            LayerCommandKind::Freeze => "freeze",
+            LayerCommandKind::Unfreeze => "unfreeze",
+            LayerCommandKind::Master => "master",
+        }
+    }
+}
+
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
 /// "name"`.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SequenceRef {
     pub name: String,
     /// The arguments bound here, in order, values as written.
@@ -1431,6 +1471,20 @@ pub fn time_in(value: f64, from: &str, to: &str) -> Option<f64> {
         .filter_map(|places| format!("{raw:.places$}").parse::<f64>().ok())
         .chain([raw])
         .find(|&v| read(v, to) == Some(time))
+}
+
+/// A tempo change's `transition:` value (`snap`, `4`, `2m`) as the
+/// player reads it (`tempo_parse::parse_transition`); `None` for text the
+/// grammar does not read as one, whole.
+pub fn transition(text: &str) -> Option<super::super::tempo::TempoTransition> {
+    let text = text.trim();
+    let pair = LightingParser::parse(Rule::tempo_transition_duration, text)
+        .ok()?
+        .next()?;
+    if pair.as_span().end() != text.len() {
+        return None;
+    }
+    super::tempo_parse::parse_transition(pair).ok()
 }
 
 fn timestamp(pair: Pair<Rule>) -> Result<Timestamp, Box<dyn Error>> {

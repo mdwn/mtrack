@@ -14,7 +14,7 @@
 
 // The player's rules module loaded under node (no browser): from the
 // module file `make gen-wasm` writes, for the specs that hold the UI's
-// drawing helpers and its serializer to the player's answers.
+// drawing helpers and its document edits to the player's answers.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

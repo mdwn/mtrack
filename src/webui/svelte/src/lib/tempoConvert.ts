@@ -43,27 +43,19 @@ export function configToSection(config: TempoConfig): TempoSection {
         time_signature: c.time_signature ? sigOf(c.time_signature) : undefined,
       };
       if (c.transition) {
-        change.transition =
-          "measures" in c.transition
-            ? `${c.transition.measures}m`
-            : `${c.transition.beats}`;
+        change.transition = rules.transition_text(c.transition);
       }
       return change;
     }),
   };
 }
 
-export function parseTransition(
-  raw: string | undefined,
+/** A light show change's `transition:` as a song change's, as the
+ *  player reads it (`rules.transition_read`); none for `snap`. */
+export function transitionOf(
+  written: string | undefined,
 ): TempoChangeConfig["transition"] {
-  if (!raw) return undefined;
-  const trimmed = raw.trim();
-  if (trimmed === "" || trimmed === "snap") return undefined;
-  const measures = /^(\d+(?:\.\d+)?)\s*m$/.exec(trimmed);
-  if (measures) return { measures: parseFloat(measures[1]) };
-  const beats = /^(\d+(?:\.\d+)?)$/.exec(trimmed);
-  if (beats) return { beats: parseFloat(beats[1]) };
-  return undefined;
+  return written ? rules.transition_read(written) : undefined;
 }
 
 export interface SnappedImport {
@@ -135,7 +127,7 @@ export function sectionToConfigSnapped(
     if (c.time_signature) {
       change.time_signature = `${c.time_signature[0]}/${c.time_signature[1]}`;
     }
-    const transition = parseTransition(c.transition);
+    const transition = transitionOf(c.transition);
     if (transition) {
       change.transition = transition;
     }
