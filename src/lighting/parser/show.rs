@@ -88,8 +88,35 @@ pub(super) struct PlacedPasses {
     /// When the first pass ends, and when the last does.
     pub(super) first_end: Duration,
     pub(super) end: Duration,
-    /// When each pass starts.
-    pub(super) starts: Vec<Duration>,
+    /// The sequence the passes are of, and the show offset they were laid
+    /// under: what lays them again (see [`PlacedPasses::boundaries`]).
+    sequence: Rc<Sequence>,
+    offset_secs: f64,
+}
+
+impl PlacedPasses {
+    /// Where pass after pass of the sequence starts, laid as the player
+    /// lays them on `tempo_map` (the block's, which placed them) from the
+    /// first, up to `until` however many the reference asks for (each
+    /// pass ends where the next starts), but no more passes than the
+    /// reference's or a `loop`'s, whichever is more.
+    pub(super) fn boundaries(
+        &self,
+        tempo_map: &Option<TempoMap>,
+        until: Duration,
+    ) -> Vec<Duration> {
+        let passes = Passes::of(
+            self.sequence.clone(),
+            0,
+            tempo_map,
+            self.start,
+            self.offset_secs,
+        );
+        (0..=self.count.max(LOOP_PASSES))
+            .map(|i| passes.time_of(i, passes.base_time))
+            .take_while(|&at| at <= until)
+            .collect()
+    }
 }
 
 impl ParsedCue {
@@ -154,9 +181,8 @@ impl CueBlock {
                     start: passes.at,
                     first_end: passes.time_of(1, passes.base_time),
                     end: passes.time_of(passes.count, passes.base_time),
-                    starts: (0..passes.count)
-                        .map(|i| passes.time_of(i, passes.base_time))
-                        .collect(),
+                    sequence: passes.sequence.clone(),
+                    offset_secs: passes.offset_secs,
                 });
                 place_passes(&passes, Some(&call.name), &mut parsed.cues, parsed.base);
             }
@@ -588,10 +614,13 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 }
 
 /// Determine loop count from a SequenceLoop parameter
+/// How many passes a `loop` reference lays: a practical infinity.
+const LOOP_PASSES: usize = 10000;
+
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
         Some(SequenceLoop::Once) => Ok(1),
-        Some(SequenceLoop::Loop) => Ok(10000), // Practical infinity
+        Some(SequenceLoop::Loop) => Ok(LOOP_PASSES), // Practical infinity
         Some(SequenceLoop::PingPong) => {
             Err("PingPong loop mode not yet implemented for sequences".into())
         }

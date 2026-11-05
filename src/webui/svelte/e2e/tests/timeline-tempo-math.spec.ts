@@ -28,7 +28,6 @@ import {
   getGridLines,
   msToDurationString,
   msToTimestamp,
-  passesBy,
   snapDurationToGrid,
   snapToNearestGrid,
   tempoSourceOf,
@@ -179,16 +178,32 @@ test("a loop's resize counts the passes the drag reaches, under a ramp", () => {
   const pass = laid.shows[0].cues[0].passes[0];
   expect(pass.count).toBe(6);
   expect(pass.pass_starts).toHaveLength(6);
+  // The passes laid on past the six, to the end of the timeline, each
+  // ending where the next starts.
+  expect(pass.pass_ends.length).toBeGreaterThan(8);
+  expect(pass.pass_ends.slice(0, 5)).toEqual(pass.pass_starts.slice(1));
+  const by = (ms: number) => rules.passes_by(pass.pass_ends, ms)!;
   // The block at its own width is all six passes, not the three the first
   // pass's length would divide it into.
-  expect(passesBy(pass.pass_starts, pass.end_ms)).toBe(6);
+  expect(by(pass.end_ms)).toBe(6);
   expect(Math.round((pass.end_ms - pass.start_ms) / pass.pass_ms)).toBeLessThan(
     6,
   );
-  // A nudge past the end is still six; a drag back to the fourth start is four.
-  expect(passesBy(pass.pass_starts, pass.end_ms + 1)).toBe(6);
-  expect(passesBy(pass.pass_starts, pass.pass_starts[3])).toBe(4);
-  expect(passesBy(pass.pass_starts, pass.start_ms - 1)).toBe(1);
+  // A nudge past the end is still six; a wider drag grows the loop to
+  // eight; a drag back to the fourth start holds three whole passes.
+  expect(by(pass.end_ms + 1)).toBe(6);
+  expect(by(pass.pass_ends[7])).toBe(8);
+  expect(by(pass.pass_ends[8] - 1)).toBe(8);
+  expect(by(pass.pass_starts[3])).toBe(3);
+  expect(by(pass.pass_starts[3] - 1)).toBe(2);
+  expect(by(pass.start_ms - 1)).toBe(1);
+  // The count at every width is the passes whose end that width reaches,
+  // so the ghost (drawn to the last one's end) never shows more than fit.
+  for (let ms = pass.start_ms; ms < pass.pass_ends[9]; ms += 37) {
+    const n = by(ms);
+    expect(n === 1 || pass.pass_ends[n - 1] <= ms).toBe(true);
+    expect(pass.pass_ends[n] > ms).toBe(true);
+  }
 });
 
 test("the ruler labels and beat lines thin out as the bars narrow", () => {

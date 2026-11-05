@@ -212,6 +212,19 @@ pub struct PassLayout {
     /// When each pass starts, those within the timeline: where the
     /// passes are, under whatever tempo they run through.
     pub pass_starts: Vec<f64>,
+    /// Where pass after pass would end, laid on through the tempo map to
+    /// the end of the timeline however many the reference asks for: what
+    /// a resize that grows or shrinks the count reaches (see
+    /// [`passes_by`]).
+    pub pass_ends: Vec<f64>,
+}
+
+/// How many whole passes of `pass` fit before `until_ms`: those that end
+/// by then (see [`PassLayout::pass_ends`]), never fewer than one -- the
+/// count a reference's block dragged to end there stands for.
+pub fn passes_by(pass_ends: &[f64], until_ms: f64) -> u32 {
+    let whole = pass_ends.iter().take_while(|&&end| end <= until_ms).count();
+    u32::try_from(whole).unwrap_or(u32::MAX).max(1)
 }
 
 /// Lays out `source` as the player loads it: `path` is where the file is,
@@ -268,7 +281,7 @@ pub fn layout(
                 let steps = offset_steps(&cues);
                 SequenceLayout {
                     name,
-                    cues: cue_layouts(&cues, horizon),
+                    cues: cue_layouts(&cues, horizon, &tempo_map),
                     tempo: tempo_map
                         .filter(|_| own_tempo)
                         .map(|map| TempoLayout::new(&map, horizon, &steps)),
@@ -340,7 +353,7 @@ fn show_layout(show: &ParsedShow, horizon: Duration) -> ShowLayout {
     let steps = offset_steps(&show.cues);
     ShowLayout {
         name: show.name.clone(),
-        cues: cue_layouts(&show.cues, horizon),
+        cues: cue_layouts(&show.cues, horizon, &show.tempo_map),
         tempo: show
             .tempo_map
             .as_ref()
@@ -382,14 +395,25 @@ fn written_end(cues: &[ParsedCue]) -> Duration {
     end
 }
 
-fn cue_layouts(cues: &[ParsedCue], horizon: Duration) -> Vec<CueLayout> {
+/// `cues`, a block's, laid out; `tempo_map` is the block's, which placed
+/// their passes.
+fn cue_layouts(
+    cues: &[ParsedCue],
+    horizon: Duration,
+    tempo_map: &Option<TempoMap>,
+) -> Vec<CueLayout> {
     cues.iter()
         .enumerate()
-        .map(|(index, cue)| cue_layout(index, cue, horizon))
+        .map(|(index, cue)| cue_layout(index, cue, horizon, tempo_map))
         .collect()
 }
 
-fn cue_layout(index: usize, cue: &ParsedCue, horizon: Duration) -> CueLayout {
+fn cue_layout(
+    index: usize,
+    cue: &ParsedCue,
+    horizon: Duration,
+    tempo_map: &Option<TempoMap>,
+) -> CueLayout {
     let offset = secs(cue.offset_secs);
     let effects = cue
         .cues
@@ -415,23 +439,26 @@ fn cue_layout(index: usize, cue: &ParsedCue, horizon: Duration) -> CueLayout {
     let passes = cue
         .passes
         .iter()
-        .map(|pass| PassLayout {
-            sequence: pass.name.clone(),
-            start_ms: ms(pass.start),
-            end_ms: ms(if pass.infinite {
-                pass.end.min(horizon)
-            } else {
-                pass.end
-            }),
-            pass_ms: ms(pass.first_end.saturating_sub(pass.start)),
-            count: u32::try_from(pass.count).unwrap_or(u32::MAX),
-            infinite: pass.infinite,
-            pass_starts: pass
-                .starts
-                .iter()
-                .take_while(|&&start| start <= horizon)
-                .map(|&start| ms(start))
-                .collect(),
+        .map(|pass| {
+            let boundaries = pass.boundaries(tempo_map, horizon);
+            PassLayout {
+                sequence: pass.name.clone(),
+                start_ms: ms(pass.start),
+                end_ms: ms(if pass.infinite {
+                    pass.end.min(horizon)
+                } else {
+                    pass.end
+                }),
+                pass_ms: ms(pass.first_end.saturating_sub(pass.start)),
+                count: u32::try_from(pass.count).unwrap_or(u32::MAX),
+                infinite: pass.infinite,
+                pass_starts: boundaries
+                    .iter()
+                    .take(pass.count)
+                    .map(|&start| ms(start))
+                    .collect(),
+                pass_ends: boundaries.iter().skip(1).map(|&end| ms(end)).collect(),
+            }
         })
         .collect();
     CueLayout {
@@ -581,6 +608,14 @@ mod tests {
         close(pass.end_ms, 8000.0, "passes end");
         assert_eq!(pass.count, 3);
         assert_eq!(pass.pass_starts, vec![2000.0, 4000.0, 6000.0]);
+        // Passes laid on past the three, to the end of the timeline: a
+        // resize counts the whole ones a dragged end reaches.
+        assert_eq!(pass.pass_ends[..4], [4000.0, 6000.0, 8000.0, 10000.0]);
+        assert_eq!(passes_by(&pass.pass_ends, 8000.0), 3);
+        assert_eq!(passes_by(&pass.pass_ends, 9999.0), 3);
+        assert_eq!(passes_by(&pass.pass_ends, 10000.0), 4);
+        assert_eq!(passes_by(&pass.pass_ends, 6000.0), 2);
+        assert_eq!(passes_by(&pass.pass_ends, 2500.0), 1);
         assert!(show.cues[1]
             .effects
             .iter()

@@ -37,10 +37,10 @@
   import {
     effectTypeColor,
     msToDurationString,
-    passesBy,
     snapDurationToGrid,
     type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     cue: Cue;
@@ -169,26 +169,28 @@
       : [],
   );
 
-  // During resize: the snapped preview loop count and width
-  let resizePreviewLoopCount = $derived.by(() => {
-    if (
-      !resizing ||
-      subLaneType !== "sequences" ||
-      seqIterMs <= 0 ||
-      seqInfinite
-    )
-      return 0;
-    const currentWidthMs = blockWidth / pixelsPerMs;
-    const newTotalMs = Math.max(
-      seqIterMs,
-      currentWidthMs + resizeOffsetPx / pixelsPerMs,
-    );
-    return Math.max(1, Math.round(newTotalMs / seqIterMs));
-  });
+  /** How many whole passes the block's end dragged by `offsetPx` reaches:
+   *  those of the passes the layout laid on to the end of the timeline
+   *  that end by then (the player's `passes_by`). The ghost shows it and a
+   *  drop writes it. */
+  function passesReached(offsetPx: number): number {
+    const endMs = passes[0].start_ms + (blockWidth + offsetPx) / pixelsPerMs;
+    return rules.passes_by(passes[0].pass_ends, endMs) ?? 1;
+  }
+
+  // During resize: the passes the drag reaches, and where the last ends.
+  let resizePreviewLoopCount = $derived(
+    resizing && subLaneType === "sequences" && passes.length > 0 && !seqInfinite
+      ? passesReached(resizeOffsetPx)
+      : 0,
+  );
 
   let resizePreviewWidth = $derived(
     resizePreviewLoopCount > 0
-      ? resizePreviewLoopCount * seqIterMs * pixelsPerMs
+      ? ((passes[0].pass_ends[resizePreviewLoopCount - 1] ??
+          passes[0].start_ms + seqIterMs) -
+          passes[0].start_ms) *
+          pixelsPerMs
       : 0,
   );
 
@@ -240,12 +242,10 @@
         // Hold Ctrl/Cmd to bypass snap
         const bypassSnap = e.ctrlKey || e.metaKey;
         if (subLaneType === "sequences") {
-          // The passes the dragged end reaches, by the layout's own pass
-          // starts; a `loop:` has no count to write.
+          // The passes the dragged end reaches, as the ghost showed them;
+          // a `loop:` has no count to write.
           if (passes.length > 0 && !seqInfinite && onloopchange) {
-            onloopchange(
-              passesBy(passes[0].pass_starts, passes[0].start_ms + newTotalMs),
-            );
+            onloopchange(passesReached(deltaPx));
           }
         } else if (onresize) {
           const snappedMs =

@@ -183,6 +183,7 @@ type MetronomeConfigJs = <MetronomeConfig as Tsify>::JsType;
 type PatchSpanJs = <PatchSpan as Tsify>::JsType;
 type PatchSpansJs = <PatchSpans as Tsify>::JsType;
 type LayoutRequestJs = <LayoutRequest as Tsify>::JsType;
+type PassEndsJs = <PassEnds as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -670,6 +671,22 @@ pub fn layout(request: LayoutRequestJs) -> Layout {
 #[wasm_bindgen]
 pub fn document(source: &str, path: Option<String>) -> DocumentResult {
     lighting::parser::document::document(source, path.as_deref().map(Path::new))
+}
+
+/// A sequence reference's `PassLayout::pass_ends`, as the page hands them
+/// back.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct PassEnds(pub Vec<f64>);
+
+/// How many whole passes of a sequence reference fit before `until_ms`,
+/// from its layout's `pass_ends` (laid by the player to the end of the
+/// timeline): the count its block dragged to end there stands for
+/// (`layout::passes_by`). `None` for a value that is not a list of times.
+#[wasm_bindgen]
+pub fn passes_by(pass_ends: PassEndsJs, until_ms: f64) -> Option<u32> {
+    let ends: PassEnds = read(JsValue::from(pass_ends))?;
+    Some(lighting::parser::layout::passes_by(&ends.0, until_ms))
 }
 
 /// Whether `text`, whole, is a sequence parameter reference (`$name`) by
