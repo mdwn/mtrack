@@ -161,6 +161,32 @@ fn test_simple_advanced_parameters() {
 }
 
 #[test]
+fn the_grammar_names_exactly_the_named_colors() {
+    use crate::lighting::effects::NAMED_COLORS;
+    use crate::lighting::parser::grammar::{LightingParser, Rule};
+    use pest::Parser;
+    // The words `named_color` lists, read off the grammar itself.
+    let rule = include_str!("../../grammar.pest")
+        .lines()
+        .find(|line| line.starts_with("named_color ="))
+        .unwrap();
+    let mut written: Vec<&str> = rule
+        .split('"')
+        .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase()))
+        .collect();
+    let mut named: Vec<&str> = NAMED_COLORS.iter().map(|(name, _)| *name).collect();
+    written.sort();
+    named.sort();
+    assert_eq!(written, named);
+    for name in named {
+        let quoted = format!("\"{name}\"");
+        let pair = LightingParser::parse(Rule::named_color, &quoted).unwrap();
+        assert_eq!(pair.as_str(), quoted);
+    }
+    assert!(LightingParser::parse(Rule::named_color, "\"teal\"").is_err());
+}
+
+#[test]
 fn pink_is_a_named_color() {
     let shows = parse_light_shows(
         r#"show "s" {

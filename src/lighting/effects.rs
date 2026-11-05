@@ -26,7 +26,7 @@ mod types;
 mod tests;
 
 // Re-export public items
-pub use color::Color;
+pub use color::{Color, NAMED_COLORS};
 pub use error::EffectError;
 #[cfg(test)]
 pub(crate) use fixture::declared_dmx;

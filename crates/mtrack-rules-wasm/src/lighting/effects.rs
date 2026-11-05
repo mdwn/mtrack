@@ -25,7 +25,7 @@ mod tempo_aware;
 #[path = "../../../../src/lighting/effects/types.rs"]
 mod types;
 
-pub use color::Color;
+pub use color::{Color, NAMED_COLORS};
 pub use error::EffectError;
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
