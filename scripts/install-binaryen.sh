@@ -30,11 +30,21 @@ set -euo pipefail
 BINARYEN_VERSION="${1:-${BINARYEN_VERSION:-130}}"
 BINARYEN_PREFIX="${BINARYEN_PREFIX:-/usr/local}"
 
+# The release assets' SHA-256 digests, as GitHub publishes them for
+# version_130. A new version means new digests here.
 case "$(uname -s)-$(uname -m)" in
-    Linux-x86_64)   asset_platform="x86_64-linux" ;;
-    Linux-aarch64)  asset_platform="aarch64-linux" ;;
-    Darwin-x86_64)  asset_platform="x86_64-macos" ;;
-    Darwin-arm64)   asset_platform="arm64-macos" ;;
+    Linux-x86_64)
+        asset_platform="x86_64-linux"
+        asset_sha256="0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc" ;;
+    Linux-aarch64)
+        asset_platform="aarch64-linux"
+        asset_sha256="e6ae6e09ac40f4e14bc5be6f687c58e2995c84170013975fa641809dd3b480a0" ;;
+    Darwin-x86_64)
+        asset_platform="x86_64-macos"
+        asset_sha256="d3e2d1235b70c93c54b52eabc1625ea960965152218754f1f4eeb0f873c48e03" ;;
+    Darwin-arm64)
+        asset_platform="arm64-macos"
+        asset_sha256="79d3ab9f417d9e215f15f598f523d001a7d9ac1e59367e5c869fbdabd1cba72e" ;;
     *)
         echo "install-binaryen: no binaryen release for $(uname -s) $(uname -m)" >&2
         exit 1
@@ -48,12 +58,27 @@ url="https://github.com/WebAssembly/binaryen/releases/download/${release}/${asse
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+if [ "$BINARYEN_VERSION" != "130" ]; then
+    echo "install-binaryen: no pinned digest for version_${BINARYEN_VERSION}; add it to this script" >&2
+    exit 1
+fi
+
 echo "Fetching ${asset}"
 curl -fsSL --retry 3 -o "$tmp/binaryen.tar.gz" "$url"
+# Verified against the pinned digest before anything is unpacked, so a
+# changed or substituted asset fails here rather than installing.
+if command -v sha256sum >/dev/null; then
+    echo "${asset_sha256}  $tmp/binaryen.tar.gz" | sha256sum -c - >/dev/null
+else
+    echo "${asset_sha256}  $tmp/binaryen.tar.gz" | shasum -a 256 -c - >/dev/null
+fi
 tar -xzf "$tmp/binaryen.tar.gz" -C "$tmp"
 
+# sudo only when the prefix is not ours to write.
 SUDO=""
-[ "$(id -u)" -eq 0 ] || SUDO="sudo"
+if [ ! -w "$BINARYEN_PREFIX" ] && [ "$(id -u)" -ne 0 ]; then
+    SUDO="sudo"
+fi
 
 # wasm-opt is dynamically linked against libbinaryen in the release, so the
 # library ships beside it.
