@@ -24,8 +24,18 @@ import App from "./App.svelte";
 import { mount } from "svelte";
 
 async function start() {
-  await Promise.all([waitLocale(), rulesReady]);
-  mount(App, { target: document.getElementById("app")! });
+  const target = document.getElementById("app")!;
+  try {
+    await Promise.all([waitLocale(), rulesReady]);
+  } catch (error) {
+    // Without the rules module every position and meter on every page
+    // would be a question with no answer: say so instead of a blank page.
+    console.error("could not load the player's rules module", error);
+    target.textContent =
+      "Could not load the player's rules module. Reload the page; if this keeps happening, the UI build is incomplete.";
+    return;
+  }
+  mount(App, { target });
 }
 
 start();
