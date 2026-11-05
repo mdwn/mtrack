@@ -77,9 +77,18 @@ pub mod lighting;
 #[path = "../../../src/config/fade.rs"]
 mod config_fade;
 
+/// A song's pilot hints (`src/config/pilot.rs`).
+#[path = "../../../src/config/pilot.rs"]
+#[allow(dead_code)]
+pub mod pilot_config;
+
 /// A song's sections (`src/config/section.rs`).
 #[path = "../../../src/config/section.rs"]
 mod config_section;
+
+/// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
+#[path = "../../../src/audio/guessed_tempo.rs"]
+pub mod guessed_tempo;
 
 /// Ambient light's mode (`src/dmx/engine/ambient_mode.rs`).
 #[path = "../../../src/dmx/engine/ambient_mode.rs"]
@@ -93,17 +102,21 @@ mod ambient_source;
 #[path = "../../../src/state/pose.rs"]
 mod pose;
 
-/// What the web UI reads from the player (`src/webui/wire`), whose
-/// TypeScript types are generated here and nowhere else: the websocket's
-/// messages.
+// What the web UI reads from the player (`src/webui/wire`), whose
+// TypeScript types are generated here and nowhere else.
+
+/// The websocket's messages.
 #[path = "../../../src/webui/wire/messages.rs"]
 pub mod wire_messages;
+/// The songs API's payloads.
+#[path = "../../../src/webui/wire/songs.rs"]
+pub mod wire_songs;
 
 // The player's module paths the included sources name each other by
 // (`crate::audio::beat_grid`, `crate::config::Section`, …), so each
 // compiles as it is.
 pub mod audio {
-    pub use crate::beat_grid;
+    pub use crate::{beat_grid, guessed_tempo};
 }
 
 pub mod config {

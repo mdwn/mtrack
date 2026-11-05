@@ -19,3 +19,4 @@
 //! it (`tsify`), leaving the UI no copy of a payload's shape to drift.
 
 pub mod messages;
+pub mod songs;

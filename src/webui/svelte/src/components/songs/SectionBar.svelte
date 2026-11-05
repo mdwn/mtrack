@@ -13,21 +13,12 @@
      *
      * -->
 <script lang="ts">
+  import type { Section } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
 
-  interface SectionEntry {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-    /** 1-based beat within the measure, fractional allowed; absent = 1. */
-    start_beat?: number;
-    end_beat?: number;
-    color?: string;
-  }
-
   interface Props {
-    sections: SectionEntry[];
+    sections: Section[];
     pixelsPerMs: number;
     scrollLeft: number;
     viewportWidth: number;
@@ -42,7 +33,7 @@
     songDurationMs: number;
     /** Shown centered when there are no sections. */
     emptyHint?: string;
-    onsectionschange: (sections: SectionEntry[]) => void;
+    onsectionschange: (sections: Section[]) => void;
     /** A section was tapped (without dragging): open its editor. */
     onsectionedit?: (index: number) => void;
   }
@@ -271,7 +262,7 @@
         createState.currentMeasure,
       );
       if (end > start) {
-        const newSection: SectionEntry = {
+        const newSection: Section = {
           name: `section_${sections.length + 1}`,
           start_measure: start,
           end_measure: end,

@@ -25,8 +25,6 @@
     fetchWaveform,
     uploadTrack,
     importFileToSong,
-    type SongSummary,
-    type WaveformTrack,
   } from "../../lib/api/songs";
   import type {
     Include,
@@ -40,7 +38,9 @@
   import type {
     IncludeSource,
     Layout,
+    SongInfo,
     TempoSource,
+    TrackPeaks,
   } from "../../gen/rules/mtrack_rules";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
   import { configToSection } from "../../lib/tempoConvert";
@@ -64,7 +64,7 @@
   }
 
   interface Props {
-    song: SongSummary;
+    song: SongInfo;
     onreload: () => void;
     dirty?: boolean;
     onchange?: () => void;
@@ -92,7 +92,7 @@
   let tab = $state<"timeline" | "raw">("timeline");
 
   let lightFiles = $state<LoadedLightFile[]>([]);
-  let waveformTracks = $state<WaveformTrack[]>([]);
+  let waveformTracks = $state<TrackPeaks[]>([]);
   let mergedLightFile = $state<LightFile>({ sequences: [], shows: [] });
   /** The files the song's light files include, fetched for the player's
    *  layout (which reads them as the player would off the disk). */

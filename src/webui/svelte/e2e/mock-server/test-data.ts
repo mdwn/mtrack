@@ -15,9 +15,10 @@
 import type {
   FixtureMetadata,
   SocketMessage,
+  SongList,
 } from "../../src/gen/rules/mtrack_rules";
 
-export const SONGS = {
+export const SONGS: SongList = {
   songs: [
     {
       name: "Test Song Alpha",
@@ -35,6 +36,8 @@ export const SONGS = {
       beat_grid: null,
       has_tempo_map: false,
       loop_playback: false,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [],
     },
     {
@@ -66,6 +69,8 @@ export const SONGS = {
       },
       has_tempo_map: false,
       loop_playback: true,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },
         { name: "chorus", start_measure: 5, end_measure: 8 },
@@ -99,6 +104,8 @@ export const SONGS = {
       },
       has_tempo_map: false,
       loop_playback: false,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [
         {
           name: "stab",

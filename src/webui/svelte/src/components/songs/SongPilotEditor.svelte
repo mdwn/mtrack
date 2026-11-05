@@ -13,12 +13,9 @@
      *
      * -->
 <script lang="ts">
+  import type { PilotConfig, PilotHint } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import type {
-    BeatGrid,
-    PilotConfig,
-    PilotHintConfig,
-  } from "../../lib/api/songs";
+  import type { BeatGrid } from "../../lib/api/songs";
   import { rules } from "../../lib/rules";
 
   interface Props {
@@ -49,7 +46,7 @@
     onchange(null);
   }
 
-  function emit(hints: PilotHintConfig[], track?: string) {
+  function emit(hints: PilotHint[], track?: string) {
     const updated: PilotConfig = { ...(pilot ?? {}), hints };
     if (track !== undefined) {
       updated.track = track;
@@ -69,7 +66,7 @@
     emit(hints);
   }
 
-  function updateHint(index: number, patch: Partial<PilotHintConfig>) {
+  function updateHint(index: number, patch: Partial<PilotHint>) {
     const hints = [...(pilot?.hints ?? [])];
     const merged = { ...hints[index], ...patch };
     if (merged.align === "end") {
@@ -90,7 +87,7 @@
     emit(hints);
   }
 
-  function positionKind(hint: PilotHintConfig): "measure" | "time" {
+  function positionKind(hint: PilotHint): "measure" | "time" {
     return "measure" in hint.at ? "measure" : "time";
   }
 

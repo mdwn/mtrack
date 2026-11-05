@@ -13,9 +13,10 @@
      *
      * -->
 <script lang="ts">
+  import type { GuessedTempo } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
-  import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
+  import { fetchTempoGuess } from "../../lib/api/songs";
   import TimestampInput from "./TimestampInput.svelte";
   import { rules } from "../../lib/rules";
 

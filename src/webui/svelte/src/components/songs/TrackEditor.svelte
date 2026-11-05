@@ -13,9 +13,9 @@
      *
      * -->
 <script lang="ts">
+  import type { TrackPeaks } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type { SongFile } from "../../lib/api/songs";
-  import type { WaveformTrack } from "../../lib/api/songs";
   import Waveform from "./Waveform.svelte";
 
   interface TrackEntry {
@@ -27,7 +27,7 @@
   interface Props {
     tracks: TrackEntry[];
     files: SongFile[];
-    waveformTracks: WaveformTrack[];
+    waveformTracks: TrackPeaks[];
     onchange: (tracks: TrackEntry[]) => void;
     /** Open a file browser for the given track index (or -1 for "add new"). */
     onbrowse: (trackIndex: number) => void;

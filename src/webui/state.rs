@@ -195,10 +195,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 
             let summary = current_song.summary();
 
-            let pilot_hints: Vec<wire::PilotHint> = current_song
+            let pilot_hints: Vec<wire::ResolvedPilotHint> = current_song
                 .pilot_hints()
                 .iter()
-                .map(|h| wire::PilotHint {
+                .map(|h| wire::ResolvedPilotHint {
                     label: h.label.clone(),
                     at_ms: (h.at_secs * 1000.0).max(0.0) as u64,
                     start_ms: (h.start_secs * 1000.0).max(0.0) as u64,
@@ -2327,7 +2327,7 @@ metronome: {}
                     looping: with_options,
                     reactive_loop_state: loop_state,
                     pending_start_ms: with_options.then_some(500),
-                    pilot_hints: vec![wire::PilotHint {
+                    pilot_hints: vec![wire::ResolvedPilotHint {
                         label: "go".to_string(),
                         at_ms: 1,
                         start_ms: 0,

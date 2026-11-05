@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import type { Section } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import { rules } from "../../lib/rules";
@@ -22,18 +23,8 @@
   import UnitToggle from "./UnitToggle.svelte";
   import PlayheadCapture from "./PlayheadCapture.svelte";
 
-  interface SectionEntry {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-    /** 1-based beat within the measure, fractional allowed; absent = 1. */
-    start_beat?: number;
-    end_beat?: number;
-    color?: string;
-  }
-
   interface Props {
-    section: SectionEntry;
+    section: Section;
     /** The section's index, for the automatic palette color. */
     index: number;
     /** The song's measure count, bounding the pickers. */
@@ -50,7 +41,7 @@
     playheadPos?: { measure: number; beat: number } | null;
     /** The same playhead in seconds, for the marker and the readout. */
     playheadTime?: number | null;
-    onchange: (patch: Partial<SectionEntry>) => void;
+    onchange: (patch: Partial<Section>) => void;
     ondelete: () => void;
     onclose: () => void;
   }

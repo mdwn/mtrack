@@ -90,7 +90,7 @@ pub struct Playback {
     /// Start position for the next play, set by seeking while stopped.
     pub pending_start_ms: Option<u64>,
     /// Pilot hints resolved to song times.
-    pub pilot_hints: Vec<PilotHint>,
+    pub pilot_hints: Vec<ResolvedPilotHint>,
     /// The tempo and metre from the song's tempo map, at the playhead.
     pub tempo: Option<PlaybackTempo>,
     /// A song about to start by itself, its playlist entry's auto-play gap
@@ -189,7 +189,7 @@ pub enum LoopState {
     tsify(missing_as_null, hashmap_as_object)
 )]
 #[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct PilotHint {
+pub struct ResolvedPilotHint {
     pub label: String,
     pub at_ms: u64,
     pub start_ms: u64,

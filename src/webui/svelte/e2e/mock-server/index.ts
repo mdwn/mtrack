@@ -533,7 +533,7 @@ app.get("/api/lighting/fixture-test/options", (req, res) => {
     ? GDTF_INSPECTION.modes.map((m) =>
         testModeFor(
           m.name,
-          Object.fromEntries(m.channels.map(([o, n]) => [n, o])),
+          Object.fromEntries(m.channels.map(([o, n]) => [n, Number(o)])),
           (m as { strobe_range?: { min_hz: number; max_hz: number } })
             .strobe_range ?? null,
         ),

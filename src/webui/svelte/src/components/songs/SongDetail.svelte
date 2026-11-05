@@ -13,6 +13,13 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    PilotConfig,
+    Section,
+    SongFailure,
+    SongInfo,
+    TrackPeaks,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import YAML from "yaml";
@@ -25,12 +32,8 @@
     uploadTrack,
     uploadTracks,
     type MetronomeConfig,
-    type PilotConfig,
     type SongFile,
-    type SongFailure,
-    type SongSummary,
     type TempoConfig,
-    type WaveformTrack,
   } from "../../lib/api/songs";
   import { fetchLightingFile } from "../../lib/api/config";
   import { rules } from "../../lib/rules";
@@ -76,9 +79,9 @@
 
   let { songName, initialTab, initialTimeMs = null }: Props = $props();
 
-  let song = $state<SongSummary | null>(null);
+  let song = $state<SongInfo | null>(null);
   let songFiles = $state<SongFile[]>([]);
-  let waveformTracks = $state<WaveformTrack[]>([]);
+  let waveformTracks = $state<TrackPeaks[]>([]);
   let rawYaml = $state("");
   let editedYaml = $state("");
   let parsedConfig = $state<Record<string, unknown> | null>(null);
@@ -146,16 +149,7 @@
   let loopCrossfadeCut = $state<string[]>([]);
 
   // Section editor state
-  let sections = $state<
-    {
-      name: string;
-      start_measure: number;
-      end_measure: number;
-      start_beat?: number;
-      end_beat?: number;
-      color?: string;
-    }[]
-  >([]);
+  let sections = $state<Section[]>([]);
   let sectionsDirty = $state(false);
 
   // Tempo map state (the song.yaml `tempo:` block)
@@ -298,14 +292,7 @@
             )
           : [];
         sections = (parsed.sections ?? []).map((s: Record<string, unknown>) => {
-          const entry: {
-            name: string;
-            start_measure: number;
-            end_measure: number;
-            start_beat?: number;
-            end_beat?: number;
-            color?: string;
-          } = {
+          const entry: Section = {
             name: (s.name as string) ?? "",
             start_measure: (s.start_measure as number) ?? 1,
             end_measure: (s.end_measure as number) ?? 2,

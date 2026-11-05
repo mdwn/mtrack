@@ -20,10 +20,11 @@
    * three maps the live state message carries and never touches the
    * engine, so a playing song plays on.
    */
+  import type { SongInfo } from "../../gen/rules/mtrack_rules";
   import { onDestroy, onMount } from "svelte";
   import { t } from "svelte-i18n";
   import { BadAnswerError } from "../../lib/lighting/answer";
-  import { fetchSongs, type SongSummary } from "../../lib/api/songs";
+  import { fetchSongs } from "../../lib/api/songs";
   import {
     clock,
     evaluatePreview,
@@ -57,7 +58,7 @@
   /** How long scrubbing rests before the show is evaluated. */
   const DEBOUNCE_MS = 120;
 
-  let songs = $state<SongSummary[]>([]);
+  let songs = $state<SongInfo[]>([]);
   let loaded = $state(false);
   let songName = $state("");
   let time = $state(0);

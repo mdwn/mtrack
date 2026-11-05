@@ -21,6 +21,7 @@
 import type {
   FixtureMetadata,
   PoseSnapshot,
+  SongInfo,
   StageValues,
 } from "../../gen/rules/mtrack_rules";
 import { post } from "../api/rest";
@@ -35,7 +36,6 @@ import {
   str,
   type Obj,
 } from "./answer";
-import type { SongSummary } from "../api/songs";
 import { rules } from "../rules";
 import { sectionColor } from "../sectionColors";
 
@@ -140,7 +140,7 @@ export interface SectionSegment {
 
 /** The song's sections as strip segments, from the beat grid the same way
  *  the dashboard's timeline places them. Empty without a grid. */
-export function sectionSegments(song: SongSummary): SectionSegment[] {
+export function sectionSegments(song: SongInfo): SectionSegment[] {
   const grid = song.beat_grid;
   const total = song.duration_ms / 1000;
   if (!grid || total <= 0) return [];

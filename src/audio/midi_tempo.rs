@@ -25,37 +25,11 @@ use std::path::Path;
 use midly::Smf;
 
 use super::click_analysis::BeatGrid;
+pub use super::guessed_tempo::{GuessedTempo, GuessedTempoChange};
 use crate::midi::playback::{
     MidiTiming, SignatureEntry, TempoEntry, TempoWalk, DEFAULT_MICROS_PER_BEAT,
 };
 use crate::tempo::{TempoChangePosition, TempoMap, TimeSignature};
-
-/// A guessed tempo map: what the web UI suggests for a song's `tempo:`
-/// block or a show's `tempo {}` block.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct GuessedTempo {
-    pub start_seconds: f64,
-    pub bpm: f64,
-    pub time_signature: [u32; 2],
-    pub changes: Vec<GuessedTempoChange>,
-    /// RMS alignment error in milliseconds between MIDI-predicted beats and the
-    /// click-track beat grid, measured after cross-correlation offset detection.
-    /// `None` when no beat grid was available for comparison.
-    /// Values above ~15ms suggest the MIDI may not match the recorded audio.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alignment_rms_ms: Option<f64>,
-}
-
-/// A single tempo or time-signature change.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct GuessedTempoChange {
-    pub measure: u32,
-    pub beat: u32,
-    pub bpm: f64,
-    pub time_signature: [u32; 2],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transition_beats: Option<u32>,
-}
 
 impl GuessedTempo {
     /// The suggestion a tempo map makes: a beat grid's, derived as lighting

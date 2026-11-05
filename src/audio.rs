@@ -27,6 +27,7 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod guessed_tempo;
 pub mod health;
 pub mod metronome;
 pub mod midi_tempo;
