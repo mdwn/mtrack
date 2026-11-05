@@ -40,6 +40,7 @@
   import { rules } from "../../lib/rules";
   import type {
     IncludeSource,
+    Layout,
     TempoSource,
   } from "../../gen/rules/mtrack_rules";
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
@@ -272,17 +273,48 @@
     tempoSourceOf(mergedLightFile.tempo, songTempoSource),
   );
 
-  /** The player's layout of the show as it is being edited: the merged
-   *  file written out and read back by the one parser, with the files it
-   *  includes and the song's tempo, as loading the song would. */
-  let layout = $derived(
-    rules.layout({
-      source: serializeLightFile(mergedLightFile),
-      path: lightFiles[0]?.path,
-      song_tempo: songTempoSource ?? undefined,
-      includes: includeSources,
-      until_ms: song.duration_ms || 60000,
-    }),
+  /** The player's layout of the show as it is being edited: each file
+   *  written out and read back by the one parser, with its own path (its
+   *  `include`s resolve against its own folder, as the player resolves
+   *  them), the files it includes and the song's tempo, as loading the
+   *  song would; the files' shows and sequences side by side. */
+  let layout = $derived.by(() => {
+    const merged: Layout = { shows: [], sequences: [], end_ms: 0 };
+    const errors: string[] = [];
+    for (const lf of lightFiles) {
+      if (lf.parseError) continue;
+      const laid = rules.layout({
+        source: serializeLightFile(lf.parsed),
+        path: lf.path,
+        song_tempo: songTempoSource ?? undefined,
+        includes: includeSources,
+        until_ms: song.duration_ms || 60000,
+      });
+      if (laid.error !== undefined) {
+        errors.push(
+          lightFiles.length > 1 ? `${lf.path}: ${laid.error}` : laid.error,
+        );
+        continue;
+      }
+      merged.tempo ??= laid.tempo;
+      merged.shows.push(...laid.shows);
+      merged.sequences.push(...laid.sequences);
+      merged.end_ms = Math.max(merged.end_ms, laid.end_ms);
+    }
+    if (errors.length > 0) merged.error = errors.join("\n");
+    return merged;
+  });
+
+  /** The last layout that laid out: what the timeline keeps drawing while
+   *  an edit does not lay out, with the error said. */
+  let lastGoodLayout = $state<Layout | null>(null);
+  $effect(() => {
+    if (layout.error === undefined) lastGoodLayout = layout;
+  });
+  let shownLayout = $derived<Layout>(
+    layout.error === undefined
+      ? layout
+      : { ...(lastGoodLayout ?? layout), error: layout.error },
   );
 
   /** Fetches every file the loaded files include, and the files those
@@ -812,9 +844,14 @@
           {venueGroupsError}
         </div>
       {/if}
+      {#if shownLayout.error !== undefined}
+        <div class="error-banner" data-testid="layout-error">
+          {shownLayout.error}
+        </div>
+      {/if}
       <TimelineEditor
         lightFile={mergedLightFile}
-        {layout}
+        layout={shownLayout}
         {tempoSource}
         groups={venueGroups}
         {sequenceNames}

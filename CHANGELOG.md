@@ -164,7 +164,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the player's words, where the old timeline drew it anyway. A file that defines a fixture type or a
   venue, or gives a show its own `tempo` block, is edited as text. Inline loops and every
   parameter a line carries are written back as read, where a save used to drop them.
-  Included files are fetched for the layout, and a file's `include` lines survive a save.
+  Included files are fetched for the layout (each file's resolve against its own folder), and a
+  file's `include` lines survive a save. One difference from the player remains: it reads an
+  included file by its canonical path, so one reached through a symlink is read once and must
+  lie inside the songs folder; the editor resolves the path as written (`..` folded) and asks
+  the server for it, so a symlinked include is fetched by its written path. Comments are kept
+  where they were, as written, and written back; parameters as written, repeats included.
 
 - **A Format 1 MIDI file's tempo lives on its conductor track**: the web UI's tempo guess read
   tempo and time-signature events from every track; it reads the conductor track (track 0) as
