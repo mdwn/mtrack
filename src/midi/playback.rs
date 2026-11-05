@@ -46,8 +46,9 @@ pub(crate) struct SignatureEntry {
     pub(crate) denominator_power: u8,
 }
 
-/// Default tempo: 120 BPM = 500_000 microseconds per beat.
-const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
+/// Default tempo: 120 BPM = 500_000 microseconds per beat, until a file's
+/// first tempo event.
+pub(crate) const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
 
 /// A MIDI file's timing: its tempo and time-signature events at their
 /// ticks, by the one rule for where a file's tempo lives. A Format 0 file's

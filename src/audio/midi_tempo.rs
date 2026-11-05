@@ -25,7 +25,9 @@ use std::path::Path;
 use midly::Smf;
 
 use super::click_analysis::BeatGrid;
-use crate::midi::playback::{MidiTiming, SignatureEntry, TempoEntry, TempoWalk};
+use crate::midi::playback::{
+    MidiTiming, SignatureEntry, TempoEntry, TempoWalk, DEFAULT_MICROS_PER_BEAT,
+};
 use crate::tempo::{TempoChangePosition, TempoMap, TimeSignature};
 
 /// A guessed tempo map: what the web UI suggests for a song's `tempo:`
@@ -97,10 +99,6 @@ impl GuessedTempo {
         }
     }
 }
-
-/// Default tempo: 120 BPM = 500_000 microseconds per beat, until a file's
-/// first tempo event.
-const DEFAULT_MICROS_PER_BEAT: u32 = 500_000;
 
 /// A tempo as a whole BPM, as a MIDI file's is written.
 fn bpm_of(micros_per_beat: u32) -> f64 {
