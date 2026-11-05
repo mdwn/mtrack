@@ -207,10 +207,10 @@ fn layer_commands(shows: &[LightShow], tempo: Option<&TempoMap>) -> Vec<LayerCom
                 out.push(LayerCommandEntry {
                     time: cue.time,
                     position: map.map(|m| m.position_label(cue.time)),
-                    command: format!("{:?}", cmd.command_type).to_lowercase(),
+                    command: cmd.command_type.keyword().to_string(),
                     layer: cmd
                         .layer
-                        .map(|l| format!("{l:?}").to_lowercase())
+                        .map(|l| l.keyword().to_string())
                         .unwrap_or_else(|| "all".to_string()),
                     intensity: cmd.intensity,
                     speed: cmd.speed,
@@ -305,15 +305,15 @@ fn field_changes(old: &DiffEntry, new: &DiffEntry) -> Vec<FieldChange> {
     if old.layer != new.layer {
         fields.push(FieldChange {
             field: "layer".to_string(),
-            from: format!("{:?}", old.layer).to_lowercase(),
-            to: format!("{:?}", new.layer).to_lowercase(),
+            from: old.layer.keyword().to_string(),
+            to: new.layer.keyword().to_string(),
         });
     }
     if old.blend_mode != new.blend_mode {
         fields.push(FieldChange {
             field: "blend_mode".to_string(),
-            from: format!("{:?}", old.blend_mode).to_lowercase(),
-            to: format!("{:?}", new.blend_mode).to_lowercase(),
+            from: old.blend_mode.keyword().to_string(),
+            to: new.blend_mode.keyword().to_string(),
         });
     }
 

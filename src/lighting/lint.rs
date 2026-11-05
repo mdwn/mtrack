@@ -670,7 +670,7 @@ fn stomping_replace_effects(cues: &[&Cue], ends: &[EffectEnd], out: &mut Vec<War
                 format!(
                     "two `replace` effects overlap on `{group}` in the {} layer between \
                      {:.3}s and {:.3}s — the later one wins and the earlier appears to do nothing",
-                    format!("{layer:?}").to_lowercase(),
+                    layer.keyword(),
                     second_start.as_secs_f64(),
                     first_end.as_secs_f64(),
                 ),

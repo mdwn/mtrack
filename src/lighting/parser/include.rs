@@ -29,7 +29,7 @@ use pest::Parser;
 use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
 use super::sequences::SequenceLibrary;
-use super::utils::items;
+use super::utils::{items, unquote};
 
 /// Where the files an `include` names come from. The player reads them
 /// off the disk (`DiskReader`, in the parser's root module); the web UI
@@ -118,12 +118,33 @@ pub(super) struct Include {
 }
 
 impl Include {
+    /// The file it names, from the file at `from` (`None` for source that
+    /// is no file): its path joined to that file's folder, or why it names
+    /// none -- source that is no file has no folder to resolve against, and
+    /// only `.light` files are included.
+    pub(super) fn target(&self, from: Option<&Path>) -> Result<PathBuf, String> {
+        let Include { written, line } = self;
+        let Some(from_path) = from else {
+            return Err(format!(
+                "line {line}: include \"{written}\" resolves against the file's folder, and this \
+                 source is not a file; save it first, or validate it with its song"
+            ));
+        };
+        if Path::new(written).extension().and_then(|e| e.to_str()) != Some("light") {
+            return Err(format!(
+                "line {line}: include \"{written}\": only .light files can be included"
+            ));
+        }
+        let folder = from_path.parent().unwrap_or(Path::new(""));
+        Ok(folder.join(written))
+    }
+
     pub(super) fn from_pair(pair: Pair<Rule>) -> Include {
         let line = pair.line_col().0;
         let written = pair
             .into_inner()
             .find(|p| p.as_rule() == Rule::string)
-            .map(|p| p.as_str().trim_matches('"').to_string())
+            .map(|p| unquote(&p))
             .unwrap_or_default();
         Include { written, line }
     }
@@ -162,20 +183,8 @@ pub(super) fn add_included(
         }
     };
     for include in includes {
+        let path = include.target(from.path).map_err(&in_file)?;
         let Include { written, line } = include;
-        let Some(from_path) = from.path else {
-            return Err(in_file(format!(
-                "line {line}: include \"{written}\" resolves against the file's folder, and this \
-                 source is not a file; save it first, or validate it with its song"
-            )));
-        };
-        if Path::new(&written).extension().and_then(|e| e.to_str()) != Some("light") {
-            return Err(in_file(format!(
-                "line {line}: include \"{written}\": only .light files can be included"
-            )));
-        }
-        let folder = from_path.parent().unwrap_or(Path::new(""));
-        let path = folder.join(&written);
         let canonical = reader.resolve(&path).map_err(|e| {
             in_file(format!(
                 "line {line}: include \"{written}\": cannot read {}: {e}",

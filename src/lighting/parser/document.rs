@@ -30,9 +30,14 @@ use pest::iterators::Pair;
 use pest::Parser;
 use serde::{Deserialize, Serialize};
 
+use super::super::tempo::{parse_signature_in, SignatureRange};
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
-use super::utils::{parse_measure_time, parse_time_string, parse_time_value, TimeValue};
+pub use super::types::{EffectKind, LayerCommandType};
+use super::utils::{
+    parse_measure_time, parse_time_string, parse_time_unit, parse_time_value, unquote, TimeUnit,
+    TimeValue,
+};
 
 /// A `.light` file as written.
 #[cfg_attr(
@@ -553,42 +558,11 @@ impl Remarks {
     }
 }
 
-/// The effect keywords of the grammar.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectKind {
-    Static,
-    Cycle,
-    Strobe,
-    Pulse,
-    Chase,
-    Dimmer,
-    Rainbow,
-    Move,
-}
-
-impl EffectKind {
-    /// The effect's keyword, as the grammar writes it.
-    pub fn keyword(self) -> &'static str {
-        match self {
-            EffectKind::Static => "static",
-            EffectKind::Cycle => "cycle",
-            EffectKind::Strobe => "strobe",
-            EffectKind::Pulse => "pulse",
-            EffectKind::Chase => "chase",
-            EffectKind::Dimmer => "dimmer",
-            EffectKind::Rainbow => "rainbow",
-            EffectKind::Move => "move",
-        }
-    }
-}
-
 /// A `clear(…)`, `freeze(…)`, `unfreeze(…)` or `master(…)`.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LayerCommand {
-    pub command: LayerCommandKind,
+    pub command: LayerCommandType,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub layer: Option<String>,
@@ -611,28 +585,6 @@ pub struct LayerCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comment: Option<String>,
-}
-
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum LayerCommandKind {
-    Clear,
-    Freeze,
-    Unfreeze,
-    Master,
-}
-
-impl LayerCommandKind {
-    /// The command's keyword, as the grammar writes it.
-    pub fn keyword(self) -> &'static str {
-        match self {
-            LayerCommandKind::Clear => "clear",
-            LayerCommandKind::Freeze => "freeze",
-            LayerCommandKind::Unfreeze => "unfreeze",
-            LayerCommandKind::Master => "master",
-        }
-    }
 }
 
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
@@ -696,7 +648,6 @@ pub fn document(source: &str, path: Option<&Path>) -> DocumentResult {
 fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
     let mut pairs = LightingParser::parse(Rule::file, source)
         .map_err(|e| super::error::describe_pest_error(&e, source))?;
-    let folder = path.and_then(Path::parent).unwrap_or(Path::new(""));
     let mut document = Document::default();
     let mut includes = Vec::new();
     let mut comments = Comments::default();
@@ -730,16 +681,14 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         match pair.as_rule() {
             Rule::include => {
                 let inner = pair.clone();
-                let written = pair
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .map(|p| p.as_str().trim_matches('"').to_string())
-                    .unwrap_or_default();
-                let path = normalize(&folder.join(&written))
+                // The file the player reads for it, by the key it reads
+                // it by (`Sources::resolve`), or why it reads none.
+                let named = super::include::Include::from_pair(pair);
+                let path = normalize(&named.target(path)?)
                     .to_string_lossy()
                     .into_owned();
                 let mut include = Include {
-                    written,
+                    written: named.written,
                     path,
                     line,
                     comments_before: comments.take(),
@@ -1218,7 +1167,12 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                         .into_inner()
                         .find(|p| p.as_rule() == Rule::time_parameter)
                     {
-                        section.start = duration_value(value.as_str())?;
+                        let raw = value.as_str().trim();
+                        if !raw.is_empty() {
+                            // Refused as the player refuses it.
+                            super::tempo_parse::parse_tempo_start(raw)?;
+                            section.start = duration_value(raw)?;
+                        }
                     }
                 }
                 Rule::tempo_bpm => {
@@ -1421,25 +1375,23 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
 
 /// `4/4` as `(4, 4)`, as written: the player's own range check is in
 /// `parse_signature_in`, applied when the file loads.
+/// A `time_signature:` as the player reads it (`parse_signature_in`, a
+/// light show's range).
 fn signature(raw: &str) -> Result<(u32, u32), Box<dyn Error>> {
-    let (numerator, denominator) = raw
-        .trim()
-        .split_once('/')
-        .ok_or_else(|| format!("Invalid time signature: {raw}"))?;
-    Ok((numerator.trim().parse()?, denominator.trim().parse()?))
+    let sig = parse_signature_in(raw, SignatureRange::Light)?;
+    Ok((sig.numerator, sig.denominator))
 }
 
-/// `2.5s`, `500ms`, `1beat`, `2measures` as the number and its unit.
+/// `2.5s`, `500ms`, `1beat`, `2measures` as the number and its unit, by
+/// the player's one table (`parse_time_unit`).
 fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
-    let (number, unit) = super::utils::split_unit(raw);
+    let (value, unit) = parse_time_unit(raw)?;
     let unit = match unit {
-        "ms" => DurationUnit::Ms,
-        "s" | "" => DurationUnit::S,
-        "beat" | "beats" => DurationUnit::Beats,
-        "measure" | "measures" => DurationUnit::Measures,
-        other => return Err(format!("Unknown time unit: {other}").into()),
+        TimeUnit::Ms => DurationUnit::Ms,
+        TimeUnit::S => DurationUnit::S,
+        TimeUnit::Beats => DurationUnit::Beats,
+        TimeUnit::Measures => DurationUnit::Measures,
     };
-    let value = number.trim().parse()?;
     Ok(DurationValue {
         value,
         unit,
@@ -1539,7 +1491,7 @@ fn sequence(pair: Pair<Rule>, source: &str) -> Result<Sequence, Box<dyn Error>> 
             Item::Pair(pair) => pair,
         };
         match item.as_rule() {
-            Rule::sequence_name => sequence.name = item.as_str().trim_matches('"').to_string(),
+            Rule::sequence_name => sequence.name = unquote(&item),
             Rule::sequence_param_decls => {
                 let mut found =
                     LineComments::read(&item, source, &|r| r == Rule::sequence_param_decl);
@@ -1604,7 +1556,7 @@ fn show(pair: Pair<Rule>, source: &str) -> Result<LightShow, Box<dyn Error>> {
         };
         match item.as_rule() {
             Rule::show_name => {
-                show.name = item.as_str().trim_matches('"').to_string();
+                show.name = unquote(&item);
                 show.unnamed = None;
             }
             Rule::show_content => {
@@ -1755,7 +1707,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 cue.keep_tail(tail, &mut comments);
             }
             Rule::layer_command => {
-                let (mut command, tail) = layer_command(item, source);
+                let (mut command, tail) = layer_command(item, source)?;
                 command.comments_before = joined(comments.take(), command.comments_before);
                 cue.commands.push(command);
                 cue.last = CueLine::Command;
@@ -1775,7 +1727,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                 let name = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::sequence_name)
-                    .map(|p| p.as_str().trim_matches('"').to_string())
+                    .map(|p| unquote(&p))
                     .unwrap_or_default();
                 cue.sequences.push(SequenceRef {
                     name,
@@ -1794,12 +1746,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
             }
             Rule::offset_command => {
                 let inner = item.clone();
-                let measures: u32 = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::number_value)
-                    .map(|p| p.as_str().trim().parse())
-                    .transpose()?
-                    .unwrap_or(0);
+                let measures = super::show::parse_offset_command(item)?;
                 cue.offset_measures = Some(cue.offset_measures.unwrap_or(0) + measures);
                 cue.offsets.get_or_insert_with(Vec::new).push(OffsetLine {
                     measures,
@@ -1875,17 +1822,8 @@ fn effect<'i>(
             }
             Rule::effect_type => {
                 type_end = Some(item.as_span().end() - base);
-                params.kind = match item.as_str() {
-                    "static" => EffectKind::Static,
-                    "cycle" => EffectKind::Cycle,
-                    "strobe" => EffectKind::Strobe,
-                    "pulse" => EffectKind::Pulse,
-                    "chase" => EffectKind::Chase,
-                    "dimmer" => EffectKind::Dimmer,
-                    "rainbow" => EffectKind::Rainbow,
-                    "move" => EffectKind::Move,
-                    other => return Err(format!("Unknown effect type: {other}").into()),
-                }
+                params.kind = EffectKind::from_keyword(item.as_str())
+                    .ok_or_else(|| format!("Unknown effect type: {}", item.as_str()))?;
             }
             Rule::parameters => {
                 if let Some(end) = type_end {
@@ -1937,10 +1875,13 @@ fn effect<'i>(
 
 /// A layer command, with the comments after its text (see
 /// [`LineComments`]).
-fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Vec<Item<'i>>) {
+fn layer_command<'i>(
+    pair: Pair<'i, Rule>,
+    source: &'i str,
+) -> Result<(LayerCommand, Vec<Item<'i>>), Box<dyn Error>> {
     let mut found = LineComments::read(&pair, source, &|r| r == Rule::layer_command_param);
     let mut command = LayerCommand {
-        command: LayerCommandKind::Clear,
+        command: LayerCommandType::Clear,
         layer: None,
         intensity: None,
         speed: None,
@@ -1952,12 +1893,7 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::layer_command_type => {
-                command.command = match item.as_str() {
-                    "freeze" => LayerCommandKind::Freeze,
-                    "unfreeze" => LayerCommandKind::Unfreeze,
-                    "master" => LayerCommandKind::Master,
-                    _ => LayerCommandKind::Clear,
-                }
+                command.command = LayerCommandType::from_keyword(item.as_str())?;
             }
             Rule::layer_command_params => {
                 for param in item
@@ -1994,7 +1930,7 @@ fn layer_command<'i>(pair: Pair<'i, Rule>, source: &'i str) -> (LayerCommand, Ve
         command.written = Some(written);
     }
     command.comments_before = take(&mut found.loose);
-    (command, found.tail)
+    Ok((command, found.tail))
 }
 
 /// A sequence reference, with the comments after its text (see
@@ -2034,7 +1970,7 @@ fn sequence_ref<'i>(pair: Pair<'i, Rule>, whole: &'i str) -> (SequenceRef, Vec<I
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::sequence_name => {
-                reference.name = item.as_str().trim_matches('"').to_string();
+                reference.name = unquote(&item);
                 before_params = item.as_span().end() - base;
             }
             Rule::sequence_args => {
@@ -2177,7 +2113,7 @@ show "Song" {
             ]
         );
         assert_eq!(effect.effect.no_comma, None);
-        assert_eq!(first.commands[0].command, LayerCommandKind::Clear);
+        assert_eq!(first.commands[0].command, LayerCommandType::Clear);
         assert_eq!(first.commands[0].layer.as_deref(), Some("background"));
         assert_eq!(first.sequences[0].name, "strike");
         assert_eq!(first.sequences[0].loop_.as_deref(), Some("2"));
@@ -2230,7 +2166,9 @@ show "Song" {
     #[test]
     fn every_comment_is_kept_where_it_was() {
         let source = "# top\ninclude \"a.light\" # inc\n// before tempo\ntempo { # head\n    # before start\n    start: 0s // on start\n    bpm: 120\n    # before changes\n    changes: [\n        # before change\n        @3/1 { bpm: 90 }, # on change\n        @4/1 { bpm: 100 }\n        # after changes\n    ]\n    # at end\n} # close\nsequence \"s\" { # seq head\n    @1/1\n    a: static, color: \"red\", duration: 1s\n    # seq after\n}\n# before show\nshow \"S\" { // show head\n    # before cue\n    @1/1 # on cue\n    # before effect\n    front: static, color: \"red\", duration: 1s # on effect\n    clear(layer: background) # on command\n    # before ref\n    sequence \"s\" # on ref\n    offset 1 measures # on offset\n    reset_measures # on reset\n    # between cues\n    @2/1\n    loop {\n        @0.0\n        a: strobe, frequency: 4, duration: 0.5s\n    } repeats: 2 # on loop\n    # show after\n} # show close\n# file end\n";
-        let doc = document(source, None).document.expect("parses");
+        let doc = document(source, Some(Path::new("show.light")))
+            .document
+            .expect("parses");
         let v = |xs: &[&str]| Some(xs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
         let inc = &doc.includes.as_ref().unwrap()[0];
         assert_eq!(inc.comments_before, v(&["# top"]));
@@ -2492,6 +2430,38 @@ show "Song" {
                 .unwrap();
             assert_eq!(doc.shows[0].cues[0].timestamp.ms, Some(ms), "{written}");
         }
+    }
+
+    #[test]
+    fn refuses_what_the_player_refuses_with_its_words() {
+        let error = |source: &str, path: Option<&str>| {
+            document(source, path.map(Path::new))
+                .error
+                .unwrap_or_else(|| panic!("{source} is refused"))
+        };
+        let show = "show \"S\" {\n    @1/1\n}\n";
+        let player = |source: &str| {
+            crate::lighting::parser::parse_light_shows(source)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        };
+        // A zero metre, a start in beats: the player's own text.
+        for tempo in [
+            "tempo {\n    time_signature: 0/4\n}\n",
+            "tempo {\n    start: 2beats\n}\n",
+        ] {
+            let source = format!("{tempo}{show}");
+            let refused = error(&source, Some("s.light"));
+            assert!(player(&source).contains(&refused), "{refused}");
+        }
+        // An include with no file to resolve against, or not a `.light`.
+        assert!(error(&format!("include \"a.light\"\n{show}"), None)
+            .contains("resolves against the file's folder"));
+        assert!(
+            error(&format!("include \"a.txt\"\n{show}"), Some("s.light"))
+                .contains("only .light files can be included")
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
 use super::show::{parse_sequence_structure, ParsedCue, SequenceDefinition};
 use super::types::{Sequence, SequenceCall};
+use super::utils::unquote;
 
 /// A sequence as written: its parameters and its source.
 struct SequenceTemplate {
@@ -117,7 +118,7 @@ impl SequenceLibrary {
             let mut params: Vec<(String, Option<String>)> = Vec::new();
             for inner in pair.into_inner() {
                 match inner.as_rule() {
-                    Rule::sequence_name => name = inner.as_str().trim_matches('"').to_string(),
+                    Rule::sequence_name => name = unquote(&inner),
                     Rule::sequence_param_decls => {
                         for decl in inner.into_inner() {
                             let mut parts = decl.into_inner();

@@ -269,7 +269,9 @@ impl Effect {
 }
 
 /// Layer control command types (grandMA-inspired)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayerCommandType {
     /// Clear - immediately stop all effects on the layer
     Clear,
@@ -279,6 +281,97 @@ pub enum LayerCommandType {
     Unfreeze,
     /// Master - set layer intensity and/or speed master
     Master,
+}
+
+/// Each layer command and its keyword, as the grammar writes it: the one
+/// table both ways are read off.
+const LAYER_COMMAND_KEYWORDS: [(LayerCommandType, &str); 4] = [
+    (LayerCommandType::Clear, "clear"),
+    (LayerCommandType::Freeze, "freeze"),
+    (LayerCommandType::Unfreeze, "unfreeze"),
+    (LayerCommandType::Master, "master"),
+];
+
+impl LayerCommandType {
+    /// The command a keyword names.
+    pub fn from_keyword(keyword: &str) -> Result<LayerCommandType, Box<dyn std::error::Error>> {
+        LAYER_COMMAND_KEYWORDS
+            .iter()
+            .find(|(_, k)| *k == keyword)
+            .map(|(c, _)| *c)
+            .ok_or_else(|| format!("Unknown layer command type: {}", keyword).into())
+    }
+
+    /// The command's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        LAYER_COMMAND_KEYWORDS
+            .iter()
+            .find(|(c, _)| *c == self)
+            .map(|(_, k)| *k)
+            .expect("every layer command has a keyword")
+    }
+}
+
+/// The effect keywords of the grammar: which effect a line names, before
+/// its parameters are read.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectKind {
+    Static,
+    Cycle,
+    Strobe,
+    Pulse,
+    Chase,
+    Dimmer,
+    Rainbow,
+    Move,
+}
+
+/// Each effect and its keyword, as the grammar writes it: the one table
+/// both ways are read off.
+const EFFECT_KEYWORDS: [(EffectKind, &str); 8] = [
+    (EffectKind::Static, "static"),
+    (EffectKind::Cycle, "cycle"),
+    (EffectKind::Strobe, "strobe"),
+    (EffectKind::Pulse, "pulse"),
+    (EffectKind::Chase, "chase"),
+    (EffectKind::Dimmer, "dimmer"),
+    (EffectKind::Rainbow, "rainbow"),
+    (EffectKind::Move, "move"),
+];
+
+impl EffectKind {
+    /// The effect a keyword names, or `None` for a word that names none.
+    pub fn from_keyword(keyword: &str) -> Option<EffectKind> {
+        EFFECT_KEYWORDS
+            .iter()
+            .find(|(_, k)| *k == keyword)
+            .map(|(e, _)| *e)
+    }
+
+    /// The effect's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        EFFECT_KEYWORDS
+            .iter()
+            .find(|(e, _)| *e == self)
+            .map(|(_, k)| *k)
+            .expect("every effect has a keyword")
+    }
+
+    /// Which effect an effect type is.
+    pub fn of(effect_type: &EffectType) -> EffectKind {
+        match effect_type {
+            EffectType::Static { .. } => EffectKind::Static,
+            EffectType::ColorCycle { .. } => EffectKind::Cycle,
+            EffectType::Strobe { .. } => EffectKind::Strobe,
+            EffectType::Pulse { .. } => EffectKind::Pulse,
+            EffectType::Chase { .. } => EffectKind::Chase,
+            EffectType::Dimmer { .. } => EffectKind::Dimmer,
+            EffectType::Rainbow { .. } => EffectKind::Rainbow,
+            EffectType::Move { .. } => EffectKind::Move,
+        }
+    }
 }
 
 /// A layer control command

@@ -16,7 +16,7 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::effects::{
-    Color, EffectLayer, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
+    BlendMode, Color, EffectLayer, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue,
 };
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
@@ -56,21 +56,46 @@ pub(crate) enum TimeValue {
     Measures(f64),
 }
 
+/// The unit a time is written in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TimeUnit {
+    Ms,
+    S,
+    Beats,
+    Measures,
+}
+
 /// The units a time is written in -- `500ms` or `1.5ms`, `0.5s`, `2beats`,
-/// `1measure`, or a bare number, which is seconds -- read into
-/// [`TimeValue`]. The one table; each caller takes the units it allows
-/// and reports its own errors.
-pub(crate) fn parse_time_value(value: &str) -> Result<TimeValue, std::num::ParseFloatError> {
+/// `1measure`, or a bare number, which is seconds -- read as the number
+/// written and its unit. The one table; each caller takes the units it
+/// allows and reports its own errors.
+pub(crate) fn parse_time_unit(value: &str) -> Result<(f64, TimeUnit), std::num::ParseFloatError> {
     let (number, unit) = split_unit(value);
     let number = number.trim();
     Ok(match unit {
-        "ms" => TimeValue::Seconds(number.parse::<f64>()? / 1000.0),
-        "s" => TimeValue::Seconds(number.parse()?),
-        "beats" | "beat" => TimeValue::Beats(number.parse()?),
-        "measures" | "measure" => TimeValue::Measures(number.parse()?),
+        "ms" => (number.parse()?, TimeUnit::Ms),
+        "s" => (number.parse()?, TimeUnit::S),
+        "beats" | "beat" => (number.parse()?, TimeUnit::Beats),
+        "measures" | "measure" => (number.parse()?, TimeUnit::Measures),
         // Assume seconds if no unit
-        _ => TimeValue::Seconds(value.trim().parse()?),
+        _ => (value.trim().parse()?, TimeUnit::S),
     })
+}
+
+/// A time as [`parse_time_unit`] reads it, in its unit ([`TimeValue`]).
+pub(crate) fn parse_time_value(value: &str) -> Result<TimeValue, std::num::ParseFloatError> {
+    Ok(match parse_time_unit(value)? {
+        (ms, TimeUnit::Ms) => TimeValue::Seconds(ms / 1000.0),
+        (secs, TimeUnit::S) => TimeValue::Seconds(secs),
+        (beats, TimeUnit::Beats) => TimeValue::Beats(beats),
+        (measures, TimeUnit::Measures) => TimeValue::Measures(measures),
+    })
+}
+
+/// A quoted name (`"intro"`: a show's, a sequence's, an include's path)
+/// without its quotes.
+pub(crate) fn unquote(pair: &Pair<Rule>) -> String {
+    pair.as_str().trim_matches('"').to_string()
 }
 
 /// A value written as a number and its unit -- `2.5s`, `4beats`, `45deg`
@@ -83,13 +108,59 @@ pub(crate) fn split_unit(value: &str) -> (&str, &str) {
     (number, &value[number.len()..])
 }
 
+/// Each layer and its keyword, as the grammar writes it: the one table
+/// both ways are read off.
+const LAYER_KEYWORDS: [(EffectLayer, &str); 3] = [
+    (EffectLayer::Background, "background"),
+    (EffectLayer::Midground, "midground"),
+    (EffectLayer::Foreground, "foreground"),
+];
+
 /// The layer a `layer:` keyword names.
 pub(crate) fn parse_layer(value: &str) -> Option<EffectLayer> {
-    match value {
-        "background" => Some(EffectLayer::Background),
-        "midground" => Some(EffectLayer::Midground),
-        "foreground" => Some(EffectLayer::Foreground),
-        _ => None,
+    LAYER_KEYWORDS
+        .iter()
+        .find(|(_, k)| *k == value)
+        .map(|(layer, _)| *layer)
+}
+
+impl EffectLayer {
+    /// The layer's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        LAYER_KEYWORDS
+            .iter()
+            .find(|(layer, _)| *layer == self)
+            .map(|(_, k)| *k)
+            .expect("every layer has a keyword")
+    }
+}
+
+/// Each blend mode and its keyword, as the grammar writes it: the one
+/// table both ways are read off.
+const BLEND_KEYWORDS: [(BlendMode, &str); 5] = [
+    (BlendMode::Replace, "replace"),
+    (BlendMode::Multiply, "multiply"),
+    (BlendMode::Add, "add"),
+    (BlendMode::Overlay, "overlay"),
+    (BlendMode::Screen, "screen"),
+];
+
+/// The blend mode a `blend_mode:` keyword names.
+pub(crate) fn parse_blend_mode(value: &str) -> Option<BlendMode> {
+    BLEND_KEYWORDS
+        .iter()
+        .find(|(_, k)| *k == value)
+        .map(|(mode, _)| *mode)
+}
+
+impl BlendMode {
+    /// The blend mode's keyword, as the grammar writes it.
+    pub fn keyword(self) -> &'static str {
+        BLEND_KEYWORDS
+            .iter()
+            .find(|(mode, _)| *mode == self)
+            .map(|(_, k)| *k)
+            .expect("every blend mode has a keyword")
     }
 }
 

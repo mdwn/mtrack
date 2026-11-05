@@ -50,9 +50,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                                 if time_str.is_empty() {
                                     continue;
                                 }
-                                start_offset = parse_time_parameter(time_str).map_err(|e| {
-                                    format!("Failed to parse time_parameter '{}': {}", time_str, e)
-                                })?;
+                                start_offset = parse_tempo_start(time_str)?;
                                 break;
                             }
                         }
@@ -225,6 +223,13 @@ pub(crate) fn parse_transition(pair: Pair<Rule>) -> Result<TempoTransition, Box<
         }
     }
     Ok(transition)
+}
+
+/// A tempo block's `start:` value (`time_str`, trimmed) as the player
+/// reads it: a time in `s` or `ms`.
+pub(crate) fn parse_tempo_start(time_str: &str) -> Result<Duration, Box<dyn Error>> {
+    parse_time_parameter(time_str)
+        .map_err(|e| format!("Failed to parse time_parameter '{}': {}", time_str, e).into())
 }
 
 fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
