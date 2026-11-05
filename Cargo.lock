@@ -2362,6 +2362,9 @@ name = "mtrack-rules-wasm"
 version = "0.1.0"
 dependencies = [
  "config",
+ "indexmap",
+ "pest",
+ "pest_derive",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

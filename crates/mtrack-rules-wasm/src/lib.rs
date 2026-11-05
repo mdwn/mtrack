@@ -11,22 +11,24 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-//! mtrack's beat grid, tempo map, metronome and DMX patch rules for the web
-//! UI, as a WebAssembly module.
+//! mtrack's beat grid, tempo map, metronome, DMX patch and light show
+//! rules for the web UI, as a WebAssembly module.
 //!
 //! The module is the player's own `src/tempo.rs`, `src/config/tempo.rs`,
-//! `src/config/metronome.rs`, `src/audio/beat_grid.rs` and
-//! `src/lighting/patch.rs`, compiled as they are, so the UI places measures,
-//! beats, signatures and accents exactly where the player does, and refuses
-//! the patch overlaps the player refuses. No rule lives here: each export
-//! carries values across the boundary to one of the player's functions.
-//! What little logic it holds is the boundary's own -- reading the page's
-//! values leniently, refusing magnitudes no song has (see [`bounds`]),
-//! milliseconds to and from seconds, which of the player's two signature
-//! lookups a tempo point reports (the bar's, by its time, and the one the
-//! changes have set), and the beats-in-measure of a count-in. The
-//! TypeScript types of the arguments and results are generated from the
-//! Rust structs (`tsify`), so the UI has no copy of them to drift.
+//! `src/config/metronome.rs`, `src/audio/beat_grid.rs`,
+//! `src/lighting/patch.rs` and the light show parser (`src/lighting/parser/*`
+//! with the effect types it builds), compiled as they are, so the UI places
+//! measures, beats, signatures, accents and cues exactly where the player
+//! does, refuses the patch overlaps the player refuses, and reads a `.light`
+//! file by the one grammar. No rule lives here: each export carries values
+//! across the boundary to one of the player's functions. What little logic
+//! it holds is the boundary's own -- reading the page's values leniently,
+//! refusing magnitudes no song has (see [`bounds`]), milliseconds to and
+//! from seconds, which of the player's two signature lookups a tempo point
+//! reports (the bar's, by its time, and the one the changes have set), and
+//! the beats-in-measure of a count-in. The TypeScript types of the
+//! arguments and results are generated from the Rust structs (`tsify`), so
+//! the UI has no copy of them to drift.
 //!
 //! Every export is stateless and synchronous: the UI hands over the grid or
 //! config it holds and gets an answer, with nothing kept on this side. An
@@ -62,6 +64,13 @@ pub mod beat_grid;
 #[allow(dead_code)]
 pub mod patch;
 
+/// The player's light show parser, with the effect types it builds: the
+/// modules of `src/lighting/effects` and `src/lighting/parser` the parser
+/// needs, under the paths they have in the player (`crate::lighting::…`),
+/// so each compiles as it is. See `lighting.rs`.
+#[allow(dead_code)]
+pub mod lighting;
+
 /// What the included modules' own unit tests reach for in the player
 /// (`crate::util::to_yaml_string`). Those tests are never run here (`[lib]
 /// test = false`), but `cargo clippy --all-targets` still compiles them, so
@@ -75,6 +84,7 @@ mod util {
     }
 }
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -84,6 +94,9 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
 pub use beat_grid::BeatGrid;
+pub use lighting::parser::document::{Document, DocumentResult};
+pub use lighting::parser::layout::Layout;
+use lighting::parser::Sources;
 pub use metronome_config::{MetronomeConfig, Subdivision};
 pub use patch::{PatchOverlap, PatchOverrun, PatchSpan};
 use tempo::TempoMap;
@@ -169,6 +182,7 @@ type TempoConfigJs = <TempoConfig as Tsify>::JsType;
 type MetronomeConfigJs = <MetronomeConfig as Tsify>::JsType;
 type PatchSpanJs = <PatchSpan as Tsify>::JsType;
 type PatchSpansJs = <PatchSpans as Tsify>::JsType;
+type LayoutRequestJs = <LayoutRequest as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -283,10 +297,10 @@ pub fn grid_query(grid: BeatGridJs, query: GridQueryJs) -> Option<GridPosition> 
 
 // ── Tempo map ───────────────────────────────────────────────────────────────
 
-/// Where a tempo map comes from: a song's `tempo:` block, or the beat grid
+/// Where a tempo map comes from: a song's `tempo:` block, the beat grid
 /// of a song without one (`BeatGrid::to_tempo_map`, the map the player
-/// cues such a song's light show against). A light show's `tempo {}` block
-/// is a later variant.
+/// cues such a song's light show against), or a light show's `tempo {}`
+/// block as DSL text (the last file-level block, as the parser takes it).
 #[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TempoSource {
@@ -294,6 +308,8 @@ pub enum TempoSource {
     Config { config: TempoConfig },
     /// The song's beat grid, from click analysis.
     Grid { grid: BeatGrid },
+    /// A light show's `tempo { }` block, as written.
+    Dsl { dsl: String },
 }
 
 impl TempoSource {
@@ -312,12 +328,17 @@ impl TempoSource {
                 grid.to_tempo_map()
                     .ok_or_else(|| "the beat grid holds no complete measure".to_string())
             }
+            TempoSource::Dsl { dsl } => lighting::parser::file_items(dsl, None)
+                .map_err(|e| e.to_string())?
+                .tempo_map
+                .ok_or_else(|| "the source has no tempo block".to_string()),
         }
     }
 }
 
-/// A question to a tempo map: what is at a time, or where a position is.
-#[derive(Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
+/// A question to a tempo map: what is at a time, where a position is, or
+/// where a duration written as the DSL writes one ends.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TempoQuery {
     /// A time in milliseconds of song time.
@@ -325,6 +346,11 @@ pub enum TempoQuery {
     /// A measure (1-based) and a possibly fractional beat (1-based, in the
     /// map's quarter-note units).
     Position { measure: u32, beat: f64 },
+    /// Where a duration written as an effect's is (`2beats`, `1measure`,
+    /// `500ms`, `1.5s`, a bare number of seconds) ends from a time, as the
+    /// parser reads it there (`parse_duration_string`): through the tempo
+    /// changes and ramps it runs over.
+    Span { from_ms: f64, duration: String },
 }
 
 /// A point on a tempo map: its time, its position, and the tempo and
@@ -356,12 +382,19 @@ pub struct TempoPoint {
 impl TempoQuery {
     /// The map's answer, by the player's `TempoMap`; `None` when the source
     /// makes no tempo map (see [`tempo_validate`]), the position lies
-    /// before measure 1, or the question is beyond [`bounds`].
-    pub fn answer(&self, source: &TempoSource) -> Option<TempoPoint> {
-        let map = source.to_tempo_map().ok()?;
-        let (at, measure, beat, label, sig) = match *self {
+    /// before measure 1, or the question is beyond [`bounds`]. With no
+    /// source at all, only a span in seconds or milliseconds has an answer,
+    /// and its bar, beat and tempo are those of a bare clock (bar 1 at 0,
+    /// the default tempo and metre).
+    pub fn answer(&self, source: Option<&TempoSource>) -> Option<TempoPoint> {
+        let map = match source {
+            Some(source) => Some(source.to_tempo_map().ok()?),
+            None => None,
+        };
+        let (at, measure, beat, label, sig) = match self {
             TempoQuery::Time { ms } => {
-                if ms < 0.0 || !bounds::secs(ms / 1000.0) {
+                let map = map.as_ref()?;
+                if *ms < 0.0 || !bounds::secs(ms / 1000.0) {
                     return None;
                 }
                 let at = Duration::from_secs_f64(ms / 1000.0);
@@ -370,22 +403,40 @@ impl TempoQuery {
                 (at, measure, beat, map.position_label(at), sig)
             }
             TempoQuery::Position { measure, beat } => {
-                if measure > bounds::MAX_MEASURES || !bounds::beat(beat) {
+                let map = map.as_ref()?;
+                if *measure > bounds::MAX_MEASURES || !bounds::beat(*beat) {
                     return None;
                 }
-                let at = map.measure_to_time_with_offset(measure, beat, 0, 0.0)?;
+                let at = map.measure_to_time_with_offset(*measure, *beat, 0, 0.0)?;
                 // The bar the point is in, by its time: a beat past its
                 // measure's last (beat 5 of a 4/4 bar) is in the next bar.
                 let sig = map.time_signature_at_time(at, 0.0);
                 (
                     at,
-                    measure,
-                    beat,
-                    tempo::position_label_for(measure, beat),
+                    *measure,
+                    *beat,
+                    tempo::position_label_for(*measure, *beat),
                     sig,
                 )
             }
+            TempoQuery::Span { from_ms, duration } => {
+                if *from_ms < 0.0 || !bounds::secs(from_ms / 1000.0) {
+                    return None;
+                }
+                let from = Duration::from_secs_f64(from_ms / 1000.0);
+                let length =
+                    lighting::parser::utils::parse_duration_string(duration, &map, Some(from), 0.0)
+                        .ok()?;
+                let at = from.saturating_add(length);
+                let Some(map) = map.as_ref() else {
+                    return Some(TempoPoint::on_a_bare_clock(at));
+                };
+                let (measure, beat) = map.time_to_measure_beat(at);
+                let sig = map.time_signature_at_time(at, 0.0);
+                (at, measure, beat, map.position_label(at), sig)
+            }
         };
+        let map = map.as_ref()?;
         let sig_set = map.time_signature_set_at(at);
         Some(TempoPoint {
             ms: at.as_secs_f64() * 1000.0,
@@ -399,12 +450,75 @@ impl TempoQuery {
     }
 }
 
-/// [`TempoQuery::answer`], for the web UI.
+impl TempoPoint {
+    /// A time with no tempo map to place it on: a span in seconds ends
+    /// here, on a bare clock at the default tempo and metre.
+    fn on_a_bare_clock(at: Duration) -> TempoPoint {
+        let sig = tempo::DEFAULT_TIME_SIGNATURE;
+        TempoPoint {
+            ms: at.as_secs_f64() * 1000.0,
+            measure: 1,
+            beat: 1.0,
+            label: tempo::position_label_for(1, 1.0),
+            bpm: tempo::DEFAULT_BPM,
+            sig: (sig.numerator, sig.denominator),
+            sig_set: (sig.numerator, sig.denominator),
+        }
+    }
+}
+
+/// [`TempoQuery::answer`], for the web UI. `source` may be `null` for a
+/// show with no tempo at all, whose spans are in seconds alone.
 #[wasm_bindgen]
-pub fn tempo_query(source: TempoSourceJs, query: TempoQueryJs) -> Option<TempoPoint> {
-    let source: TempoSource = read(JsValue::from(source))?;
+pub fn tempo_query(source: Option<TempoSourceJs>, query: TempoQueryJs) -> Option<TempoPoint> {
+    let source: Option<TempoSource> = match source {
+        Some(source) => Some(read(JsValue::from(source))?),
+        None => None,
+    };
     let query: TempoQuery = read(JsValue::from(query))?;
-    query.answer(&source)
+    query.answer(source.as_ref())
+}
+
+/// The distance between two times on a tempo map, as the position walk
+/// counts it: in milliseconds, in quarter-note beats
+/// (`TempoMap::beats_between`) and in bars of the metres between
+/// (`TempoMap::measures_between`, fractional within a bar). What the
+/// timeline names a dragged length by.
+#[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct TempoDistance {
+    pub ms: f64,
+    pub beats: f64,
+    pub measures: f64,
+}
+
+impl TempoDistance {
+    /// The distance from `from_ms` to `to_ms` on `source`'s map; `None`
+    /// when the source makes no map or a time is not one.
+    pub fn between(source: &TempoSource, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
+        if from_ms < 0.0
+            || to_ms < 0.0
+            || !bounds::secs(from_ms / 1000.0)
+            || !bounds::secs(to_ms / 1000.0)
+        {
+            return None;
+        }
+        let map = source.to_tempo_map().ok()?;
+        let from = Duration::from_secs_f64(from_ms / 1000.0);
+        let to = Duration::from_secs_f64(to_ms / 1000.0);
+        Some(TempoDistance {
+            ms: to_ms - from_ms,
+            beats: map.beats_between(from, to),
+            measures: map.measures_between(from, to),
+        })
+    }
+}
+
+/// [`TempoDistance::between`], for the web UI.
+#[wasm_bindgen]
+pub fn tempo_distance(source: TempoSourceJs, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
+    let source: TempoSource = read(JsValue::from(source))?;
+    TempoDistance::between(&source, from_ms, to_ms)
 }
 
 /// Why a tempo config cannot be saved (`TempoConfig::validate`, the verdict
@@ -457,6 +571,105 @@ pub fn signature_parse(raw: Option<String>) -> Option<Signature> {
     tempo_config::parse_time_signature(&raw?)
         .ok()
         .map(|sig| Signature((sig.numerator, sig.denominator)))
+}
+
+// ── Light shows ─────────────────────────────────────────────────────────────
+
+/// A `.light` file to lay out, with everything the parser would read off
+/// the disk for it: the sources of the files it includes (fetched by the
+/// UI), and the song's tempo map for a file with no tempo block.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(from_wasm_abi)]
+pub struct LayoutRequest {
+    pub source: String,
+    /// The file's path (as the lighting API names it), which its
+    /// `include`s resolve against; `None` for a draft that is no file yet.
+    #[serde(default)]
+    #[tsify(optional)]
+    pub path: Option<String>,
+    /// The song's tempo map, for a file with no `tempo` block.
+    #[serde(default)]
+    #[tsify(optional)]
+    pub song_tempo: Option<TempoSource>,
+    /// The included files, by the path [`Document`]'s `includes` resolved
+    /// them to.
+    #[serde(default)]
+    pub includes: Vec<IncludeSource>,
+    /// How far the timeline reaches at least: the song's length.
+    pub until_ms: f64,
+}
+
+/// An included file as the UI fetched it, or why it could not.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+pub struct IncludeSource {
+    pub path: String,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub source: Option<String>,
+    /// Why the file could not be fetched; the include that names it
+    /// reports as the player would, with this where the player has the
+    /// file system's reason.
+    #[serde(default)]
+    #[tsify(optional)]
+    pub error: Option<String>,
+}
+
+impl LayoutRequest {
+    /// The layout, by the player's own parse of the file
+    /// (`parser::layout::layout`).
+    pub fn answer(&self) -> Layout {
+        let mut sources = Sources::none();
+        for include in &self.includes {
+            match (&include.source, &include.error) {
+                (Some(source), _) => sources.add(&include.path, source.clone()),
+                (None, Some(error)) => sources.add_missing(&include.path, error.clone()),
+                (None, None) => {}
+            }
+        }
+        let external = match self.song_tempo.as_ref().map(TempoSource::to_tempo_map) {
+            Some(Ok(map)) => Some(map),
+            Some(Err(error)) => {
+                return Layout {
+                    error: Some(format!("the song's tempo makes no tempo map: {error}")),
+                    ..Layout::default()
+                }
+            }
+            None => None,
+        };
+        let until = if self.until_ms > 0.0 && bounds::secs(self.until_ms / 1000.0) {
+            Duration::from_secs_f64(self.until_ms / 1000.0)
+        } else {
+            Duration::ZERO
+        };
+        lighting::parser::layout::layout(
+            &self.source,
+            self.path.as_deref().map(Path::new),
+            external.as_ref(),
+            &sources,
+            until,
+        )
+    }
+}
+
+/// [`LayoutRequest::answer`], for the web UI: a request that is not one
+/// (no source) lays out as an error.
+#[wasm_bindgen]
+pub fn layout(request: LayoutRequestJs) -> Layout {
+    match read::<LayoutRequest>(JsValue::from(request)) {
+        Some(request) => request.answer(),
+        None => Layout {
+            error: Some("the layout request is not one".to_string()),
+            ..Layout::default()
+        },
+    }
+}
+
+/// A `.light` file as written (`parser::document::document`): the editing
+/// model, read off the one grammar. `path` is the file's path, which its
+/// `include`s resolve against.
+#[wasm_bindgen]
+pub fn document(source: &str, path: Option<String>) -> DocumentResult {
+    lighting::parser::document::document(source, path.as_deref().map(Path::new))
 }
 
 // ── Metronome ───────────────────────────────────────────────────────────────

@@ -490,7 +490,7 @@ fn exports_equal_the_players_rules() {
         let mut positions = vec![];
         for measure in 0..=14 {
             for beat in half_beats(9) {
-                let got = TempoQuery::Position { measure, beat }.answer(&source);
+                let got = TempoQuery::Position { measure, beat }.answer(Some(&source));
                 let expected = map.as_ref().and_then(|map| {
                     let at = map.measure_to_time_with_offset(measure, beat, 0, 0.0)?;
                     // The bar's signature (read at its downbeat), for a beat
@@ -526,7 +526,7 @@ fn exports_equal_the_players_rules() {
         let mut times = vec![];
         for secs in secs_sweep(40.0) {
             let ms = secs * 1000.0;
-            let got = TempoQuery::Time { ms }.answer(&source);
+            let got = TempoQuery::Time { ms }.answer(Some(&source));
             assert_eq!(
                 got.is_some(),
                 map.is_some() && ms >= 0.0,
@@ -583,14 +583,14 @@ fn exports_equal_the_players_rules() {
     };
     let at = |measure, beat| {
         TempoQuery::Position { measure, beat }
-            .answer(&mid_bar)
+            .answer(Some(&mid_bar))
             .unwrap()
     };
     assert_eq!((at(3, 3.0).sig, at(3, 3.0).sig_set), ((4, 4), (7, 8)));
     assert_eq!((at(3, 2.5).sig, at(3, 2.5).sig_set), ((4, 4), (4, 4)));
     assert_eq!((at(4, 1.0).sig, at(4, 1.0).sig_set), ((7, 8), (7, 8)));
     let by_time = TempoQuery::Time { ms: at(3, 3.0).ms }
-        .answer(&mid_bar)
+        .answer(Some(&mid_bar))
         .unwrap();
     assert_eq!((by_time.sig, by_time.sig_set), ((4, 4), (7, 8)));
 
@@ -598,7 +598,9 @@ fn exports_equal_the_players_rules() {
     let from_grid = TempoSource::Grid {
         grid: steady_grid(0.0, 120.0, &[4, 4, 4, 4]),
     };
-    let p = TempoQuery::Time { ms: 2250.0 }.answer(&from_grid).unwrap();
+    let p = TempoQuery::Time { ms: 2250.0 }
+        .answer(Some(&from_grid))
+        .unwrap();
     assert_eq!((p.measure, p.beat, p.sig), (2, 1.5, (4, 4)));
     assert!((p.bpm - 120.0).abs() < 0.01);
     let too_small = TempoSource::Grid {
@@ -607,7 +609,7 @@ fn exports_equal_the_players_rules() {
             measure_starts: vec![0],
         },
     };
-    assert_eq!(TempoQuery::Time { ms: 0.0 }.answer(&too_small), None);
+    assert_eq!(TempoQuery::Time { ms: 0.0 }.answer(Some(&too_small)), None);
 
     for (name, config) in metronomes() {
         let mut patterns = vec![];
@@ -799,9 +801,11 @@ fn absurd_magnitudes_are_refused_not_walked() {
             beat: 1e300,
         },
     ] {
-        assert_eq!(query.answer(&source), None, "{query:?}");
+        assert_eq!(query.answer(Some(&source)), None, "{query:?}");
     }
-    assert!(TempoQuery::Time { ms: 1e12 }.answer(&source).is_some());
+    assert!(TempoQuery::Time { ms: 1e12 }
+        .answer(Some(&source))
+        .is_some());
     let beyond = [
         TempoConfig {
             start: Some(1e300),

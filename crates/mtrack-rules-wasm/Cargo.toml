@@ -1,6 +1,6 @@
 [package]
 name = "mtrack-rules-wasm"
-description = "mtrack's beat grid, tempo map, metronome and DMX patch rules, compiled to WebAssembly for the web UI."
+description = "mtrack's beat grid, tempo map, metronome, DMX patch and light show rules, compiled to WebAssembly for the web UI."
 license = "GPL-3.0"
 version = "0.1.0"
 edition = "2021"
@@ -25,6 +25,11 @@ tsify = []
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
+# What the included light show parser needs: its grammar and its ordered
+# show map, at the player's versions.
+pest = "2.8"
+pest_derive = "2.8"
+indexmap = { version = "2", features = ["serde"] }
 # Pinned exactly: the `wasm-bindgen` CLI the build runs (setup.sh, CI) must
 # be this version, and wasm-pack would otherwise download one.
 wasm-bindgen = "=0.2.122"
