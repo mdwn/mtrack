@@ -15,14 +15,15 @@
 // Conversions between the song.yaml `tempo:` config (measure-anchored) and
 // the lighting editor's TempoSection model (measure- or time-anchored).
 
-import type { TempoConfig, TempoChangeConfig } from "./api/songs";
+import type { BeatGrid, TempoConfig, TempoChangeConfig } from "./api/songs";
 import type { TempoSection, TempoChange } from "./lighting/types";
-import { orderTempoChanges } from "./util/tempo";
+import { rules } from "./rules";
 
-export function parseTimeSignature(raw: string | undefined): [number, number] {
-  const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-  if (!match) return [4, 4];
-  return [parseInt(match[1]), parseInt(match[2])];
+/** `[numerator, denominator]` of a `4/4`-style string, by the player's own
+ * parser; 4/4 stands in for a string it refuses, since the editor's model
+ * has to show something. */
+function sigOf(raw: string | undefined): [number, number] {
+  return rules.signature_parse(raw ?? "") ?? [4, 4];
 }
 
 /** song.yaml tempo config -> the lighting TempoEditor's data model. */
@@ -30,7 +31,7 @@ export function configToSection(config: TempoConfig): TempoSection {
   return {
     start: { value: config.start ?? 0, unit: "s" },
     bpm: config.bpm,
-    time_signature: parseTimeSignature(config.time_signature),
+    time_signature: sigOf(config.time_signature),
     changes: (config.changes ?? []).map((c) => {
       const change: TempoChange = {
         timestamp: {
@@ -39,9 +40,7 @@ export function configToSection(config: TempoConfig): TempoSection {
           beat: c.beat ?? 1,
         },
         bpm: c.bpm,
-        time_signature: c.time_signature
-          ? parseTimeSignature(c.time_signature)
-          : undefined,
+        time_signature: c.time_signature ? sigOf(c.time_signature) : undefined,
       };
       if (c.transition) {
         change.transition =
@@ -67,38 +66,6 @@ export function parseTransition(
   return undefined;
 }
 
-interface BeatGrid {
-  beats: number[];
-  measure_starts: number[];
-}
-
-/** Nearest measure/beat for a time in seconds, or null without a grid. */
-function timeToMeasureBeat(
-  grid: BeatGrid | null | undefined,
-  secs: number,
-): { measure: number; beat: number } | null {
-  if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
-    return null;
-  }
-  let nearest = 0;
-  for (let i = 1; i < grid.beats.length; i++) {
-    if (Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)) {
-      nearest = i;
-    }
-  }
-  let measure = 0;
-  while (
-    measure + 1 < grid.measure_starts.length &&
-    grid.measure_starts[measure + 1] <= nearest
-  ) {
-    measure++;
-  }
-  return {
-    measure: measure + 1,
-    beat: nearest - grid.measure_starts[measure] + 1,
-  };
-}
-
 export interface SnappedImport {
   config: TempoConfig;
   /** Time-anchored changes snapped to the nearest measure/beat. */
@@ -116,8 +83,8 @@ export interface SnappedImport {
  * The result is ordered and free of repeated positions, because a light show
  * is under no obligation to be either: its changes are sorted at playback,
  * and two of them may share a position (or arrive at one by snapping). The
- * song format is stricter — `to_tempo_map` refuses both — so an import that
- * passed either through would come back as an HTTP 400 on the next save. */
+ * song format is stricter — `to_tempo_map` refuses both — so the result goes
+ * through the player's `tempo_normalize` before it can reach a save. */
 export function sectionToConfigSnapped(
   section: TempoSection,
   beatGrid: BeatGrid | null | undefined,
@@ -144,7 +111,9 @@ export function sectionToConfigSnapped(
       measure = c.timestamp.measure ?? 1;
       beat = c.timestamp.beat ?? 1;
     } else {
-      const at = timeToMeasureBeat(beatGrid, (c.timestamp.ms ?? 0) / 1000);
+      const at = beatGrid
+        ? rules.grid_query(beatGrid, { secs: (c.timestamp.ms ?? 0) / 1000 })
+        : undefined;
       if (!at) {
         dropped++;
         continue;
@@ -169,9 +138,14 @@ export function sectionToConfigSnapped(
     }
     changes.push(change);
   }
-  const ordered = orderTempoChanges(changes);
-  if (ordered.changes.length > 0) {
-    config.changes = ordered.changes;
+  if (changes.length > 0) {
+    config.changes = changes;
   }
-  return { config, snapped, dropped, duplicates: ordered.duplicates };
+  const ordered = rules.tempo_normalize(config);
+  return {
+    config: ordered.config,
+    snapped,
+    dropped,
+    duplicates: ordered.duplicates,
+  };
 }

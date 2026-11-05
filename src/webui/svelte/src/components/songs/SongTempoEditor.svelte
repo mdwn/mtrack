@@ -14,7 +14,8 @@
      * -->
 <script lang="ts">
   import type { TempoConfig, TempoChangeConfig } from "../../lib/api/songs";
-  import type { TempoSection, TempoChange } from "../../lib/lighting/types";
+  import type { TempoSection } from "../../lib/lighting/types";
+  import { configToSection } from "../../lib/tempoConvert";
   import TempoEditor from "../lighting/TempoEditor.svelte";
 
   interface Props {
@@ -33,41 +34,6 @@
     hasBeatGrid = false,
     hasMidi = false,
   }: Props = $props();
-
-  function parseTimeSignature(raw: string | undefined): [number, number] {
-    const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-    if (!match) return [4, 4];
-    return [parseInt(match[1]), parseInt(match[2])];
-  }
-
-  /** song.yaml tempo config -> the lighting TempoEditor's data model. */
-  function configToSection(config: TempoConfig): TempoSection {
-    return {
-      start: { value: config.start ?? 0, unit: "s" },
-      bpm: config.bpm,
-      time_signature: parseTimeSignature(config.time_signature),
-      changes: (config.changes ?? []).map((c) => {
-        const change: TempoChange = {
-          timestamp: {
-            type: "measure_beat",
-            measure: c.measure,
-            beat: c.beat ?? 1,
-          },
-          bpm: c.bpm,
-          time_signature: c.time_signature
-            ? parseTimeSignature(c.time_signature)
-            : undefined,
-        };
-        if (c.transition) {
-          change.transition =
-            "measures" in c.transition
-              ? `${c.transition.measures}m`
-              : `${c.transition.beats}`;
-        }
-        return change;
-      }),
-    };
-  }
 
   function parseTransition(
     raw: string | undefined,
