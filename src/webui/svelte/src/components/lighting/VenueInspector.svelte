@@ -45,6 +45,7 @@
     type PatchSpan,
   } from "../../lib/lighting/patch";
   import { isRefused } from "../../lib/lighting/modes";
+  import { rules } from "../../lib/rules";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
   import type {
     FixtureMetadata,
@@ -469,7 +470,7 @@
               name: from,
               universe: candidate.universe,
               from: candidate.address,
-              to: candidate.address + candidate.footprint - 1,
+              to: rules.patch_last(candidate) ?? candidate.address,
               names: names.join(", "),
               count: names.length,
             },
@@ -625,7 +626,7 @@
               values: {
                 mode: next,
                 from: candidate.address,
-                to: candidate.address + footprint - 1,
+                to: rules.patch_last(candidate) ?? candidate.address,
                 names: names.join(", "),
                 count: names.length,
                 first: names[0],

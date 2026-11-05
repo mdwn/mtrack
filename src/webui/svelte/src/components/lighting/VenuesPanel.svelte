@@ -773,7 +773,7 @@
                   : $t("lighting.venueRow.span", {
                       values: {
                         from: span.address,
-                        to: span.address + (span.footprint ?? 1) - 1,
+                        to: rules.patch_last(span) ?? span.address,
                       },
                     })}
               </p>
