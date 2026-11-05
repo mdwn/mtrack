@@ -903,13 +903,13 @@
                   min="0"
                   max="127"
                   class="input"
-                  value={input.event?.key ?? input.event?.control ?? 60}
+                  value={input.event?.key ?? input.event?.controller ?? 60}
                   onchange={(e) => {
                     const v =
                       parseInt((e.target as HTMLInputElement).value) || 0;
                     const type = input.event?.type ?? "note_on";
                     if (type === "control_change") {
-                      updateMidiEvent(i, "control", v);
+                      updateMidiEvent(i, "controller", v);
                     } else {
                       updateMidiEvent(i, "key", v);
                     }
