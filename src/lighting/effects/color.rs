@@ -101,6 +101,13 @@ impl Color {
                 b: 128,
                 w: None,
             }),
+            // CSS pink, as the web UI's colour picker shows it (#ffc0cb).
+            "pink" => Ok(Color {
+                r: 255,
+                g: 192,
+                b: 203,
+                w: None,
+            }),
             _ => Err(format!("Unknown color name: {}", name).into()),
         }
     }
@@ -277,6 +284,7 @@ mod tests {
             ("magenta", (255, 0, 255)),
             ("orange", (255, 165, 0)),
             ("purple", (128, 0, 128)),
+            ("pink", (255, 192, 203)),
         ];
         for (name, (r, g, b)) in cases {
             let c = Color::from_name(name).unwrap();

@@ -25,7 +25,7 @@ tempo map; see [Where the tempo comes from](cueing.md#where-the-tempo-comes-from
 is twice a second, `1beat` is once a beat.
 
 **Colors.** `color` takes a named color in quotes — `"red"`, `"green"`, `"blue"`, `"white"`,
-`"black"`, `"yellow"`, `"cyan"`, `"magenta"`, `"orange"`, `"purple"` — a hex color (`#FF8800`,
+`"black"`, `"yellow"`, `"cyan"`, `"magenta"`, `"orange"`, `"purple"`, `"pink"` — a hex color (`#FF8800`,
 quoted or not), or `rgb(255, 128, 0)`.
 
 ## Effect Types

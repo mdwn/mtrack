@@ -175,7 +175,7 @@ hex_color = @{ "#" ~ ASCII_HEX_DIGIT{6} }
 // RGB color with optional spaces after commas - make atomic to control whitespace
 rgb_color = @{ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" }
 
-named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple") ~ "\"" }
+named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple" | "pink") ~ "\"" }
 
 quoted_hex_color = @{ "\"" ~ hex_color ~ "\"" }
 

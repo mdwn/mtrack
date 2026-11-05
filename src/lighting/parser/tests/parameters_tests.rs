@@ -161,6 +161,24 @@ fn test_simple_advanced_parameters() {
 }
 
 #[test]
+fn pink_is_a_named_color() {
+    let shows = parse_light_shows(
+        r#"show "s" {
+    @00:00.000
+    front_wash: static color: "pink", duration: 5s
+}"#,
+    )
+    .unwrap();
+    match &shows["s"].cues[0].effects[0].effect_type {
+        EffectType::Static { parameters, .. } => assert_eq!(
+            (parameters["red"], parameters["green"], parameters["blue"]),
+            (1.0, 192.0 / 255.0, 203.0 / 255.0)
+        ),
+        other => panic!("expected a static, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_custom_color_formats() {
     // Test all three supported color formats
     let custom_colors_dsl = r##"show "Custom Colors Show" {

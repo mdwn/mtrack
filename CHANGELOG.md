@@ -142,6 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turning the hue the short way while blending saturation and brightness. A plain `fade` blends
   red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to
   blue is grey halfway); a hue fade stays vivid. `fade` is unchanged.
+- **`"pink"` is a named colour**: `color: "pink"` is CSS pink, `#FFC0CB`, the pink the web UI's
+  colour picker offers; the player refused it as an invalid colour.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
