@@ -12,8 +12,19 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { saveVenue } from "../../src/lib/api/config";
 import type {
   ChannelCalibration,
+  FixtureSettingsData,
+  FixtureTypeEntry,
+  FixtureTypeGdtf,
+  GdtfImport,
+  GdtfInspection,
+  SettingsSaved,
+  Venue,
+  VenueDetail,
+  VenueList,
+  VenueScene,
   NoiseFloor,
   Preview,
 } from "../../src/gen/rules/mtrack_rules";
@@ -274,33 +285,7 @@ app.post("/api/lighting/validate", (_req, res) => {
 // The three forms a fixture type comes in: a v1 `.light` channel map, a
 // hand-written rich `.fixture`, and one distilled from a GDTF archive —
 // which has no channels of its own until the lighting system expands it.
-const FIXTURE_TYPES: Record<
-  string,
-  {
-    fixture_type: {
-      name: string;
-      channels: Record<string, number>;
-      max_strobe_frequency: number | null;
-      min_strobe_frequency: number | null;
-      strobe_dmx_offset: number | null;
-    };
-    file: string;
-    extension: string;
-    referential: boolean;
-    rich: boolean;
-    dsl: string;
-    /** A referential type's archive in brief, for its card. */
-    gdtf?: {
-      fixture: string;
-      manufacturer: string;
-      modes: number;
-      beam: { type: string | null; angle: number | null } | null;
-      thumbnail: string | null;
-      used_by: number;
-      in_use: { mode: string; count: number }[];
-    } | null;
-  }
-> = {
+const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
   par: {
     fixture_type: {
       name: "par",
@@ -385,15 +370,10 @@ app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
 });
 
 // The PB15's modes, as the inspect endpoint and the details view answer them.
-const GDTF_INSPECTION = {
-  fixture: "PB15 PixelBrick",
-  manufacturer: "Astera LED Technology",
-  suggested_name: "PB15 PixelBrick",
-  fixture_types_dir: "lighting/fixture_types",
+const GDTF_INSPECTION: GdtfInspection = {
   modes: [
     {
       name: "1: RGB",
-      channel_count: 4,
       footprint: 3,
       capabilities: ["color", "dimmer"],
       cells: 0,
@@ -405,7 +385,6 @@ const GDTF_INSPECTION = {
     },
     {
       name: "8: RGBS",
-      channel_count: 5,
       footprint: 4,
       capabilities: ["color", "dimmer", "strobe"],
       cells: 0,
@@ -435,7 +414,7 @@ app.get("/api/lighting/fixture-types/:name/settings", (req, res) => {
     // The PB15's strobe function has only its endpoints.
     strobe: { steps: 0, automatic: "declared" },
     version: "mock-v1",
-  });
+  } satisfies FixtureSettingsData);
 });
 
 app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
@@ -457,7 +436,7 @@ app.post("/api/lighting/fixture-types/:name/settings", (req, res) => {
       : null,
     venue_versions: { "built_in.venue": "v-b", "club.venue": "v-c" },
     venue_error: null,
-  });
+  } satisfies SettingsSaved);
 });
 
 // A referential type's archive, for its details view: the mock's one rig
@@ -497,7 +476,7 @@ app.get("/api/lighting/fixture-types/:name/gdtf", (req, res) => {
       { name: "club", fixtures: [{ name: "Solo", mode: "1: RGB" }] },
     ],
     inspection: GDTF_INSPECTION,
-  });
+  } satisfies FixtureTypeGdtf);
 });
 
 // Testing a fixture from its page. Stateless: the options are derived from
@@ -538,9 +517,13 @@ app.get("/api/lighting/fixture-test/options", (req, res) => {
     ? GDTF_INSPECTION.modes.map((m) =>
         testModeFor(
           m.name,
-          Object.fromEntries(m.channels.map(([o, n]) => [n, Number(o)])),
-          (m as { strobe_range?: { min_hz: number; max_hz: number } })
-            .strobe_range ?? null,
+          Object.fromEntries((m.channels ?? []).map(([o, n]) => [n, o])),
+          m.strobe_range
+            ? {
+                min_hz: m.strobe_range.min_hz ?? 0,
+                max_hz: m.strobe_range.max_hz,
+              }
+            : null,
         ),
       )
     : [testModeFor(null, entry.fixture_type.channels, null)];
@@ -629,7 +612,8 @@ app.post("/api/lighting/gdtf/import", (req, res) => {
     already_imported: false,
     renamed_from: null,
     refused_modes: [],
-  });
+    fixture_file: null,
+  } satisfies GdtfImport);
 });
 
 // MVR import and export (lighting UI design section 11). Tests that need a
@@ -720,31 +704,23 @@ app.get("/api/lighting/venues", (_req, res) => {
             universe: 1,
             start_channel: 1,
             tags: ["front", "left"],
+            position: null,
+            rotation: null,
           },
         },
-        groups: {},
+        focus_points: {},
+        source: null,
       },
     },
-  });
+    errors: [],
+    versions: { "test-venue": "mock-v1" },
+  } satisfies VenueList);
 });
 
 // Venue saves are remembered per name so a second edit sees the first,
 // the way the real server's file does.
-type VenueFixture = {
-  name: string;
-  fixture_type: string;
-  universe: number;
-  start_channel: number;
-  tags: string[];
-  position?: [number, number, number] | null;
-  rotation?: [number, number, number] | null;
-  beam_angle?: number | null;
-};
-type VenueBody = {
-  fixtures: VenueFixture[];
-  focus_points?: Record<string, [number, number, number]>;
-  source?: { mvr: string; origin: [number, number, number] } | null;
-};
+/** A venue save's body, as the page sends it. */
+type VenueBody = Parameters<typeof saveVenue>[1];
 const savedVenues = new Map<string, VenueBody>();
 const MOCK_VENUE: VenueBody = {
   fixtures: [
@@ -764,8 +740,13 @@ const MOCK_VENUE: VenueBody = {
 
 app.get("/api/lighting/venues/:name", (req, res) => {
   const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
-  const fixtures: Record<string, VenueFixture> = {};
-  for (const f of body.fixtures) fixtures[f.name] = f;
+  const fixtures: Venue["fixtures"] = {};
+  for (const f of body.fixtures)
+    fixtures[f.name] = {
+      ...f,
+      mode: f.mode ?? undefined,
+      beam_angle: f.beam_angle ?? undefined,
+    };
   res.json({
     venue: {
       name: req.params.name,
@@ -774,7 +755,8 @@ app.get("/api/lighting/venues/:name", (req, res) => {
       source: body.source ?? null,
     },
     dsl: "venue test-venue {\n  fixture front-left par@1:1 [front, left]\n}",
-  });
+    version: "mock-v1",
+  } satisfies VenueDetail);
 });
 
 // What the 3D view draws for a venue that is not the current one: the
@@ -786,7 +768,7 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
     return;
   }
   const body = savedVenues.get(req.params.name) ?? MOCK_VENUE;
-  const fixtures: Record<string, unknown> = {};
+  const fixtures: VenueScene["fixtures"] = {};
   for (const f of body.fixtures) {
     fixtures[f.name] = {
       tags: f.tags,
@@ -806,7 +788,7 @@ app.get("/api/lighting/venues/:name/scene", (req, res) => {
       scenery: null,
       scenery_error: null,
     },
-  });
+  } satisfies VenueScene);
 });
 
 // Keyed by venue name so parallel tests, each editing its own venue, never

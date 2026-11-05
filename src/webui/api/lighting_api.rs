@@ -12,6 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::fixture_types::{
+    BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
+    GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, SceneVenue,
+    StrobeRange, TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
+};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -90,20 +95,24 @@ use lighting::import::suggested_type_name;
 /// footprint, what a show can do in it (capabilities, cells, strobe range),
 /// its channel map and the distiller's warnings, or the reason it cannot be
 /// imported.
-fn inspect_description(description: &lighting::gdtf::Description) -> serde_json::Value {
+fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspection {
     // Distilling every mode is a few milliseconds each (design 12.2), so the
     // picker can say what each one lets a show do before anything is written.
     let suggested = suggested_type_name(&description.name);
     let summaries = lighting::gdtf::mode_summaries(description);
-    let modes: Vec<serde_json::Value> = summaries
+    let modes = summaries
         .iter()
         .enumerate()
         .map(|(index, summary)| {
-            let mut mode = json!({
-                "name": summary.name,
-                "footprint": summary.footprint,
-            });
-            let fields = mode.as_object_mut().expect("a json object");
+            let mut mode = GdtfMode {
+                name: summary.name.clone(),
+                footprint: summary.footprint,
+                capabilities: None,
+                cells: None,
+                strobe_range: None,
+                channels: None,
+                refused: None,
+            };
             // The importer finds a mode by name and takes the first match, so
             // a repeat could only ever import its namesake.
             let repeats = summaries[..index].iter().any(|m| m.name == summary.name);
@@ -125,36 +134,35 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    fields.insert(
-                        "capabilities".into(),
-                        json!(lighting::fit::FitFixture::from_info(&info, &[]).capability_names()),
+                    mode.capabilities = Some(
+                        lighting::fit::FitFixture::from_info(&info, &[])
+                            .capability_names()
+                            .into_iter()
+                            .map(String::from)
+                            .collect(),
                     );
-                    fields.insert("cells".into(), json!(fixture_type.cells().len()));
-                    if let Some(max_hz) = fixture_type.max_strobe_frequency() {
-                        fields.insert(
-                            "strobe_range".into(),
-                            json!({
-                                "min_hz": fixture_type.min_strobe_frequency(),
-                                "max_hz": max_hz,
-                            }),
-                        );
-                    }
-                    let mut channels: Vec<(&u16, &String)> = fixture_type
+                    mode.cells = Some(fixture_type.cells().len());
+                    mode.strobe_range =
+                        fixture_type
+                            .max_strobe_frequency()
+                            .map(|max_hz| StrobeRange {
+                                min_hz: fixture_type.min_strobe_frequency(),
+                                max_hz,
+                            });
+                    let mut channels: Vec<(u16, String)> = fixture_type
                         .channels()
                         .iter()
-                        .map(|(name, offset)| (offset, name))
+                        .map(|(name, offset)| (*offset, name.clone()))
                         .collect();
                     channels.sort();
-                    fields.insert("channels".into(), json!(channels));
+                    mode.channels = Some(channels);
                 }
-                Err(reason) => {
-                    fields.insert("refused".into(), json!(reason));
-                }
+                Err(reason) => mode.refused = Some(reason),
             }
             mode
         })
         .collect();
-    json!({ "modes": modes })
+    GdtfInspection { modes }
 }
 
 /// Query parameters for the GDTF import endpoint.
@@ -207,13 +215,7 @@ pub(super) async fn import_gdtf(
     })
     .await?
     .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(serde_json::to_value(&report).unwrap_or_default()),
-        )
-            .into_response(),
-    )
+    Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
 }
 
 /// GET /api/lighting — lists available .light files from the songs directory.
@@ -1062,11 +1064,11 @@ pub(super) async fn get_fixture_types(
         // how it may be edited.
         let project = lighting::project_files::fixture_types(&root, Some(&dir));
         let shown = |path: &std::path::Path| lighting::project_files::display_in(&dir, path);
-        let mut errors: Vec<FileError> = project
+        let mut errors: Vec<LightingFileError> = project
             .files
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: shown(&p.file),
                 error: p.error.clone(),
             })
@@ -1078,23 +1080,30 @@ pub(super) async fn get_fixture_types(
             }
             all.insert(
                 declared.name.clone(),
-                json!({
-                    "referential": fixture_type.source().is_some(),
+                FixtureTypeEntry {
+                    referential: fixture_type.source().is_some(),
                     // A native type's addresses, for the venue editor's
                     // patch; a GDTF fixture's are its mode's, so null here.
-                    "footprint": fixture_type
-                        .source()
-                        .is_none()
-                        .then(|| fixture_type.footprint()),
-                    "rich": fixture_type.uses_rich_channels(),
-                    "fixture_type": fixture_type,
-                    "file": shown(&declared.file),
-                    "extension": declared
-                        .file
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or_default(),
-                }),
+                    footprint: Some(
+                        fixture_type
+                            .source()
+                            .is_none()
+                            .then(|| fixture_type.footprint()),
+                    ),
+                    rich: fixture_type.uses_rich_channels(),
+                    fixture_type: fixture_type.clone(),
+                    file: Some(shown(&declared.file)),
+                    extension: Some(
+                        declared
+                            .file
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         let library = project.library;
@@ -1102,7 +1111,7 @@ pub(super) async fn get_fixture_types(
         // collision is already resolved (the second fixture is renamed).
         for finding in &library.findings {
             if finding.kind == "gdtf-unreadable" {
-                errors.push(FileError {
+                errors.push(LightingFileError {
                     file: finding.file.clone(),
                     error: finding.message.clone(),
                 });
@@ -1122,14 +1131,16 @@ pub(super) async fn get_fixture_types(
             ));
             all.insert(
                 library_type.name.clone(),
-                json!({
-                    "referential": true,
-                    "footprint": null,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "file": null,
-                    "extension": null,
-                }),
+                FixtureTypeEntry {
+                    referential: true,
+                    footprint: Some(None),
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         // What each referential type's archive says, for its card. One bad
@@ -1148,8 +1159,8 @@ pub(super) async fn get_fixture_types(
             let summary = parsed.map(|(bytes, description)| {
                 gdtf_list_summary(&cache, bytes, description, &name, &fixtures)
             });
-            if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
-                entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
+            if let Some(entry) = all.get_mut(&name) {
+                entry.gdtf = Some(summary);
             }
         }
         Ok::<_, String>((all, errors))
@@ -1159,7 +1170,10 @@ pub(super) async fn get_fixture_types(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"fixture_types": all, "errors": errors})),
+            Json(FixtureTypeList {
+                fixture_types: all,
+                errors,
+            }),
         )
             .into_response(),
     )
@@ -1192,14 +1206,16 @@ pub(super) async fn get_fixture_type(
         return match found {
             Some(declared) => Ok((
                 StatusCode::OK,
-                Json(json!({
-                    "referential": true,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "dsl": null,
-                    "file": null,
-                    "extension": null,
-                })),
+                Json(FixtureTypeEntry {
+                    referential: true,
+                    footprint: None,
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    gdtf: None,
+                    dsl: Some(None),
+                }),
             )
                 .into_response()),
             None => Err((
@@ -1224,14 +1240,22 @@ pub(super) async fn get_fixture_type(
     match types.get(&name) {
         Some(ft) => Ok((
             StatusCode::OK,
-            Json(json!({
-                "referential": ft.source().is_some(),
-                "rich": ft.uses_rich_channels(),
-                "fixture_type": ft,
-                "dsl": content,
-                "file": crate::util::filename_display(&file_path),
-                "extension": file_path.extension().and_then(|e| e.to_str()).unwrap_or_default(),
-            })),
+            Json(FixtureTypeEntry {
+                referential: ft.source().is_some(),
+                footprint: None,
+                rich: ft.uses_rich_channels(),
+                fixture_type: ft.clone(),
+                file: Some(crate::util::filename_display(&file_path).to_string()),
+                extension: Some(
+                    file_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                gdtf: None,
+                dsl: Some(Some(content)),
+            }),
         )
             .into_response()),
         None => Err((
@@ -1351,44 +1375,40 @@ pub(super) async fn get_fixture_type_gdtf(
             let (dir, _) = rel.rsplit_once('/')?;
             Some(format!("{dir}/{file}"))
         });
-        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| {
-            json!({
-                "type": b.beam_type,
-                "beam_angle": b.beam_angle,
-                "field_angle": b.field_angle,
-                "luminous_flux": b.luminous_flux,
-                "color_temperature": b.color_temperature,
-                "power": b.power_consumption,
-            })
+        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| GdtfBeam {
+            beam_type: b.beam_type.clone(),
+            beam_angle: b.beam_angle,
+            field_angle: b.field_angle,
+            luminous_flux: b.luminous_flux,
+            color_temperature: b.color_temperature,
+            power: b.power_consumption,
         });
         // Each fixture in its own mode, spelled as the archive spells it
         // (null when it names none, or none of the archive's).
-        let venues: Vec<serde_json::Value> = fixtures_by_type(&venues_dir)
+        let venues = fixtures_by_type(&venues_dir)
             .remove(&name)
             .unwrap_or_default()
             .into_iter()
-            .map(|(venue, fixtures)| {
-                let fixtures: Vec<serde_json::Value> = fixtures
+            .map(|(venue, fixtures)| TypeVenue {
+                name: venue,
+                fixtures: fixtures
                     .into_iter()
-                    .map(|(fixture, mode)| {
-                        json!({
-                            "name": fixture,
-                            "mode": mode.as_deref().and_then(|m| resolve_mode(&description, m)),
-                        })
+                    .map(|(fixture, mode)| TypeVenueFixture {
+                        name: fixture,
+                        mode: mode.as_deref().and_then(|m| resolve_mode(&description, m)),
                     })
-                    .collect();
-                json!({"name": venue, "fixtures": fixtures})
+                    .collect(),
             })
             .collect();
-        Ok(Ok(json!({
-            "archive": source.path,
-            "rig": rig,
-            "thumbnail": thumbnail,
-            "beam": beam,
-            "about": description.about,
-            "venues": venues,
-            "inspection": inspect_description(&description),
-        })))
+        Ok(Ok(FixtureTypeGdtf {
+            archive: source.path,
+            rig,
+            thumbnail,
+            beam,
+            about: description.about.clone(),
+            venues,
+            inspection: inspect_description(&description),
+        }))
     })
     .await?;
     match outcome {
@@ -1538,12 +1558,14 @@ fn gdtf_list_summary(
     description: &lighting::gdtf::Description,
     type_name: &str,
     fixtures: &[Option<&str>],
-) -> serde_json::Value {
+) -> GdtfSummary {
     // The fixture is drawn, and its beam quoted, in the first mode it can
     // drive: a GDTF fixture has no mode of its own.
     let drawn = drawn_mode(description, type_name);
-    let beam = pinned_beam(description, drawn.as_deref())
-        .map(|b| json!({"type": b.beam_type, "angle": b.beam_angle}));
+    let beam = pinned_beam(description, drawn.as_deref()).map(|b| BeamBrief {
+        beam_type: b.beam_type.clone(),
+        angle: b.beam_angle,
+    });
     // The thumbnail of the rig the details view draws, if it was drawn.
     let thumbnail = drawn.and_then(|mode| {
         let rel = lighting::distill::DistillCache::rig_path(bytes, &mode);
@@ -1561,18 +1583,18 @@ fn gdtf_list_summary(
     }
     let mut in_use: Vec<(String, usize)> = counts.into_iter().collect();
     in_use.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    json!({
-        "fixture": description.name,
-        "manufacturer": description.manufacturer,
-        "modes": description.modes.len(),
-        "beam": beam,
-        "thumbnail": thumbnail,
-        "used_by": fixtures.len(),
-        "in_use": in_use
+    GdtfSummary {
+        fixture: description.name.clone(),
+        manufacturer: description.manufacturer.clone(),
+        modes: description.modes.len(),
+        beam,
+        thumbnail,
+        used_by: fixtures.len(),
+        in_use: in_use
             .into_iter()
-            .map(|(mode, count)| json!({"mode": mode, "count": count}))
-            .collect::<Vec<_>>(),
-    })
+            .map(|(mode, count)| ModeUse { mode, count })
+            .collect(),
+    }
 }
 
 /// PUT /api/lighting/fixture-types/:name — creates or updates a fixture type.
@@ -1801,12 +1823,12 @@ pub(super) async fn delete_fixture_type(
         return match removed {
             Some(archive) => Ok((
                 StatusCode::OK,
-                Json(json!({
-                    "status": "deleted",
-                    "name": name,
-                    "archive_removed": archive,
-                    "archive_kept": false,
-                })),
+                Json(FixtureTypeDeleted {
+                    status: "deleted".to_string(),
+                    name,
+                    archive_removed: Some(archive),
+                    archive_kept: false,
+                }),
             )
                 .into_response()),
             None => Err((
@@ -1844,12 +1866,12 @@ pub(super) async fn delete_fixture_type(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "deleted",
-                "name": name,
-                "archive_removed": archive_removed,
-                "archive_kept": archive_kept,
-            })),
+            Json(FixtureTypeDeleted {
+                status: "deleted".to_string(),
+                name,
+                archive_removed,
+                archive_kept,
+            }),
         )
             .into_response(),
     )
@@ -2398,7 +2420,15 @@ pub(super) async fn get_venues(
         .map_err(|e| e.into_response())?;
     if !dir.is_dir() {
         return Ok::<_, axum::response::Response>(
-            (StatusCode::OK, Json(json!({"venues": {}}))).into_response(),
+            (
+                StatusCode::OK,
+                Json(VenueList {
+                    venues: Default::default(),
+                    errors: None,
+                    versions: None,
+                }),
+            )
+                .into_response(),
         );
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
@@ -2413,10 +2443,10 @@ pub(super) async fn get_venues(
             }
             all.insert(declared.name, declared.item);
         }
-        let errors: Vec<FileError> = read
+        let errors: Vec<LightingFileError> = read
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: lighting::project_files::display_in(&dir, &p.file),
                 error: p.error.clone(),
             })
@@ -2427,7 +2457,11 @@ pub(super) async fn get_venues(
     let (all, errors, versions) = all;
     Ok((
         StatusCode::OK,
-        Json(json!({"venues": all, "errors": errors, "versions": versions})),
+        Json(VenueList {
+            venues: all,
+            errors: Some(errors),
+            versions: Some(versions),
+        }),
     )
         .into_response())
 }
@@ -2473,7 +2507,11 @@ pub(super) async fn get_venue(
     match venues.get(&name) {
         Some(v) => Ok((
             StatusCode::OK,
-            Json(json!({"venue": v, "dsl": content, "version": version})),
+            Json(VenueDetail {
+                venue: v.clone(),
+                dsl: content,
+                version,
+            }),
         )
             .into_response()),
         None => Err((
@@ -2790,14 +2828,6 @@ pub(super) async fn delete_venue(
 // Lighting helpers
 // ---------------------------------------------------------------------------
 
-/// A file in a lighting directory that could not be parsed, reported alongside
-/// the ones that could.
-#[derive(serde::Serialize)]
-struct FileError {
-    file: String,
-    error: String,
-}
-
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -2922,7 +2952,7 @@ pub(super) async fn get_venue_scene(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_scene_json(&system, venue)))
+        Ok(Some(venue_scene(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2936,11 +2966,11 @@ pub(super) async fn get_venue_scene(
 }
 
 /// The scene answer for one venue of a loaded system.
-fn venue_scene_json(
+fn venue_scene(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures: serde_json::Map<String, serde_json::Value> = venue
+) -> VenueScene {
+    let fixtures = venue
         .fixtures()
         .iter()
         .map(|(name, fixture)| {
@@ -2948,29 +2978,27 @@ fn venue_scene_json(
                 .resolve_fixture_type(fixture)
                 .ok()
                 .and_then(|t| t.rig().map(str::to_string));
-            (
-                name.clone(),
-                json!({
-                    "tags": fixture.tags(),
-                    "type": fixture.fixture_type(),
-                    "mode": fixture.mode(),
-                    "position": fixture.position(),
-                    "rotation": fixture.rotation(),
-                    "beam_angle": fixture.beam_angle(),
-                    "rig": rig,
-                }),
-            )
+            let scene = SceneFixture {
+                tags: fixture.tags().to_vec(),
+                fixture_type: fixture.fixture_type().to_string(),
+                mode: fixture.mode().map(String::from),
+                position: fixture.position(),
+                rotation: fixture.rotation(),
+                beam_angle: fixture.beam_angle(),
+                rig,
+            };
+            (name.clone(), scene)
         })
         .collect();
-    json!({
-        "fixtures": fixtures,
-        "venue": {
-            "name": venue.name(),
-            "focus_points": venue.focus_points(),
-            "scenery": system.scenery(venue.name()),
-            "scenery_error": system.scenery_error(venue.name()),
+    VenueScene {
+        fixtures,
+        venue: SceneVenue {
+            name: venue.name().to_string(),
+            focus_points: venue.focus_points().clone(),
+            scenery: system.scenery(venue.name()).map(String::from),
+            scenery_error: system.scenery_error(venue.name()).map(String::from),
         },
-    })
+    }
 }
 
 /// A lighting system loaded from a project's type and venue files alone, as
@@ -8273,7 +8301,9 @@ show "test" {
     // -----------------------------------------------------------------------
 
     async fn inspect(bytes: &[u8]) -> serde_json::Value {
-        inspect_description(&lighting::gdtf::parse_archive(bytes).unwrap())
+        json!(inspect_description(
+            &lighting::gdtf::parse_archive(bytes).unwrap()
+        ))
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@
     FixtureMetadata,
     StageValues,
     VenueMetadata,
+    VenueScene,
   } from "../../gen/rules/mtrack_rules";
   import type { SceneStats, SceneryStats } from "../../lib/stage/scene3d";
 
@@ -62,11 +63,7 @@
     underTestStore,
     venueStore,
   } from "../../lib/ws/stores";
-  import {
-    fetchVenueScene,
-    VenueNotFoundError,
-    type VenueScene,
-  } from "../../lib/api/config";
+  import { fetchVenueScene, VenueNotFoundError } from "../../lib/api/config";
   import {
     concerns,
     fixtureTypeChanges,
@@ -166,7 +163,14 @@
 
   /** The fixtures and venue the scene is built from. */
   const shownMeta = $derived<Record<string, FixtureMetadata>>(
-    fromFile ? (fileScene?.fixtures ?? {}) : $metadataStore,
+    fromFile
+      ? Object.fromEntries(
+          Object.entries(fileScene?.fixtures ?? {}).map(([name, f]) => [
+            name,
+            { ...f, capabilities: [], cells: [] },
+          ]),
+        )
+      : $metadataStore,
   );
   const shownVenue = $derived<VenueMetadata | null>(
     fromFile

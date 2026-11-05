@@ -15,9 +15,11 @@
 <script lang="ts">
   import type {
     FixtureMetadata,
+    FixtureTypeEntry,
     PoseSnapshot,
     StageValues,
     Vec3,
+    Venue,
     VenueError,
     VenueMetadata,
   } from "../gen/rules/mtrack_rules";
@@ -41,8 +43,6 @@
     fetchFixtureTypes,
     fetchVenue,
     saveVenue,
-    type FixtureTypeEntry,
-    type VenueData,
   } from "../lib/api/config";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
@@ -270,7 +270,7 @@
   let underTest = $derived(viewingFile ? [] : $underTestStore);
   let fileView = $state<{
     name: string;
-    venue: VenueData;
+    venue: Venue;
     version: string | null;
   } | null>(null);
   let fileError = $state("");
@@ -1011,7 +1011,7 @@
   // reloads for the user to reapply. The live plot re-reads just before it
   // writes, so it only guards the gap between that read and the write, and
   // retries once.
-  async function persist(update: (venue: VenueData) => void): Promise<boolean> {
+  async function persist(update: (venue: Venue) => void): Promise<boolean> {
     const meta = shownVenue;
     if (!meta) return false;
     if (saving) {

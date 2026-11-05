@@ -23,6 +23,7 @@ pub mod evaluate;
 pub mod export;
 pub mod findings;
 pub mod fit;
+pub mod fixture_data;
 pub mod fixture_patch;
 pub mod fixture_test;
 pub mod gdtf;

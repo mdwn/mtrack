@@ -1284,3 +1284,340 @@ mod devices {
         );
     }
 }
+
+mod fixture_types {
+    use std::collections::{BTreeMap, HashMap};
+
+    use serde_json::json;
+
+    use crate::lighting::findings::VenueError;
+    use crate::lighting::types::{FixtureType, MovementLimits, StrobeCurve, Venue};
+    use crate::webui::wire::fixture_types::*;
+
+    fn par() -> FixtureType {
+        FixtureType::new("par".to_string(), HashMap::from([("red".to_string(), 1)]))
+    }
+
+    #[test]
+    fn fixture_types_match_the_old_json() {
+        let ft = par();
+        let summary = GdtfSummary {
+            fixture: "Brick".to_string(),
+            manufacturer: "Astera".to_string(),
+            modes: 2,
+            beam: Some(BeamBrief {
+                beam_type: Some("Wash".to_string()),
+                angle: None,
+            }),
+            thumbnail: None,
+            used_by: 3,
+            in_use: vec![ModeUse {
+                mode: "8ch".to_string(),
+                count: 3,
+            }],
+        };
+        let old_summary = json!({
+            "fixture": "Brick",
+            "manufacturer": "Astera",
+            "modes": 2,
+            "beam": {"type": "Wash", "angle": null},
+            "thumbnail": null,
+            "used_by": 3,
+            "in_use": [json!({"mode": "8ch", "count": 3})],
+        });
+        assert_eq!(json!(summary.clone()), old_summary);
+        let native = FixtureTypeEntry {
+            referential: false,
+            footprint: Some(Some(4)),
+            rich: false,
+            fixture_type: ft.clone(),
+            file: Some("par.light".to_string()),
+            extension: Some("light".to_string()),
+            gdtf: None,
+            dsl: None,
+        };
+        let library = FixtureTypeEntry {
+            referential: true,
+            footprint: Some(None),
+            rich: false,
+            fixture_type: ft.clone(),
+            file: None,
+            extension: None,
+            gdtf: Some(Some(summary)),
+            dsl: None,
+        };
+        let list = FixtureTypeList {
+            fixture_types: HashMap::from([
+                ("par".to_string(), native),
+                ("brick".to_string(), library),
+            ]),
+            errors: vec![LightingFileError {
+                file: "x.light".to_string(),
+                error: "bad".to_string(),
+            }],
+        };
+        assert_eq!(
+            json!(list),
+            json!({
+                "fixture_types": {
+                    "par": {
+                        "referential": false,
+                        "footprint": 4,
+                        "rich": false,
+                        "fixture_type": ft,
+                        "file": "par.light",
+                        "extension": "light",
+                    },
+                    "brick": {
+                        "referential": true,
+                        "footprint": null,
+                        "rich": false,
+                        "fixture_type": ft,
+                        "file": null,
+                        "extension": null,
+                        "gdtf": old_summary,
+                    },
+                },
+                "errors": [json!({"file": "x.light", "error": "bad"})],
+            })
+        );
+        for (file, dsl) in [(None, None), (Some("par.light"), Some("fixture_type"))] {
+            let single = FixtureTypeEntry {
+                referential: file.is_none(),
+                footprint: None,
+                rich: false,
+                fixture_type: ft.clone(),
+                file: file.map(String::from),
+                extension: file.map(|_| "light".to_string()),
+                gdtf: None,
+                dsl: Some(dsl.map(String::from)),
+            };
+            assert_eq!(
+                json!(single),
+                json!({
+                    "referential": file.is_none(),
+                    "rich": false,
+                    "fixture_type": ft,
+                    "dsl": dsl,
+                    "file": file,
+                    "extension": file.map(|_| "light"),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn gdtf_pages_match_the_old_json() {
+        let refused = GdtfMode {
+            name: "bad".to_string(),
+            footprint: 4,
+            capabilities: None,
+            cells: None,
+            strobe_range: None,
+            channels: None,
+            refused: Some("why".to_string()),
+        };
+        let mode = GdtfMode {
+            name: "8ch".to_string(),
+            footprint: 8,
+            capabilities: Some(vec!["color".to_string()]),
+            cells: Some(0),
+            strobe_range: Some(StrobeRange {
+                min_hz: None,
+                max_hz: 20.0,
+            }),
+            channels: Some(vec![(1, "red".to_string())]),
+            refused: None,
+        };
+        let gdtf = FixtureTypeGdtf {
+            archive: "lighting/library/b.gdtf".to_string(),
+            rig: None,
+            thumbnail: Some("t.png".to_string()),
+            beam: Some(GdtfBeam {
+                beam_type: None,
+                beam_angle: Some(30.0),
+                field_angle: None,
+                luminous_flux: None,
+                color_temperature: None,
+                power: Some(10.0),
+            }),
+            about: None,
+            venues: vec![TypeVenue {
+                name: "club".to_string(),
+                fixtures: vec![TypeVenueFixture {
+                    name: "b1".to_string(),
+                    mode: None,
+                }],
+            }],
+            inspection: GdtfInspection {
+                modes: vec![mode, refused],
+            },
+        };
+        let name = "red".to_string();
+        let red: Vec<(&u16, &String)> = vec![(&1, &name)];
+        assert_eq!(
+            json!(gdtf),
+            json!({
+                "archive": "lighting/library/b.gdtf",
+                "rig": null,
+                "thumbnail": "t.png",
+                "beam": {
+                    "type": null,
+                    "beam_angle": 30.0,
+                    "field_angle": null,
+                    "luminous_flux": null,
+                    "color_temperature": null,
+                    "power": 10.0,
+                },
+                "about": null,
+                "venues": [json!({"name": "club", "fixtures": [json!({"name": "b1", "mode": null})]})],
+                "inspection": {"modes": [
+                    json!({
+                        "name": "8ch",
+                        "footprint": 8,
+                        "capabilities": ["color"],
+                        "cells": 0,
+                        "strobe_range": {"min_hz": null, "max_hz": 20.0},
+                        "channels": red,
+                    }),
+                    json!({"name": "bad", "footprint": 4, "refused": "why"}),
+                ]},
+            })
+        );
+    }
+
+    #[test]
+    fn settings_deletes_and_venues_match_the_old_json() {
+        let settings = FixtureSettingsData {
+            name: "Brick".to_string(),
+            movement: MovementLimits::default(),
+            strobe_curve: None,
+            strobe: Some(StrobeTable {
+                steps: 0,
+                automatic: StrobeCurve::Declared,
+            }),
+            version: "v".to_string(),
+        };
+        assert_eq!(
+            json!(settings),
+            json!({
+                "name": "Brick",
+                "movement": MovementLimits::default(),
+                "strobe_curve": null,
+                "strobe": {"steps": 0, "automatic": StrobeCurve::Declared},
+                "version": "v",
+            })
+        );
+        let saved = SettingsSaved {
+            version: "v2".to_string(),
+            rename: Some(Rename {
+                from: "A".to_string(),
+                to: "B".to_string(),
+                venues: vec![RenamedLines {
+                    venue: "club".to_string(),
+                    file: "club.venue".to_string(),
+                    lines: 2,
+                }],
+                lines: 2,
+            }),
+            venue_versions: BTreeMap::from([("club.venue".to_string(), "x".to_string())]),
+            venue_error: Some(VenueError {
+                venue: "club".to_string(),
+                fixture: "b1".to_string(),
+                reason: "r".to_string(),
+            }),
+        };
+        assert_eq!(
+            json!(saved),
+            json!({
+                "version": "v2",
+                "rename": {
+                    "from": "A",
+                    "to": "B",
+                    "venues": [json!({"venue": "club", "file": "club.venue", "lines": 2})],
+                    "lines": 2,
+                },
+                "venue_versions": {"club.venue": "x"},
+                "venue_error": {"venue": "club", "fixture": "b1", "reason": "r"},
+            })
+        );
+        assert_eq!(
+            json!(FixtureTypeDeleted {
+                status: "deleted".to_string(),
+                name: "A".to_string(),
+                archive_removed: None,
+                archive_kept: true,
+            }),
+            json!({"status": "deleted", "name": "A", "archive_removed": null, "archive_kept": true})
+        );
+        let venue = Venue::new("club".to_string(), HashMap::new());
+        assert_eq!(
+            json!(VenueList {
+                venues: HashMap::new(),
+                errors: None,
+                versions: None,
+            }),
+            json!({"venues": {}})
+        );
+        assert_eq!(
+            json!(VenueList {
+                venues: HashMap::from([("club".to_string(), venue.clone())]),
+                errors: Some(vec![]),
+                versions: Some(HashMap::from([("club".to_string(), "v".to_string())])),
+            }),
+            json!({"venues": {"club": venue}, "errors": [], "versions": {"club": "v"}})
+        );
+        assert_eq!(
+            json!(VenueDetail {
+                venue: venue.clone(),
+                dsl: "venue".to_string(),
+                version: "v".to_string(),
+            }),
+            json!({"venue": venue, "dsl": "venue", "version": "v"})
+        );
+    }
+
+    #[test]
+    fn venue_scene_matches_the_old_json() {
+        let scene = VenueScene {
+            fixtures: BTreeMap::from([(
+                "p1".to_string(),
+                SceneFixture {
+                    tags: vec!["front".to_string()],
+                    fixture_type: "par".to_string(),
+                    mode: None,
+                    position: Some([0.0, 1.0, 2.0]),
+                    rotation: None,
+                    beam_angle: Some(40.0),
+                    rig: None,
+                },
+            )]),
+            venue: SceneVenue {
+                name: "club".to_string(),
+                focus_points: BTreeMap::new(),
+                scenery: None,
+                scenery_error: Some("gone".to_string()),
+            },
+        };
+        assert_eq!(
+            json!(scene),
+            json!({
+                "fixtures": {"p1": {
+                    "tags": ["front"],
+                    "type": "par",
+                    "mode": null,
+                    "position": [0.0, 1.0, 2.0],
+                    "rotation": null,
+                    "beam_angle": 40.0,
+                    "rig": null,
+                }},
+                "venue": {
+                    "name": "club",
+                    "focus_points": {},
+                    "scenery": null,
+                    "scenery_error": "gone",
+                },
+            })
+        );
+    }
+}

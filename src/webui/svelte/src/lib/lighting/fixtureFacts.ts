@@ -1,3 +1,4 @@
+import type { FixtureTypeGdtf } from "../../gen/rules/mtrack_rules";
 // Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -17,8 +18,6 @@
  * components put into words. A fact the archive does not state is absent —
  * never 0 or "unknown".
  */
-
-import type { FixtureTypeGdtf } from "../api/config";
 
 /** A number without trailing noise: `13`, `0.4`, `5500`. */
 export function trimNumber(value: number): string {

@@ -105,3 +105,41 @@ fn a_probe_leaves_out_what_its_case_does_not_have() {
     assert_eq!(in_use["outcome"], "in_use");
     assert!(in_use.get("reason").is_none() && in_use["health"].is_null());
 }
+
+#[test]
+fn a_fixture_type_entry_leaves_out_what_its_answer_does_not_carry() {
+    use super::fixture_types::FixtureTypeEntry;
+    let entry = json!(FixtureTypeEntry {
+        referential: true,
+        footprint: Some(None),
+        rich: false,
+        fixture_type: crate::lighting::types::FixtureType::new(
+            "par".to_string(),
+            Default::default()
+        ),
+        file: None,
+        extension: None,
+        gdtf: None,
+        dsl: None,
+    });
+    assert!(entry["footprint"].is_null() && entry["file"].is_null());
+    assert!(entry.get("gdtf").is_none() && entry.get("dsl").is_none());
+}
+
+#[test]
+fn a_refused_gdtf_mode_says_only_why() {
+    use super::fixture_types::GdtfMode;
+    let mode = json!(GdtfMode {
+        name: "bad".to_string(),
+        footprint: 1,
+        capabilities: None,
+        cells: None,
+        strobe_range: None,
+        channels: None,
+        refused: Some("no".to_string()),
+    });
+    assert_eq!(
+        mode,
+        json!({"name": "bad", "footprint": 1, "refused": "no"})
+    );
+}

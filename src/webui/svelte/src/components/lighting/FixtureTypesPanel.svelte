@@ -14,6 +14,12 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    FixtureTypeEntry,
+    GdtfImport,
+    GdtfSummary,
+    LightingFileError,
+  } from "../../gen/rules/mtrack_rules";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -37,10 +43,6 @@
     saveFixtureTypeText,
     deleteFixtureType,
     importGdtf,
-    type FixtureTypeEntry,
-    type GdtfSummary,
-    type GdtfImportReport,
-    type LightingFileError,
   } from "../../lib/api/config";
 
   interface Props {
@@ -291,7 +293,7 @@ fixture_type "Name" {
     ftTextLoading = true;
     try {
       const full = await fetchFixtureType(name, ftDir || undefined);
-      editFtDsl = full.dsl;
+      editFtDsl = full.dsl ?? "";
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -346,7 +348,7 @@ fixture_type "Name" {
   /** What the last import did, said on the fixture's page it opened. */
   let importNotice = $state<{ name: string; text: string } | null>(null);
 
-  function importText(report: GdtfImportReport): string {
+  function importText(report: GdtfImport): string {
     const tr = get(t);
     if (report.already_imported)
       return tr("lighting.gdtfImport.already", {

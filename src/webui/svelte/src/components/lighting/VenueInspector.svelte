@@ -21,7 +21,10 @@
    */
   import type {
     FixtureMetadata,
+    FixtureTypeEntry,
+    FixtureTypeGdtf,
     Vec3,
+    Venue,
     VenueMetadata,
     VenuePatch,
   } from "../../gen/rules/mtrack_rules";
@@ -37,9 +40,6 @@
     fetchFixtureTypes,
     fetchVenue,
     fetchVenuePatch,
-    type FixtureTypeEntry,
-    type FixtureTypeGdtf,
-    type VenueData,
   } from "../../lib/api/config";
   import {
     listed,
@@ -72,7 +72,7 @@
     selection: string[];
     onSelect: (names: string[]) => void;
     /** The plan's read-change-write of the venue file. */
-    persist: (update: (venue: VenueData) => void) => Promise<boolean>;
+    persist: (update: (venue: Venue) => void) => Promise<boolean>;
     saving: boolean;
     /** The fixture types directory override (a profile's setting). */
     fixtureTypesDir?: string;
@@ -180,7 +180,7 @@
   }
 
   async function apply(
-    compute: (venue: VenueData) => {
+    compute: (venue: Venue) => {
       changes: Record<string, Change>;
       notes?: string[];
     },
@@ -200,7 +200,7 @@
           rotated.push(name);
         }
         if (change.beam_angle !== undefined)
-          fixture.beam_angle = change.beam_angle;
+          fixture.beam_angle = change.beam_angle ?? undefined;
       }
     });
     if (ok) {
@@ -210,7 +210,7 @@
   }
 
   /** The selected fixtures the file places, as arrange wants them. */
-  function placedIn(venue: VenueData, names: string[]): Placed[] {
+  function placedIn(venue: Venue, names: string[]): Placed[] {
     return names
       .filter((n) => venue.fixtures[n]?.position)
       .map((n) => ({
@@ -640,7 +640,7 @@
     }
     const ok = await persist((venue) => {
       const fixture = venue.fixtures[name];
-      if (fixture) fixture.mode = next || null;
+      if (fixture) fixture.mode = next || undefined;
     });
     if (ok) {
       draft.mode = next || null;

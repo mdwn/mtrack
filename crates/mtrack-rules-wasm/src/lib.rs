@@ -125,6 +125,9 @@ pub mod wire_devices;
 /// The fixture test's payloads.
 #[path = "../../../src/webui/wire/fixture_test.rs"]
 pub mod wire_fixture_test;
+/// The fixture type, GDTF and venue listing payloads.
+#[path = "../../../src/webui/wire/fixture_types.rs"]
+pub mod wire_fixture_types;
 /// The websocket's messages.
 #[path = "../../../src/webui/wire/messages.rs"]
 pub mod wire_messages;

@@ -38,49 +38,13 @@
 //! No geometry-tree kinematics: a page of trigonometry, property-tested
 //! and cross-checked against rig kinematics in `golden_tests`.
 
+pub use crate::lighting::fixture_data::AimCalibration;
+
 /// A pan/tilt pair in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub pan: f64,
     pub tilt: f64,
-}
-
-/// How a fixture's joints sit inside its mounting frame, read from its
-/// GDTF geometry (design §18.6). Most fixtures are the identity: the
-/// yoke turns about the mounting's Z and the head about the yoke's X,
-/// with the beam down −Z at rest. Some are not — the Ayrton MagicDot SX
-/// yaws its yoke geometry 90° — and for those the plain math would aim
-/// the head into the wrong plane. With a calibration the beam is
-///
-/// ```text
-/// direction = R · pre · Rz(pan + pan_offset) · Rx(tilt + tilt_offset) · (0, 0, −1)
-/// ```
-///
-/// `pre` is the rotation the geometry puts before the pan joint, and the
-/// offsets are yaws between the joints and the beam's rest angle in the
-/// head. The three translations put the lens where the geometry has it,
-/// so the beam is aimed from the lens, not the mounting point:
-///
-/// ```text
-/// origin = mount_to_pan + pre · Rz(pan) · (pan_to_tilt + Rz(pan_offset) · Rx(tilt) · tilt_to_lens)
-/// ```
-///
-/// Derived by [`crate::lighting::gdtf::aim_calibration`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AimCalibration {
-    /// Rotation from the joint frame into the mounting frame (row-major).
-    pub pre: [[f64; 3]; 3],
-    /// Degrees added to the pan the geometry wants, to get the pan the
-    /// fixture's own channel means.
-    pub pan_offset: f64,
-    /// Likewise for tilt.
-    pub tilt_offset: f64,
-    /// The pan joint's position in the mounting frame, meters.
-    pub mount_to_pan: [f64; 3],
-    /// The tilt joint's position in the pan joint's frame.
-    pub pan_to_tilt: [f64; 3],
-    /// The lens's position in the tilt joint's frame.
-    pub tilt_to_lens: [f64; 3],
 }
 
 impl AimCalibration {

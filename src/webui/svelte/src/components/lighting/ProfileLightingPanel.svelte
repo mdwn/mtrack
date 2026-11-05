@@ -14,10 +14,11 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { Venue } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
-  import { fetchVenues, type VenueData } from "../../lib/api/config";
+  import { fetchVenues } from "../../lib/api/config";
 
   interface Props {
     /** One profile's `dmx.lighting`. */
@@ -28,7 +29,7 @@
   let { lighting = $bindable(), onchange }: Props = $props();
 
   // Venue names for the current_venue dropdown
-  let venues = $state<Record<string, VenueData>>({});
+  let venues = $state<Record<string, Venue>>({});
   let venueDir = $derived(lighting.directories?.venues || "");
   let venueNames = $derived(Object.keys(venues).sort());
 

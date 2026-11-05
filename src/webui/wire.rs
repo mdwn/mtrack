@@ -20,6 +20,7 @@
 
 pub mod devices;
 pub mod fixture_test;
+pub mod fixture_types;
 pub mod messages;
 pub mod preview;
 pub mod readiness;

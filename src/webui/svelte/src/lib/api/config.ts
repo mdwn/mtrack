@@ -17,15 +17,24 @@ import type {
   AudioProbe,
   ChannelCalibration,
   FitReport,
-  FixtureMetadata,
+  Fixture,
+  FixtureSettingsData,
+  FixtureType,
+  FixtureTypeEntry,
+  FixtureTypeGdtf,
+  GdtfImport,
+  LightingFileError,
   MidiDeviceInfo,
+  MovementLimits,
   NoiseFloor,
   Readiness,
+  SettingsSaved,
   Vec3,
+  Venue,
   VenueError,
-  VenueMetadata,
   VenuePatch,
   VenueSaved,
+  VenueScene,
 } from "../../gen/rules/mtrack_rules";
 import type { ConfigReload } from "../configReload";
 import { readAnswer } from "../lighting/answer";
@@ -289,81 +298,6 @@ export async function cancelCalibration(): Promise<void> {
 
 // Lighting fixture type & venue API
 
-export interface FixtureTypeData {
-  name: string;
-  channels: Record<string, number>;
-  max_strobe_frequency: number | null;
-  min_strobe_frequency: number | null;
-  strobe_dmx_offset: number | null;
-}
-
-export interface FixtureData {
-  name: string;
-  fixture_type: string;
-  universe: number;
-  start_channel: number;
-  tags: string[];
-  /** Stage position, when the venue places the fixture. */
-  position?: Vec3 | null;
-  /** Mounting rotation in degrees about X, Y, Z. */
-  rotation?: Vec3 | null;
-  /** Beam angle in degrees when a diffuser or filter makes the fixture wider
-   *  than its type says; absent or null is the type's own. Drawing only, and
-   *  must survive every save untouched. */
-  beam_angle?: number | null;
-  /** The fixture's own GDTF mode (`mode "…"` on its line); absent or null
-   *  is its type's default. Must survive every save untouched. */
-  mode?: string | null;
-}
-
-/** Where a venue was seeded from (an MVR import). */
-export interface VenueSource {
-  mvr: string;
-  origin: Vec3;
-}
-
-export interface VenueData {
-  name: string;
-  fixtures: Record<string, FixtureData>;
-  /** Named stage points, the positional analog of tags. */
-  focus_points?: Record<string, Vec3>;
-  source?: VenueSource | null;
-}
-
-/** A fixture type as the directory listing carries it: the parsed type plus
- *  the file it came from. The form decides how it may be edited — a
- *  `.fixture` type is text-only, and a referential one has no channels of
- *  its own until the lighting system expands its GDTF archive. */
-export interface FixtureTypeEntry {
-  fixture_type: FixtureTypeData;
-  file: string;
-  extension: string;
-  referential: boolean;
-  /** The addresses a fixture of a hand-written type occupies; null for a
-   *  fixture from a GDTF, whose footprint is its mode's. */
-  footprint?: number | null;
-  rich: boolean;
-  /** A referential type's archive in brief, for its card; null when the
-   *  archive is missing or does not parse. Absent on a native type. */
-  gdtf?: GdtfSummary | null;
-}
-
-/** What a referential type's card says about its archive. */
-export interface GdtfSummary {
-  fixture: string;
-  manufacturer: string;
-  /** How many modes the archive has. */
-  modes: number;
-  /** The modes venue fixtures use, most-used first. */
-  in_use: { mode: string; count: number }[];
-  /** The pinned mode's first beam, as far as the archive states it. */
-  beam: { type: string | null; angle: number | null } | null;
-  /** In the asset store, once a rig has been made for the type. */
-  thumbnail: string | null;
-  /** Venue fixtures of this type. */
-  used_by: number;
-}
-
 /** `?dir=…&venues_dir=…`, each only when given. */
 function dirParams(dir?: string, venuesDir?: string): string {
   const params = new URLSearchParams();
@@ -390,52 +324,12 @@ export async function fetchFixtureTypes(
   };
 }
 
-/** One DMX mode of a GDTF archive, as its fixture page describes it. */
-export interface GdtfMode {
-  name: string;
-  /** DMX addresses the mode occupies. */
-  footprint: number;
-  /** What a show can do in the mode, named as the fit endpoint names
-   *  capabilities: `color`, `dimmer`, `strobe`, `pan_tilt`, `white`, `zoom`,
-   *  `focus`, `gobo`, `color_wheel`. Absent on a refused mode. */
-  capabilities?: string[];
-  /** Cells of a pixel mode (0 for a one-colour fixture). */
-  cells?: number;
-  /** The strobe channel's rate, when it carries one. */
-  strobe_range?: { min_hz: number | null; max_hz: number };
-  /** The channel map: [address offset, name], as the type would have it. */
-  channels?: [number, string][];
-  /** Why the mode cannot be imported; present only when it cannot. */
-  refused?: string;
-}
-
-export interface GdtfInspection {
-  modes: GdtfMode[];
-}
-
-/** What importing a GDTF did, in the user's terms: the fixture it is now
- *  known as, what the archive says it is, and how many modes it has. */
-export interface GdtfImportReport {
-  type_name: string;
-  fixture: string;
-  manufacturer: string;
-  /** How many modes the archive has; every one is usable in a venue. */
-  modes: number;
-  archive: string;
-  /** The same archive was already imported: nothing changed. */
-  already_imported: boolean;
-  /** The name it would have had, when another fixture already had it. */
-  renamed_from: string | null;
-  /** Modes mtrack cannot drive, and why. */
-  refused_modes: { mode: string; reason: string }[];
-}
-
 /** Imports a GDTF in one step: the fixture is usable in a venue in any of
  *  its modes at once. A `mode` makes one the default; none is the norm. */
 export async function importGdtf(
   file: File,
   name?: string,
-): Promise<GdtfImportReport> {
+): Promise<GdtfImport> {
   const params = new URLSearchParams();
   if (name) params.set("name", name);
   const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
@@ -758,41 +652,13 @@ export async function addAimPoints(
 export async function fetchFixtureType(
   name: string,
   dir?: string,
-): Promise<FixtureTypeEntry & { dsl: string }> {
+): Promise<FixtureTypeEntry> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture type");
   return res.json();
-}
-
-/** What a referential fixture type's GDTF archive holds, for the type's
- *  details view. Paths are in the asset store (`/api/lighting/assets/`). */
-export interface FixtureTypeGdtf {
-  /** The fixture's GDTF, project-relative. */
-  archive: string;
-  /** The rig model for the 3D view; null when none could be made. */
-  rig: string | null;
-  thumbnail: string | null;
-  /** The pinned mode's first beam; each figure null when the archive does
-   *  not state it. */
-  beam: {
-    type: string | null;
-    beam_angle: number | null;
-    field_angle: number | null;
-    luminous_flux: number | null;
-    color_temperature: number | null;
-    /** Watts. */
-    power: number | null;
-  } | null;
-  /** The archive's own description of the fixture: a stranger's text. */
-  about: string | null;
-  /** The venues with fixtures of this type, each fixture in patch order
-   *  with the mode it is driven in (its own, else the default), spelled as
-   *  the archive spells it; null when that names no mode of the archive. */
-  venues: { name: string; fixtures: { name: string; mode: string | null }[] }[];
-  inspection: GdtfInspection;
 }
 
 export async function fetchFixtureTypeGdtf(
@@ -806,48 +672,6 @@ export async function fetchFixtureTypeGdtf(
   );
   if (!res.ok) throw await apiError(res, "Failed to read the GDTF archive");
   return res.json();
-}
-
-/** Movement limits in degrees per second; null where none is set. */
-export interface MovementLimits {
-  max_pan_speed: number | null;
-  max_tilt_speed: number | null;
-}
-
-/** What is the user's about a fixture from a GDTF: the fixture page's
- *  settings form. */
-/** How a strobe rate maps onto the strobe channel (see the configuration
- *  reference): linear in the flash period, linear in hertz, or the GDTF's
- *  own step table. */
-export type StrobeCurve = "period" | "linear" | "declared";
-
-export interface FixtureSettingsData {
-  name: string;
-  movement: MovementLimits;
-  /** The curve the record states; null is automatic. */
-  strobe_curve: StrobeCurve | null;
-  /** The GDTF's strobe function: null when no mode has a strobe rate in
-   *  hertz (the curve means nothing then), else the size of its own table
-   *  (0: endpoints only) and the curve used when none is stated. */
-  strobe: { steps: number; automatic: StrobeCurve } | null;
-  /** The settings' version, sent back as `If-Match` (also when mtrack has
-   *  no record of them yet). */
-  version: string;
-}
-
-/** What a settings save does (or, planned, would do). */
-export interface FixtureSettingsResult {
-  version: string;
-  /** A rename: every venue line that names the type, by venue. */
-  rename: {
-    from: string;
-    to: string;
-    lines: number;
-    venues: { venue: string; file: string; lines: number }[];
-  } | null;
-  /** The venue files read, by name, with their versions. */
-  venue_versions: Record<string, string>;
-  venue_error: VenueError | null;
 }
 
 export async function fetchFixtureSettings(
@@ -876,7 +700,7 @@ export async function postFixtureSettings(
   },
   dirs: { dir?: string; venuesDir?: string },
   version?: string,
-): Promise<FixtureSettingsResult> {
+): Promise<SettingsSaved> {
   const res = await post(
     `/lighting/fixture-types/${encodeURIComponent(name)}/settings${dirParams(dirs.dir, dirs.venuesDir)}`,
     JSON.stringify(body),
@@ -894,12 +718,13 @@ export async function postFixtureSettings(
 
 export async function saveFixtureType(
   name: string,
-  data: {
-    channels: Record<string, number>;
-    max_strobe_frequency?: number | null;
-    min_strobe_frequency?: number | null;
-    strobe_dmx_offset?: number | null;
-  },
+  data: Pick<FixtureType, "channels"> &
+    Partial<
+      Pick<
+        FixtureType,
+        "max_strobe_frequency" | "min_strobe_frequency" | "strobe_dmx_offset"
+      >
+    >,
   dir?: string,
 ): Promise<void> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
@@ -986,19 +811,13 @@ export async function fetchLightingFit(): Promise<FitReport> {
   ]);
 }
 
-/** A `.light` file in a lighting directory that could not be parsed. */
-export interface LightingFileError {
-  file: string;
-  error: string;
-}
-
 /** Venues that parsed, plus the files that did not.
  *
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
 export async function fetchVenues(dir?: string): Promise<{
-  venues: Record<string, VenueData>;
+  venues: Record<string, Venue>;
   errors: LightingFileError[];
   /** Each venue file's version, to save against. */
   versions: Record<string, string>;
@@ -1017,7 +836,7 @@ export async function fetchVenues(dir?: string): Promise<{
 export async function fetchVenue(
   name: string,
   dir?: string,
-): Promise<{ venue: VenueData; dsl: string; version?: string }> {
+): Promise<{ venue: Venue; dsl: string; version?: string }> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
@@ -1029,19 +848,14 @@ export async function fetchVenue(
 export async function saveVenue(
   name: string,
   data: {
-    fixtures: {
-      name: string;
-      fixture_type: string;
-      universe: number;
-      start_channel: number;
-      tags: string[];
-      position?: Vec3 | null;
-      rotation?: Vec3 | null;
-      beam_angle?: number | null;
+    /** Each as the venue serves it, a `null` mode or beam angle for none
+     *  (the server reads null and absent alike). */
+    fixtures: (Omit<Fixture, "mode" | "beam_angle"> & {
       mode?: string | null;
-    }[];
-    focus_points?: Record<string, Vec3>;
-    source?: VenueSource | null;
+      beam_angle?: number | null;
+    })[];
+    focus_points?: Venue["focus_points"];
+    source?: Venue["source"];
   },
   dir?: string,
   version?: string,
@@ -1087,11 +901,6 @@ export async function fetchVenuePatch(
 
 /** What the 3D view draws for a venue, from its files: the websocket's
  *  metadata shape, for a venue that is not the current one. */
-export interface VenueScene {
-  fixtures: Record<string, FixtureMetadata & { mode?: string | null }>;
-  venue: Omit<VenueMetadata, "dir">;
-}
-
 /** A venue the server does not have (404), told apart from a failed read. */
 export class VenueNotFoundError extends Error {}
 
