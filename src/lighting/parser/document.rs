@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use super::super::tempo::{parse_signature_in, SignatureRange};
 use super::grammar::{LightingParser, Rule};
 use super::include::normalize;
-pub use super::types::{EffectKind, LayerCommandType};
+pub use super::types::{EffectKind, LayerCommandParam, LayerCommandType};
 pub use super::utils::DurationUnit;
 use super::utils::{
     parse_measure_time, parse_time_string, parse_time_unit, parse_time_value, unquote, TimeValue,
@@ -180,6 +180,29 @@ pub enum TempoField {
     TimeSignature,
     Changes,
     End,
+}
+
+/// Each tempo field and its name, as the grammar spells it (a change's
+/// `bpm:` and `time_signature:` too): the one table.
+const TEMPO_FIELDS: [(TempoField, &str); 4] = [
+    (TempoField::Start, "start"),
+    (TempoField::Bpm, "bpm"),
+    (TempoField::TimeSignature, "time_signature"),
+    (TempoField::Changes, "changes"),
+];
+
+/// A tempo change's `transition:`, as the grammar spells it.
+pub const TRANSITION: &str = "transition";
+
+impl TempoField {
+    /// The field's name, as the grammar spells it before its `:`; `End`,
+    /// the place after the last field, has none.
+    pub fn keyword(self) -> &'static str {
+        TEMPO_FIELDS
+            .iter()
+            .find(|(f, _)| *f == self)
+            .map_or("", |(_, k)| *k)
+    }
 }
 
 /// One entry of a tempo block's `changes:`.
@@ -567,6 +590,26 @@ pub struct LayerCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comment: Option<String>,
+}
+
+impl LayerCommand {
+    /// Where the document holds a parameter's value.
+    pub fn param_mut(&mut self, param: LayerCommandParam) -> &mut Option<String> {
+        match param {
+            LayerCommandParam::Layer => &mut self.layer,
+            LayerCommandParam::Intensity => &mut self.intensity,
+            LayerCommandParam::Speed => &mut self.speed,
+        }
+    }
+
+    /// A parameter's value, as the document holds it.
+    pub fn param(&self, param: LayerCommandParam) -> Option<&str> {
+        match param {
+            LayerCommandParam::Layer => self.layer.as_deref(),
+            LayerCommandParam::Intensity => self.intensity.as_deref(),
+            LayerCommandParam::Speed => self.speed.as_deref(),
+        }
+    }
 }
 
 /// A `sequence "name"(args), loop: …` reference, or a `stop sequence
@@ -1327,15 +1370,15 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
                     let name = match rule {
                         Rule::tempo_bpm => {
                             change.bpm = Some(text.parse()?);
-                            "bpm"
+                            TempoField::Bpm.keyword()
                         }
                         Rule::tempo_time_signature => {
                             change.time_signature = Some(signature(&text)?);
-                            "time_signature"
+                            TempoField::TimeSignature.keyword()
                         }
                         Rule::tempo_change_transition => {
                             change.transition = Some(text.clone());
-                            "transition"
+                            TRANSITION
                         }
                         _ => continue,
                     };
@@ -1891,13 +1934,8 @@ fn layer_command<'i>(
                         is_ref: None,
                         remarks: Remarks::default(),
                     });
-                    let value = Some(text);
-                    match name.as_str().trim() {
-                        "layer" => command.layer = value,
-                        "intensity" => command.intensity = value,
-                        "speed" => command.speed = value,
-                        _ => {}
-                    }
+                    *command.param_mut(LayerCommandParam::from_keyword(name.as_str().trim())?) =
+                        Some(text);
                 }
             }
             _ => {}

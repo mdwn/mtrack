@@ -191,6 +191,13 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
     })
 }
 
+/// What follows a transition's length in measures (`2m`), as the grammar
+/// spells it.
+pub(crate) const TRANSITION_MEASURES: char = 'm';
+
+/// A transition with no length, as the grammar spells it.
+pub(crate) const TRANSITION_SNAP: &str = "snap";
+
 /// A `tempo_transition_duration` (`snap`, `4` beats, `2m` measures) as
 /// the transition it names.
 pub(crate) fn parse_transition(pair: Pair<Rule>) -> Result<TempoTransition, Box<dyn Error>> {
@@ -215,7 +222,7 @@ pub(crate) fn parse_transition(pair: Pair<Rule>) -> Result<TempoTransition, Box<
             Rule::tempo_transition_measures => {
                 // tempo_transition_measures is atomic, so we can get the string directly
                 let measure_str = trans_pair.as_str().trim();
-                let num_str = measure_str.trim_end_matches('m');
+                let num_str = measure_str.trim_end_matches(TRANSITION_MEASURES);
                 let measures = num_str.trim().parse()?;
                 transition = TempoTransition::Measures(measures, TransitionCurve::Linear);
             }

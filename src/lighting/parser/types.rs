@@ -312,6 +312,33 @@ impl LayerCommandType {
     }
 }
 
+/// The parameters a layer command takes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerCommandParam {
+    Layer,
+    Intensity,
+    Speed,
+}
+
+impl LayerCommandParam {
+    /// Each parameter and its name, as the grammar spells it, in the order
+    /// a command newly given them writes them: the one table.
+    pub const ALL: [(LayerCommandParam, &'static str); 3] = [
+        (LayerCommandParam::Layer, "layer"),
+        (LayerCommandParam::Intensity, "intensity"),
+        (LayerCommandParam::Speed, "speed"),
+    ];
+
+    /// The parameter a name names.
+    pub fn from_keyword(name: &str) -> Result<LayerCommandParam, Box<dyn std::error::Error>> {
+        Self::ALL
+            .iter()
+            .find(|(_, k)| *k == name)
+            .map(|(p, _)| *p)
+            .ok_or_else(|| format!("Unknown layer command parameter: {}", name).into())
+    }
+}
+
 /// The effect keywords of the grammar: which effect a line names, before
 /// its parameters are read.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]

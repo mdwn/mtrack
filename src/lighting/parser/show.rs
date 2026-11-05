@@ -27,8 +27,8 @@ use super::include::{add_included, Include, IncludeReader, IncludingFile, Source
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
-    pass_start, Cue, LayerCommand, LayerCommandType, LightShow, LightShows, ParseContext, Sequence,
-    SequenceCall, SequenceLoop,
+    pass_start, Cue, LayerCommand, LayerCommandParam, LayerCommandType, LightShow, LightShows,
+    ParseContext, Sequence, SequenceCall, SequenceLoop,
 };
 use super::utils::{
     items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
@@ -1187,24 +1187,19 @@ fn parse_layer_command(pair: Pair<Rule>) -> Result<LayerCommand, Box<dyn Error>>
                             }
                         }
 
-                        match param_name.as_str() {
-                            "layer" => {
+                        match LayerCommandParam::from_keyword(&param_name)? {
+                            LayerCommandParam::Layer => {
                                 layer =
                                     Some(parse_layer(&param_value).ok_or_else(|| {
                                         format!("Invalid layer: {}", param_value)
                                     })?);
                             }
-                            "intensity" => {
+                            LayerCommandParam::Intensity => {
                                 intensity =
                                     Some(parse_percentage_to_f64(&param_value)?.clamp(0.0, 1.0));
                             }
-                            "speed" => {
+                            LayerCommandParam::Speed => {
                                 speed = Some(parse_percentage_to_f64(&param_value)?.max(0.0));
-                            }
-                            other => {
-                                return Err(
-                                    format!("Unknown layer command parameter: {}", other).into()
-                                );
                             }
                         }
                     }

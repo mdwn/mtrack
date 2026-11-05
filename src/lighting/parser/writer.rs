@@ -21,15 +21,23 @@
 //!
 //! The editor never builds DSL text: it edits the document (see
 //! [`super::edit`]) and asks for it written here.
+//!
+//! A word the parser reads by its own table is written from that table
+//! (effect and layer-command keywords, layer-command parameters, units,
+//! tempo fields, transitions). The words spelled by `grammar.pest` alone,
+//! with no table on the parser's side, are written here as the grammar
+//! spells them: `include`, `show`, `tempo`, `sequence`, `length`,
+//! `offset … measures`, `reset_measures`, `stop` and `loop`.
 
 use super::super::tempo::{
     parse_signature_in, SignatureRange, TempoTransition, DEFAULT_BPM, DEFAULT_TIME_SIGNATURE,
 };
 use super::document::{
-    Cue, CueEffect, CueLine, Document, DocumentItem, DurationUnit, LayerCommand, OffsetLine, Param,
-    Remarks, SequenceArg, SequenceRef, TempoChange, TempoField, TempoSection, Timestamp,
-    TimestampKind,
+    Cue, CueEffect, CueLine, Document, DocumentItem, DurationUnit, LayerCommand, LayerCommandParam,
+    OffsetLine, Param, Remarks, SequenceArg, SequenceRef, TempoChange, TempoField, TempoSection,
+    Timestamp, TimestampKind, TRANSITION,
 };
+use super::tempo_parse::{TRANSITION_MEASURES, TRANSITION_SNAP};
 
 /// The document as DSL text.
 pub fn write(file: &Document) -> String {
@@ -317,10 +325,14 @@ pub fn write_tempo(tempo: &TempoSection) -> String {
             .collect()
     };
     let inline = |field: TempoField| Some(at(field, true).join(" "));
-    let field = |lines: &mut Vec<String>, name: TempoField, text: String| {
+    // A field's line: its name and its value, with its comments.
+    let field = |lines: &mut Vec<String>, name: TempoField, value: String| {
         let above = Some(at(name, false));
         lines.extend(own(&above, "    "));
-        lines.push(line(format!("    {text}"), &inline(name)));
+        lines.push(line(
+            format!("    {}: {value}", name.keyword()),
+            &inline(name),
+        ));
     };
     lines.extend(own(&tempo.comments_before, ""));
     lines.push(line("tempo {".to_string(), &tempo.comment));
@@ -366,27 +378,27 @@ pub fn write_tempo(tempo: &TempoSection) -> String {
                     Some(w) if w.value == start.value && w.unit == start.unit => w.text.clone(),
                     _ => length_text(start.value, start.unit),
                 };
-                field(&mut lines, name, format!("start: {text}"));
+                field(&mut lines, name, text);
             }
             TempoField::Bpm => {
                 let text = match tempo.bpm_text.as_deref() {
                     Some(t) if t.parse() == Ok(tempo.bpm) => t.to_string(),
                     _ => number(tempo.bpm),
                 };
-                field(&mut lines, name, format!("bpm: {text}"));
+                field(&mut lines, name, text);
             }
             TempoField::TimeSignature => {
                 let text = match tempo.time_signature_text.as_deref() {
                     Some(t) if reads_as(t, tempo.time_signature) => t.to_string(),
                     _ => signature(tempo.time_signature),
                 };
-                field(&mut lines, name, format!("time_signature: {text}"));
+                field(&mut lines, name, text);
             }
             TempoField::Changes => {
                 if changes_unset {
                     continue;
                 }
-                field(&mut lines, name, "changes: [".to_string());
+                field(&mut lines, name, "[".to_string());
                 let count = tempo.changes.len();
                 for (i, change) in tempo.changes.iter().enumerate() {
                     let ts = timestamp(&change.timestamp);
@@ -427,17 +439,23 @@ fn change_params(change: &TempoChange) -> (Vec<Listed>, Vec<String>) {
     edited(
         change.written.as_deref().unwrap_or_default(),
         &[
-            ("bpm", change.bpm.map(number)),
-            ("time_signature", change.time_signature.map(signature)),
-            ("transition", change.transition.clone()),
+            (TempoField::Bpm.keyword(), change.bpm.map(number)),
+            (
+                TempoField::TimeSignature.keyword(),
+                change.time_signature.map(signature),
+            ),
+            (TRANSITION, change.transition.clone()),
         ],
-        |p| match p.name.as_str() {
-            "bpm" => change.bpm.is_some_and(|bpm| p.value.parse() == Ok(bpm)),
-            "time_signature" => change
-                .time_signature
-                .is_some_and(|sig| reads_as(&p.value, sig)),
-            "transition" => change.transition.as_deref() == Some(p.value.as_str()),
-            _ => false,
+        |p| {
+            if p.name == TempoField::Bpm.keyword() {
+                change.bpm.is_some_and(|bpm| p.value.parse() == Ok(bpm))
+            } else if p.name == TempoField::TimeSignature.keyword() {
+                change
+                    .time_signature
+                    .is_some_and(|sig| reads_as(&p.value, sig))
+            } else {
+                p.name == TRANSITION && change.transition.as_deref() == Some(p.value.as_str())
+            }
         },
     )
 }
@@ -695,11 +713,8 @@ fn effect(eff: &CueEffect, indent: &str) -> Option<(String, bool)> {
 /// none is left to keep them (see [`edited`]).
 fn layer_command(cmd: &LayerCommand, indent: &str) -> (String, Vec<String>) {
     // As written, an edited value replaced where it was.
-    let set = [
-        ("layer", cmd.layer.clone()),
-        ("intensity", cmd.intensity.clone()),
-        ("speed", cmd.speed.clone()),
-    ];
+    let set =
+        LayerCommandParam::ALL.map(|(param, name)| (name, cmd.param(param).map(str::to_string)));
     let (params, orphans) = edited(cmd.written.as_deref().unwrap_or_default(), &set, |p| {
         set.iter()
             .find(|(n, _)| *n == p.name)
@@ -785,9 +800,9 @@ pub fn duration_text(span: Option<(f64, f64)>, ms: f64) -> String {
 /// (beats), `2m` (measures) or `snap`.
 pub fn transition_text(transition: &TempoTransition) -> String {
     match transition {
-        TempoTransition::Snap => "snap".to_string(),
+        TempoTransition::Snap => TRANSITION_SNAP.to_string(),
         TempoTransition::Beats(n, _) => number(*n),
-        TempoTransition::Measures(n, _) => format!("{}m", number(*n)),
+        TempoTransition::Measures(n, _) => format!("{}{TRANSITION_MEASURES}", number(*n)),
     }
 }
 
