@@ -13,6 +13,8 @@
 //
 
 import { waitLocale } from "./lib/i18n";
+// The player's rules module: loaded before anything can ask it a question.
+import { ready as rulesReady } from "./lib/rules";
 // Importing the theme module subscribes the document to the user's
 // stored / system theme preference and applies `.nc--dark` to <html>
 // before the app mounts, so we never flash light-on-dark.
@@ -22,7 +24,7 @@ import App from "./App.svelte";
 import { mount } from "svelte";
 
 async function start() {
-  await waitLocale();
+  await Promise.all([waitLocale(), rulesReady]);
   mount(App, { target: document.getElementById("app")! });
 }
 

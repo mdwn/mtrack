@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { BeatGrid as RuleGrid } from "../../gen/rules/mtrack_rules";
 import { writable } from "svelte/store";
 import { connect, on, onConnectionStatus } from "./connection";
 
@@ -27,13 +28,12 @@ export interface TrackInfo {
   muted?: boolean;
 }
 
-export interface BeatGrid {
-  beats: number[];
-  measure_starts: number[];
+/** The player's beat grid, with the accent levels the backend resolves. */
+export type BeatGrid = RuleGrid & {
   /** Per-beat accent levels (0 silent, 1 normal, 2 half, 3 accent);
    * present when the song has a metronome. */
   accent_levels?: number[];
-}
+};
 
 export interface SectionInfo {
   name: string;

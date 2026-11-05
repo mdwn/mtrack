@@ -403,6 +403,7 @@ fn mime_type_for_path(path: &str) -> &'static str {
         Some("ico") => "image/x-icon",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }
