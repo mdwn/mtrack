@@ -27,7 +27,6 @@ use std::rc::Rc;
 
 use pest::iterators::Pair;
 
-use super::utils::Children;
 use pest::Parser;
 
 use super::super::tempo::TempoMap;
@@ -116,12 +115,12 @@ impl SequenceLibrary {
             );
             let mut name = String::new();
             let mut params: Vec<(String, Option<String>)> = Vec::new();
-            for inner in pair.children() {
+            for inner in pair.into_inner() {
                 match inner.as_rule() {
                     Rule::sequence_name => name = inner.as_str().trim_matches('"').to_string(),
                     Rule::sequence_param_decls => {
-                        for decl in inner.children() {
-                            let mut parts = decl.children();
+                        for decl in inner.into_inner() {
+                            let mut parts = decl.into_inner();
                             let param = parts.next().map(|p| p.as_str().to_string());
                             let default = parts.next().map(|p| p.as_str().to_string());
                             let Some(param) = param else { continue };
@@ -294,7 +293,7 @@ impl SequenceLibrary {
                 )
             })?
             .next()
-            .and_then(|source| source.children().find(|p| p.as_rule() == Rule::sequence))
+            .and_then(|source| source.into_inner().find(|p| p.as_rule() == Rule::sequence))
             .ok_or("Sequence definition did not parse (internal error)")?;
         parse_sequence_structure(pair, &self.global_tempo, self)
     }

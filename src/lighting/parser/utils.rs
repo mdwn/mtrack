@@ -22,20 +22,6 @@ use super::super::tempo::TempoMap;
 use super::grammar::Rule;
 use pest::iterators::Pair;
 
-/// A pair's children as the walkers read them: the structure, with the
-/// grammar's `comment` pairs left out (a comment may sit wherever
-/// whitespace may, and leaves a pair behind for the document model). The
-/// one place comments are skipped.
-pub(crate) trait Children<'i> {
-    fn children(self) -> impl Iterator<Item = Pair<'i, Rule>>;
-}
-
-impl<'i> Children<'i> for Pair<'i, Rule> {
-    fn children(self) -> impl Iterator<Item = Pair<'i, Rule>> {
-        self.into_inner().filter(|p| p.as_rule() != Rule::comment)
-    }
-}
-
 /// The items a parsed file holds -- its includes, fixture types, venues,
 /// shows, sequences and tempo blocks -- out of the `file` rule's pair.
 pub(crate) fn items<'i>(
@@ -43,7 +29,7 @@ pub(crate) fn items<'i>(
 ) -> impl Iterator<Item = pest::iterators::Pair<'i, Rule>> {
     pairs.flat_map(|p| {
         if p.as_rule() == Rule::file {
-            p.children().collect::<Vec<_>>()
+            p.into_inner().collect::<Vec<_>>()
         } else {
             vec![p]
         }

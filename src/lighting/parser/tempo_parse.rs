@@ -21,7 +21,7 @@ use super::super::tempo::{
 };
 
 use super::grammar::Rule;
-use super::utils::{parse_measure_time, parse_time_string, parse_time_value, Children, TimeValue};
+use super::utils::{parse_measure_time, parse_time_string, parse_time_value, TimeValue};
 use pest::iterators::Pair;
 
 pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<dyn Error>> {
@@ -34,16 +34,16 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
     // tempo = { "tempo" ~ "{" ~ tempo_content ~ "}" }
     // tempo_content = { (tempo_start | tempo_bpm | tempo_time_signature | tempo_changes)* }
     // So we need to iterate through tempo_content
-    for inner_pair in pair.children() {
+    for inner_pair in pair.into_inner() {
         if inner_pair.as_rule() == Rule::tempo_content {
             // tempo_content contains tempo_start, tempo_bpm, etc.
-            for content_pair in inner_pair.children() {
+            for content_pair in inner_pair.into_inner() {
                 match content_pair.as_rule() {
                     Rule::tempo_start => {
                         // tempo_start = { "start" ~ ":" ~ time_parameter }
                         // time_parameter is atomic (@{ time_value ~ time_unit })
                         // Since it's atomic, iterate through inner pairs to find it
-                        for param_pair in content_pair.children() {
+                        for param_pair in content_pair.into_inner() {
                             if param_pair.as_rule() == Rule::time_parameter {
                                 let time_str = param_pair.as_str().trim();
                                 if time_str.is_empty() {
@@ -57,7 +57,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                         }
                     }
                     Rule::tempo_bpm => {
-                        for value_pair in content_pair.children() {
+                        for value_pair in content_pair.into_inner() {
                             if value_pair.as_rule() == Rule::number_value {
                                 let bpm_str = value_pair.as_str().trim();
                                 bpm = bpm_str.parse().map_err(|e| {
@@ -67,7 +67,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                         }
                     }
                     Rule::tempo_time_signature => {
-                        for value_pair in content_pair.children() {
+                        for value_pair in content_pair.into_inner() {
                             if value_pair.as_rule() == Rule::time_sig_value {
                                 time_signature =
                                     parse_signature_in(value_pair.as_str(), SignatureRange::Light)?;
@@ -78,10 +78,10 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                         // tempo_changes = { "changes" ~ ":" ~ "[" ~ tempo_change_list? ~ "]" }
                         // tempo_change_list = { tempo_change ~ ("," ~ tempo_change)* }
                         // We need to find tempo_change_list, which is optional
-                        for list_pair in content_pair.children() {
+                        for list_pair in content_pair.into_inner() {
                             if list_pair.as_rule() == Rule::tempo_change_list {
                                 // tempo_change_list contains tempo_change pairs separated by commas
-                                for change_pair in list_pair.children() {
+                                for change_pair in list_pair.into_inner() {
                                     if change_pair.as_rule() == Rule::tempo_change {
                                         let change = parse_tempo_change(change_pair)?;
                                         changes.push(change);
@@ -126,7 +126,7 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
     let mut time_signature = None;
     let mut transition = TempoTransition::Snap;
 
-    for inner_pair in pair.children() {
+    for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::time_string => {
                 let time = parse_time_string(inner_pair.as_str())?;
@@ -137,17 +137,17 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                 position = TempoChangePosition::MeasureBeat(measure, beat);
             }
             Rule::tempo_change_content => {
-                for param_pair in inner_pair.children() {
+                for param_pair in inner_pair.into_inner() {
                     // tempo_change_content contains tempo_change_param pairs
                     // tempo_change_param is a wrapper, so we need to get its inner rule
                     // The inner rule will be one of: tempo_change_bpm, tempo_change_time_signature, tempo_change_transition
-                    for actual_param in param_pair.children() {
+                    for actual_param in param_pair.into_inner() {
                         match actual_param.as_rule() {
                             Rule::tempo_change_bpm => {
                                 // tempo_change_bpm = { "bpm" ~ ":" ~ number_value }
                                 // So actual_param contains "bpm", ":", and number_value
                                 // We need to find number_value
-                                for value_pair in actual_param.children() {
+                                for value_pair in actual_param.into_inner() {
                                     if value_pair.as_rule() == Rule::number_value {
                                         let bpm_str = value_pair.as_str().trim();
                                         let bpm_value: f64 = bpm_str.parse()?;
@@ -157,7 +157,7 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                 }
                             }
                             Rule::tempo_change_time_signature => {
-                                for value_pair in actual_param.children() {
+                                for value_pair in actual_param.into_inner() {
                                     if value_pair.as_rule() == Rule::time_sig_value {
                                         time_signature = Some(parse_signature_in(
                                             value_pair.as_str(),
@@ -171,11 +171,11 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                 // tempo_transition_duration = { tempo_transition_measures | tempo_transition_beats | tempo_transition_snap }
                                 // actual_param is tempo_change_transition, which contains "transition", ":", and tempo_transition_duration
                                 // We need to find tempo_transition_duration
-                                for inner_pair in actual_param.children() {
+                                for inner_pair in actual_param.into_inner() {
                                     match inner_pair.as_rule() {
                                         Rule::tempo_transition_duration => {
                                             // tempo_transition_duration is an OR of the three options
-                                            for trans_pair in inner_pair.children() {
+                                            for trans_pair in inner_pair.into_inner() {
                                                 match trans_pair.as_rule() {
                                                     Rule::tempo_transition_snap => {
                                                         transition = TempoTransition::Snap;
@@ -183,7 +183,7 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                                     Rule::tempo_transition_beats => {
                                                         // tempo_transition_beats = { number_value }
                                                         // So trans_pair contains number_value as inner pair
-                                                        for value_pair in trans_pair.children() {
+                                                        for value_pair in trans_pair.into_inner() {
                                                             if value_pair.as_rule()
                                                                 == Rule::number_value
                                                             {

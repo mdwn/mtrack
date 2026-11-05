@@ -30,7 +30,6 @@ use super::error::describe_pest_error;
 use super::grammar::{LightingParser, Rule};
 use super::sequences::SequenceLibrary;
 use super::utils::items;
-use super::utils::Children;
 
 /// Where the files an `include` names come from. The player reads them
 /// off the disk (`DiskReader`, in the parser's root module); the web UI
@@ -122,7 +121,7 @@ impl Include {
     pub(super) fn from_pair(pair: Pair<Rule>) -> Include {
         let line = pair.line_col().0;
         let written = pair
-            .children()
+            .into_inner()
             .find(|p| p.as_rule() == Rule::string)
             .map(|p| p.as_str().trim_matches('"').to_string())
             .unwrap_or_default();

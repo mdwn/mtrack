@@ -31,7 +31,6 @@ use super::effect_parse::effect_keyword;
 use super::grammar::Rule;
 use super::include::IncludeReader;
 use super::show::{parse_file_with, ParsedCue, ParsedShow};
-use super::utils::Children;
 use crate::lighting::effects::DEFAULT_LAYER;
 use crate::tempo::TempoMap;
 
@@ -256,7 +255,7 @@ pub fn layout(
         .iter()
         .filter_map(|pair| {
             pair.clone()
-                .children()
+                .into_inner()
                 .find(|p| p.as_rule() == Rule::sequence_name)
                 .map(|p| p.as_str().trim_matches('"').to_string())
         })

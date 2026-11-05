@@ -24,7 +24,7 @@ use super::grammar::Rule;
 use super::types::{Effect, ParseContext};
 use super::utils::{
     parse_color_string, parse_frequency_string, parse_layer, parse_percentage_to_f64,
-    parse_speed_string, split_unit, Children,
+    parse_speed_string, split_unit,
 };
 use pest::iterators::Pair;
 
@@ -99,10 +99,10 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
     let mut per_cell = false;
     let mut spread = 0.0_f64;
 
-    for inner_pair in pair.children() {
+    for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::group_list => {
-                for group_pair in inner_pair.children() {
+                for group_pair in inner_pair.into_inner() {
                     if group_pair.as_rule() == Rule::group_name {
                         groups.push(group_pair.as_str().trim().to_string());
                     }
@@ -113,7 +113,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                     .ok_or_else(|| format!("Unknown effect type: {}", inner_pair.as_str()))?;
             }
             Rule::parameters => {
-                for param_pair in inner_pair.children() {
+                for param_pair in inner_pair.into_inner() {
                     if param_pair.as_rule() == Rule::parameter {
                         let (key, value) = super::utils::parse_parameter(param_pair)?;
                         musical.record(&key, &value);
