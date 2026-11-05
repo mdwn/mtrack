@@ -37,13 +37,15 @@
     type VenuePatch,
   } from "../../lib/api/config";
   import {
-    collisions,
+    listed,
+    overlaps,
     room,
     stripCells,
     stripWindow,
-    type Span,
+    type PatchSpan,
   } from "../../lib/lighting/patch";
   import { isRefused } from "../../lib/lighting/modes";
+  import { rules } from "../../lib/rules";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
   import type {
     FixtureMetadata,
@@ -450,16 +452,17 @@
     }
     // A new address is checked against the patch before it is saved, in
     // the fixture's current mode (a new type's footprint is not known yet).
-    const own = patch?.spans.find((s) => s.fixture === from);
+    const own = spans.find((s) => s.fixture === from);
     if (own && own.type === draft.fixture_type.trim()) {
-      const candidate: Span = {
+      const candidate: PatchSpan = {
         fixture: from,
         universe: Number(draft.universe),
         address: Number(draft.start_channel),
         footprint: own.footprint,
       };
-      const hits = collisions(spans, candidate);
+      const hits = overlaps(spans, candidate);
       if (hits.length > 0 && candidate.footprint) {
+        const names = listed(hits).map((h) => h.fixture);
         patchMsg = {
           ok: false,
           text: get(t)("venues.inspector.addressRefused", {
@@ -467,9 +470,9 @@
               name: from,
               universe: candidate.universe,
               from: candidate.address,
-              to: candidate.address + candidate.footprint - 1,
-              names: unique(hits.map((h) => h.fixture)).join(", "),
-              count: unique(hits.map((h) => h.fixture)).length,
+              to: rules.patch_last(candidate) ?? candidate.address,
+              names: names.join(", "),
+              count: names.length,
             },
           }),
         };
@@ -508,8 +511,6 @@
 
   // --- The mode and the patch (design §21)
 
-  const unique = (names: string[]) => [...new Set(names)];
-
   /** A refusal from the patch check, said beside the strip. */
   let patchMsg = $state<{ text: string; ok: boolean } | null>(null);
   /** The strip's scroller: kept on this fixture's cells. */
@@ -547,7 +548,11 @@
       });
     return () => (stale = true);
   });
-  let spans = $derived<Span[]>(patch?.spans ?? []);
+  /** The venue's spans for the patch rule, a footprint it does not know
+   *  (type or mode not loading) handed over as nothing occupied. */
+  let spans = $derived<(PatchSpan & { type: string })[]>(
+    (patch?.spans ?? []).map((s) => ({ ...s, footprint: s.footprint ?? 0 })),
+  );
 
   /** Each GDTF type's archive, for its modes; fetched once per type. */
   let archives = $state<Record<string, FixtureTypeGdtf | null>>({});
@@ -604,12 +609,12 @@
     patchMsg = null;
     const footprint = footprintOf(next);
     if (ownSpan && footprint) {
-      const candidate: Span = { ...ownSpan, footprint };
-      const hits = collisions(spans, candidate);
+      const candidate: PatchSpan = { ...ownSpan, footprint };
+      const hits = overlaps(spans, candidate);
       if (hits.length > 0) {
         // Refused before the save: the select goes back to what is saved.
         select.value = previous;
-        const names = unique(hits.map((h) => h.fixture));
+        const names = listed(hits).map((h) => h.fixture);
         const fits = room(spans, candidate);
         patchMsg = {
           ok: false,
@@ -621,7 +626,7 @@
               values: {
                 mode: next,
                 from: candidate.address,
-                to: candidate.address + footprint - 1,
+                to: rules.patch_last(candidate) ?? candidate.address,
                 names: names.join(", "),
                 count: names.length,
                 first: names[0],
