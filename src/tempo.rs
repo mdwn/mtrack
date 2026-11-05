@@ -1070,6 +1070,9 @@ impl TempoMap {
     /// barline has passed since (`SegmentState::metre`). For a change
     /// anchored mid-bar this is the signature it sets, where
     /// [`Self::time_signature_at_time`] still answers the bar's.
+    // Read by the web UI's rules crate (`crates/mtrack-rules-wasm`), which
+    // compiles this file as its own; the player has no caller yet.
+    #[allow(dead_code)]
     pub(crate) fn time_signature_set_at(&self, time: Duration) -> TimeSignature {
         self.segments().state_at(time).metre
     }
