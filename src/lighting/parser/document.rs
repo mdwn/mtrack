@@ -56,6 +56,22 @@ pub struct Document {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comments_after: Option<Vec<String>>,
+    /// Its items in the order they were written (each kind's in its
+    /// list's order), so a save keeps them so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub items: Option<Vec<DocumentItem>>,
+}
+
+/// The kinds of item a file holds.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentItem {
+    Include,
+    Tempo,
+    Sequence,
+    Show,
 }
 
 /// What reading a file as a [`Document`] gives: the document, or why the
@@ -102,7 +118,15 @@ pub struct Include {
 pub struct TempoSection {
     pub start: DurationValue,
     pub bpm: f64,
+    /// `bpm:` as written (`120.0`), for a save to keep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub bpm_text: Option<String>,
     pub time_signature: (u32, u32),
+    /// `time_signature:` as written, for a save to keep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub time_signature_text: Option<String>,
     pub changes: Vec<TempoChange>,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +191,15 @@ pub struct TempoChange {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub transition: Option<String>,
+    /// Its parameters as written, in order and spelling (`bpm: 140.0`),
+    /// for a save to keep while the values above are still theirs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub written: Option<Vec<Param>>,
+    /// Whether the comment on its line sits before its comma.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comment_before_comma: Option<bool>,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -284,6 +317,10 @@ pub struct LightShow {
     /// As written; `""` for a show written without a name (the only show
     /// of a file may be, and plays as `default`).
     pub name: String,
+    /// Whether it was written with no name at all (`show {`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub unnamed: Option<bool>,
     pub cues: Vec<Cue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -318,6 +355,11 @@ pub struct Cue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub offset_measures: Option<u32>,
+    /// Each `offset` line's measures as written, when there are several,
+    /// for a save to keep the lines while their sum is still the above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub offsets: Option<Vec<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub reset_measures: Option<bool>,
@@ -433,6 +475,11 @@ pub struct EffectParams {
 pub struct Param {
     pub name: String,
     pub value: String,
+    /// Whether the value is a sequence parameter reference (`$name`), by
+    /// the grammar's `param_ref`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub is_ref: Option<bool>,
 }
 
 /// The effect keywords of the grammar.
@@ -464,6 +511,11 @@ pub struct LayerCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub speed: Option<String>,
+    /// Its parameters as written, in order, for a save to keep while the
+    /// values above are still theirs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub written: Option<Vec<Param>>,
     /// The comment lines above it, as written (`# …`, `// …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -549,10 +601,11 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         Show,
     }
     let mut last = Last::None;
+    let mut order: Vec<DocumentItem> = Vec::new();
     let file = pairs.next().ok_or("no file")?;
     for item in walk(&file, source) {
         let pair = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 let slot = match last {
                     Last::Include => includes.last_mut().map(|i: &mut Include| &mut i.comment),
                     Last::Tempo => document.tempo.as_mut().map(|t| &mut t.close_comment),
@@ -584,6 +637,7 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
                     comment: None,
                 });
                 last = Last::Include;
+                order.push(DocumentItem::Include);
             }
             Rule::tempo => {
                 if document.tempo.is_some() {
@@ -598,18 +652,21 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
                 section.comments_before = before;
                 document.tempo = Some(section);
                 last = Last::Tempo;
+                order.push(DocumentItem::Tempo);
             }
             Rule::sequence => {
                 let mut seq = sequence(pair, source)?;
                 seq.comments_before = comments.take();
                 document.sequences.push(seq);
                 last = Last::Sequence;
+                order.push(DocumentItem::Sequence);
             }
             Rule::light_show => {
                 let mut show = show(pair, source)?;
                 show.comments_before = comments.take();
                 document.shows.push(show);
                 last = Last::Show;
+                order.push(DocumentItem::Show);
             }
             Rule::fixture_type | Rule::venue => {
                 let what = if pair.as_rule() == Rule::venue {
@@ -629,6 +686,9 @@ fn read(source: &str, path: Option<&Path>) -> Result<Document, Box<dyn Error>> {
         document.includes = Some(includes);
     }
     document.comments_after = comments.take();
+    if !order.is_empty() {
+        document.items = Some(order);
+    }
     Ok(document)
 }
 
@@ -641,6 +701,8 @@ enum Item<'i> {
     Comment {
         text: String,
         inline: bool,
+        /// Whether a comma came before it in the gap.
+        after_comma: bool,
     },
     Pair(Pair<'i, Rule>),
 }
@@ -664,19 +726,25 @@ fn walk<'i>(parent: &Pair<'i, Rule>, source: &'i str) -> Vec<Item<'i>> {
 }
 
 /// The comments in a pair's own tail: a rule that ends in an optional
-/// part (`effect`, `sequence_reference`) has the whitespace and comments
-/// skipped before that part in its span whether or not the part matched,
-/// so a comment on its line is inside it, after its last token.
+/// part or a repetition (`effect`, its `parameters`, `sequence_reference`)
+/// keeps the whitespace and comments skipped before the part that did not
+/// match in its span, so a comment on its line, or on the lines after it,
+/// is inside it, after its last token at any depth.
 fn tail_comments<'i>(pair: &Pair<'i, Rule>, source: &'i str) -> Vec<Item<'i>> {
     let mut items = Vec::new();
-    if let Some(last) = pair.clone().into_inner().last() {
-        gap_comments(
-            &source[last.as_span().end()..pair.as_span().end()],
-            false,
-            &mut items,
-        );
+    let from = end_of(pair);
+    if from < pair.as_span().end() {
+        gap_comments(&source[from..pair.as_span().end()], false, &mut items);
     }
     items
+}
+
+/// Where a pair's last token ends: its last descendant's end.
+fn end_of(pair: &Pair<Rule>) -> usize {
+    match pair.clone().into_inner().last() {
+        Some(last) => end_of(&last),
+        None => pair.as_span().end(),
+    }
 }
 
 /// The comments in a gap, by the grammar's `gap` rule. A comment with no
@@ -693,6 +761,7 @@ fn gap_comments(gap: &str, first: bool, items: &mut Vec<Item>) {
         items.push(Item::Comment {
             text: token.as_str().trim_end().to_string(),
             inline,
+            after_comma: before.contains(','),
         });
     }
 }
@@ -732,10 +801,12 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
             text: None,
         },
         bpm: crate::tempo::DEFAULT_BPM,
+        bpm_text: None,
         time_signature: (
             crate::tempo::DEFAULT_TIME_SIGNATURE.numerator,
             crate::tempo::DEFAULT_TIME_SIGNATURE.denominator,
         ),
+        time_signature_text: None,
         changes: Vec::new(),
         comments_before: None,
         comment: None,
@@ -776,7 +847,7 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
     };
     for item in walk(&pair, source) {
         let content = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 keep(
                     text,
                     inline,
@@ -794,7 +865,7 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
         }
         for item in walk(&content, source) {
             let item = match item {
-                Item::Comment { text, inline } => {
+                Item::Comment { text, inline, .. } => {
                     keep(
                         text,
                         inline,
@@ -828,6 +899,7 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                         .find(|p| p.as_rule() == Rule::number_value)
                     {
                         section.bpm = value.as_str().trim().parse()?;
+                        section.bpm_text = Some(value.as_str().trim().to_string());
                     }
                 }
                 Rule::tempo_time_signature => {
@@ -839,6 +911,7 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
                         .find(|p| p.as_rule() == Rule::time_sig_value)
                     {
                         section.time_signature = signature(value.as_str())?;
+                        section.time_signature_text = Some(value.as_str().trim().to_string());
                     }
                 }
                 Rule::tempo_changes => {
@@ -869,15 +942,27 @@ fn tempo_changes(
     comments: &mut Comments,
 ) -> Result<(), Box<dyn Error>> {
     // A comment on a change's line, before or after its comma.
-    let keep =
-        |text: String, inline: bool, changes: &mut Vec<TempoChange>, comments: &mut Comments| {
-            let slot = changes.last_mut().map(|c| &mut c.comment);
-            comments.keep(text, inline, slot);
-        };
+    let keep = |text: String,
+                inline: bool,
+                after_comma: bool,
+                changes: &mut Vec<TempoChange>,
+                comments: &mut Comments| {
+        if inline && !after_comma {
+            if let Some(change) = changes.last_mut().filter(|c| c.comment.is_none()) {
+                change.comment_before_comma = Some(true);
+            }
+        }
+        let slot = changes.last_mut().map(|c| &mut c.comment);
+        comments.keep(text, inline, slot);
+    };
     for item in walk(&pair, source) {
         let list = match item {
-            Item::Comment { text, inline } => {
-                keep(text, inline, &mut section.changes, comments);
+            Item::Comment {
+                text,
+                inline,
+                after_comma,
+            } => {
+                keep(text, inline, after_comma, &mut section.changes, comments);
                 continue;
             }
             Item::Pair(pair) => pair,
@@ -887,8 +972,12 @@ fn tempo_changes(
         }
         for item in walk(&list, source) {
             match item {
-                Item::Comment { text, inline } => {
-                    keep(text, inline, &mut section.changes, comments);
+                Item::Comment {
+                    text,
+                    inline,
+                    after_comma,
+                } => {
+                    keep(text, inline, after_comma, &mut section.changes, comments);
                 }
                 Item::Pair(change) if change.as_rule() == Rule::tempo_change => {
                     let mut change = tempo_change(change)?;
@@ -915,9 +1004,12 @@ fn tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
         bpm: None,
         time_signature: None,
         transition: None,
+        written: None,
+        comment_before_comma: None,
         comments_before: None,
         comment: None,
     };
+    let mut written = Vec::new();
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::time_string | Rule::measure_time => change.timestamp = timestamp(item)?,
@@ -931,20 +1023,34 @@ fn tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
                     let Some(value) = param.into_inner().next() else {
                         continue;
                     };
-                    match rule {
-                        Rule::tempo_change_bpm => change.bpm = Some(value.as_str().trim().parse()?),
+                    let text = value.as_str().trim().to_string();
+                    let name = match rule {
+                        Rule::tempo_change_bpm => {
+                            change.bpm = Some(text.parse()?);
+                            "bpm"
+                        }
                         Rule::tempo_change_time_signature => {
-                            change.time_signature = Some(signature(value.as_str())?)
+                            change.time_signature = Some(signature(&text)?);
+                            "time_signature"
                         }
                         Rule::tempo_change_transition => {
-                            change.transition = Some(value.as_str().trim().to_string())
+                            change.transition = Some(text.clone());
+                            "transition"
                         }
-                        _ => {}
-                    }
+                        _ => continue,
+                    };
+                    written.push(Param {
+                        name: name.to_string(),
+                        value: text,
+                        is_ref: None,
+                    });
                 }
             }
             _ => {}
         }
+    }
+    if !written.is_empty() {
+        change.written = Some(written);
     }
     Ok(change)
 }
@@ -1017,7 +1123,7 @@ fn sequence(pair: Pair<Rule>, source: &str) -> Result<Sequence, Box<dyn Error>> 
     let mut comments = Comments::default();
     for item in walk(&pair, source) {
         let item = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 let slot = match sequence.cues.last_mut() {
                     Some(cue) => cue.last_line(),
                     None => &mut sequence.comment,
@@ -1063,6 +1169,7 @@ fn show(pair: Pair<Rule>, source: &str) -> Result<LightShow, Box<dyn Error>> {
     let line = pair.line_col().0 as u32;
     let mut show = LightShow {
         name: String::new(),
+        unnamed: Some(true),
         cues: Vec::new(),
         line: Some(line),
         comments_before: None,
@@ -1073,7 +1180,7 @@ fn show(pair: Pair<Rule>, source: &str) -> Result<LightShow, Box<dyn Error>> {
     let mut comments = Comments::default();
     for item in walk(&pair, source) {
         let item = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 let slot = match show.cues.last_mut() {
                     Some(cue) => cue.last_line(),
                     None => &mut show.comment,
@@ -1084,7 +1191,10 @@ fn show(pair: Pair<Rule>, source: &str) -> Result<LightShow, Box<dyn Error>> {
             Item::Pair(pair) => pair,
         };
         match item.as_rule() {
-            Rule::show_name => show.name = item.as_str().trim_matches('"').to_string(),
+            Rule::show_name => {
+                show.name = item.as_str().trim_matches('"').to_string();
+                show.unnamed = None;
+            }
             Rule::show_content => {
                 show.cues = cues(item, source, "a show", &mut comments, &mut show.comment)?;
             }
@@ -1120,7 +1230,7 @@ fn cues(
     let mut cues: Vec<Cue> = Vec::new();
     for item in walk(&content, source) {
         let item = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 let slot = match cues.last_mut() {
                     Some(cue) => cue.last_line(),
                     None => header,
@@ -1140,9 +1250,10 @@ fn cues(
                 .into())
             }
             Rule::cue | Rule::sequence_cue => {
-                let mut cue = cue(item, source)?;
+                let (mut cue, trailing) = cue(item, source)?;
                 cue.comments_before = comments.take();
                 cues.push(cue);
+                comments.pending.extend(trailing.into_iter().flatten());
             }
             _ => {}
         }
@@ -1172,7 +1283,12 @@ impl Cue {
     }
 }
 
-fn cue(pair: Pair<Rule>, source: &str) -> Result<Cue, Box<dyn Error>> {
+/// A cue as read, with the comment lines its span holds after its last
+/// line (a repetition's skipped tail stays in the span), which belong to
+/// what follows the cue.
+type CueAndTrailing = (Cue, Option<Vec<String>>);
+
+fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>> {
     let line = pair.line_col().0 as u32;
     let mut cue = Cue {
         timestamp: Timestamp {
@@ -1187,6 +1303,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<Cue, Box<dyn Error>> {
         sequences: Vec::new(),
         comment: None,
         offset_measures: None,
+        offsets: None,
         reset_measures: None,
         loops: None,
         line: Some(line),
@@ -1202,7 +1319,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<Cue, Box<dyn Error>> {
     let mut lines: Vec<CueLine> = Vec::new();
     for item in walk(&pair, source) {
         let item = match item {
-            Item::Comment { text, inline } => {
+            Item::Comment { text, inline, .. } => {
                 let slot = cue.last_line();
                 comments.keep(text, inline, Some(slot));
                 continue;
@@ -1260,6 +1377,7 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<Cue, Box<dyn Error>> {
                     .transpose()?
                     .unwrap_or(0);
                 cue.offset_measures = Some(cue.offset_measures.unwrap_or(0) + measures);
+                cue.offsets.get_or_insert_with(Vec::new).push(measures);
                 if let Some(pending) = comments.take() {
                     cue.offset_comments_before
                         .get_or_insert_with(Vec::new)
@@ -1293,16 +1411,17 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<Cue, Box<dyn Error>> {
     if !lines.is_empty() {
         cue.lines = Some(lines);
     }
-    // The cue's text ends with its last line: nothing waits after it.
-    debug_assert!(comments.pending.is_empty());
-    Ok(cue)
+    if cue.offsets.as_ref().is_some_and(|o| o.len() < 2) {
+        cue.offsets = None;
+    }
+    Ok((cue, comments.take()))
 }
 
 /// The comments in a cue line's own tail (see [`tail_comments`]), kept
 /// as that line's.
 fn tail(item: &Pair<Rule>, source: &str, cue: &mut Cue, comments: &mut Comments) {
     for found in tail_comments(item, source) {
-        if let Item::Comment { text, inline } = found {
+        if let Item::Comment { text, inline, .. } = found {
             let slot = cue.last_line();
             comments.keep(text, inline, Some(slot));
         }
@@ -1350,9 +1469,15 @@ fn effect(pair: Pair<Rule>) -> Result<CueEffect, Box<dyn Error>> {
                     let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
                         continue;
                     };
+                    let is_ref = value
+                        .clone()
+                        .into_inner()
+                        .next()
+                        .is_some_and(|v| v.as_rule() == Rule::param_ref);
                     params.params.push(Param {
                         name: name.as_str().trim().to_string(),
                         value: value.as_str().trim().to_string(),
+                        is_ref: is_ref.then_some(true),
                     });
                 }
             }
@@ -1373,9 +1498,11 @@ fn layer_command(pair: Pair<Rule>) -> LayerCommand {
         layer: None,
         intensity: None,
         speed: None,
+        written: None,
         comments_before: None,
         comment: None,
     };
+    let mut written = Vec::new();
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::layer_command_type => {
@@ -1395,7 +1522,13 @@ fn layer_command(pair: Pair<Rule>) -> LayerCommand {
                     let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
                         continue;
                     };
-                    let value = Some(value.as_str().trim().to_string());
+                    let text = value.as_str().trim().to_string();
+                    written.push(Param {
+                        name: name.as_str().trim().to_string(),
+                        value: text.clone(),
+                        is_ref: None,
+                    });
+                    let value = Some(text);
                     match name.as_str().trim() {
                         "layer" => command.layer = value,
                         "intensity" => command.intensity = value,
@@ -1406,6 +1539,9 @@ fn layer_command(pair: Pair<Rule>) -> LayerCommand {
             }
             _ => {}
         }
+    }
+    if !written.is_empty() {
+        command.written = Some(written);
     }
     command
 }
@@ -1663,6 +1799,42 @@ show "Song" {
             Some("# on loop")
         );
         assert_eq!(doc.comments_after, v(&["# file end"]));
+    }
+
+    #[test]
+    fn a_comment_after_a_bare_cue_is_the_blocks_last() {
+        let doc = document(
+            "show \"S\" {\n    @1/1\n    a: static, color: \"red\", duration: 1s\n\n    @2/1\n    # End in blackout\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let show = &doc.shows[0];
+        assert_eq!(show.cues[1].comment, None);
+        assert_eq!(
+            show.comments_after,
+            Some(vec!["# End in blackout".to_string()])
+        );
+    }
+
+    #[test]
+    fn comment_lines_after_an_effect_with_no_duration_are_the_next_cues() {
+        let doc = document(
+            "show \"S\" {\n    @1/1\n    a: static, color: \"red\"\n\n    # next\n    # lines\n    @2/1\n    b: static, color: \"red\" # same line\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let show = &doc.shows[0];
+        assert_eq!(show.cues[0].effects[0].comment, None);
+        assert_eq!(
+            show.cues[1].comments_before,
+            Some(vec!["# next".to_string(), "# lines".to_string()])
+        );
+        assert_eq!(
+            show.cues[1].effects[0].comment.as_deref(),
+            Some("# same line")
+        );
     }
 
     #[test]
