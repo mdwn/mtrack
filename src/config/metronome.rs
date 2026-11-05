@@ -32,6 +32,11 @@ pub const DEFAULT_SUB_VOLUME: f64 = 0.45;
 
 /// A YAML representation of a song's metronome: a virtual click track
 /// generated from the song's beat grid, routable like any other track.
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeConfig {
     /// Tri-state switch: absent = the block enables the metronome (and a
@@ -82,6 +87,7 @@ pub struct MetronomeConfig {
 }
 
 /// The metronome subdivision: even ticks per beat or a clave pattern.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Subdivision {
@@ -92,6 +98,7 @@ pub enum Subdivision {
 }
 
 /// The supported clave patterns (3-2 direction).
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaveKind {
@@ -108,6 +115,7 @@ impl Default for Subdivision {
 }
 
 /// A positional change to the metronome feel, anchored at a measure.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeChange {
     /// The 1-indexed measure the change takes effect at.
@@ -121,6 +129,7 @@ pub struct MetronomeChange {
 }
 
 /// The pair of click sounds used by the metronome.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct MetronomeSounds {
     /// The sound for accented (downbeat / group start) clicks.
@@ -138,6 +147,7 @@ pub struct MetronomeSounds {
 }
 
 /// A single click sound: synthesized (freq/volume) or a sample file.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 pub struct ClickSound {
     /// Path to a sample file (relative to the song directory). When set,
@@ -207,6 +217,71 @@ fn validate_subdivision(subdivision: &Subdivision) -> Result<(), String> {
 }
 
 impl MetronomeConfig {
+    /// The accent pattern a measure (1-indexed) of `beats` beats plays: the
+    /// per-beat levels (0 silent, 1 normal, 2 half, 3 accent) of the pattern
+    /// in effect there -- the base `accents`, swapped by the last positional
+    /// change at or before the measure -- padded with the baseline level when
+    /// the measure has more beats than the pattern and truncated when it has
+    /// fewer. Without a pattern the `accent` grouping applies, and without
+    /// either the downbeat alone gets a plain accent. This is the rule the
+    /// click renderer applies bar by bar (`audio::metronome::accent_levels`)
+    /// and the one the web UI's accent pads show.
+    pub fn accent_pattern_at(&self, measure: u32, beats: usize) -> Vec<u8> {
+        let group_starts = self.accent_group_starts();
+        let mut sorted_changes: Vec<&MetronomeChange> = self.changes.iter().collect();
+        sorted_changes.sort_by_key(|c| c.measure);
+        let active_accents: &[u8] = sorted_changes
+            .iter()
+            .filter(|c| c.measure >= 1 && c.measure <= measure)
+            .rev()
+            .find_map(|c| c.accents.as_deref())
+            .unwrap_or(&self.accents);
+        (0..beats)
+            .map(|beat_in_measure| {
+                if !active_accents.is_empty() {
+                    active_accents
+                        .get(beat_in_measure)
+                        .copied()
+                        .unwrap_or(1)
+                        .min(3)
+                } else if group_starts.contains(&beat_in_measure) {
+                    3
+                } else {
+                    1
+                }
+            })
+            .collect()
+    }
+
+    /// The subdivision a measure (1-indexed) plays and the measure it was
+    /// set at: the base `subdivision` from measure 1, swapped by the last
+    /// positional change at or before the measure (a clave's two-measure
+    /// cycle restarts where its subdivision was set). This is the rule the
+    /// click renderer applies bar by bar and the one the web UI's marker
+    /// dialog starts a subdivision change from.
+    pub fn subdivision_at(&self, measure: u32) -> (&Subdivision, u32) {
+        let mut sorted_changes: Vec<&MetronomeChange> = self.changes.iter().collect();
+        sorted_changes.sort_by_key(|c| c.measure);
+        sorted_changes
+            .iter()
+            .filter(|c| c.measure >= 1 && c.measure <= measure)
+            .rev()
+            .find_map(|c| c.subdivision.as_ref().map(|s| (s, c.measure)))
+            .unwrap_or((&self.subdivision, 1))
+    }
+
+    /// Beat indices (0-based) that start an accent group: beat 0, then the
+    /// cumulative group sizes.
+    fn accent_group_starts(&self) -> Vec<usize> {
+        let mut starts = vec![0usize];
+        let mut acc = 0usize;
+        for group in &self.accent {
+            acc += *group as usize;
+            starts.push(acc);
+        }
+        starts
+    }
+
     /// Validates the metronome configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.track.trim().is_empty() {

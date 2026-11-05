@@ -31,7 +31,7 @@ export interface SongSummary {
   /** MIDI DMX file paths relative to the songs root */
   midi_dmx_files: string[];
   /** Beat grid, from the explicit tempo map or click track analysis */
-  beat_grid: { beats: number[]; measure_starts: number[] } | null;
+  beat_grid: BeatGrid | null;
   /** Whether the song has an explicit tempo map configured */
   has_tempo_map: boolean;
   /** Whether this song loops when it finishes playing */
@@ -132,60 +132,21 @@ export async function deleteSong(name: string): Promise<Response> {
   return fetch(`/api/songs/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-/** The song.yaml `tempo:` block — the song's explicit tempo map. */
-export interface TempoChangeConfig {
-  measure: number;
-  beat?: number;
-  bpm?: number;
-  time_signature?: string;
-  transition?: { beats: number } | { measures: number };
-}
-
-export interface TempoConfig {
-  bpm: number;
-  time_signature?: string;
-  start?: number;
-  changes?: TempoChangeConfig[];
-}
-
-/** The song.yaml `metronome:` block — a generated, routable click track. */
-export interface ClickSoundConfig {
-  file?: string;
-  freq?: number;
-  volume?: number;
-}
-
-/** Even ticks per beat (1 = none, 2 = eighths, ...) or a clave pattern. */
-export type SubdivisionValue = number | "son" | "rumba";
-
-/** A positional change to the metronome feel, anchored at a measure. */
-export interface MetronomeChangeConfig {
-  measure: number;
-  accents?: number[];
-  subdivision?: SubdivisionValue;
-}
-
-export interface MetronomeConfig {
-  /** Tri-state: absent = on (block present) / follows the player default
-   * (no block); false = explicitly off, settings preserved. */
-  enabled?: boolean;
-  track?: string;
-  accent?: number[];
-  /** Per-beat accent levels: 0 silent, 1 normal, 2 half accent, 3 accent.
-   * Padded with baseline / truncated per measure on length mismatch. */
-  accents?: number[];
-  subdivision?: SubdivisionValue;
-  /** Feel changes anchored at measures, active until the next change. */
-  changes?: MetronomeChangeConfig[];
-  /** Master click volume (0-2), scaling all sounds uniformly. */
-  volume?: number;
-  sounds?: {
-    accent?: ClickSoundConfig;
-    normal?: ClickSoundConfig;
-    half?: ClickSoundConfig;
-    sub?: ClickSoundConfig;
-  };
-}
+// The song.yaml `tempo:` and `metronome:` blocks, and the beat grid: the
+// player's own types, generated from the Rust structs with the rules module
+// (`lib/rules.ts`), so the UI holds no copy of them to drift.
+import type { BeatGrid } from "../../gen/rules/mtrack_rules";
+export type {
+  BeatGrid,
+  TempoConfig,
+  TempoChangeConfig,
+  TransitionConfig,
+  MetronomeConfig,
+  MetronomeChange as MetronomeChangeConfig,
+  MetronomeSounds,
+  ClickSound as ClickSoundConfig,
+  Subdivision as SubdivisionValue,
+} from "../../gen/rules/mtrack_rules";
 
 /** The song.yaml `pilot:` block — labeled voice hints at song positions. */
 export interface PilotHintConfig {

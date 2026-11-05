@@ -17,6 +17,7 @@
   import { playbackStore, type AmbientMode } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
+  import { rules } from "../../lib/rules";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatFadeLength, formatMs } from "../../lib/util/format";
   import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
@@ -317,26 +318,6 @@
     "249, 115, 22",
   ];
 
-  /** Time (ms) of a measure/beat position, interpolating fractional beats the
-   *  way the Rust-side `BeatGrid::beat_time` does. */
-  function measureBeatToMs(
-    grid: { beats: number[]; measure_starts: number[] },
-    measure: number,
-    beat: number,
-    durationMs: number,
-  ): number {
-    const startIdx = grid.measure_starts[measure - 1];
-    if (startIdx === undefined) return durationMs;
-    const offset = beat - 1;
-    const base = startIdx + Math.floor(offset);
-    const t0 = grid.beats[base];
-    if (t0 === undefined) return durationMs;
-    const frac = offset - Math.floor(offset);
-    if (frac === 0) return t0 * 1000;
-    const t1 = grid.beats[base + 1];
-    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
-  }
-
   let sectionRegions = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     const dur = $playbackStore.song_duration_ms;
@@ -349,12 +330,12 @@
       // region a measure too long. The beat offsets are what make a boundary
       // beat-precise; ignoring them put the region up to half a measure away
       // from where the active-section highlight actually flips.
-      const startPct =
-        (measureBeatToMs(grid, s.start_measure, s.start_beat ?? 1, dur) / dur) *
-        100;
-      const endPct =
-        (measureBeatToMs(grid, s.end_measure, s.end_beat ?? 1, dur) / dur) *
-        100;
+      // A boundary the grid does not hold (the song's end, one measure past
+      // the last) sits at the end of the strip.
+      const ms = (measure: number, beat: number) =>
+        (rules.grid_query(grid, { measure, beat })?.secs ?? dur / 1000) * 1000;
+      const startPct = (ms(s.start_measure, s.start_beat ?? 1) / dur) * 100;
+      const endPct = (ms(s.end_measure, s.end_beat ?? 1) / dur) * 100;
       const isActive = active?.name === s.name;
       const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
       return {
@@ -367,29 +348,17 @@
     });
   });
 
+  /** The measure and whole beat at the playhead, from the player's grid;
+   * nothing during the count-in (measure 0), which no position names. */
   let currentBeatInfo = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
-    if (!grid || grid.beats.length === 0) return null;
-    const elapsed = $playbackStore.elapsed_ms / 1000;
-
-    let beatIdx = 0;
-    for (let i = grid.beats.length - 1; i >= 0; i--) {
-      if (grid.beats[i] <= elapsed) {
-        beatIdx = i;
-        break;
-      }
-    }
-
-    let measureIdx = 0;
-    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
-      if (grid.measure_starts[i] <= beatIdx) {
-        measureIdx = i;
-        break;
-      }
-    }
-
-    const beatInMeasure = beatIdx - grid.measure_starts[measureIdx] + 1;
-    return { measure: measureIdx + 1, beat: beatInMeasure };
+    if (!grid) return null;
+    const at = rules.grid_query(grid, {
+      secs: $playbackStore.elapsed_ms / 1000,
+    });
+    return at && at.measure > 0
+      ? { measure: at.measure, beat: Math.floor(at.beat) }
+      : null;
   });
 </script>
 

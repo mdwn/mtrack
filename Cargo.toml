@@ -1,5 +1,5 @@
 [workspace]
-members = ["harness"]
+members = ["harness", "crates/mtrack-rules-wasm"]
 exclude = ["fuzz"]
 
 [package]
@@ -32,6 +32,14 @@ include = [
     "!src/webui/svelte/playwright-report/**",
     "!src/webui/svelte/.playwright-mcp/**",
 ]
+
+[features]
+# Never needed by the player itself. `crates/mtrack-rules-wasm` compiles some
+# of these sources (tempo, beat grid, the tempo and metronome configs) into
+# the web UI's WebAssembly module with this feature on, deriving their
+# TypeScript types; declaring it here keeps the `cfg_attr` in those files a
+# known cfg, and `--all-features` (make lint-rust) still builds.
+tsify = ["dep:tsify-next", "dep:wasm-bindgen"]
 
 [package.metadata.deb]
 # Depends are hand-written, NOT `$auto`. dpkg-shlibdeps emits *versioned*
@@ -117,6 +125,9 @@ pest = "2.8"
 pest_derive = "2.8"
 indexmap = { version = "2", features = ["serde"] }
 serde_json = "1.0"
+# Only with the `tsify` feature (see [features]).
+tsify-next = { version = "0.5", default-features = false, features = ["js"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 sha2 = "0.10"
 ratatui = "0.30"
 crossterm = "0.29"

@@ -527,8 +527,14 @@ impl SegmentState {
     }
 }
 
+/// A measure/beat position as the `@measure/beat` position reports show
+/// it, the beat to two decimals: `@3/1.00`.
+pub(crate) fn position_label_for(measure: u32, beat: f64) -> String {
+    format!("@{measure}/{beat:.2}")
+}
+
 /// Bar order: by measure, then by beat.
-fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
+pub(crate) fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
     a.0.cmp(&b.0)
         .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
@@ -1010,7 +1016,7 @@ impl TempoMap {
     /// the beat to two decimals: `@3/1.00`.
     pub(crate) fn position_label(&self, at: Duration) -> String {
         let (measure, beat) = self.time_to_measure_beat(at);
-        format!("@{measure}/{beat:.2}")
+        position_label_for(measure, beat)
     }
 
     /// Get BPM at a given time (accounting for tempo changes)
@@ -1057,6 +1063,18 @@ impl TempoMap {
             .metres
             .measure_beat_at(segments.beats_at(score_time));
         segments.metres.at_measure(measure)
+    }
+
+    /// The time signature the changes up to and including a score time have
+    /// set -- the metre a ramp in measures counts in, whether or not a
+    /// barline has passed since (`SegmentState::metre`). For a change
+    /// anchored mid-bar this is the signature it sets, where
+    /// [`Self::time_signature_at_time`] still answers the bar's.
+    // Read by the web UI's rules crate (`crates/mtrack-rules-wasm`), which
+    // compiles this file as its own; the player has no caller yet.
+    #[allow(dead_code)]
+    pub(crate) fn time_signature_set_at(&self, time: Duration) -> TimeSignature {
+        self.segments().state_at(time).metre
     }
 
     /// The time signature in effect at a measure (1-indexed), as the beat

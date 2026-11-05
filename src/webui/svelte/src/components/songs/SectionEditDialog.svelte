@@ -15,13 +15,8 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
-  import { beatsInMeasure, sigAtMeasure } from "../../lib/util/tempo";
-  import {
-    beatsInMeasure as gridBeatsInMeasure,
-    maxBeatIn,
-    type BeatGrid,
-  } from "../../lib/util/beatGrid";
-  import type { TempoConfig } from "../../lib/api/songs";
+  import { rules } from "../../lib/rules";
+  import type { BeatGrid, TempoConfig } from "../../lib/api/songs";
   import MarkerDialog from "./MarkerDialog.svelte";
   import PositionPicker, { type Position } from "./PositionPicker.svelte";
   import UnitToggle from "./UnitToggle.svelte";
@@ -91,10 +86,22 @@
    * measure that holds three — and a beat past the measure is one the
    * backend's `beat_time` refuses. */
   function sectionBeatsIn(measure: number): number {
-    if (tempo) return beatsInMeasure(tempo, measure);
-    return (
-      gridBeatsInMeasure(beatGrid, measure) ?? beatsInMeasure(null, measure)
-    );
+    return meterAt(measure)?.[0] ?? gridBeatsIn(measure) ?? 4;
+  }
+
+  /** The player's tempo map answers for a measure; nothing without a tempo
+   * block or while it makes no map. */
+  function meterAt(measure: number): [number, number] | undefined {
+    return tempo
+      ? rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.sig
+      : undefined;
+  }
+
+  /** How many beats the grid holds in a measure; nothing off the grid. */
+  function gridBeatsIn(measure: number): number | undefined {
+    return beatGrid
+      ? rules.grid_query(beatGrid, { measure, beat: 1 })?.beats_in_measure
+      : undefined;
   }
 
   /** Position ordering by resolved time, the way the edge drags do it.
@@ -147,13 +154,17 @@
       measure -= 1;
       beat += sectionBeatsIn(measure);
     }
-    const highest = maxBeatIn(
-      beatGrid,
-      measure,
-      sectionBeatsIn(measure),
-      BEAT_STEP,
-    );
-    return { measure, beat: Math.max(1, Math.min(highest, beat)) };
+    // Held inside the measure by the player's own snapping: the highest
+    // half-beat the measure holds (4½ of a 4/4 bar; only 4 in the bar the
+    // grid ends in). Without a grid there is nothing to hold it to.
+    const held = beatGrid
+      ? rules.grid_query(beatGrid, {
+          measure,
+          beat,
+          snap: { step: BEAT_STEP, within_bar: true },
+        })
+      : undefined;
+    return { measure, beat: held ? held.beat : Math.max(1, beat) };
   }
 
   /** Writes a boundary; beat 1 is the measure line, stored as "unset".
@@ -237,7 +248,7 @@
         {maxMeasure}
         {beatGrid}
         beatsIn={sectionBeatsIn}
-        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        sigOf={(m) => meterAt(m)?.join("/")}
         ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("start", v)}
       />
@@ -254,7 +265,7 @@
         {maxMeasure}
         {beatGrid}
         beatsIn={sectionBeatsIn}
-        sigOf={(m) => sigAtMeasure(tempo, m).join("/")}
+        sigOf={(m) => meterAt(m)?.join("/")}
         ghostTime={playheadTime}
         onchange={(v) => v.kind === "beat" && setBoundary("end", v)}
       />

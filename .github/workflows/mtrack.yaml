@@ -26,6 +26,13 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -72,6 +79,12 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -127,6 +140,13 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo-tarpaulin"
@@ -144,7 +164,7 @@ jobs:
       with:
         tool: cargo-tarpaulin
     - name: Test mtrack
-      run: cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
+      run: cargo tarpaulin --workspace --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v7
       with:
@@ -168,6 +188,13 @@ jobs:
     - name: Install system dependencies
       run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
@@ -202,8 +229,16 @@ jobs:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install and generate
-      run: make install-ui gen-proto
+      run: make install-ui gen-proto gen-wasm
     - name: Lint
       run: make lint-ui
     - name: Format check
@@ -223,8 +258,16 @@ jobs:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install and generate
-      run: make install-ui gen-proto
+      run: make install-ui gen-proto gen-wasm
     - name: Install Playwright browsers
       run: cd src/webui/svelte && npx playwright install chromium
     - name: Install Playwright system deps
@@ -256,6 +299,14 @@ jobs:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1,wasm-bindgen@0.2.122
+    - name: Install wasm-opt
+      run: ./scripts/install-binaryen.sh
     - name: Install, generate and build the UI
       run: make build-ui
     - uses: actions/download-artifact@v8
