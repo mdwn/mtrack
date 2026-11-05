@@ -175,9 +175,10 @@ test("the ruler labels and beat lines thin out as the bars narrow", () => {
     until_ms: 60000,
   });
   const grid = laid.tempo!.grid;
-  // Bars of 2 s: at 0.05 px/ms a bar is 100 px, every bar labelled, beats 25 px apart.
+  // Bars of 2 s: at 0.05 px/ms a bar is 100 px, every bar labelled (bar 11
+  // on the range's end), beats 25 px apart.
   const wide = getGridLines(grid, 0, 20000, 0.05);
-  expect(wide.filter((l) => l.type === "measure" && l.label).length).toBe(10);
+  expect(wide.filter((l) => l.type === "measure" && l.label).length).toBe(11);
   expect(wide.filter((l) => l.type === "beat").length).toBe(30);
   // At 0.01 px/ms a bar is 20 px: a label every 8 bars, no beat lines.
   const narrow = getGridLines(grid, 0, 60000, 0.01);

@@ -57,6 +57,9 @@ export function getGridLines(
 ): RulerLine[] {
   const lines: RulerLine[] = [];
   const bars = grid.filter((l) => l.kind === "measure");
+  // The last bar of the grid has no next barline: it is as long as the
+  // one before it.
+  let measureDurationMs = Infinity;
   for (let b = 0; b < bars.length; b++) {
     const bar = bars[b];
     if (bar.ms > viewEndMs) break;
@@ -65,8 +68,7 @@ export function getGridLines(
       (l) => l.measure === bar.measure && l.kind === "beat" && l.ms >= bar.ms,
     );
     const quarters = beats.length + 1;
-    const measureDurationMs =
-      nextBarMs !== undefined ? nextBarMs - bar.ms : Infinity;
+    if (nextBarMs !== undefined) measureDurationMs = nextBarMs - bar.ms;
     if (nextBarMs !== undefined && nextBarMs < viewStartMs) continue;
 
     const pxPerMeasure = pixelsPerMs
