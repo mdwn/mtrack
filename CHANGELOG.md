@@ -317,6 +317,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fixture test of a type with no channels lights no venue fixture**: the web UI's fixture
+  test warned that a type with no channels was lit over the venue fixture at its address. It
+  occupies nothing, as the venue's patch check has it.
 - **A tempo start keeps its time when its unit is switched**: in the web UI's tempo editor,
   switching a light show's tempo `start:` between ms and s relabelled the number, so `500ms`
   became `500s` and the tempo map moved by minutes. The switch now converts the value
