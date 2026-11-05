@@ -205,11 +205,11 @@ export function serializeTempo(tempo: TempoSection): string {
   }
   const writeField = (name: TempoField) => {
     if (name === "start") {
-      // As written, while the value is still the one that was read.
-      const { text, value, unit } = tempo.start;
+      // As written, while the value and the unit are still the ones read.
+      const { written, value, unit } = tempo.start;
       const kept =
-        text && parseFloat(text) === value && text.endsWith(unit)
-          ? text
+        written && written.value === value && written.unit === unit
+          ? written.text
           : undefined;
       field("start", `start: ${kept ?? `${value}${unit}`}`);
     } else if (name === "bpm") {

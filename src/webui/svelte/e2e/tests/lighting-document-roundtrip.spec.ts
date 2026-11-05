@@ -126,6 +126,25 @@ test("a comment between a list's elements is written back in place", () => {
   }
 });
 
+test("a tempo start is written as read until its value or unit changes", () => {
+  const read = rules.document(
+    'tempo {\n    start: 500ms\n    bpm: 120\n}\nshow "S" {\n    @1/1\n}\n',
+  ).document!;
+  const tempo = read.tempo!;
+  const withStart = (start: Partial<typeof tempo.start>) =>
+    serializeLightFile({
+      ...read,
+      tempo: { ...tempo, start: { ...tempo.start, ...start } },
+    });
+  expect(serializeLightFile(read)).toContain("start: 500ms\n");
+  // `500ms` ends with `s`: switched to seconds it is no longer that text.
+  expect(withStart({ unit: "s" })).toContain("start: 500s\n");
+  expect(withStart({ value: 250 })).toContain("start: 250ms\n");
+  expect(withStart({ unit: "s", value: 0.5 })).toContain("start: 0.5s\n");
+  const decimal = rules.document("tempo {\n    start: 0.50s\n}\n").document!;
+  expect(serializeLightFile(decimal)).toContain("start: 0.50s\n");
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

@@ -216,10 +216,21 @@ pub struct TempoChange {
 pub struct DurationValue {
     pub value: f64,
     pub unit: DurationUnit,
-    /// As written (`0.0s`), for a save to keep.
+    /// How it was written, for a save to keep while the value and the
+    /// unit are still the ones read.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub text: Option<String>,
+    pub written: Option<WrittenDuration>,
+}
+
+/// A duration as written (`0.0s`, `500ms`) and the value and unit it reads
+/// as.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct WrittenDuration {
+    pub text: String,
+    pub value: f64,
+    pub unit: DurationUnit,
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -1005,7 +1016,7 @@ fn tempo_section(pair: Pair<Rule>, source: &str) -> Result<TempoSection, Box<dyn
         start: DurationValue {
             value: 0.0,
             unit: DurationUnit::S,
-            text: None,
+            written: None,
         },
         bpm: crate::tempo::DEFAULT_BPM,
         bpm_text: None,
@@ -1319,10 +1330,15 @@ fn duration_value(raw: &str) -> Result<DurationValue, Box<dyn Error>> {
         "measure" | "measures" => DurationUnit::Measures,
         other => return Err(format!("Unknown time unit: {other}").into()),
     };
+    let value = number.trim().parse()?;
     Ok(DurationValue {
-        value: number.trim().parse()?,
+        value,
         unit,
-        text: Some(raw.trim().to_string()),
+        written: Some(WrittenDuration {
+            text: raw.trim().to_string(),
+            value,
+            unit,
+        }),
     })
 }
 
@@ -2152,6 +2168,18 @@ show "Song" {
             Some(vec!["# opened".to_string()])
         );
         assert_eq!(cue.offset_comment.as_deref(), Some("# mid"));
+    }
+
+    #[test]
+    fn a_tempo_start_keeps_how_it_was_written_and_what_it_read_as() {
+        let doc = document("tempo {\n    start: 500ms\n}\n", None)
+            .document
+            .unwrap();
+        let start = doc.tempo.unwrap().start;
+        assert_eq!((start.value, start.unit), (500.0, DurationUnit::Ms));
+        let written = start.written.unwrap();
+        assert_eq!(written.text, "500ms");
+        assert_eq!((written.value, written.unit), (500.0, DurationUnit::Ms));
     }
 
     #[test]
