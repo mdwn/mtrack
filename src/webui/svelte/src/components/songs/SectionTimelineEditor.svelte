@@ -23,7 +23,7 @@
     MetronomeConfig,
     SongFile,
   } from "../../lib/api/songs";
-  import { sortTempoChanges } from "../../lib/util/tempo";
+  import { rules } from "../../lib/rules";
   import type { TempoSection } from "../../lib/lighting/types";
   import { accentsGlyph, subdivisionChip } from "../../lib/meter";
   import SectionBar from "./SectionBar.svelte";
@@ -479,46 +479,23 @@
   let tempoDialogTarget = $state<"start" | MarkerPosition | null>(null);
   let pilotDialogIndex = $state<number | null>(null);
 
-  /** Time (ms) of a measure/beat position on the beat grid. */
+  /** Time (ms) of a measure/beat position on the beat grid: where the
+   * player's `BeatGrid::beat_time` puts it, or the song's end for a position
+   * the grid does not hold. */
   function measureBeatToMs(measure: number, beat: number): number {
     const grid = song.beat_grid;
     if (!grid) return 0;
-    const startIdx = grid.measure_starts[measure - 1];
-    if (startIdx === undefined) return songDurationMs;
-    const offset = beat - 1;
-    const base = startIdx + Math.floor(offset);
-    const t0 = grid.beats[base];
-    if (t0 === undefined) return songDurationMs;
-    // Fractional beats interpolate between grid beats, matching the
-    // Rust-side BeatGrid::beat_time.
-    const frac = offset - Math.floor(offset);
-    if (frac === 0) return t0 * 1000;
-    const t1 = grid.beats[base + 1];
-    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
+    const at = rules.grid_query(grid, { measure, beat });
+    return at ? at.secs * 1000 : songDurationMs;
   }
 
-  /** Signature in effect at a position (base + prior changes). */
+  /** Signature of the bar a position is in, as the player's tempo map has
+   * it; 4/4 while the tempo block makes no map. */
   function sigAt(measure: number, beat: number): [number, number] {
-    const parse = (raw: string | undefined): [number, number] | null => {
-      const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
-      return match ? [parseInt(match[1]), parseInt(match[2])] : null;
-    };
-    let sig = parse(tempo?.time_signature) ?? [4, 4];
-    const sorted = [...(tempo?.changes ?? [])].sort(
-      (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
-    );
-    for (const c of sorted) {
-      const atOrBefore =
-        c.measure < measure || (c.measure === measure && (c.beat ?? 1) <= beat);
-      if (!atOrBefore) break;
-      sig = parse(c.time_signature) ?? sig;
-    }
-    return sig;
-  }
-
-  /** Pattern resized to the meter at its position, like the renderer. */
-  function chipPattern(levels: number[], numerator: number): number[] {
-    return Array.from({ length: numerator }, (_, i) => levels[i] ?? 1);
+    const at = tempo
+      ? rules.tempo_query({ config: tempo }, { measure, beat })
+      : undefined;
+    return at?.sig ?? [4, 4];
   }
 
   /** One marker per position, merging tempo changes with metronome feel
@@ -527,12 +504,19 @@
     if (!tempo) return [];
     const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
     if (metronome?.accents?.length) {
+      // The base pattern as the renderer sizes it to the opening meter.
       baseParts.push(
-        accentsGlyph(chipPattern(metronome.accents, sigAt(1, 0)[0])),
+        accentsGlyph(
+          rules.accent_pattern(
+            { ...metronome, changes: [] },
+            1,
+            sigAt(1, 1)[0],
+          ),
+        ),
       );
     }
     if (metronome?.subdivision !== undefined && metronome.subdivision !== 1) {
-      baseParts.push(subdivisionChip(metronome.subdivision, sigAt(1, 0)[1]));
+      baseParts.push(subdivisionChip(metronome.subdivision, sigAt(1, 1)[1]));
     }
     const markers = [
       {
@@ -569,8 +553,10 @@
       if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
       if (tc?.time_signature) parts.push(tc.time_signature);
       const sig = sigAt(pos.measure, pos.beat);
-      if (mc?.accents)
-        parts.push(accentsGlyph(chipPattern(mc.accents, sig[0])));
+      if (mc?.accents && metronome)
+        parts.push(
+          accentsGlyph(rules.accent_pattern(metronome, pos.measure, sig[0])),
+        );
       if (mc?.subdivision !== undefined) {
         parts.push(subdivisionChip(mc.subdivision, sig[1]));
       }
@@ -618,14 +604,15 @@
     return best;
   }
 
-  /** The BPM in effect at a measure (base tempo + preceding changes). */
+  /** The BPM in force at a measure's downbeat, as the player plays it
+   * (inside a ramp, the ramp's value there); the base tempo while the tempo
+   * block makes no map. */
   function effectiveBpmAt(measure: number): number {
     if (!tempo) return 120;
-    let bpm = tempo.bpm;
-    for (const c of sortTempoChanges(tempo.changes ?? [])) {
-      if (c.measure <= measure && c.bpm !== undefined) bpm = c.bpm;
-    }
-    return bpm;
+    return (
+      rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.bpm ??
+      tempo.bpm
+    );
   }
 
   function handleTempoMarkerClick(id: string) {
@@ -669,39 +656,29 @@
       return;
     }
     // Tapping a spot before an existing change must not append out of order —
-    // the backend rejects a non-ascending map.
+    // the backend rejects a non-ascending map, so the player's own ordering
+    // puts the new change in its place.
     const entry = { measure, bpm: effectiveBpmAt(measure) };
-    const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
-    ontempochange?.({ ...tempo, changes });
+    ontempochange?.(
+      rules.tempo_normalize({
+        ...tempo,
+        changes: [...(tempo.changes ?? []), entry],
+      }).config,
+    );
     tempoDialogTarget = { measure, beat: 1 };
   }
 
-  /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
+  /** Nearest beat as measure/beat for a position (ms), as the player snaps
+   * a time to one; null off-grid. Beat 1 stays implicit. */
   function nearestBeatAt(
     ms: number,
   ): { measure: number; beat?: number } | null {
     const grid = song.beat_grid;
-    if (!grid || grid.beats.length === 0) return null;
-    const secs = ms / 1000;
-    let nearest = 0;
-    for (let i = 1; i < grid.beats.length; i++) {
-      if (
-        Math.abs(grid.beats[i] - secs) < Math.abs(grid.beats[nearest] - secs)
-      ) {
-        nearest = i;
-      }
-    }
-    let measure = 0;
-    while (
-      measure + 1 < grid.measure_starts.length &&
-      grid.measure_starts[measure + 1] <= nearest
-    ) {
-      measure++;
-    }
-    const beat = nearest - grid.measure_starts[measure] + 1;
-    const at: { measure: number; beat?: number } = { measure: measure + 1 };
-    if (beat > 1) at.beat = beat;
-    return at;
+    const at = grid ? rules.grid_query(grid, { secs: ms / 1000 }) : undefined;
+    if (!at) return null;
+    return at.beat > 1
+      ? { measure: at.measure, beat: at.beat }
+      : { measure: at.measure };
   }
 
   function handlePilotMarkerClick(id: string) {
