@@ -150,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A Format 1 MIDI file's tempo lives on its conductor track**: the web UI's tempo guess read
+  tempo and time-signature events from every track; it reads the conductor track (track 0) as
+  playback does, so a file with its tempo events elsewhere now gets no suggestion from the
+  MIDI file (the click track's, if any, instead) rather than one playback does not follow.
 - **The web UI's tempo guess from a click track is the map lighting plays to**: the suggestion
   for a song without a MIDI file is derived from the beat grid as `@bar/beat` cueing derives it
   (each steady run's measured tempo, to a hundredth of a BPM, a change where the tempo moves by
@@ -158,7 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **gRPC `next` and `previous` answer as the player does**: the song the player is on after
   the move -- the one it moved to, or the one it stays on while a song plays or at the list's
   end -- as MCP has answered. They refused with `FailedPrecondition` ("can't navigate while
-  playing") and `OutOfRange` ("already at the end") before, from a check of their own. MCP's
+  playing") and `OutOfRange` ("already at the end") before, from a check of their own, so
+  `mtrack next` while a song plays now prints the song still playing. MCP's
   `play` says `started` and why not (`reason`), as `play_from` does, the reason read from the
   player as gRPC reads it.
 - **One rule for a path that must stay inside the project**: the web UI's lighting file paths,
@@ -262,6 +267,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP positions never read `1:60.000`**: `format_duration` rounded the seconds to the
+  millisecond on their own, so 119.9996 s came out as `1:60.000`; it is `1:59.999` now, the
+  minutes and seconds every surface shows with the milliseconds truncated after them.
 - **A tempo guessed from a MIDI file in 6/8 lands on the right bar** (#636): the guess rolled a
   bar over every *numerator* quarter notes, so in any metre but x/4 a tempo or signature change
   was placed bars early (a 6/8 file's change at bar 5 was guessed at bar 3), further the longer
@@ -279,8 +287,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restored over the file, went unnoticed until the next edit. It now goes by the file's
   modified time and length, as the song's own reload of a show does.
 - **The web UI reads a flat-layout song's own YAML**: `GET /api/songs/<name>` looked for
-  `song.yaml` or `song.yml` in the song's folder, so a song kept as `<name>.yaml` beside others
-  answered with a bare summary (or another song's file). It now reads the file the song was
+  `song.yaml` or `song.yml` in the song's folder, so a song kept as `<name>.yaml` beside others,
+  or loaded from a `config.yaml`, answered with a bare summary (or another song's file). It now reads the file the song was
   loaded from, as every other surface does.
 - **`mtrack seek 90s` seeks**: the CLI parsed a position with the lighting DSL's time parser,
   which does not take an `s` suffix, so `90s` or `1:30s` fell through to a seek to a *section*
