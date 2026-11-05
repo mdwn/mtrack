@@ -152,6 +152,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A fixture type's strobe rate is its first strobe function's**: the strobe fields
+  (`strobe_dmx_offset`, `min_strobe_frequency`, `max_strobe_frequency`) come from the first
+  function named `strobe` on the `strobe` channel, the one the engine drives. Where that one has
+  no rate range and a later `strobe` function does, they came from the later one and the first
+  was rewritten to its range; the type now has no strobe rate, as its strobe function has none.
 - **The lighting timeline's beat lines are the click grid's beats**: one line per beat of the
   time signature's denominator, so a 6/8 bar has six, where it had three quarter-note lines. The
   timeline and the song's beat grid walk the bars once, the same way.
