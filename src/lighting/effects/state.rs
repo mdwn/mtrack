@@ -123,6 +123,12 @@ pub struct FixtureState {
     /// What the show asked for in physical units (degrees), resolved into
     /// bytes only when DMX is produced. Never scaled by a layer master.
     pub physical: PhysicalState,
+    /// The rate a software strobe (one on a fixture with no strobe
+    /// channel, flashing its dimmer or colour) is flashing this fixture
+    /// at, so the state stream can say so: the bytes alone only show the
+    /// phase. Later writer wins, as the effect order runs. `None` when no
+    /// software strobe drives it.
+    pub strobe_hz: Option<f64>,
 }
 
 impl Default for FixtureState {
@@ -136,6 +142,7 @@ impl FixtureState {
         Self {
             channels: HashMap::new(),
             physical: PhysicalState::default(),
+            strobe_hz: None,
         }
     }
 
@@ -149,6 +156,7 @@ impl FixtureState {
         Self {
             channels: channels.into_iter().collect(),
             physical: PhysicalState::default(),
+            strobe_hz: None,
         }
     }
 
@@ -160,6 +168,9 @@ impl FixtureState {
     /// Blend this fixture state with another
     pub fn blend_with(&mut self, other: &FixtureState) {
         self.physical.blend_with(&other.physical);
+        if other.strobe_hz.is_some() {
+            self.strobe_hz = other.strobe_hz;
+        }
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
             // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames

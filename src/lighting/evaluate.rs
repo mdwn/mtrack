@@ -277,6 +277,7 @@ fn fill_dark_fixtures<'a>(
             continue;
         }
         snapshots.push(FixtureSnapshot {
+            strobe_hz: None,
             cells: Default::default(),
             name: info.name.clone(),
             channels: info
@@ -981,6 +982,7 @@ show "T" {
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
                 name: "m".to_string(),
                 channels: channels.clone(),
                 cells: Default::default(),
@@ -992,6 +994,7 @@ show "T" {
         channels.insert("dimmer".to_string(), 1u8);
         let lit = Evaluation {
             fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
                 name: "m".to_string(),
                 channels,
                 cells: Default::default(),
@@ -1013,6 +1016,7 @@ show "T" {
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
                 name: "m".to_string(),
                 channels,
                 cells: Default::default(),
@@ -1034,6 +1038,7 @@ show "T" {
         let evaluation = Evaluation {
             time: Duration::ZERO,
             fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
                 name: "m".to_string(),
                 channels,
                 cells: Default::default(),

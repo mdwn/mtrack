@@ -425,11 +425,16 @@ pub fn state_maps(
     let channels_by_fixture: serde_json::Map<String, serde_json::Value> = fixtures
         .iter()
         .map(|f| {
-            let channels: serde_json::Map<String, serde_json::Value> = f
+            let mut channels: serde_json::Map<String, serde_json::Value> = f
                 .channels
                 .iter()
                 .map(|(k, v)| (k.clone(), json!(*v)))
                 .collect();
+            // The rate the fixture flashes at, beside its bytes: the
+            // stage views flash at it rather than guess from the byte.
+            if let Some(hz) = f.strobe_hz {
+                channels.insert("strobe_hz".to_string(), json!(hz));
+            }
             (f.name.clone(), serde_json::Value::Object(channels))
         })
         .collect();
@@ -1435,6 +1440,7 @@ metronome: {}
         // watch channel, even though nothing has changed since it was made.
         let (_state_tx, state_rx) = watch::channel(Arc::new(crate::state::StateSnapshot {
             fixtures: vec![crate::state::FixtureSnapshot {
+                strobe_hz: None,
                 cells: Default::default(),
                 name: "wash1".to_string(),
                 channels: std::collections::HashMap::from([("dimmer".to_string(), 0)]),
@@ -1447,6 +1453,26 @@ metronome: {}
             serde_json::from_str(&build_state_json(&state_rx.borrow())).unwrap();
         assert_eq!(parsed["type"], "state");
         assert_eq!(parsed["fixtures"]["wash1"]["dimmer"], 0);
+        assert!(
+            parsed["fixtures"]["wash1"].get("strobe_hz").is_none(),
+            "not strobing: no rate"
+        );
+    }
+
+    /// A strobing fixture's rate rides beside its bytes in the `fixtures`
+    /// map, so the stage views flash at it instead of guessing from the
+    /// byte (live message and evaluation alike, through `state_maps`).
+    #[test]
+    fn state_maps_carry_the_strobe_rate_beside_the_bytes() {
+        let fixtures = vec![crate::state::FixtureSnapshot {
+            strobe_hz: Some(12.5),
+            name: "brick".to_string(),
+            channels: std::collections::HashMap::from([("strobe".to_string(), 200)]),
+            cells: Default::default(),
+        }];
+        let (channels, _, _) = state_maps(&fixtures, &[]);
+        assert_eq!(channels["brick"]["strobe"], 200);
+        assert_eq!(channels["brick"]["strobe_hz"], 12.5);
     }
 
     #[tokio::test]
@@ -1460,6 +1486,7 @@ metronome: {}
         // Send a state update with fixtures
         let snapshot = Arc::new(crate::state::StateSnapshot {
             fixtures: vec![crate::state::FixtureSnapshot {
+                strobe_hz: None,
                 cells: Default::default(),
                 name: "wash1".to_string(),
                 channels: {
@@ -1504,11 +1531,13 @@ metronome: {}
         let snapshot = Arc::new(crate::state::StateSnapshot {
             fixtures: vec![
                 crate::state::FixtureSnapshot {
+                    strobe_hz: None,
                     name: "bar".to_string(),
                     channels: std::collections::HashMap::new(),
                     cells,
                 },
                 crate::state::FixtureSnapshot {
+                    strobe_hz: None,
                     name: "wash1".to_string(),
                     channels: std::collections::HashMap::from([("red".to_string(), 255)]),
                     cells: Default::default(),
@@ -1877,6 +1906,7 @@ metronome: {}
         // Send a state update with no subscribers
         let snapshot = Arc::new(crate::state::StateSnapshot {
             fixtures: vec![crate::state::FixtureSnapshot {
+                strobe_hz: None,
                 name: "light1".to_string(),
                 channels: std::collections::HashMap::new(),
                 cells: Default::default(),

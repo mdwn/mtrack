@@ -36,6 +36,13 @@ pub struct FixtureSnapshot {
     /// per-cell effect drives at least one cell of this fixture; empty
     /// otherwise, when every cell shows the fixture's own channels.
     pub cells: std::collections::BTreeMap<String, HashMap<String, u8>>,
+    /// The rate the fixture is strobing at, in hertz, when it is: its
+    /// strobe byte read back through its own strobe rule
+    /// ([`FixtureInfo::strobe_hz`](crate::lighting::effects::FixtureInfo::strobe_hz)),
+    /// or the rate of the software strobe flashing a fixture that has no
+    /// strobe channel. `None` when it is not strobing. The stage views
+    /// flash at this; the bytes alone do not say.
+    pub strobe_hz: Option<f64>,
 }
 
 /// Where a mover is pointing, for the stage plot's beam.
@@ -138,6 +145,7 @@ pub(crate) fn apply_test_overlay(
                 fixtures.insert(
                     at,
                     FixtureSnapshot {
+                        strobe_hz: None,
                         name: name.clone(),
                         channels: HashMap::new(),
                         cells: Default::default(),
@@ -336,6 +344,7 @@ pub(crate) fn engine_snapshot(
         Some(overlay) => {
             let mut poses = engine.shown_poses().clone();
             let under_test = apply_test_overlay(&mut fixtures, &mut poses, overlay, registry);
+            attach_strobe_rates(&mut fixtures, registry);
             (compute_pose_snapshots(&poses, registry), under_test)
         }
     };
@@ -440,6 +449,9 @@ pub(crate) fn compute_fixture_snapshots(
             }
 
             FixtureSnapshot {
+                // A software strobe's rate; a strobe channel's is read
+                // from its byte once the registry is at hand.
+                strobe_hz: state.strobe_hz,
                 name: name.clone(),
                 channels,
                 cells: Default::default(),
@@ -465,7 +477,26 @@ pub(crate) fn fixture_snapshots_with_cells(
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
     attach_mirrors(&mut fixtures, registry);
+    attach_strobe_rates(&mut fixtures, registry);
     fixtures
+}
+
+/// Reads each fixture's strobe byte back into the rate it means through
+/// the fixture's own strobe rule, for a fixture with a strobe channel; a
+/// software strobe's rate (no strobe channel) was already set from the
+/// engine's state. Run again after a test overlay changes the bytes.
+pub(crate) fn attach_strobe_rates(
+    fixtures: &mut [FixtureSnapshot],
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    for snapshot in fixtures {
+        let Some(info) = registry.get(&snapshot.name) else {
+            continue;
+        };
+        if let Some(byte) = snapshot.channels.get("strobe") {
+            snapshot.strobe_hz = info.strobe_hz(*byte);
+        }
+    }
 }
 
 /// The bytes a ganged channel repeats on the wire, named: a channel with
@@ -599,6 +630,7 @@ pub(crate) fn attach_cell_snapshots(
                 snapshots.insert(
                     at,
                     FixtureSnapshot {
+                        strobe_hz: None,
                         name: parent.to_string(),
                         channels: info
                             .channels
@@ -798,6 +830,7 @@ mod tests {
         channels.insert("red".to_string(), 255u8);
         channels.insert("green".to_string(), 128u8);
         let snapshot = FixtureSnapshot {
+            strobe_hz: None,
             cells: Default::default(),
             name: "test".to_string(),
             channels,
@@ -812,6 +845,7 @@ mod tests {
     fn test_state_snapshot_clone() {
         let snapshot = StateSnapshot {
             fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
                 name: "f1".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),
@@ -1241,11 +1275,13 @@ mod tests {
         // the insertion position (between them) is exercised.
         let mut snapshots = vec![
             FixtureSnapshot {
+                strobe_hz: None,
                 name: "Aaa".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),
             },
             FixtureSnapshot {
+                strobe_hz: None,
                 name: "Zzz".to_string(),
                 channels: HashMap::new(),
                 cells: Default::default(),

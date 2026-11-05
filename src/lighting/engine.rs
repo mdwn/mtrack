@@ -688,6 +688,12 @@ impl EffectEngine {
             };
             state.physical.pan = intent(old.physical.pan, new.physical.pan);
             state.physical.tilt = intent(old.physical.tilt, new.physical.tilt);
+            // A software strobe's rate snaps over, as its bytes do.
+            state.strobe_hz = if t < 0.5 {
+                old.strobe_hz
+            } else {
+                new.strobe_hz
+            };
             states.insert(name.clone(), state);
         }
         let mut poses = outgoing.shown_poses().clone();
@@ -746,6 +752,7 @@ impl EffectEngine {
             let has_dimmer = info.is_some_and(FixtureInfo::has_dimmer);
             let mut resolved = FixtureState::new();
             resolved.physical = state.physical.clone();
+            resolved.strobe_hz = state.strobe_hz;
             for (channel, channel_state) in &state.channels {
                 if is_multiplier_channel(channel) {
                     continue;
