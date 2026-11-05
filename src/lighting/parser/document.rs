@@ -476,6 +476,12 @@ pub struct CueEffect {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comment: Option<String>,
+    /// Comment lines after it that are its own: those of parameters an
+    /// edit removed when none was left to keep them. A file read never
+    /// gives one any (comment lines after a line are the next line's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_after: Option<Vec<String>>,
 }
 
 /// An effect's parameters as written: each `name: value` in order, the
@@ -1869,6 +1875,7 @@ fn effect<'i>(
             effect: params,
             comments_before: take(&mut found.loose),
             comment: None,
+            comments_after: None,
         },
         found.tail,
     ))

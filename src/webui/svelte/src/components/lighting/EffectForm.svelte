@@ -40,7 +40,7 @@
   /** A `move` aims at a focus point or at angles, never both: setting one
    *  clears the other, so the form always shows what will be written. */
   function updateMoveTarget(key: "focus" | "pan" | "tilt", value?: string) {
-    let next = effect.effect;
+    let next = effect;
     if (key === "focus") {
       if (value) next = withoutParams(next, ["pan", "tilt", "to"]);
       next = withParam(next, "focus", value ? quoted(value) : undefined);
@@ -48,14 +48,14 @@
       if (value) next = withoutParams(next, ["focus", "to"]);
       next = withParam(next, key, value ? withDeg(value) : undefined);
     }
-    onchange({ ...effect, effect: next });
+    onchange(next);
   }
 
   function updateMoveStart(
     key: "from" | "from_pan" | "from_tilt",
     value?: string,
   ) {
-    let next = effect.effect;
+    let next = effect;
     if (key === "from") {
       if (value) next = withoutParams(next, ["from_pan", "from_tilt"]);
       next = withParam(next, "from", value ? quoted(value) : undefined);
@@ -63,7 +63,7 @@
       if (value) next = withoutParams(next, ["from"]);
       next = withParam(next, key, value ? withDeg(value) : undefined);
     }
-    onchange({ ...effect, effect: next });
+    onchange(next);
   }
 
   /** An angle as the DSL wants it, for the form's own edit: `45deg`; a
@@ -180,11 +180,11 @@
   function updateParam(key: string, value: unknown) {
     const text =
       value === undefined || value === "" ? undefined : String(value);
-    onchange({ ...effect, effect: withParam(effect.effect, key, text) });
+    onchange(withParam(effect, key, text));
   }
 
   function updateColors(colors: string[]) {
-    onchange({ ...effect, effect: withColors(effect.effect, colors) });
+    onchange(withColors(effect, colors));
   }
 
   // Only the effect types that actually use a colour. `EffectType::Strobe`,

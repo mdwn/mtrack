@@ -382,6 +382,7 @@ function serializeCues(cues: Cue[]): string {
           // comment is a line of its own after it, never merged into it.
           lines.push(`    ${s.text}`, `    ${eff.comment}`);
         } else lines.push(line(`    ${s.text}`, eff.comment));
+        lines.push(...own(eff.comments_after, "    "));
       } else if (kind === "command") {
         const cmd = cue.commands[i];
         const written = serializeLayerCommand(cmd, "        ");

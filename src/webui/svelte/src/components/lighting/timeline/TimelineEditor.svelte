@@ -415,10 +415,9 @@
     const shows = [...lightFile.shows];
     const cues = [...shows[showIndex].cues];
     const cue = { ...cues[cueIndex] };
-    cue.effects = cue.effects.map((eff) => ({
-      ...eff,
-      effect: withParam(eff.effect, "duration", newDurationStr),
-    }));
+    cue.effects = cue.effects.map((eff) =>
+      withParam(eff, "duration", newDurationStr),
+    );
     cues[cueIndex] = cue;
     shows[showIndex] = { ...shows[showIndex], cues };
     onchange({ ...lightFile, shows });

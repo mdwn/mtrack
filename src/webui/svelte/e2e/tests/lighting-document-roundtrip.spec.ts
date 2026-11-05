@@ -25,8 +25,12 @@ import { resolve } from "node:path";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 import { serializeLightFile } from "../../src/lib/lighting/serializer";
-import { withColors, withParam } from "../../src/lib/lighting/params";
-import type { Cue, EffectParams } from "../../src/lib/lighting/types";
+import {
+  withColors,
+  withParam,
+  withoutParams,
+} from "../../src/lib/lighting/params";
+import type { Cue, CueEffect } from "../../src/lib/lighting/types";
 
 test.beforeAll(async () => {
   await loadRules();
@@ -217,9 +221,7 @@ test("an edit changes only the edited parameter's text", () => {
         cues: [
           {
             ...moved.shows[0].cues[0],
-            effects: [
-              { ...effect, effect: withParam(effect.effect, "pan", "50deg") },
-            ],
+            effects: [withParam(effect, "pan", "50deg")],
           },
         ],
       },
@@ -228,11 +230,10 @@ test("an edit changes only the edited parameter's text", () => {
   expect(panned).toContain("movers: move, pan: 50deg, # c\n");
 });
 
-/** `source` with its first effect's parameters edited by `edit`,
- *  written out. */
+/** `source` with its first effect edited by `edit`, written out. */
 function editedEffect(
   source: string,
-  edit: (effect: EffectParams) => EffectParams,
+  edit: (effect: CueEffect) => CueEffect,
 ): string {
   const read = rules.document(source).document!;
   const show = read.shows[0];
@@ -246,7 +247,7 @@ function editedEffect(
         cues: [
           {
             ...cue,
-            effects: [{ ...first, effect: edit(first.effect) }, ...rest],
+            effects: [edit(first), ...rest],
           },
           ...show.cues.slice(1),
         ],
@@ -321,6 +322,23 @@ test("an element removed leaves its comments where it was", () => {
   for (const written of [master, panned, offset]) {
     expect(rules.document(written).error, written).toBeUndefined();
   }
+});
+
+test("an effect's parameters all removed leave their comments after it", () => {
+  const show = (body: string) => `show "S" {\n    @1/1\n${body}}\n`;
+  const cleared = editedEffect(
+    show(
+      '    # above\n    front: static, color: "red", # one\n        # two\n        dimmer: 50%\n    clear(layer: background)\n',
+    ),
+    (e) => withoutParams(e, ["color", "dimmer"]),
+  );
+  expect(cleared).toBe(
+    show(
+      "    # above\n    front: static\n    # one\n    # two\n    clear(layer: background)\n",
+    ),
+  );
+  expect(commentLines(cleared)).toEqual(["# above", "# one", "# two"]);
+  expect(rules.document(cleared).error).toBeUndefined();
 });
 
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
