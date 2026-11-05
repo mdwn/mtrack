@@ -2363,6 +2363,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tsify-next",
  "wasm-bindgen",

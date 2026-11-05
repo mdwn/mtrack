@@ -87,7 +87,7 @@ pub struct MetronomeConfig {
 }
 
 /// The metronome subdivision: even ticks per beat or a clave pattern.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Subdivision {
@@ -251,6 +251,23 @@ impl MetronomeConfig {
                 }
             })
             .collect()
+    }
+
+    /// The subdivision a measure (1-indexed) plays and the measure it was
+    /// set at: the base `subdivision` from measure 1, swapped by the last
+    /// positional change at or before the measure (a clave's two-measure
+    /// cycle restarts where its subdivision was set). This is the rule the
+    /// click renderer applies bar by bar and the one the web UI's marker
+    /// dialog starts a subdivision change from.
+    pub fn subdivision_at(&self, measure: u32) -> (&Subdivision, u32) {
+        let mut sorted_changes: Vec<&MetronomeChange> = self.changes.iter().collect();
+        sorted_changes.sort_by_key(|c| c.measure);
+        sorted_changes
+            .iter()
+            .filter(|c| c.measure >= 1 && c.measure <= measure)
+            .rev()
+            .find_map(|c| c.subdivision.as_ref().map(|s| (s, c.measure)))
+            .unwrap_or((&self.subdivision, 1))
     }
 
     /// Beat indices (0-based) that start an accent group: beat 0, then the

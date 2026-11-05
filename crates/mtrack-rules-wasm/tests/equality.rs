@@ -24,13 +24,12 @@
 use std::time::Duration;
 
 use mtrack_rules_wasm::metronome_config::{MetronomeChange, MetronomeConfig, Subdivision};
-use mtrack_rules_wasm::tempo::position_label_for;
 use mtrack_rules_wasm::tempo_config::{TempoChangeConfig, TempoConfig, TransitionConfig};
 use mtrack_rules_wasm::{
-    grid_position, signature, tempo_normalized, tempo_point, tempo_verdict, BeatGrid, GridQuery,
-    TempoQuery, TempoSource,
+    signature_parse, BeatGrid, GridQuery, NormalizedTempo, TempoQuery, TempoSource,
 };
 use serde::Serialize;
+use serde_json::json;
 
 /// A grid from measure beat-counts at a steady tempo, starting at `lead_in`
 /// seconds, with a trailing downbeat so the last measure is complete.
@@ -302,6 +301,8 @@ struct DumpGrid {
     grid: BeatGrid,
     positions: Vec<((u32, f64), Option<mtrack_rules_wasm::GridPosition>)>,
     times: Vec<(f64, Option<mtrack_rules_wasm::GridPosition>)>,
+    /// The same times snapped to whole beats.
+    snapped: Vec<(f64, Option<mtrack_rules_wasm::GridPosition>)>,
 }
 
 #[derive(Serialize)]
@@ -309,7 +310,7 @@ struct DumpTempo {
     name: String,
     config: TempoConfig,
     verdict: Option<String>,
-    normalized: mtrack_rules_wasm::NormalizedTempo,
+    normalized: NormalizedTempo,
     positions: Vec<((u32, f64), Option<mtrack_rules_wasm::TempoPoint>)>,
     times: Vec<(f64, Option<mtrack_rules_wasm::TempoPoint>)>,
 }
@@ -335,7 +336,7 @@ fn exports_equal_the_players_rules() {
         let mut positions = vec![];
         for measure in 0..=measures as u32 {
             for beat in half_beats(9) {
-                let got = grid_position(&grid, GridQuery::Position { measure, beat });
+                let got = GridQuery::Position { measure, beat }.answer(&grid);
                 let expected = measure.checked_sub(1).and_then(|m| {
                     let secs = grid.beat_time(m as usize, beat)?;
                     Some((secs, grid.beats_in_measure(m as usize)? as u32))
@@ -347,22 +348,27 @@ fn exports_equal_the_players_rules() {
                 );
                 if let Some(p) = got {
                     assert_eq!((p.measure, p.beat), (measure, beat), "{name}: echo");
+                    assert_eq!(
+                        grid.beats[p.beat_index as usize],
+                        grid.beat_time(measure as usize - 1, beat.floor()).unwrap(),
+                        "{name}: beat_index is the whole beat's"
+                    );
                 }
                 positions.push(((measure, beat), got));
             }
         }
         let mut times = vec![];
+        let mut snapped_times = vec![];
         let end = grid.beats.last().copied().unwrap_or(0.0);
         let mut sweep = secs_sweep(end);
         sweep.extend(grid.beats.iter().flat_map(|b| [*b, b + 1e-4, b - 1e-4]));
         for secs in sweep {
-            let got = grid_position(&grid, GridQuery::Time { secs });
+            let got = GridQuery::Time { secs, snap: None }.answer(&grid);
             let expected = grid.position_at(secs).map(|(m, b)| {
                 (
                     m as u32 + 1,
-                    b as f64,
-                    grid.beat_time(m, b as f64)
-                        .expect("the nearest beat exists"),
+                    b,
+                    grid.beat_time(m, b).expect("the position resolves"),
                     grid.beats_in_measure(m).expect("its measure exists") as u32,
                 )
             });
@@ -371,13 +377,50 @@ fn exports_equal_the_players_rules() {
                 expected,
                 "{name}: grid time {secs}"
             );
+            // A fractional position is the time again; a snapped one is the
+            // grid's own rounding, and never a beat its measure lacks.
+            if let Some(p) = got {
+                let on_grid = secs.clamp(grid.beats[0], *grid.beats.last().unwrap());
+                assert!((p.secs - on_grid).abs() < 1e-9, "{name}: round trip {secs}");
+            }
+            for step in [1.0, 0.5] {
+                let snapped = GridQuery::Time {
+                    secs,
+                    snap: Some(step),
+                }
+                .answer(&grid);
+                let expected = grid
+                    .snapped_position_at(secs, step)
+                    .map(|(m, b)| (m as u32 + 1, b));
+                assert_eq!(
+                    snapped.map(|p| (p.measure, p.beat)),
+                    expected,
+                    "{name}: snapped {secs} by {step}"
+                );
+                if let Some(p) = snapped {
+                    assert!(
+                        p.beat < p.beats_in_measure as f64 + 1.0,
+                        "{name}: snapped {secs} to a beat its measure lacks: {p:?}"
+                    );
+                    assert_eq!((p.beat - 1.0) % step, 0.0);
+                }
+            }
             times.push((secs, got));
+            snapped_times.push((
+                secs,
+                GridQuery::Time {
+                    secs,
+                    snap: Some(1.0),
+                }
+                .answer(&grid),
+            ));
         }
         dump.grids.push(DumpGrid {
             name: name.into(),
             grid,
             positions,
             times,
+            snapped: snapped_times,
         });
     }
 
@@ -385,9 +428,13 @@ fn exports_equal_the_players_rules() {
         let source = TempoSource::Config {
             config: config.clone(),
         };
-        let verdict = tempo_verdict(&config);
+        let verdict = config.validate().err();
         assert_eq!(verdict, config.to_tempo_map().err(), "{name}: verdict");
-        let normalized = tempo_normalized(&config);
+        let (normalized_config, duplicates) = config.normalized();
+        let normalized = NormalizedTempo {
+            config: normalized_config,
+            duplicates: duplicates as u32,
+        };
         if verdict.is_none() {
             assert_eq!(
                 normalized.config, config,
@@ -400,15 +447,24 @@ fn exports_equal_the_players_rules() {
         let mut positions = vec![];
         for measure in 0..=14 {
             for beat in half_beats(9) {
-                let got = tempo_point(&source, TempoQuery::Position { measure, beat });
+                let got = TempoQuery::Position { measure, beat }.answer(&source);
                 let expected = map.as_ref().and_then(|map| {
                     let at = map.measure_to_time_with_offset(measure, beat, 0, 0.0)?;
-                    let sig = map.time_signature_at_measure(measure);
+                    // The bar's signature (read at its downbeat), for a beat
+                    // the bar holds in the map's quarter-note units; a beat
+                    // past it is in the next bar.
+                    let downbeat = map.measure_to_time_with_offset(measure, 1.0, 0, 0.0)?;
+                    let bar = map.time_signature_at_time(downbeat, 0.0);
+                    let sig = if beat < 1.0 + bar.beats_per_measure() {
+                        bar
+                    } else {
+                        map.time_signature_at_time(at, 0.0)
+                    };
                     Some((
                         at.as_secs_f64() * 1000.0,
                         map.bpm_at_time(at, 0.0),
                         (sig.numerator, sig.denominator),
-                        position_label_for(measure, beat),
+                        format!("@{measure}/{beat:.2}"),
                     ))
                 });
                 assert_eq!(
@@ -416,34 +472,51 @@ fn exports_equal_the_players_rules() {
                     expected,
                     "{name}: tempo position {measure}/{beat}"
                 );
+                if let (Some(p), Some(map)) = (&got, &map) {
+                    let at = Duration::from_secs_f64(p.ms / 1000.0);
+                    let sig = map.time_signature_at_time(at, 0.0);
+                    assert_eq!(p.sig, (sig.numerator, sig.denominator), "{name}: bar sig");
+                }
                 positions.push(((measure, beat), got));
             }
         }
         let mut times = vec![];
         for secs in secs_sweep(40.0) {
             let ms = secs * 1000.0;
-            let got = tempo_point(&source, TempoQuery::Time { ms });
-            let expected = map.as_ref().and_then(|map| {
-                if ms < 0.0 {
-                    return None;
-                }
-                let at = Duration::from_secs_f64(secs);
-                let (measure, beat) = map.time_to_measure_beat(at);
-                let sig = map.time_signature_at_time(at, 0.0);
-                Some((
-                    measure,
-                    beat,
-                    map.bpm_at_time(at, 0.0),
-                    (sig.numerator, sig.denominator),
-                    map.position_label(at),
-                ))
-            });
+            let got = TempoQuery::Time { ms }.answer(&source);
             assert_eq!(
-                got.as_ref()
-                    .map(|p| (p.measure, p.beat, p.bpm, p.sig, p.label.clone())),
-                expected,
+                got.is_some(),
+                map.is_some() && ms >= 0.0,
                 "{name}: tempo time {ms}"
             );
+            if let (Some(p), Some(map)) = (&got, &map) {
+                let at = Duration::from_secs_f64(secs);
+                // The position is the inverse of the player's forward map:
+                // its time, back through `measure_to_time_with_offset`, is
+                // the time asked about (a time before bar 1 is before it).
+                // (A time before bar 1 is bar 1 beat 1, as the player has it.)
+                let back = map
+                    .measure_to_time_with_offset(p.measure, p.beat, 0, 0.0)
+                    .expect("a position the map gave resolves");
+                let back_ms = back.as_secs_f64() * 1000.0;
+                let bar_one_ms = map.start_offset.as_secs_f64() * 1000.0;
+                assert!(
+                    (back_ms - ms.max(bar_one_ms)).abs() < 1e-3,
+                    "{name}: {ms} -> {}/{} -> {back_ms}",
+                    p.measure,
+                    p.beat
+                );
+                let sig = map.time_signature_at_time(at, 0.0);
+                assert_eq!(
+                    p.sig,
+                    (sig.numerator, sig.denominator),
+                    "{name}: sig at {ms}"
+                );
+                assert_eq!(p.bpm, map.bpm_at_time(at, 0.0), "{name}: bpm at {ms}");
+                assert_eq!(p.label, format!("@{}/{:.2}", p.measure, p.beat));
+                // Back through `Duration` (nanoseconds) and out again.
+                assert!((p.ms - ms).abs() < 1e-6, "{name}: ms echo {ms} vs {}", p.ms);
+            }
             times.push((ms, got));
         }
         dump.tempos.push(DumpTempo {
@@ -456,35 +529,42 @@ fn exports_equal_the_players_rules() {
         });
     }
 
-    // Normalizing puts an unsorted config in the order a save needs and
-    // keeps the last of a repeated position.
-    let unsorted = tempos()
-        .into_iter()
-        .find(|(n, _)| *n == "unsorted")
-        .unwrap()
-        .1;
-    let fixed = tempo_normalized(&unsorted);
-    assert_eq!(fixed.duplicates, 0);
-    assert_eq!(tempo_verdict(&fixed.config), None);
-    assert_eq!(
-        fixed
-            .config
-            .changes
-            .iter()
-            .map(|c| c.measure)
-            .collect::<Vec<_>>(),
-        vec![5, 10]
-    );
-    let repeated = tempos()
-        .into_iter()
-        .find(|(n, _)| *n == "repeated")
-        .unwrap()
-        .1;
-    let fixed = tempo_normalized(&repeated);
-    assert_eq!(fixed.duplicates, 1);
-    assert_eq!(tempo_verdict(&fixed.config), None);
-    assert_eq!(fixed.config.changes.len(), 1);
-    assert_eq!(fixed.config.changes[0].bpm, Some(90.0));
+    // A mid-bar signature change: the bar keeps its metre (`sig`), the
+    // marker sets the new one (`sig_set`), and the next bar has it.
+    let mid_bar = TempoSource::Config {
+        config: tempos()
+            .into_iter()
+            .find(|(n, _)| *n == "mid-bar-signature")
+            .unwrap()
+            .1,
+    };
+    let at = |measure, beat| {
+        TempoQuery::Position { measure, beat }
+            .answer(&mid_bar)
+            .unwrap()
+    };
+    assert_eq!((at(3, 3.0).sig, at(3, 3.0).sig_set), ((4, 4), (7, 8)));
+    assert_eq!((at(3, 2.5).sig, at(3, 2.5).sig_set), ((4, 4), (4, 4)));
+    assert_eq!((at(4, 1.0).sig, at(4, 1.0).sig_set), ((7, 8), (7, 8)));
+    let by_time = TempoQuery::Time { ms: at(3, 3.0).ms }
+        .answer(&mid_bar)
+        .unwrap();
+    assert_eq!((by_time.sig, by_time.sig_set), ((4, 4), (7, 8)));
+
+    // A song without a tempo block: its grid's own map.
+    let from_grid = TempoSource::Grid {
+        grid: steady_grid(0.0, 120.0, &[4, 4, 4, 4]),
+    };
+    let p = TempoQuery::Time { ms: 2250.0 }.answer(&from_grid).unwrap();
+    assert_eq!((p.measure, p.beat, p.sig), (2, 1.5, (4, 4)));
+    assert!((p.bpm - 120.0).abs() < 0.01);
+    let too_small = TempoSource::Grid {
+        grid: BeatGrid {
+            beats: vec![0.0, 0.5],
+            measure_starts: vec![0],
+        },
+    };
+    assert_eq!(TempoQuery::Time { ms: 0.0 }.answer(&too_small), None);
 
     for (name, config) in metronomes() {
         let mut patterns = vec![];
@@ -507,7 +587,7 @@ fn exports_equal_the_players_rules() {
         "4/4", "7/8", "6/8", " 3 / 4 ", "5/3", "0/4", "4/0", "4", "", "abc", "12/16", "33/8",
         "4/64",
     ] {
-        let got = signature(raw).map(|s| s.0);
+        let got = signature_parse(raw).map(|s| s.0);
         let expected = mtrack_rules_wasm::tempo_config::parse_time_signature(raw)
             .ok()
             .map(|s| (s.numerator, s.denominator));
@@ -518,4 +598,78 @@ fn exports_equal_the_players_rules() {
     if let Ok(path) = std::env::var("MTRACK_RULES_DUMP") {
         std::fs::write(path, serde_json::to_string(&dump).unwrap()).unwrap();
     }
+}
+
+/// A value that is not what its type says -- the shapes a hand-edited
+/// song.yaml or a stale page could hand over -- is refused by the DTOs'
+/// deserialization (the exports answer `None`, or pass the message on as
+/// `tempo_validate`'s verdict) rather than read as something else. The
+/// page's values come through serde-wasm-bindgen; serde_json exercises the
+/// same `Deserialize` impls natively.
+#[test]
+fn values_that_are_not_their_type_are_refused_not_coerced() {
+    for bad in [
+        json!({ "measure": 1.5, "beat": 1 }),
+        json!({ "measure": -1, "beat": 1 }),
+        json!({ "measure": "1", "beat": 1 }),
+        json!({ "secs": "now" }),
+        json!({ "secs": 1, "snap": "nearest" }),
+        json!({}),
+    ] {
+        assert!(
+            serde_json::from_value::<GridQuery>(bad.clone()).is_err(),
+            "grid query {bad}"
+        );
+    }
+    for bad in [
+        json!({ "ms": "0" }),
+        json!({ "measure": 2.5, "beat": 1 }),
+        json!({ "measure": 1 }),
+    ] {
+        assert!(
+            serde_json::from_value::<TempoQuery>(bad.clone()).is_err(),
+            "tempo query {bad}"
+        );
+    }
+    for bad in [
+        json!({ "bpm": "fast" }),
+        json!({ "bpm": 120, "changes": [{ "measure": 1.5, "bpm": 100 }] }),
+        json!({ "bpm": 120, "changes": [{ "measure": -3, "bpm": 100 }] }),
+        json!({ "bpm": 120, "changes": [{ "bpm": 100 }] }),
+    ] {
+        assert!(
+            serde_json::from_value::<TempoConfig>(bad.clone()).is_err(),
+            "tempo config {bad}"
+        );
+        assert!(serde_json::from_value::<TempoSource>(json!({ "config": bad })).is_err());
+    }
+    assert!(serde_json::from_value::<MetronomeConfig>(json!({ "accents": [1, -1] })).is_err());
+    assert!(
+        serde_json::from_value::<MetronomeConfig>(json!({ "changes": [{ "measure": 0.5 }] }))
+            .is_err()
+    );
+    // What the types do take, through the same door.
+    let query: GridQuery = serde_json::from_value(json!({ "secs": 1.25, "snap": 0.5 })).unwrap();
+    assert_eq!(
+        query,
+        GridQuery::Time {
+            secs: 1.25,
+            snap: Some(0.5)
+        }
+    );
+    let query: GridQuery = serde_json::from_value(json!({ "secs": 1.25 })).unwrap();
+    assert_eq!(
+        query,
+        GridQuery::Time {
+            secs: 1.25,
+            snap: None
+        }
+    );
+    let config: TempoConfig = serde_json::from_value(json!({ "bpm": 120 })).unwrap();
+    assert_eq!(config.validate(), Ok(()));
+    // Values that are their type but make no map: the verdict, not a trap.
+    let config: TempoConfig = serde_json::from_value(json!({ "bpm": 0 })).unwrap();
+    assert!(config.validate().is_err());
+    let query: GridQuery = serde_json::from_value(json!({ "secs": 1.0, "snap": -1 })).unwrap();
+    assert_eq!(query.answer(&steady_grid(0.0, 120.0, &[4])), None);
 }

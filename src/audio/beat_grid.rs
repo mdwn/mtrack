@@ -96,30 +96,61 @@ impl BeatGrid {
         Some(t0 + (t1 - t0) * frac)
     }
 
-    /// The beat nearest to a time in seconds, as (measure, beat): measure
-    /// 0-indexed, beat 1-based and whole, the way [`BeatGrid::beat_time`]
-    /// takes them. This is the rule a time snaps to a beat by: a tempo change
-    /// or a pilot hint captured from the playhead lands on the nearest beat,
-    /// not the one before it. Ties go to the earlier beat; a time before the
-    /// grid is its first beat and a time past it is its last. `None` for an
-    /// empty grid, or when the nearest beat lies before the first measure
-    /// (a pickup) and so has no measure to be counted in.
-    pub fn position_at(&self, secs: f64) -> Option<(usize, usize)> {
+    /// The position of a time in seconds, as (measure, beat): measure
+    /// 0-indexed, beat 1-based and fractional, the way [`BeatGrid::beat_time`]
+    /// takes them -- the beat at or before the time plus how far through it
+    /// the time lies, so `beat_time` of the result is the time again. This
+    /// is the one rule for reading a time off the grid; a time that has to
+    /// land on a beat goes through [`BeatGrid::snapped_position_at`]. A time
+    /// before the grid is its first beat and a time past it is its last.
+    /// `None` for an empty grid, a time that is not a number, or a beat
+    /// before the first downbeat (a pickup), which has no measure to be
+    /// counted in.
+    pub fn position_at(&self, secs: f64) -> Option<(usize, f64)> {
         if !secs.is_finite() {
             return None;
         }
-        let mut nearest = 0;
-        for (index, beat) in self.beats.iter().enumerate() {
-            if (beat - secs).abs() < (self.beats[nearest] - secs).abs() {
-                nearest = index;
-            }
-        }
-        self.beats.get(nearest)?;
+        let index = self
+            .beats
+            .iter()
+            .rposition(|beat| *beat <= secs)
+            .unwrap_or(0);
+        let t0 = *self.beats.get(index)?;
+        let frac = match self.beats.get(index + 1) {
+            Some(t1) if *t1 > t0 && secs > t0 => ((secs - t0) / (t1 - t0)).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
         let measure = self
             .measure_starts
             .iter()
-            .rposition(|&start| start <= nearest)?;
-        Some((measure, nearest - self.measure_starts[measure] + 1))
+            .rposition(|&start| start <= index)?;
+        Some((
+            measure,
+            (index - self.measure_starts[measure]) as f64 + 1.0 + frac,
+        ))
+    }
+
+    /// [`BeatGrid::position_at`] rounded to the nearest `step` of a beat (1
+    /// for whole beats, 0.5 for halves): the rule a time snaps to a beat by,
+    /// so a tempo change or a pilot hint captured from the playhead lands on
+    /// the nearest beat and a section boundary on the nearest half. The
+    /// rounded position is asked of the grid again: one rounded past the end
+    /// of its measure is the next measure's downbeat, not a beat the measure
+    /// does not hold, and one rounded past the grid's end is the last beat
+    /// it does.
+    pub fn snapped_position_at(&self, secs: f64, step: f64) -> Option<(usize, f64)> {
+        if !step.is_finite() || step <= 0.0 {
+            return None;
+        }
+        let (measure, beat) = self.position_at(secs)?;
+        let rounded = 1.0 + ((beat - 1.0) / step).round() * step;
+        if self.beat_time(measure, rounded).is_some() {
+            return Some((measure, rounded));
+        }
+        if self.beat_time(measure + 1, 1.0).is_some() {
+            return Some((measure + 1, 1.0));
+        }
+        Some((measure, beat.floor()))
     }
 
     /// Returns the time range (start, end) of the given measure (0-indexed).
@@ -697,26 +728,49 @@ mod position_at_tests {
     }
 
     #[test]
-    fn nearest_beat_rounds_both_ways() {
+    fn position_is_the_beat_and_the_fraction_through_it() {
         let grid = grid();
-        assert_eq!(grid.position_at(0.0), Some((0, 1)));
-        assert_eq!(grid.position_at(0.2), Some((0, 1)));
-        assert_eq!(grid.position_at(0.3), Some((0, 2)));
-        assert_eq!(grid.position_at(1.9), Some((1, 1)));
-        assert_eq!(grid.position_at(3.6), Some((1, 4)));
-        assert_eq!(grid.position_at(3.8), Some((2, 1)));
+        assert_eq!(grid.position_at(0.0), Some((0, 1.0)));
+        assert_eq!(grid.position_at(0.25), Some((0, 1.5)));
+        assert_eq!(grid.position_at(1.9), Some((0, 4.8)));
+        assert_eq!(grid.position_at(2.0), Some((1, 1.0)));
+        assert_eq!(grid.position_at(3.75), Some((1, 4.5)));
     }
 
     #[test]
-    fn ties_go_to_the_earlier_beat() {
-        assert_eq!(grid().position_at(0.25), Some((0, 1)));
-        assert_eq!(grid().position_at(1.75), Some((0, 4)));
+    fn position_round_trips_through_beat_time() {
+        let grid = grid();
+        for i in 0..80 {
+            let secs = i as f64 * 0.05;
+            let (measure, beat) = grid.position_at(secs).expect("on the grid");
+            let back = grid.beat_time(measure, beat).expect("resolves");
+            assert!(
+                (back - secs).abs() < 1e-9,
+                "{secs} -> {measure}/{beat} -> {back}"
+            );
+        }
     }
 
     #[test]
     fn clamps_to_the_grid() {
-        assert_eq!(grid().position_at(-5.0), Some((0, 1)));
-        assert_eq!(grid().position_at(99.0), Some((2, 1)));
+        assert_eq!(grid().position_at(-5.0), Some((0, 1.0)));
+        assert_eq!(grid().position_at(99.0), Some((2, 1.0)));
+    }
+
+    #[test]
+    fn snaps_to_the_nearest_step_and_rolls_into_the_next_measure() {
+        let grid = grid();
+        assert_eq!(grid.snapped_position_at(0.2, 1.0), Some((0, 1.0)));
+        assert_eq!(grid.snapped_position_at(0.3, 1.0), Some((0, 2.0)));
+        assert_eq!(grid.snapped_position_at(0.3, 0.5), Some((0, 1.5)));
+        // Three quarters through beat 4: nearest beat is the next downbeat,
+        // never "beat 5" of a four-beat measure.
+        assert_eq!(grid.snapped_position_at(1.9, 1.0), Some((1, 1.0)));
+        assert_eq!(grid.snapped_position_at(1.8, 0.5), Some((0, 4.5)));
+        assert_eq!(grid.snapped_position_at(1.9, 0.5), Some((1, 1.0)));
+        // Past the grid there is nothing to roll into.
+        assert_eq!(grid.snapped_position_at(99.0, 1.0), Some((2, 1.0)));
+        assert_eq!(grid.snapped_position_at(1.0, 0.0), None);
     }
 
     #[test]
@@ -737,7 +791,7 @@ mod position_at_tests {
             measure_starts: vec![1],
         };
         assert_eq!(pickup.position_at(0.0), None);
-        assert_eq!(pickup.position_at(0.5), Some((0, 1)));
+        assert_eq!(pickup.position_at(0.5), Some((0, 1.0)));
         assert_eq!(grid().position_at(f64::NAN), None);
     }
 }

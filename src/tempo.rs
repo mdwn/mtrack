@@ -529,7 +529,7 @@ impl SegmentState {
 
 /// A measure/beat position as the `@measure/beat` position reports show
 /// it, the beat to two decimals: `@3/1.00`.
-pub fn position_label_for(measure: u32, beat: f64) -> String {
+pub(crate) fn position_label_for(measure: u32, beat: f64) -> String {
     format!("@{measure}/{beat:.2}")
 }
 
@@ -1005,7 +1005,7 @@ impl TempoMap {
     /// Convert an absolute time to a (measure, beat) position, as the beat
     /// grid counts it: through all tempo changes and ramps before it, in the
     /// bars the time signature changes make.
-    pub fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
+    pub(crate) fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
         let segments = self.segments();
         segments
             .metres
@@ -1014,7 +1014,7 @@ impl TempoMap {
 
     /// An absolute time as the `@measure/beat` position reports show it,
     /// the beat to two decimals: `@3/1.00`.
-    pub fn position_label(&self, at: Duration) -> String {
+    pub(crate) fn position_label(&self, at: Duration) -> String {
         let (measure, beat) = self.time_to_measure_beat(at);
         position_label_for(measure, beat)
     }
@@ -1065,9 +1065,18 @@ impl TempoMap {
         segments.metres.at_measure(measure)
     }
 
+    /// The time signature the changes up to and including a score time have
+    /// set -- the metre a ramp in measures counts in, whether or not a
+    /// barline has passed since (`SegmentState::metre`). For a change
+    /// anchored mid-bar this is the signature it sets, where
+    /// [`Self::time_signature_at_time`] still answers the bar's.
+    pub(crate) fn time_signature_set_at(&self, time: Duration) -> TimeSignature {
+        self.segments().state_at(time).metre
+    }
+
     /// The time signature in effect at a measure (1-indexed), as the beat
     /// grid has it: a change anchored mid-bar governs from the next bar.
-    pub fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
+    pub(crate) fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
         self.segments().metres.at_measure(measure)
     }
 

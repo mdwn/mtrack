@@ -16,8 +16,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::tempo::{
-    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
-    TempoTransition, TimeSignature, TransitionCurve,
+    measure_beat_order, parse_signature_in, SignatureRange, TempoChange, TempoChangePosition,
+    TempoMap, TempoTransition, TimeSignature, TransitionCurve,
 };
 
 /// A YAML representation of a song's tempo map. This is the canonical
@@ -109,6 +109,43 @@ impl TempoConfig {
         Some(
             map.time_signature_at_measure(measure)
                 .grid_beats_per_measure(),
+        )
+    }
+
+    /// This configuration with its changes in the order [`Self::to_tempo_map`]
+    /// requires -- ascending (measure, beat), `measure_beat_order` -- and one
+    /// change per position: the last written, since `TempoMap::new` applies
+    /// changes in order and that is the one that was in effect. Returns it
+    /// with how many changes were dropped for repeating a position. An
+    /// editor that adds a change out of turn, or an import whose changes
+    /// share a position, goes through here before a save.
+    pub fn normalized(&self) -> (TempoConfig, usize) {
+        let mut changes = self.changes.clone();
+        changes.sort_by(|a, b| {
+            measure_beat_order(
+                (a.measure, a.beat.unwrap_or(1.0)),
+                (b.measure, b.beat.unwrap_or(1.0)),
+            )
+        });
+        let before = changes.len();
+        let mut kept: Vec<TempoChangeConfig> = Vec::with_capacity(before);
+        for change in changes {
+            let position = (change.measure, change.beat.unwrap_or(1.0));
+            if kept
+                .last()
+                .is_some_and(|last| (last.measure, last.beat.unwrap_or(1.0)) == position)
+            {
+                kept.pop();
+            }
+            kept.push(change);
+        }
+        let dropped = before - kept.len();
+        (
+            TempoConfig {
+                changes: kept,
+                ..self.clone()
+            },
+            dropped,
         )
     }
 
@@ -308,6 +345,27 @@ changes:
         )
         .to_tempo_map()
         .is_err());
+    }
+
+    #[test]
+    fn normalized_orders_and_keeps_the_last_of_a_position() {
+        let config = deserialize(
+            "bpm: 120\nchanges:\n  - measure: 10\n    bpm: 100\n  - measure: 5\n    bpm: 90\n  - measure: 5\n    beat: 1\n    bpm: 80\n",
+        );
+        assert!(config.to_tempo_map().is_err());
+        let (fixed, dropped) = config.normalized();
+        assert_eq!(dropped, 1);
+        assert!(fixed.to_tempo_map().is_ok());
+        assert_eq!(
+            fixed
+                .changes
+                .iter()
+                .map(|c| (c.measure, c.bpm))
+                .collect::<Vec<_>>(),
+            vec![(5, Some(80.0)), (10, Some(100.0))]
+        );
+        // A valid config is left as it is.
+        assert_eq!(fixed.normalized(), (fixed.clone(), 0));
     }
 
     #[test]

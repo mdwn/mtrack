@@ -128,9 +128,6 @@ pub fn click_events_from_beat_grid(
     let rate = sample_rate as f64;
     let to_pos = |secs: f64| ((secs - start_secs) * rate).round() as i64;
 
-    let mut sorted_changes = config.changes.clone();
-    sorted_changes.sort_by_key(|c| c.measure);
-
     // Half-beat time: even indices are the beats themselves, odd ones the
     // midpoint to the next beat (the last interval extrapolates).
     let half_beat_secs = |beat_idx: usize, half: bool| -> Option<f64> {
@@ -163,20 +160,11 @@ pub fn click_events_from_beat_grid(
         }
     }
 
-    // The subdivision in effect and the measure it was anchored at (clave
-    // cycles restart at their anchor).
-    let mut active_sub: &Subdivision = &config.subdivision;
-    let mut sub_anchor = 0usize;
-
     for (measure_idx, &(measure_start, measure_end)) in measure_bounds(grid).iter().enumerate() {
-        for change in &sorted_changes {
-            if change.measure as usize == measure_idx + 1 {
-                if let Some(subdivision) = &change.subdivision {
-                    active_sub = subdivision;
-                    sub_anchor = measure_idx;
-                }
-            }
-        }
+        // The subdivision in effect and the measure it was anchored at
+        // (clave cycles restart at their anchor): `MetronomeConfig::subdivision_at`.
+        let (active_sub, anchor_measure) = config.subdivision_at(measure_idx as u32 + 1);
+        let sub_anchor = anchor_measure as usize - 1;
 
         let measure_len = measure_end - measure_start;
 
