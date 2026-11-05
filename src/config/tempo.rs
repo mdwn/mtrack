@@ -27,6 +27,11 @@ use crate::tempo::{
 /// BPM is expressed in quarter notes per minute, and mid-measure `beat`
 /// positions are in quarter-note units, matching the lighting DSL's
 /// `tempo {}` block.
+#[cfg_attr(
+    feature = "tsify",
+    derive(tsify_next::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct TempoConfig {
     /// The initial tempo in quarter-note beats per minute.
@@ -43,6 +48,7 @@ pub struct TempoConfig {
 }
 
 /// A tempo and/or time signature change at a measure position.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct TempoChangeConfig {
     /// The measure (1-indexed) at which the change takes effect.
@@ -63,6 +69,7 @@ pub struct TempoChangeConfig {
 }
 
 /// How a tempo change transitions from the previous tempo.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionConfig {

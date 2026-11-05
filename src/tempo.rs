@@ -527,8 +527,14 @@ impl SegmentState {
     }
 }
 
+/// A measure/beat position as the `@measure/beat` position reports show
+/// it, the beat to two decimals: `@3/1.00`.
+pub fn position_label_for(measure: u32, beat: f64) -> String {
+    format!("@{measure}/{beat:.2}")
+}
+
 /// Bar order: by measure, then by beat.
-fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
+pub(crate) fn measure_beat_order(a: (u32, f64), b: (u32, f64)) -> std::cmp::Ordering {
     a.0.cmp(&b.0)
         .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
@@ -999,7 +1005,7 @@ impl TempoMap {
     /// Convert an absolute time to a (measure, beat) position, as the beat
     /// grid counts it: through all tempo changes and ramps before it, in the
     /// bars the time signature changes make.
-    pub(crate) fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
+    pub fn time_to_measure_beat(&self, target_time: Duration) -> (u32, f64) {
         let segments = self.segments();
         segments
             .metres
@@ -1008,9 +1014,9 @@ impl TempoMap {
 
     /// An absolute time as the `@measure/beat` position reports show it,
     /// the beat to two decimals: `@3/1.00`.
-    pub(crate) fn position_label(&self, at: Duration) -> String {
+    pub fn position_label(&self, at: Duration) -> String {
         let (measure, beat) = self.time_to_measure_beat(at);
-        format!("@{measure}/{beat:.2}")
+        position_label_for(measure, beat)
     }
 
     /// Get BPM at a given time (accounting for tempo changes)
@@ -1061,7 +1067,7 @@ impl TempoMap {
 
     /// The time signature in effect at a measure (1-indexed), as the beat
     /// grid has it: a change anchored mid-bar governs from the next bar.
-    pub(crate) fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
+    pub fn time_signature_at_measure(&self, measure: u32) -> TimeSignature {
         self.segments().metres.at_measure(measure)
     }
 
