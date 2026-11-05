@@ -1755,3 +1755,62 @@ mod mvr {
         );
     }
 }
+
+mod playlists {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+
+    use crate::config::ambient::{Ambient, PlaylistAmbient};
+    use crate::config::{AutoPlayConfig, EntryFades, FadeConfig};
+    use crate::webui::wire::playlists::*;
+
+    #[test]
+    fn playlists_match_the_old_json() {
+        assert_eq!(
+            json!(vec![PlaylistInfo {
+                name: "show".to_string(),
+                song_count: 2,
+                is_active: true,
+            }]),
+            json!([{"name": "show", "song_count": 2, "is_active": true}])
+        );
+        let fades = vec![EntryFades {
+            fade_out: Some(FadeConfig::Length("2s".to_string())),
+            fade_in: None,
+        }];
+        let ambient =
+            PlaylistAmbient::On(Ambient::new(Some("a.light".to_string()), None, None, None));
+        let entry_ambient = vec![None, Some(PlaylistAmbient::Off)];
+        let detail = PlaylistDetail {
+            name: "show".to_string(),
+            songs: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            auto_play: vec![
+                None,
+                Some(AutoPlayConfig::On(true)),
+                Some(AutoPlayConfig::Gap("2s".to_string())),
+            ],
+            fades: fades.clone(),
+            ambient: Some(ambient.clone()),
+            entry_ambient: entry_ambient.clone(),
+            available_songs: vec!["A".to_string()],
+            song_tracks: BTreeMap::from([("A".to_string(), vec!["kick".to_string()])]),
+        };
+        assert_eq!(
+            json!(detail),
+            json!({
+                "name": "show",
+                "songs": ["A", "B", "C"],
+                "auto_play": [serde_json::Value::Null, json!(true), json!("2s")],
+                "fades": fades,
+                "ambient": Some(&ambient),
+                "entry_ambient": entry_ambient,
+                "available_songs": ["A"],
+                "song_tracks": {"A": ["kick"]},
+            })
+        );
+        assert_eq!(json!(PlaylistAmbient::Off), json!(false));
+        assert_eq!(json!(ambient), json!({"show": "a.light"}));
+        assert_eq!(json!(AutoPlayConfig::On(false)), json!(false));
+    }
+}

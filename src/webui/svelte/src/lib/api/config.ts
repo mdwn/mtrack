@@ -32,6 +32,9 @@ import type {
   MvrInspection,
   MvrKeep,
   NoiseFloor,
+  PlaylistBody,
+  PlaylistDetail,
+  PlaylistInfo,
   Readiness,
   SettingsSaved,
   Vec3,
@@ -799,71 +802,15 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
 
 // ---- Playlist CRUD ----
 
-export interface PlaylistInfo {
-  name: string;
-  song_count: number;
-  is_active: boolean;
-}
-
-/** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null` for
- *  none. */
-export type AutoPlay = true | string | null;
-
-/** A fade as written: a length alone (`"3s"`, `"1measure"`), or with its
- *  settings. */
-export type FadeConfig =
-  | string
-  | {
-      length: string;
-      curve?: "equal_power" | "linear";
-      exclude?: string[];
-      /** fade_out only. */
-      lights?: string;
-    };
-
-/** An entry's fades: `null` for none. */
-export interface EntryFades {
-  fade_out: FadeConfig | null;
-  fade_in: FadeConfig | null;
-}
-
-/** A playlist's ambient light settings, each overriding the profile's. */
-export interface AmbientSettings {
-  show?: string;
-  delay?: string;
-  fade_in?: string;
-  fade_out?: string;
-}
-
 /** A playlist's (or an entry's) ambient light: `null` for the profile's (an
  *  entry: the playlist's), `false` for none, or settings of its own. */
-export type PlaylistAmbient = null | false | AmbientSettings;
+export type PlaylistAmbient = PlaylistDetail["ambient"];
 
-export interface PlaylistData {
-  name: string;
-  songs: string[];
-  /** Each song's auto play, in the order of `songs`. */
-  auto_play?: AutoPlay[];
-  /** Each song's fades, in the order of `songs`. */
-  fades?: EntryFades[];
-  /** Each song's ambient light before it, in the order of `songs`: `null`
-   *  for the playlist's, `false` for none, or settings of its own (each
-   *  field left out inherits the playlist's, then the profile's). */
-  entry_ambient?: PlaylistAmbient[];
-  ambient?: PlaylistAmbient;
-  available_songs: string[];
-  /** Each song's track names, for the tracks a fade leaves out. */
-  song_tracks?: Record<string, string[]>;
-}
+/** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null`. */
+export type AutoPlay = PlaylistDetail["auto_play"][number];
 
 /** What a save sets beyond the songs; each left out is kept as it is. */
-export interface PlaylistSettings {
-  auto_play?: AutoPlay[];
-  fades?: EntryFades[];
-  /** One per song, as in `PlaylistData.entry_ambient`. */
-  entry_ambient?: PlaylistAmbient[];
-  ambient?: PlaylistAmbient;
-}
+export type PlaylistSettings = Omit<PlaylistBody, "songs">;
 
 export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
   const res = await get("/playlists");
@@ -871,7 +818,7 @@ export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
   return res.json();
 }
 
-export async function fetchPlaylist(name: string): Promise<PlaylistData> {
+export async function fetchPlaylist(name: string): Promise<PlaylistDetail> {
   const res = await get(`/playlists/${encodeURIComponent(name)}`);
   if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
   return res.json();

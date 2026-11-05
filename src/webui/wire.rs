@@ -23,6 +23,7 @@ pub mod fixture_test;
 pub mod fixture_types;
 pub mod messages;
 pub mod mvr;
+pub mod playlists;
 pub mod preview;
 pub mod readiness;
 pub mod songs;

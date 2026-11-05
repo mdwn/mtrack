@@ -17,12 +17,11 @@
 // its translator, so these can be checked as plain values.
 
 import type {
-  AmbientSettings,
-  AutoPlay,
+  Ambient,
   EntryFades,
   FadeConfig,
-  PlaylistAmbient,
-} from "./api/config";
+} from "../gen/rules/mtrack_rules";
+import type { AutoPlay, PlaylistAmbient } from "./api/config";
 import { formatFadeLength, isZeroLength } from "./util/format";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
@@ -39,17 +38,17 @@ export function ambientForMode(mode: AmbientMode): PlaylistAmbient {
 /** The settings with one field set, or removed when empty (to inherit). */
 export function withAmbientField(
   ambient: PlaylistAmbient,
-  key: keyof AmbientSettings,
+  key: keyof Ambient,
   value: string,
-): AmbientSettings {
-  const settings: AmbientSettings = { ...(ambient || {}) };
+): Ambient {
+  const settings: Ambient = { ...(ambient || {}) };
   if (value) settings[key] = value;
   else delete settings[key];
   return settings;
 }
 
 /** The timing fields after the show, with their labels' i18n keys. */
-export const ambientTimings: { key: keyof AmbientSettings; label: string }[] = [
+export const ambientTimings: { key: keyof Ambient; label: string }[] = [
   { key: "delay", label: "lighting.ambientDelay" },
   { key: "fade_in", label: "lighting.ambientFadeIn" },
   { key: "fade_out", label: "lighting.ambientFadeOut" },

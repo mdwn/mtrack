@@ -82,6 +82,11 @@ mod config_fade;
 #[allow(dead_code)]
 pub mod pilot_config;
 
+/// A playlist's transitions and ambient light as written
+/// (`src/config/playlist_settings.rs`).
+#[path = "../../../src/config/playlist_settings.rs"]
+mod config_playlist_settings;
+
 /// A song's sections (`src/config/section.rs`).
 #[path = "../../../src/config/section.rs"]
 mod config_section;
@@ -134,6 +139,9 @@ pub mod wire_messages;
 /// The MVR import and export payloads.
 #[path = "../../../src/webui/wire/mvr.rs"]
 pub mod wire_mvr;
+/// The playlist API's payloads.
+#[path = "../../../src/webui/wire/playlists.rs"]
+pub mod wire_playlists;
 /// A song's shows evaluated offline (the 3D view's Preview mode).
 #[path = "../../../src/webui/wire/preview.rs"]
 pub mod wire_preview;
@@ -159,7 +167,12 @@ pub mod audio {
 
 pub mod config {
     pub use crate::config_fade::{FadeCurve, FadeStatus};
+    pub use crate::config_playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
     pub use crate::config_section::Section;
+
+    pub mod ambient {
+        pub use crate::config_playlist_settings::{Ambient, PlaylistAmbient};
+    }
 }
 
 pub mod dmx {

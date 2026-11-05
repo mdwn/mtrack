@@ -19,6 +19,8 @@ import type {
   MidiDeviceInfo,
   MvrExportSummary,
   MvrInspection,
+  PlaylistDetail,
+  PlaylistInfo,
   FixtureMetadata,
   Readiness,
   RigModel,
@@ -137,7 +139,7 @@ export const SONGS: SongList = {
   ],
 };
 
-export const PLAYLISTS = [
+export const PLAYLISTS: PlaylistInfo[] = [
   { name: "all_songs", song_count: 2, is_active: false },
   { name: "setlist", song_count: 1, is_active: true },
   { name: "rehearsal", song_count: 2, is_active: false },
@@ -148,31 +150,42 @@ const SONG_TRACKS: Record<string, string[]> = {
   "Test Song Beta": ["guitar", "vocals"],
 };
 
-export const PLAYLIST_DETAILS: Record<
-  string,
-  {
-    name: string;
-    songs: string[];
-    available_songs: string[];
-    song_tracks?: Record<string, string[]>;
-  }
-> = {
-  all_songs: {
-    name: "all_songs",
-    songs: ["Test Song Alpha", "Test Song Beta"],
-    available_songs: [],
-  },
-  setlist: {
-    name: "setlist",
-    songs: ["Test Song Alpha"],
-    available_songs: ["Test Song Beta"],
-    song_tracks: SONG_TRACKS,
-  },
-  rehearsal: {
-    name: "rehearsal",
-    songs: ["Test Song Alpha", "Test Song Beta"],
-    available_songs: [],
-  },
+/** A playlist as the server answers it, its entries with no settings. */
+function playlistDetail(
+  name: string,
+  songs: string[],
+  available_songs: string[],
+  song_tracks: Record<string, string[]> = {},
+): PlaylistDetail {
+  return {
+    name,
+    songs,
+    auto_play: songs.map(() => null),
+    fades: songs.map(() => ({ fade_out: null, fade_in: null })),
+    ambient: null,
+    entry_ambient: songs.map(() => null),
+    available_songs,
+    song_tracks,
+  };
+}
+
+export const PLAYLIST_DETAILS: Record<string, PlaylistDetail> = {
+  all_songs: playlistDetail(
+    "all_songs",
+    ["Test Song Alpha", "Test Song Beta"],
+    [],
+  ),
+  setlist: playlistDetail(
+    "setlist",
+    ["Test Song Alpha"],
+    ["Test Song Beta"],
+    SONG_TRACKS,
+  ),
+  rehearsal: playlistDetail(
+    "rehearsal",
+    ["Test Song Alpha", "Test Song Beta"],
+    [],
+  ),
 };
 
 export const CONFIG_YAML = `songs: songs

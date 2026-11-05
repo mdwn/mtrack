@@ -28,6 +28,7 @@ pub mod notification;
 pub mod pilot;
 mod player;
 mod playlist;
+mod playlist_settings;
 mod profile;
 pub mod samples;
 mod section;

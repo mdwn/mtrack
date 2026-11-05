@@ -156,3 +156,13 @@ fn an_mvr_plan_answer_carries_only_the_plan() {
     });
     assert_eq!(answer, json!({"write": false}));
 }
+
+#[test]
+fn a_playlists_ambient_and_auto_play_are_what_their_ts_types_say() {
+    use crate::config::ambient::PlaylistAmbient;
+    use crate::config::AutoPlayConfig;
+    // `false | Ambient | null`, `boolean | string`.
+    assert_eq!(json!(PlaylistAmbient::Off), json!(false));
+    assert_eq!(json!(Some(AutoPlayConfig::On(true))), json!(true));
+    assert_eq!(json!(AutoPlayConfig::Gap("2s".to_string())), json!("2s"));
+}
