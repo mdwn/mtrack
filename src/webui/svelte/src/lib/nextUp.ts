@@ -12,7 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { FadeInfo, NextUp, PlaybackState } from "./ws/stores";
+import type { FadeStatus, NextUp } from "../gen/rules/mtrack_rules";
+import type { PlaybackState } from "./ws/stores";
 import { formatFadeLength, formatGapMs, isZeroLength } from "./util/format";
 
 type Translate = (
@@ -67,7 +68,9 @@ export function describeNext(
 /** The fade a looping song playing ends over when Next on the last entry,
  *  or Previous on the first, ends it, or null when such a press would cut
  *  it (no `fade_out`) and so is not offered. */
-export function loopEndFade(next: NextUp | null | undefined): FadeInfo | null {
+export function loopEndFade(
+  next: NextUp | null | undefined,
+): FadeStatus | null {
   if (!next || !(next.breaks_loop || next.ends_loop)) return null;
   const out = next.fade_out;
   return out && !isZeroLength(out.length) ? out : null;

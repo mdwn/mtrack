@@ -11,6 +11,9 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+mod ambient_source;
+
+pub use ambient_source::AmbientSource;
 use tracing::{info, span, Level, Span};
 
 use crate::config;
@@ -51,27 +54,6 @@ struct Cursor {
     index: usize,
     /// The song playing that an edit took off the list, if one did.
     off_list: Option<Arc<Song>>,
-}
-
-/// Whose settings an ambient light plays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AmbientSource {
-    /// The profile's, under `dmx.lighting.ambient`.
-    Profile,
-    /// The playlist's own `ambient`.
-    Playlist,
-    /// The playlist entry's own `ambient`, before its song.
-    Entry,
-}
-
-impl AmbientSource {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AmbientSource::Profile => "profile",
-            AmbientSource::Playlist => "playlist",
-            AmbientSource::Entry => "entry",
-        }
-    }
 }
 
 /// Playlist is a playlist for use by a player.

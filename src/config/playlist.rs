@@ -17,6 +17,7 @@ use config::Config;
 use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
+pub use super::fade::{FadeCurve, FadeStatus};
 use super::song::LoopCrossfade;
 
 /// The configuration for a playlist.
@@ -229,15 +230,6 @@ pub enum FadeConfig {
     },
 }
 
-/// A fade's curve.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FadeCurve {
-    /// Quick in, slow out: the level holds up through the fade.
-    EqualPower,
-    /// A straight ramp in amplitude.
-    Linear,
-}
-
 /// A fade's settings, parsed: see [`FadeConfig`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fade {
@@ -361,19 +353,14 @@ impl FadeConfig {
 }
 
 impl Fade {
-    /// The fade as configured, for status reports: a `null` `exclude` is the
-    /// default (a fade-out's `loop_crossfade_cut`, a fade-in's none), as is a
-    /// `null` `lights` (the length).
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "length": self.length.to_string(),
-            "curve": match self.curve {
-                FadeCurve::EqualPower => "equal_power",
-                FadeCurve::Linear => "linear",
-            },
-            "exclude": self.exclude,
-            "lights": self.lights.map(|l| l.to_string()),
-        })
+    /// The fade as configured, for status reports.
+    pub fn status(&self) -> FadeStatus {
+        FadeStatus {
+            length: self.length.to_string(),
+            curve: self.curve,
+            exclude: self.exclude.clone(),
+            lights: self.lights.map(|l| l.to_string()),
+        }
     }
 }
 

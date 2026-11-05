@@ -1413,18 +1413,7 @@ impl Song {
         SongSummary {
             name: self.name.clone(),
             duration: self.length(),
-            sections: self
-                .sections
-                .iter()
-                .map(|s| SectionSummary {
-                    name: s.name.clone(),
-                    start_measure: s.start_measure,
-                    end_measure: s.end_measure,
-                    start_beat: s.start_beat,
-                    end_beat: s.end_beat,
-                    color: s.color.clone(),
-                })
-                .collect(),
+            sections: self.sections.clone(),
         }
     }
 
@@ -1472,19 +1461,7 @@ impl Song {
 pub struct SongSummary {
     pub name: String,
     pub duration: Duration,
-    pub sections: Vec<SectionSummary>,
-}
-
-/// A section as every surface reports it: its bounds in full, so a client
-/// that draws it agrees with where the player resolves it.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct SectionSummary {
-    pub name: String,
-    pub start_measure: usize,
-    pub end_measure: usize,
-    pub start_beat: Option<f64>,
-    pub end_beat: Option<f64>,
-    pub color: Option<String>,
+    pub sections: Vec<crate::config::Section>,
 }
 
 impl fmt::Display for Song {

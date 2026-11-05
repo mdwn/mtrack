@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { Vec3 } from "../../gen/rules/mtrack_rules";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -45,7 +46,6 @@
     type FixtureTypeGdtf,
     type VenueData,
     type VenueSource,
-    type Vec3,
     type LightingFileError,
   } from "../../lib/api/config";
 

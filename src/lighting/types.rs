@@ -815,9 +815,7 @@ pub struct Fixture {
     beam_angle: Option<f64>,
 }
 
-/// A stage-space triple: meters, right-handed Z-up, origin downstage-center
-/// on the deck, +x stage-left, +y upstage, +z up. (For a rotation, degrees.)
-pub type Vec3 = [f64; 3];
+pub use super::geometry::Vec3;
 
 impl Fixture {
     /// Creates a new fixture.

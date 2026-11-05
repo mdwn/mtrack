@@ -13,7 +13,6 @@
 //
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::time::Duration;
@@ -23,6 +22,8 @@ use tracing::{error, info, warn};
 use super::engine::Engine;
 use crate::lighting::validation::validate_light_shows;
 use crate::util::FileStamp;
+use crate::webui::state::to_json;
+use crate::webui::wire::messages::{ShowReload, SocketMessage};
 
 /// Handle to a running file watcher, shuts down when dropped.
 pub struct WatcherHandle {
@@ -165,20 +166,16 @@ pub fn start_watching(
                         }
                         Ok(true) => {
                             info!("Light show reloaded successfully");
-                            let msg = json!({
-                                "type": "reload",
-                                "status": "ok",
-                            });
-                            let _ = broadcast_tx.send(msg.to_string());
+                            let _ =
+                                broadcast_tx.send(to_json(&SocketMessage::Reload(ShowReload::Ok)));
                         }
                         Err(e) => {
                             warn!("Light show reload failed: {}", e);
-                            let msg = json!({
-                                "type": "reload",
-                                "status": "error",
-                                "error": e.to_string(),
-                            });
-                            let _ = broadcast_tx.send(msg.to_string());
+                            let _ = broadcast_tx.send(to_json(&SocketMessage::Reload(
+                                ShowReload::Error {
+                                    error: e.to_string(),
+                                },
+                            )));
                         }
                     }
                 }

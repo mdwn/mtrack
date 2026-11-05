@@ -16,6 +16,7 @@ mod audio;
 mod controller;
 mod dmx;
 mod error;
+mod fade;
 mod hostname;
 pub mod lighting;
 pub mod metronome;
@@ -29,6 +30,7 @@ mod player;
 mod playlist;
 mod profile;
 pub mod samples;
+mod section;
 mod song;
 mod statusevents;
 pub mod store;
@@ -67,7 +69,7 @@ pub use self::player::{MetronomeDefaults, Player};
 #[allow(unused_imports)]
 pub use self::playlist::{
     AutoPlayConfig, ConfiguredEntry, EntryFades, EntryTransitions, Fade, FadeConfig, FadeCurve,
-    Playlist, PlaylistEntry,
+    FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;
@@ -79,7 +81,8 @@ pub use self::samples::{
     ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
-pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section, Song};
+pub use self::section::Section;
+pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};

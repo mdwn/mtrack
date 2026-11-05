@@ -19,6 +19,11 @@
    * Every operation is one venue save, made through the plan's own `persist`
    * so it and a drag can never race, and the plan redraws from the reload.
    */
+  import type {
+    FixtureMetadata,
+    Vec3,
+    VenueMetadata,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
@@ -47,11 +52,6 @@
   import { isRefused } from "../../lib/lighting/modes";
   import { rules } from "../../lib/rules";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
-  import type {
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
-  } from "../../lib/ws/stores";
   import {
     BEARINGS,
     MOVER_MOUNTINGS,

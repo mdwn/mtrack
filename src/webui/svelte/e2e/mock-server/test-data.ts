@@ -12,6 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type {
+  FixtureMetadata,
+  SocketMessage,
+} from "../../src/gen/rules/mtrack_rules";
+
 export const SONGS = {
   songs: [
     {
@@ -302,20 +307,32 @@ export const PLAYBACK_STATE = {
   song_duration_ms: 180000,
   playlist_name: "setlist",
   playlist_position: 0,
+  playlist_off_list: false,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
-    { name: "kick", output_channels: [0, 1], gain_db: 0 },
-    { name: "snare", output_channels: [2, 3], gain_db: -6 },
-    { name: "bass", output_channels: [4, 5], gain_db: -60 },
+    { name: "kick", output_channels: [0, 1], gain_db: 0, muted: false },
+    { name: "snare", output_channels: [2, 3], gain_db: -6, muted: false },
+    { name: "bass", output_channels: [4, 5], gain_db: -60, muted: false },
   ],
   available_playlists: ["all_songs", "setlist"],
   persisted_playlist_name: "setlist",
   locked: false,
+  hardware_reload_started: 0,
+  hardware_reload_refused: [],
+  process_id: "1",
   beat_grid: null,
   looping: false,
   available_sections: [],
   active_section: null,
-};
+  reactive_loop_state: { state: "idle" },
+  pending_start_ms: null,
+  pilot_hints: [],
+  tempo: null,
+  auto_play: null,
+  ending: null,
+  ambient: null,
+  next: null,
+} satisfies SocketMessage;
 
 /** The readiness facts of a rig where everything lines up. Specs that need a
  *  problem route their own copy of this with `page.route`; nothing mutates it. */
@@ -473,39 +490,54 @@ export const FIT = {
   },
 };
 
+/** A fixture as the metadata message carries it, unplaced. */
+function metadataFixture(
+  type: string,
+  tags: string[],
+  more: Partial<FixtureMetadata> = {},
+): FixtureMetadata {
+  return {
+    tags,
+    type,
+    position: null,
+    rotation: null,
+    beam_angle: null,
+    rig: null,
+    capabilities: [],
+    cells: [],
+    ...more,
+  };
+}
+
 export const METADATA_STATE = {
   type: "metadata",
   fixtures: {
-    "front-left": {
-      tags: ["front", "left"],
-      type: "par",
+    "front-left": metadataFixture("par", ["front", "left"], {
       capabilities: ["color"],
-    },
-    "front-right": {
-      tags: ["front", "right"],
-      type: "par",
+    }),
+    "front-right": metadataFixture("par", ["front", "right"], {
       capabilities: ["color"],
-    },
+    }),
   },
-};
+  venue: null,
+} satisfies SocketMessage;
 
 /** The same venue with a three-cell pixel bar beside the pars. */
 export const PIXEL_METADATA_STATE = {
   type: "metadata",
   fixtures: {
-    "front-left": { tags: ["front", "left"], type: "par" },
-    "front-right": { tags: ["front", "right"], type: "par" },
-    bar: {
-      tags: ["bar"],
-      type: "PixelBar",
+    "front-left": metadataFixture("par", ["front", "left"]),
+    "front-right": metadataFixture("par", ["front", "right"]),
+    bar: metadataFixture("PixelBar", ["bar"], {
       cells: [
         { name: "1", offset: [-0.3, 0, 0] },
         { name: "2", offset: [0, 0, 0] },
         { name: "3", offset: [0.3, 0, 0] },
       ],
-    },
+    }),
   },
-};
+  venue: null,
+} satisfies SocketMessage;
 
 /** A state frame in which a per-cell effect drives the bar: red, green,
  *  blue along its cells over a white bed. */
@@ -517,6 +549,7 @@ export const PIXEL_STATE = {
     bar: { red: 255, green: 255, blue: 255, dimmer: 255, strobe: 0 },
   },
   active_effects: ["rainbow"],
+  poses: {},
   cells: {
     bar: {
       "1": { red: 255, green: 0, blue: 0 },
@@ -524,7 +557,9 @@ export const PIXEL_STATE = {
       "3": { red: 0, green: 0, blue: 255 },
     },
   },
-};
+  strobe_rates: {},
+  under_test: [],
+} satisfies SocketMessage;
 
 /** A mover's rig as the asset store writes it: base, yoke (pan), head
  *  (tilt), one beam. */
@@ -652,7 +687,11 @@ export const FIXTURE_STATE = {
     "front-right": { red: 0, green: 255, blue: 64, dimmer: 180, strobe: 0 },
   },
   active_effects: ["color_wash", "strobe_pulse"],
-};
+  poses: {},
+  cells: {},
+  strobe_rates: {},
+  under_test: [],
+} satisfies SocketMessage;
 
 export const WAVEFORM_DATA = {
   type: "waveform",
@@ -662,7 +701,7 @@ export const WAVEFORM_DATA = {
     { name: "snare", peaks: [0.1, 0.4, 0.7, 0.2, 0.6] },
     { name: "bass", peaks: [0.6, 0.5, 0.4, 0.7, 0.3] },
   ],
-};
+} satisfies SocketMessage;
 
 export const LOG_LINES = {
   type: "logs",
@@ -676,7 +715,7 @@ export const LOG_LINES = {
       message: "Web UI listening on 0.0.0.0:8080",
     },
   ],
-};
+} satisfies SocketMessage;
 
 /** An MVR as the inspect endpoint reports it (lighting UI design section 11):
  *  a three-fixture rig over a deck 6 m wide and 4 m deep, whose front edge is

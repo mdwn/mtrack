@@ -18,7 +18,7 @@
  * the page applies to them.
  */
 
-import type { Vec3 } from "../api/config";
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
 import { arr, hasAny, isObj, obj, objOrNull, str, type Obj } from "./answer";
 
 export type Want = "move" | "color" | "strobe" | "cells" | "dimmer";

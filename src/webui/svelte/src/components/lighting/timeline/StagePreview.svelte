@@ -13,6 +13,11 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    FixtureMetadata,
+    StageValues,
+    VenueMetadata,
+  } from "../../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { get } from "svelte/store";
@@ -23,11 +28,6 @@
     strobeRateStore,
     venueStore,
     poseStore,
-  } from "../../../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    VenueMetadata,
   } from "../../../lib/ws/stores";
   import {
     beamEnd,
@@ -161,7 +161,7 @@
     if (resized) draw(get(fixtureStore));
   }
 
-  function draw(fixtureStates: Record<string, FixtureChannels>) {
+  function draw(fixtureStates: StageValues["fixtures"]) {
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;

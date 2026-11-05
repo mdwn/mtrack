@@ -12,14 +12,14 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+
 /**
  * Arranging a selection on the plan: align, space, mirror, nudge. Pure
  * functions over `{name, position}` that return the new positions; the caller
  * writes them through the venue save. Meters, +x stage-left, +y upstage;
  * results are rounded to the millimeter. Z is never touched.
  */
-
-export type Vec3 = [number, number, number];
 
 export interface Placed {
   name: string;

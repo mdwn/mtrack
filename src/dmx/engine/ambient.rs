@@ -32,6 +32,7 @@ use std::{
 
 use tracing::{error, info};
 
+pub use super::ambient_mode::AmbientMode;
 use super::{timeline::Fired, Engine};
 use crate::{
     config::ambient::{PlaylistAmbient, ResolvedAmbient},
@@ -43,41 +44,6 @@ use crate::{
         EffectEngine,
     },
 };
-
-/// What the operator asks of ambient light. Set at run time and not kept:
-/// every start is [`AmbientMode::Auto`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AmbientMode {
-    /// Between songs and under a song without lights, after its delay.
-    #[default]
-    Auto,
-    /// Now, over whatever plays -- a song's own show included -- until the
-    /// mode goes back to `Auto`.
-    On,
-    /// None: ambient playing fades out to dark. Songs light as ever.
-    Off,
-}
-
-impl AmbientMode {
-    /// The mode's name: `auto`, `on` or `off`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AmbientMode::Auto => "auto",
-            AmbientMode::On => "on",
-            AmbientMode::Off => "off",
-        }
-    }
-
-    /// The mode named `name` (`auto`, `on` or `off`, any case).
-    pub fn parse(name: &str) -> Option<AmbientMode> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(AmbientMode::Auto),
-            "on" => Some(AmbientMode::On),
-            "off" => Some(AmbientMode::Off),
-            _ => None,
-        }
-    }
-}
 
 /// Ambient light ready to play: its settings and its parsed shows.
 #[derive(Clone)]

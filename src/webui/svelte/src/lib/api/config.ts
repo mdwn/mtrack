@@ -12,11 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+import type {
+  FixtureMetadata,
+  VenueMetadata,
+} from "../../gen/rules/mtrack_rules";
 import type { ConfigReload } from "../configReload";
 import { BadAnswerError, readJson } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import { parseFit, type Fit } from "../lighting/fit";
-import type { FixtureMetadata, VenueMetadata } from "../ws/stores";
 import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
   get,
@@ -347,9 +351,6 @@ export interface FixtureTypeData {
   min_strobe_frequency: number | null;
   strobe_dmx_offset: number | null;
 }
-
-/** A stage triple: meters (or degrees, for a rotation). */
-export type Vec3 = [number, number, number];
 
 export interface FixtureData {
   name: string;

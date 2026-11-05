@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::json;
 use tokio::sync::{broadcast, watch};
 use tokio::time;
 use tracing::{info, warn};
@@ -29,6 +28,7 @@ use crate::audio::sample_source::audio::AudioSampleSource;
 use crate::audio::sample_source::traits::SampleSource;
 use crate::player::Player;
 use crate::tui::logging::get_log_buffer;
+use crate::webui::wire::messages as wire;
 
 /// Per-track info needed for waveform computation: (track_name, file_path, file_channel).
 pub type TrackInfo = (String, PathBuf, u16);
@@ -170,52 +170,40 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 .unwrap_or_default();
             // Output tracks include virtual tracks (e.g. the metronome)
             // so they show up in the gains mixer like any other track.
-            let tracks: Vec<serde_json::Value> = current_song
+            let tracks: Vec<wire::TrackInfo> = current_song
                 .output_track_names()
-                .iter()
-                .map(|name| {
-                    let output_channels = mappings
+                .into_iter()
+                .map(|name| wire::TrackInfo {
+                    output_channels: mappings
                         .as_ref()
-                        .and_then(|m| m.get(name))
+                        .and_then(|m| m.get(&name))
                         .cloned()
-                        .unwrap_or_default();
-                    json!({
-                        "name": name,
-                        "output_channels": output_channels,
-                        "gain_db": track_gains.get(name).copied().unwrap_or(0.0),
-                        "muted": track_mutes.get(name).copied().unwrap_or(false),
-                    })
+                        .unwrap_or_default(),
+                    gain_db: track_gains.get(&name).copied().unwrap_or(0.0),
+                    muted: track_mutes.get(&name).copied().unwrap_or(false),
+                    name,
                 })
                 .collect();
-            let beat_grid = current_song.beat_grid().map(|g| {
-                let mut grid = json!({
-                    "beats": g.beats,
-                    "measure_starts": g.measure_starts,
-                });
+            let beat_grid = current_song.beat_grid().map(|g| wire::PlaybackGrid {
+                grid: g.clone(),
                 // Resolved per-beat accent levels for the visual metronome,
                 // matching what the audio metronome plays.
-                if let Some(metronome) = current_song.metronome() {
-                    grid["accent_levels"] =
-                        json!(crate::audio::metronome::accent_levels(g, metronome));
-                }
-                grid
+                accent_levels: current_song
+                    .metronome()
+                    .map(|metronome| crate::audio::metronome::accent_levels(g, metronome)),
             });
 
             let summary = current_song.summary();
-            let available_sections: Vec<serde_json::Value> =
-                summary.sections.iter().map(|s| json!(s)).collect();
 
-            let pilot_hints: Vec<serde_json::Value> = current_song
+            let pilot_hints: Vec<wire::PilotHint> = current_song
                 .pilot_hints()
                 .iter()
-                .map(|h| {
-                    json!({
-                        "label": h.label,
-                        "at_ms": (h.at_secs * 1000.0).max(0.0) as u64,
-                        "start_ms": (h.start_secs * 1000.0).max(0.0) as u64,
-                        "end_ms": (h.end_secs * 1000.0).max(0.0) as u64,
-                        "has_audio": h.file.is_some(),
-                    })
+                .map(|h| wire::PilotHint {
+                    label: h.label.clone(),
+                    at_ms: (h.at_secs * 1000.0).max(0.0) as u64,
+                    start_ms: (h.start_secs * 1000.0).max(0.0) as u64,
+                    end_ms: (h.end_secs * 1000.0).max(0.0) as u64,
+                    has_audio: h.file.is_some(),
                 })
                 .collect();
 
@@ -225,7 +213,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 tracks,
                 beat_grid,
                 current_song.loop_playback(),
-                available_sections,
+                summary.sections,
                 pilot_hints,
             )
         } else {
@@ -235,36 +223,29 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let available_playlists = player.list_playlists();
         let persisted_playlist_name = player.persisted_playlist_name();
 
-        // Get active section loop info.
-        let active_section = status.active_section.as_ref().map(|s| {
-            json!({
-                "name": s.name,
-                "start_ms": s.start_time.as_millis() as u64,
-                "end_ms": s.end_time.as_millis() as u64,
-            })
+        let active_section = status.active_section.as_ref().map(|s| wire::ActiveSection {
+            name: s.name.clone(),
+            start_ms: s.start_time.as_millis() as u64,
+            end_ms: s.end_time.as_millis() as u64,
         });
 
-        // Get reactive loop state info.
         let reactive_loop_state = {
             use crate::player::ReactiveLoopState;
+            let section_name = |b: &crate::player::SectionBounds| b.name.clone();
             match &status.reactive_loop_state {
-                ReactiveLoopState::Idle => json!({"state": "idle"}),
-                ReactiveLoopState::SectionOffered(b) => json!({
-                    "state": "section_offered",
-                    "section_name": b.name,
-                }),
-                ReactiveLoopState::LoopArmed(b) => json!({
-                    "state": "loop_armed",
-                    "section_name": b.name,
-                }),
-                ReactiveLoopState::Looping(b) => json!({
-                    "state": "looping",
-                    "section_name": b.name,
-                }),
-                ReactiveLoopState::BreakRequested(b) => json!({
-                    "state": "break_requested",
-                    "section_name": b.name,
-                }),
+                ReactiveLoopState::Idle => wire::LoopState::Idle,
+                ReactiveLoopState::SectionOffered(b) => wire::LoopState::SectionOffered {
+                    section_name: section_name(b),
+                },
+                ReactiveLoopState::LoopArmed(b) => wire::LoopState::LoopArmed {
+                    section_name: section_name(b),
+                },
+                ReactiveLoopState::Looping(b) => wire::LoopState::Looping {
+                    section_name: section_name(b),
+                },
+                ReactiveLoopState::BreakRequested(b) => wire::LoopState::BreakRequested {
+                    section_name: section_name(b),
+                },
             }
         };
         // Current tempo and meter from the song's tempo map, sampled at the
@@ -273,73 +254,78 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             song.tempo_map().map(|map| {
                 let at = Duration::from_millis(elapsed_ms);
                 let time_signature = map.time_signature_at_time(at, 0.0);
-                json!({
-                    "bpm": map.bpm_at_time(at, 0.0),
-                    "time_signature": [time_signature.numerator, time_signature.denominator],
-                })
+                wire::PlaybackTempo {
+                    bpm: map.bpm_at_time(at, 0.0),
+                    time_signature: (time_signature.numerator, time_signature.denominator),
+                }
             })
         });
 
-        let msg = json!({
-            "type": "playback",
-            "is_playing": is_playing,
-            "elapsed_ms": elapsed_ms,
-            "song_name": song_name,
-            "song_duration_ms": song_duration_ms,
-            "playlist_name": playlist_name,
-            "playlist_position": playlist_position,
-            "playlist_off_list": playlist_off_list,
-            "playlist_songs": playlist_songs,
-            "tracks": tracks,
-            "available_playlists": available_playlists,
-            "persisted_playlist_name": persisted_playlist_name,
-            "locked": status.locked,
-            // The deferred hardware reloads started (or refused): a config
-            // save's deferral is over once this reaches the generation its
-            // reply named. What each device then does is the hardware
-            // status's to say.
-            "hardware_reload_started": status.deferred_reloads.started,
-            "hardware_reload_refused": status
+        let msg = wire::SocketMessage::Playback(Box::new(wire::Playback {
+            is_playing,
+            elapsed_ms,
+            song_name,
+            song_duration_ms,
+            playlist_name,
+            playlist_position,
+            playlist_off_list,
+            playlist_songs,
+            tracks,
+            available_playlists,
+            persisted_playlist_name,
+            locked: status.locked,
+            hardware_reload_started: status.deferred_reloads.started,
+            hardware_reload_refused: status
                 .deferred_reloads
                 .refused
                 .iter()
-                .map(|(generation, error)| json!({"generation": generation, "error": error}))
-                .collect::<Vec<_>>(),
-            // Which process the generations are this one's: a restart counts
-            // from none again. A string, as it is more than a JSON number
-            // holds exactly.
-            "process_id": crate::player::process_id().to_string(),
-            "beat_grid": beat_grid,
-            "available_sections": available_sections,
-            "active_section": active_section,
-            "looping": looping,
-            "reactive_loop_state": reactive_loop_state,
-            "pending_start_ms": status.pending_start.map(|d| d.as_millis() as u64),
-            "pilot_hints": pilot_hints,
-            "tempo": tempo,
-            "auto_play": status.auto_play.as_ref().map(|(song, starts_in)| json!({
-                "song": song,
-                "starts_in_ms": starts_in.as_millis() as u64,
-            })),
-            "ending": status.ending.as_ref().map(|(song, remaining)| json!({
-                "song": song,
-                "remaining_ms": remaining.as_millis() as u64,
-            })),
+                .map(|(generation, error)| wire::RefusedReload {
+                    generation: *generation,
+                    error: error.clone(),
+                })
+                .collect(),
+            process_id: crate::player::process_id().to_string(),
+            beat_grid,
+            available_sections,
+            active_section,
+            looping,
+            reactive_loop_state,
+            pending_start_ms: status.pending_start.map(|d| d.as_millis() as u64),
+            pilot_hints,
+            tempo,
+            auto_play: status
+                .auto_play
+                .as_ref()
+                .map(|(song, starts_in)| wire::AutoPlay {
+                    song: song.clone(),
+                    starts_in_ms: starts_in.as_millis() as u64,
+                }),
+            ending: status
+                .ending
+                .as_ref()
+                .map(|(song, remaining)| wire::Ending {
+                    song: song.clone(),
+                    remaining_ms: remaining.as_millis() as u64,
+                }),
             // With a DMX engine, whatever the mode, so the card can show it;
             // left out, as without one, when the read did not answer.
-            "ambient": match &status.ambient {
-                Some(crate::player::DmxRead::Read(ambient)) => json!({
-                    "mode": ambient.report.mode.as_str(),
-                    "source": ambient.source.map(|s| s.as_str()),
-                    "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
-                    "state": ambient.report.state,
+            ambient: match &status.ambient {
+                Some(crate::player::DmxRead::Read(ambient)) => Some(wire::AmbientState {
+                    mode: ambient.report.mode,
+                    source: ambient.source,
+                    show: ambient
+                        .report
+                        .show
+                        .as_ref()
+                        .map(|show| show.display().to_string()),
+                    state: ambient.report.state.to_string(),
                 }),
-                _ => serde_json::Value::Null,
+                _ => None,
             },
-            "next": next_json(&playlist, is_playing),
-        });
+            next: next_up(&playlist, is_playing),
+        }));
 
-        let _ = tx.send(msg.to_string());
+        let _ = tx.send(to_json(&msg));
     }
 }
 
@@ -350,43 +336,48 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 /// loop break (Play or Next), which takes the playlist's fades; otherwise
 /// the next song starts by itself after its auto-play gap, or waits for
 /// Play.
-fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
-    let Some(current) = playlist.current() else {
-        return serde_json::Value::Null;
-    };
+fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wire::NextUp> {
+    let current = playlist.current()?;
+    let status =
+        |fade: &Option<crate::config::Fade>| fade.as_ref().map(crate::config::Fade::status);
     let Some(position) = playlist.next_entry() else {
         // A looping song playing at the end of the list: Next (or Previous
         // on the first entry) ends it over its entry's `fade_out`, which the
         // dashboard offers and names (#579).
         if is_playing && current.loop_playback() {
-            let fade_out = playlist.loop_break(false).fade_out;
-            return json!({
-                "song": null,
-                "ends_loop": true,
-                "fade_out": fade_out.as_ref().map(crate::config::Fade::to_json),
+            return Some(wire::NextUp {
+                ends_loop: Some(true),
+                fade_out: Some(status(&playlist.loop_break(false).fade_out)),
+                ..Default::default()
             });
         }
-        return json!({"song": null});
+        return Some(wire::NextUp::default());
     };
-    let song = &playlist.songs()[position];
     if is_playing && current.loop_playback() {
         let handover = playlist.loop_break(false);
-        return json!({
-            "song": handover.target.as_ref().map(|s| s.name().to_string()),
-            "breaks_loop": true,
-            "fade_out": handover.fade_out.as_ref().map(crate::config::Fade::to_json),
-            "fade_in": handover.fade_in.as_ref().map(crate::config::Fade::to_json),
-            "auto_play_ms": null,
+        return Some(wire::NextUp {
+            song: handover.target.as_ref().map(|s| s.name().to_string()),
+            breaks_loop: Some(true),
+            fade_out: Some(status(&handover.fade_out)),
+            fade_in: Some(status(&handover.fade_in)),
+            auto_play_ms: Some(None),
+            ..Default::default()
         });
     }
     let gap = playlist.entry_auto_play().get(position).copied().flatten();
-    json!({
-        "song": song,
-        "breaks_loop": false,
-        "fade_out": null,
-        "fade_in": null,
-        "auto_play_ms": gap.map(|gap| gap.as_millis() as u64),
+    Some(wire::NextUp {
+        song: Some(playlist.songs()[position].clone()),
+        breaks_loop: Some(false),
+        fade_out: Some(None),
+        fade_in: Some(None),
+        auto_play_ms: Some(gap.map(|gap| gap.as_millis() as u64)),
+        ..Default::default()
     })
+}
+
+/// A websocket message as sent.
+pub fn to_json(msg: &wire::SocketMessage) -> String {
+    serde_json::to_string(msg).unwrap_or_default()
 }
 
 /// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
@@ -410,67 +401,33 @@ pub async fn state_poller(
     }
 }
 
-/// The per-fixture maps of the `state` message — channel values, poses,
-/// per-cell values and strobe rates — from a snapshot's parts. The live
-/// message and the preview's evaluation both build them here, so the stage
+/// The stage at one instant, by fixture -- channel values, poses,
+/// per-cell values and strobe rates -- from a snapshot's parts. The live
+/// message and the preview's evaluation both build it here, so the stage
 /// views are fed the same shape either way and the two cannot drift apart.
-pub struct StateMaps {
-    /// Channel bytes by fixture, by canonical channel name.
-    pub fixtures: serde_json::Map<String, serde_json::Value>,
-    pub poses: serde_json::Map<String, serde_json::Value>,
-    pub cells: serde_json::Map<String, serde_json::Value>,
-    /// The rate each strobing fixture flashes at, in hertz, by fixture
-    /// ([`FixtureSnapshot::strobe_hz`](crate::state::FixtureSnapshot::strobe_hz)):
-    /// a map of its own, not a channel, so the byte maps stay bytes.
-    pub strobe_rates: serde_json::Map<String, serde_json::Value>,
-}
-
-pub fn state_maps(
+pub fn stage_frame(
     fixtures: &[crate::state::FixtureSnapshot],
     poses: &[crate::state::PoseSnapshot],
-) -> StateMaps {
-    let channels_by_fixture: serde_json::Map<String, serde_json::Value> = fixtures
-        .iter()
-        .map(|f| {
-            let channels: serde_json::Map<String, serde_json::Value> = f
-                .channels
-                .iter()
-                .map(|(k, v)| (k.clone(), json!(*v)))
-                .collect();
-            (f.name.clone(), serde_json::Value::Object(channels))
-        })
-        .collect();
-
-    // The rate a strobing fixture flashes at: the stage views flash at it
-    // rather than guess from the byte.
-    let strobe_rates: serde_json::Map<String, serde_json::Value> = fixtures
-        .iter()
-        .filter_map(|f| f.strobe_hz.map(|hz| (f.name.clone(), json!(hz))))
-        .collect();
-
-    let poses: serde_json::Map<String, serde_json::Value> = poses
-        .iter()
-        .map(|p| {
-            (
-                p.name.clone(),
-                json!({"pan": p.pan, "tilt": p.tilt, "aim": p.aim, "floor": p.floor}),
-            )
-        })
-        .collect();
-
-    // Per-cell values, by fixture then cell, only for fixtures a
-    // per-cell effect is driving this frame (design §17.4).
-    let cells: serde_json::Map<String, serde_json::Value> = fixtures
-        .iter()
-        .filter(|f| !f.cells.is_empty())
-        .map(|f| (f.name.clone(), json!(f.cells)))
-        .collect();
-
-    StateMaps {
-        fixtures: channels_by_fixture,
-        poses,
-        cells,
-        strobe_rates,
+) -> wire::StageValues {
+    wire::StageValues {
+        fixtures: fixtures
+            .iter()
+            .map(|f| (f.name.clone(), f.channels.clone()))
+            .collect(),
+        poses: poses.iter().map(|p| (p.name.clone(), p.clone())).collect(),
+        // Per-cell values, by fixture then cell, only for fixtures a
+        // per-cell effect is driving this frame (design §17.4).
+        cells: fixtures
+            .iter()
+            .filter(|f| !f.cells.is_empty())
+            .map(|f| (f.name.clone(), f.cells.clone()))
+            .collect(),
+        // The rate a strobing fixture flashes at: the stage views flash at
+        // it rather than guess from the byte.
+        strobe_rates: fixtures
+            .iter()
+            .filter_map(|f| f.strobe_hz.map(|hz| (f.name.clone(), hz)))
+            .collect(),
     }
 }
 
@@ -478,17 +435,11 @@ pub fn state_maps(
 /// client on connect, so one that joins while nothing is changing (an idle
 /// player) still learns the current values.
 pub fn build_state_json(snapshot: &crate::state::StateSnapshot) -> String {
-    let maps = state_maps(&snapshot.fixtures, &snapshot.poses);
-    json!({
-        "type": "state",
-        "fixtures": maps.fixtures,
-        "active_effects": snapshot.active_effects,
-        "poses": maps.poses,
-        "cells": maps.cells,
-        "strobe_rates": maps.strobe_rates,
-        "under_test": snapshot.under_test,
-    })
-    .to_string()
+    to_json(&wire::SocketMessage::State(wire::StageState {
+        frame: stage_frame(&snapshot.fixtures, &snapshot.poses),
+        active_effects: snapshot.active_effects.clone(),
+        under_test: snapshot.under_test.clone(),
+    }))
 }
 
 /// Polls the log ring buffer at ~2Hz and broadcasts log lines.
@@ -528,18 +479,18 @@ pub async fn log_poller(tx: broadcast::Sender<String>) {
                 return (Vec::new(), adjusted_skip);
             }
 
-            let lines: Vec<serde_json::Value> = buf
+            let lines: Vec<wire::LogLine> = buf
                 .iter()
                 .skip(adjusted_skip)
                 .map(|line| {
                     // Parse "LEVEL target: message" format from TuiLogLayer
                     let (level, rest) = line.split_once(' ').unwrap_or(("INFO", line));
                     let (target, message) = rest.split_once(": ").unwrap_or(("", rest));
-                    json!({
-                        "level": level,
-                        "target": target,
-                        "message": message,
-                    })
+                    wire::LogLine {
+                        level: level.to_string(),
+                        target: target.to_string(),
+                        message: message.to_string(),
+                    }
                 })
                 .collect();
 
@@ -557,12 +508,7 @@ pub async fn log_poller(tx: broadcast::Sender<String>) {
             continue;
         }
 
-        let msg = json!({
-            "type": "logs",
-            "lines": new_lines,
-        });
-
-        let _ = tx.send(msg.to_string());
+        let _ = tx.send(to_json(&wire::SocketMessage::Logs { lines: new_lines }));
     }
 }
 
@@ -671,24 +617,16 @@ pub async fn waveform_poller(
                 .await
                 .unwrap_or_default();
 
-        let tracks_json: Vec<serde_json::Value> = track_peaks
+        let tracks = track_peaks
             .into_iter()
             .chain(virtual_peaks)
-            .map(|(name, peaks)| {
-                json!({
-                    "name": name,
-                    "peaks": peaks,
-                })
-            })
+            .map(|(name, peaks)| wire::TrackPeaks { name, peaks })
             .collect();
 
-        let msg = json!({
-            "type": "waveform",
-            "song_name": song_name,
-            "tracks": tracks_json,
-        });
-
-        let _ = tx.send(msg.to_string());
+        let _ = tx.send(to_json(&wire::SocketMessage::Waveform(wire::Waveform {
+            song_name,
+            tracks,
+        })));
     }
 }
 
@@ -711,15 +649,13 @@ pub async fn config_watcher(player: Arc<Player>, tx: broadcast::Sender<String>) 
                 if tx.receiver_count() == 0 {
                     continue;
                 }
-                let msg = json!({ "type": "config_changed" });
-                let _ = tx.send(msg.to_string());
+                let _ = tx.send(to_json(&wire::SocketMessage::ConfigChanged));
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("config_watcher missed {} change notifications", n);
                 // Still send one notification so clients know to re-fetch.
                 if tx.receiver_count() > 0 {
-                    let msg = json!({ "type": "config_changed" });
-                    let _ = tx.send(msg.to_string());
+                    let _ = tx.send(to_json(&wire::SocketMessage::ConfigChanged));
                 }
             }
             Err(broadcast::error::RecvError::Closed) => break,
@@ -969,8 +905,10 @@ fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: u
 pub fn build_metadata_json(
     lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
 ) -> String {
-    let mut fixtures = serde_json::Map::new();
-    let mut venue_meta = serde_json::Value::Null;
+    let mut metadata = wire::StageMetadata {
+        fixtures: Default::default(),
+        venue: None,
+    };
 
     if let Some(ls) = lighting_system {
         let system = ls.lock();
@@ -979,59 +917,43 @@ pub fn build_metadata_json(
 
             for fi in &fixture_infos {
                 let tags = venue_fixtures.get(&fi.name).cloned().unwrap_or_default();
-
-                // Position and rotation are the venue's stage geometry, when
-                // it has any; the stage view draws a plot from them and
-                // falls back to the tag layout without.
-                let fixture_meta = json!({
-                    "tags": tags,
-                    "type": fi.fixture_type,
-                    "position": fi.position,
-                    "rotation": fi.rotation,
-                    // Degrees the venue says this unit really throws, or
-                    // null for its type's own; a drawing hint only.
-                    "beam_angle": fi.beam_angle,
-                    // The rig model's path under /api/lighting/assets/,
-                    // when the type has one; the 3D view draws a generic
-                    // body without.
-                    "rig": fi.rig,
-                    // What the fixture can do (`color`, `pan_tilt`, `strobe`,
-                    // `cells`), named as the fit endpoint names them; the
-                    // Venues inspector tells a mover from a fixed fixture by
-                    // it, whatever its type's channels look like.
-                    "capabilities": crate::lighting::fit::FitFixture::from_info(fi, &tags)
-                        .capability_names(),
-                    // The cells of a pixel fixture, in the manufacturer's
-                    // order, with their offsets in the fixture's frame:
-                    // the plot draws one segment each.
-                    "cells": fi
+                let capabilities = crate::lighting::fit::FitFixture::from_info(fi, &tags)
+                    .capability_names()
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                let fixture = wire::FixtureMetadata {
+                    tags,
+                    fixture_type: fi.fixture_type.clone(),
+                    position: fi.position,
+                    rotation: fi.rotation,
+                    beam_angle: fi.beam_angle,
+                    rig: fi.rig.clone(),
+                    capabilities,
+                    cells: fi
                         .cells
                         .iter()
-                        .map(|c| json!({"name": c.name, "offset": c.offset}))
-                        .collect::<Vec<_>>(),
-                });
-                fixtures.insert(fi.name.clone(), fixture_meta);
+                        .map(|c| wire::CellPlacement {
+                            name: c.name.clone(),
+                            offset: c.offset,
+                        })
+                        .collect(),
+                };
+                metadata.fixtures.insert(fi.name.clone(), fixture);
             }
         }
         if let Some(venue) = system.get_current_venue() {
-            venue_meta = json!({
-                "name": venue.name(),
-                "dir": system.venues_dir(),
-                "focus_points": venue.focus_points(),
-                // The scenery file under /api/lighting/assets/, when the
-                // venue came from an MVR; the 3D view draws it.
-                "scenery": system.scenery(venue.name()),
-                "scenery_error": system.scenery_error(venue.name()),
+            metadata.venue = Some(wire::VenueMetadata {
+                name: venue.name().to_string(),
+                dir: system.venues_dir().map(String::from),
+                focus_points: venue.focus_points().clone(),
+                scenery: system.scenery(venue.name()).map(String::from),
+                scenery_error: system.scenery_error(venue.name()).map(String::from),
             });
         }
     }
 
-    let msg = json!({
-        "type": "metadata",
-        "fixtures": fixtures,
-        "venue": venue_meta,
-    });
-    msg.to_string()
+    to_json(&wire::SocketMessage::Metadata(metadata))
 }
 
 /// Extracts fixture names -> tags from the lighting system's current venue.
@@ -1050,6 +972,11 @@ fn get_venue_fixture_tags(
 #[cfg(test)]
 mod test {
     use super::*;
+    use serde_json::json;
+
+    fn next_json(playlist: &crate::playlist::Playlist, is_playing: bool) -> serde_json::Value {
+        json!(next_up(playlist, is_playing))
+    }
 
     #[test]
     fn new_waveform_cache_is_empty() {
@@ -1474,7 +1401,7 @@ metronome: {}
     /// A strobing fixture's rate rides in a map of its own beside the
     /// `fixtures` byte map — never as a channel — so the stage views flash
     /// at it instead of guessing from the byte (live message and
-    /// evaluation alike, through `state_maps`; which strobes carry a rate
+    /// evaluation alike, through `stage_frame`; which strobes carry a rate
     /// is the snapshot's rule, `StrobeRates`).
     #[test]
     fn state_maps_carry_the_strobe_rate_beside_the_bytes() {
@@ -1492,12 +1419,9 @@ metronome: {}
                 cells: Default::default(),
             },
         ];
-        let maps = state_maps(&fixtures, &[]);
-        assert_eq!(maps.fixtures["brick"], json!({"strobe": 200}));
-        assert_eq!(
-            maps.strobe_rates,
-            json!({"brick": 12.5}).as_object().cloned().unwrap()
-        );
+        let maps = stage_frame(&fixtures, &[]);
+        assert_eq!(json!(maps.fixtures["brick"]), json!({"strobe": 200}));
+        assert_eq!(json!(maps.strobe_rates), json!({"brick": 12.5}));
         let message: serde_json::Value =
             serde_json::from_str(&build_state_json(&crate::state::StateSnapshot {
                 fixtures,
@@ -2299,5 +2223,446 @@ metronome: {}
         // Should complete quickly since there's no store.
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "config_watcher should exit when no store");
+    }
+
+    /// The websocket's messages are what the `json!` they replaced built:
+    /// that `json!`, kept here as the oracle, over representative values.
+    mod wire_oracle {
+        use super::*;
+        use crate::config::{FadeCurve, FadeStatus, Section};
+        use crate::dmx::engine::AmbientMode;
+        use crate::playlist::AmbientSource;
+
+        fn value(msg: &wire::SocketMessage) -> serde_json::Value {
+            serde_json::from_str(&to_json(msg)).unwrap()
+        }
+
+        fn fade() -> FadeStatus {
+            FadeStatus {
+                length: "1measure".to_string(),
+                curve: FadeCurve::EqualPower,
+                exclude: Some(vec!["click".to_string()]),
+                lights: None,
+            }
+        }
+
+        fn old_fade(f: &FadeStatus) -> serde_json::Value {
+            json!({
+                "length": f.length,
+                "curve": match f.curve {
+                    FadeCurve::EqualPower => "equal_power",
+                    FadeCurve::Linear => "linear",
+                },
+                "exclude": f.exclude,
+                "lights": f.lights,
+            })
+        }
+
+        #[test]
+        fn playback() {
+            let grid = crate::audio::beat_grid::BeatGrid {
+                beats: vec![0.0, 0.5, 1.0, 1.5, 2.0],
+                measure_starts: vec![0, 4],
+            };
+            let section = Section {
+                name: "verse".to_string(),
+                start_measure: 1,
+                end_measure: 2,
+                start_beat: Some(2.5),
+                end_beat: None,
+                color: None,
+            };
+            for (with_options, loop_state, old_loop_state) in [
+                (true, wire::LoopState::Idle, json!({"state": "idle"})),
+                (
+                    false,
+                    wire::LoopState::LoopArmed {
+                        section_name: "verse".to_string(),
+                    },
+                    json!({"state": "loop_armed", "section_name": "verse"}),
+                ),
+                (
+                    true,
+                    wire::LoopState::BreakRequested {
+                        section_name: "verse".to_string(),
+                    },
+                    json!({"state": "break_requested", "section_name": "verse"}),
+                ),
+            ] {
+                let accent_levels = with_options.then(|| vec![3, 1, 1, 1, 3]);
+                let msg = wire::SocketMessage::Playback(Box::new(wire::Playback {
+                    is_playing: with_options,
+                    elapsed_ms: 1234,
+                    song_name: "Song".to_string(),
+                    song_duration_ms: 60_000,
+                    playlist_name: "show".to_string(),
+                    playlist_position: 2,
+                    playlist_off_list: !with_options,
+                    playlist_songs: vec!["A".to_string(), "Song".to_string()],
+                    tracks: vec![wire::TrackInfo {
+                        name: "kick".to_string(),
+                        output_channels: vec![1, 2],
+                        gain_db: -3.0,
+                        muted: true,
+                    }],
+                    available_playlists: vec!["show".to_string()],
+                    persisted_playlist_name: "show".to_string(),
+                    locked: false,
+                    hardware_reload_started: 7,
+                    hardware_reload_refused: vec![wire::RefusedReload {
+                        generation: 6,
+                        error: "busy".to_string(),
+                    }],
+                    process_id: "18446744073709551615".to_string(),
+                    beat_grid: with_options.then(|| wire::PlaybackGrid {
+                        grid: grid.clone(),
+                        accent_levels: accent_levels.clone(),
+                    }),
+                    available_sections: vec![section.clone()],
+                    active_section: with_options.then(|| wire::ActiveSection {
+                        name: "verse".to_string(),
+                        start_ms: 2000,
+                        end_ms: 4000,
+                    }),
+                    looping: with_options,
+                    reactive_loop_state: loop_state,
+                    pending_start_ms: with_options.then_some(500),
+                    pilot_hints: vec![wire::PilotHint {
+                        label: "go".to_string(),
+                        at_ms: 1,
+                        start_ms: 0,
+                        end_ms: 1,
+                        has_audio: false,
+                    }],
+                    tempo: with_options.then_some(wire::PlaybackTempo {
+                        bpm: 120.0,
+                        time_signature: (7, 8),
+                    }),
+                    auto_play: with_options.then(|| wire::AutoPlay {
+                        song: "Next".to_string(),
+                        starts_in_ms: 900,
+                    }),
+                    ending: with_options.then(|| wire::Ending {
+                        song: "Song".to_string(),
+                        remaining_ms: 300,
+                    }),
+                    ambient: with_options.then(|| wire::AmbientState {
+                        mode: AmbientMode::On,
+                        source: Some(AmbientSource::Entry),
+                        show: None,
+                        state: "unavailable".to_string(),
+                    }),
+                    next: with_options.then(wire::NextUp::default),
+                }));
+                let old_grid = with_options.then(|| {
+                    let mut g = json!({
+                        "beats": grid.beats,
+                        "measure_starts": grid.measure_starts,
+                    });
+                    g["accent_levels"] = json!(accent_levels);
+                    g
+                });
+                // The section as `SongSummary` carried it: its unset beats
+                // and colour left out, as the song's YAML leaves them.
+                let old = json!({
+                    "type": "playback",
+                    "is_playing": with_options,
+                    "elapsed_ms": 1234,
+                    "song_name": "Song",
+                    "song_duration_ms": 60_000,
+                    "playlist_name": "show",
+                    "playlist_position": 2,
+                    "playlist_off_list": !with_options,
+                    "playlist_songs": ["A", "Song"],
+                    "tracks": [{"name": "kick", "output_channels": [1, 2], "gain_db": -3.0, "muted": true}],
+                    "available_playlists": ["show"],
+                    "persisted_playlist_name": "show",
+                    "locked": false,
+                    "hardware_reload_started": 7,
+                    "hardware_reload_refused": [json!({"generation": 6, "error": "busy"})],
+                    "process_id": u64::MAX.to_string(),
+                    "beat_grid": old_grid,
+                    "available_sections": [json!(section)],
+                    "active_section": with_options.then(|| json!({
+                        "name": "verse",
+                        "start_ms": 2000,
+                        "end_ms": 4000,
+                    })),
+                    "looping": with_options,
+                    "reactive_loop_state": old_loop_state,
+                    "pending_start_ms": with_options.then_some(500),
+                    "pilot_hints": [json!({
+                        "label": "go",
+                        "at_ms": 1,
+                        "start_ms": 0,
+                        "end_ms": 1,
+                        "has_audio": false,
+                    })],
+                    "tempo": with_options.then(|| json!({
+                        "bpm": 120.0,
+                        "time_signature": [7, 8],
+                    })),
+                    "auto_play": with_options.then(|| json!({
+                        "song": "Next",
+                        "starts_in_ms": 900,
+                    })),
+                    "ending": with_options.then(|| json!({
+                        "song": "Song",
+                        "remaining_ms": 300,
+                    })),
+                    "ambient": if with_options {
+                        json!({
+                            "mode": AmbientMode::On.as_str(),
+                            "source": Some(AmbientSource::Entry).map(|s| s.as_str()),
+                            "show": None::<String>,
+                            "state": "unavailable",
+                        })
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    "next": if with_options { json!({"song": null}) } else { serde_json::Value::Null },
+                });
+                assert_eq!(value(&msg), old);
+            }
+        }
+
+        #[test]
+        fn grid_without_a_metronome_has_no_accent_levels() {
+            let grid = wire::PlaybackGrid {
+                grid: crate::audio::beat_grid::BeatGrid {
+                    beats: vec![0.0, 1.0],
+                    measure_starts: vec![0],
+                },
+                accent_levels: None,
+            };
+            assert_eq!(
+                json!(grid),
+                json!({"beats": [0.0, 1.0], "measure_starts": [0]})
+            );
+        }
+
+        #[test]
+        fn next_up() {
+            let f = fade();
+            let cases = [
+                (wire::NextUp::default(), json!({"song": null})),
+                (
+                    wire::NextUp {
+                        ends_loop: Some(true),
+                        fade_out: Some(Some(f.clone())),
+                        ..Default::default()
+                    },
+                    json!({"song": null, "ends_loop": true, "fade_out": old_fade(&f)}),
+                ),
+                (
+                    wire::NextUp {
+                        ends_loop: Some(true),
+                        fade_out: Some(None),
+                        ..Default::default()
+                    },
+                    json!({"song": null, "ends_loop": true, "fade_out": null}),
+                ),
+                (
+                    wire::NextUp {
+                        song: Some("B".to_string()),
+                        breaks_loop: Some(true),
+                        fade_out: Some(Some(f.clone())),
+                        fade_in: Some(None),
+                        auto_play_ms: Some(None),
+                        ..Default::default()
+                    },
+                    json!({
+                        "song": "B",
+                        "breaks_loop": true,
+                        "fade_out": old_fade(&f),
+                        "fade_in": null,
+                        "auto_play_ms": null,
+                    }),
+                ),
+                (
+                    wire::NextUp {
+                        song: Some("B".to_string()),
+                        breaks_loop: Some(false),
+                        fade_out: Some(None),
+                        fade_in: Some(None),
+                        auto_play_ms: Some(Some(2000)),
+                        ..Default::default()
+                    },
+                    json!({
+                        "song": "B",
+                        "breaks_loop": false,
+                        "fade_out": null,
+                        "fade_in": null,
+                        "auto_play_ms": 2000,
+                    }),
+                ),
+            ];
+            for (next, old) in cases {
+                assert_eq!(json!(next), old);
+            }
+            let linear = FadeStatus {
+                curve: FadeCurve::Linear,
+                exclude: None,
+                lights: Some("0s".to_string()),
+                ..fade()
+            };
+            assert_eq!(json!(linear), old_fade(&linear));
+        }
+
+        #[test]
+        fn state() {
+            let fixtures = vec![crate::state::FixtureSnapshot {
+                name: "bar".to_string(),
+                channels: HashMap::from([("red".to_string(), 255), ("dimmer".to_string(), 9)]),
+                cells: std::collections::BTreeMap::from([(
+                    "c1".to_string(),
+                    HashMap::from([("red".to_string(), 1)]),
+                )]),
+                strobe_hz: Some(4.0),
+            }];
+            let poses = vec![crate::state::PoseSnapshot {
+                name: "mover".to_string(),
+                pan: 10.0,
+                tilt: -5.0,
+                aim: [0.0, 0.0, -1.0],
+                floor: Some([1.0, 2.0]),
+            }];
+            let snapshot = crate::state::StateSnapshot {
+                fixtures: fixtures.clone(),
+                active_effects: vec!["fx".to_string()],
+                poses: poses.clone(),
+                under_test: vec!["bar".to_string()],
+            };
+            let old = json!({
+                "type": "state",
+                "fixtures": {"bar": {"red": 255, "dimmer": 9}},
+                "active_effects": ["fx"],
+                "poses": {"mover": {
+                    "pan": 10.0,
+                    "tilt": -5.0,
+                    "aim": [0.0, 0.0, -1.0],
+                    "floor": [1.0, 2.0],
+                }},
+                "cells": {"bar": {"c1": {"red": 1}}},
+                "strobe_rates": {"bar": 4.0},
+                "under_test": ["bar"],
+            });
+            let got: serde_json::Value =
+                serde_json::from_str(&build_state_json(&snapshot)).unwrap();
+            assert_eq!(got, old);
+            let mut pose = poses[0].clone();
+            pose.floor = None;
+            assert_eq!(
+                json!(pose),
+                json!({"pan": 10.0, "tilt": -5.0, "aim": [0.0, 0.0, -1.0], "floor": null})
+            );
+        }
+
+        #[test]
+        fn metadata() {
+            let fixture = wire::FixtureMetadata {
+                tags: vec!["front".to_string()],
+                fixture_type: "par".to_string(),
+                position: Some([1.0, 2.0, 3.0]),
+                rotation: None,
+                beam_angle: Some(30.0),
+                rig: None,
+                capabilities: vec!["color".to_string()],
+                cells: vec![wire::CellPlacement {
+                    name: "c1".to_string(),
+                    offset: [0.1, 0.0, 0.0],
+                }],
+            };
+            let venue = wire::VenueMetadata {
+                name: "club".to_string(),
+                dir: None,
+                focus_points: std::collections::BTreeMap::from([(
+                    "dsc".to_string(),
+                    [0.0, 1.0, 0.0],
+                )]),
+                scenery: Some("club/scene.glb".to_string()),
+                scenery_error: None,
+            };
+            let msg = wire::SocketMessage::Metadata(wire::StageMetadata {
+                fixtures: std::collections::BTreeMap::from([("p1".to_string(), fixture)]),
+                venue: Some(venue),
+            });
+            let old = json!({
+                "type": "metadata",
+                "fixtures": {"p1": {
+                    "tags": ["front"],
+                    "type": "par",
+                    "position": [1.0, 2.0, 3.0],
+                    "rotation": null,
+                    "beam_angle": 30.0,
+                    "rig": null,
+                    "capabilities": ["color"],
+                    "cells": [json!({"name": "c1", "offset": [0.1, 0.0, 0.0]})],
+                }},
+                "venue": {
+                    "name": "club",
+                    "dir": null,
+                    "focus_points": {"dsc": [0.0, 1.0, 0.0]},
+                    "scenery": "club/scene.glb",
+                    "scenery_error": null,
+                },
+            });
+            assert_eq!(value(&msg), old);
+            let none: serde_json::Value = serde_json::from_str(&build_metadata_json(None)).unwrap();
+            assert_eq!(
+                none,
+                json!({"type": "metadata", "fixtures": {}, "venue": serde_json::Value::Null})
+            );
+        }
+
+        #[test]
+        fn logs_waveform_config_and_reload() {
+            let cases = [
+                (
+                    wire::SocketMessage::Logs {
+                        lines: vec![wire::LogLine {
+                            level: "INFO".to_string(),
+                            target: "mtrack".to_string(),
+                            message: "hi".to_string(),
+                        }],
+                    },
+                    json!({"type": "logs", "lines": [json!({
+                        "level": "INFO",
+                        "target": "mtrack",
+                        "message": "hi",
+                    })]}),
+                ),
+                (
+                    wire::SocketMessage::Waveform(wire::Waveform {
+                        song_name: "Song".to_string(),
+                        tracks: vec![wire::TrackPeaks {
+                            name: "kick".to_string(),
+                            peaks: vec![0.5, 1.0],
+                        }],
+                    }),
+                    json!({"type": "waveform", "song_name": "Song", "tracks": [json!({
+                        "name": "kick",
+                        "peaks": [0.5f32, 1.0f32],
+                    })]}),
+                ),
+                (
+                    wire::SocketMessage::ConfigChanged,
+                    json!({ "type": "config_changed" }),
+                ),
+                (
+                    wire::SocketMessage::Reload(wire::ShowReload::Ok),
+                    json!({"type": "reload", "status": "ok"}),
+                ),
+                (
+                    wire::SocketMessage::Reload(wire::ShowReload::Error {
+                        error: "bad".to_string(),
+                    }),
+                    json!({"type": "reload", "status": "error", "error": "bad"}),
+                ),
+            ];
+            for (msg, old) in cases {
+                assert_eq!(value(&msg), old);
+            }
+        }
     }
 }

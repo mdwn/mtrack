@@ -20,4 +20,6 @@
 pub use crate::tempo;
 
 pub mod effects;
+#[path = "../../../src/lighting/geometry.rs"]
+pub mod geometry;
 pub mod parser;

@@ -13,8 +13,9 @@
      *
      * -->
 <script lang="ts">
+  import type { AmbientMode } from "../../gen/rules/mtrack_rules";
   import { Code, ConnectError } from "@connectrpc/connect";
-  import { playbackStore, type AmbientMode } from "../../lib/ws/stores";
+  import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import { rules } from "../../lib/rules";

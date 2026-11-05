@@ -28,7 +28,9 @@
 //! reports (the bar's, by its time, and the one the changes have set), and
 //! the beats-in-measure of a count-in. The TypeScript types of the
 //! arguments and results are generated from the Rust structs (`tsify`), so
-//! the UI has no copy of them to drift.
+//! the UI has no copy of them to drift; so are the types of what the UI
+//! reads from the player's HTTP API and websocket (`src/webui/wire`), which
+//! are compiled here for their types alone.
 //!
 //! Every export is stateless and synchronous: the UI hands over the grid or
 //! config it holds and gets an answer, with nothing kept on this side. An
@@ -70,6 +72,58 @@ pub mod patch;
 /// so each compiles as it is. See `lighting.rs`.
 #[allow(dead_code)]
 pub mod lighting;
+
+/// A transition's fade as status reports it (`src/config/fade.rs`).
+#[path = "../../../src/config/fade.rs"]
+mod config_fade;
+
+/// A song's sections (`src/config/section.rs`).
+#[path = "../../../src/config/section.rs"]
+mod config_section;
+
+/// Ambient light's mode (`src/dmx/engine/ambient_mode.rs`).
+#[path = "../../../src/dmx/engine/ambient_mode.rs"]
+mod ambient_mode;
+
+/// Whose ambient settings are up (`src/playlist/ambient_source.rs`).
+#[path = "../../../src/playlist/ambient_source.rs"]
+mod ambient_source;
+
+/// Where a mover points (`src/state/pose.rs`).
+#[path = "../../../src/state/pose.rs"]
+mod pose;
+
+/// What the web UI reads from the player (`src/webui/wire`), whose
+/// TypeScript types are generated here and nowhere else: the websocket's
+/// messages.
+#[path = "../../../src/webui/wire/messages.rs"]
+pub mod wire_messages;
+
+// The player's module paths the included sources name each other by
+// (`crate::audio::beat_grid`, `crate::config::Section`, …), so each
+// compiles as it is.
+pub mod audio {
+    pub use crate::beat_grid;
+}
+
+pub mod config {
+    pub use crate::config_fade::{FadeCurve, FadeStatus};
+    pub use crate::config_section::Section;
+}
+
+pub mod dmx {
+    pub mod engine {
+        pub use crate::ambient_mode::AmbientMode;
+    }
+}
+
+pub mod playlist {
+    pub use crate::ambient_source::AmbientSource;
+}
+
+pub mod state {
+    pub use crate::pose::PoseSnapshot;
+}
 
 /// What the included modules' own unit tests reach for in the player
 /// (`crate::util::to_yaml_string`). Those tests are never run here (`[lib]

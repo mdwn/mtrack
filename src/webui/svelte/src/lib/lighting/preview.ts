@@ -18,6 +18,11 @@
  * so the scene is fed the same way from either source.
  */
 
+import type {
+  FixtureMetadata,
+  PoseSnapshot,
+  StageValues,
+} from "../../gen/rules/mtrack_rules";
 import { post } from "../api/rest";
 import {
   BadAnswerError,
@@ -33,13 +38,6 @@ import {
 import type { SongSummary } from "../api/songs";
 import { rules } from "../rules";
 import { sectionColor } from "../sectionColors";
-import type {
-  CellChannels,
-  FixtureChannels,
-  FixtureMetadata,
-  FixturePose,
-  StrobeRates,
-} from "../ws/stores";
 
 /** An effect running at the previewed moment. */
 export interface PreviewEffect {
@@ -59,10 +57,10 @@ export interface PreviewEffect {
 
 /** What the scene is fed: the live state message's four maps. */
 export interface PreviewFrame {
-  fixtures: Record<string, FixtureChannels>;
-  poses: Record<string, FixturePose>;
-  cells: CellChannels;
-  strobe_rates: StrobeRates;
+  fixtures: StageValues["fixtures"];
+  poses: Record<string, PoseSnapshot>;
+  cells: StageValues["cells"];
+  strobe_rates: StageValues["strobe_rates"];
 }
 
 export interface PreviewEvaluation extends PreviewFrame {
@@ -91,7 +89,9 @@ export function parsePreview(body: unknown): PreviewResult | null {
         fixtures: obj(e.fixtures) as unknown as PreviewFrame["fixtures"],
         poses: obj(e.poses) as unknown as PreviewFrame["poses"],
         cells: obj(e.cells) as unknown as PreviewFrame["cells"],
-        strobe_rates: obj(e.strobe_rates) as unknown as StrobeRates,
+        strobe_rates: obj(
+          e.strobe_rates,
+        ) as unknown as StageValues["strobe_rates"],
         active_effects: arr<PreviewEffect>(e.active_effects).filter(isObj),
       })),
     untouched: arr<string>(body.untouched),

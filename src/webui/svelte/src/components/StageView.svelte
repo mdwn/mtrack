@@ -13,6 +13,13 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    FixtureMetadata,
+    PoseSnapshot,
+    StageValues,
+    Vec3,
+    VenueMetadata,
+  } from "../gen/rules/mtrack_rules";
   import {
     concerns,
     fixtureTypeChanges,
@@ -28,12 +35,6 @@
     poseStore,
     underTestStore,
   } from "../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
-  } from "../lib/ws/stores";
   import {
     ConflictError,
     fetchFixtureTypes,
@@ -43,7 +44,6 @@
     type VenueData,
     type VenueError,
   } from "../lib/api/config";
-  import type { FixturePose } from "../lib/ws/stores";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { deckFootprint, restAim } from "../lib/stage/aim";
@@ -351,14 +351,16 @@
           position: f.position ?? null,
           rotation: f.rotation ?? null,
           beam_angle: f.beam_angle ?? null,
+          rig: null,
           capabilities: isMoverType(f.fixture_type) ? ["pan_tilt"] : [],
+          cells: [],
         } satisfies FixtureMetadata,
       ]),
     );
   });
   /** A fixed fixture's beam, from its mounting alone. */
-  let filePoses = $derived.by<Record<string, FixturePose>>(() => {
-    const out: Record<string, FixturePose> = {};
+  let filePoses = $derived.by<Record<string, PoseSnapshot>>(() => {
+    const out: Record<string, PoseSnapshot> = {};
     for (const [name, f] of Object.entries(fileFixtures)) {
       if (!f.position || !f.rotation) continue;
       if (f.capabilities?.includes("pan_tilt")) continue;
@@ -382,6 +384,8 @@
             name: fileView.name,
             dir: venuesDir || null,
             focus_points: fileView.venue.focus_points ?? {},
+            scenery: null,
+            scenery_error: null,
           }
         : null
       : $venueStore,
@@ -392,7 +396,7 @@
   let previewing = $derived(
     is3d && editable && !viewingFile && previewMode === "preview",
   );
-  let shownPoses = $derived<Record<string, FixturePose>>(
+  let shownPoses = $derived<Record<string, PoseSnapshot>>(
     viewingFile ? filePoses : $poseStore,
   );
 
@@ -573,7 +577,7 @@
     }
   }
 
-  function draw(fixtureStates: Record<string, FixtureChannels>) {
+  function draw(fixtureStates: StageValues["fixtures"]) {
     // Per-cell values and strobe rates ride the same state message as
     // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);

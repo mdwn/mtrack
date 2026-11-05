@@ -25,6 +25,7 @@ pub mod fit;
 pub mod fixture_patch;
 pub mod fixture_test;
 pub mod gdtf;
+pub mod geometry;
 #[cfg(test)]
 mod golden_tests;
 pub mod import;

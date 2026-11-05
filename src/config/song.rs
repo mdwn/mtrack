@@ -24,6 +24,7 @@ use super::{
     notification::SongNotificationConfig,
     pilot::PilotConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
+    section::Section,
     tempo::TempoConfig,
     track::Track,
 };
@@ -165,29 +166,6 @@ impl LoopCrossfade {
             Err(invalid())
         }
     }
-}
-
-/// A named section of a song defined by measure boundaries.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct Section {
-    /// Display name for this section (e.g., "verse", "chorus").
-    pub name: String,
-    /// Start measure (1-indexed, inclusive).
-    pub start_measure: usize,
-    /// End measure (1-indexed, exclusive).
-    pub end_measure: usize,
-    /// Start beat within the start measure (1-based, fractional allowed;
-    /// omitted = 1, the measure boundary).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_beat: Option<f64>,
-    /// End beat within the end measure (1-based, fractional allowed;
-    /// omitted = 1, keeping the end bound exclusive at the measure line).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_beat: Option<f64>,
-    /// Optional display color for the web UI timeline (hex "#rrggbb").
-    /// Without one the UI rotates through its palette.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
 }
 
 impl Song {

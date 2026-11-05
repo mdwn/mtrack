@@ -13,6 +13,11 @@
      *
      * -->
 <script module lang="ts">
+  import type {
+    FixtureMetadata,
+    StageValues,
+    VenueMetadata,
+  } from "../../gen/rules/mtrack_rules";
   import type { SceneStats, SceneryStats } from "../../lib/stage/scene3d";
 
   /** What the view is showing, for its host's header. */
@@ -56,11 +61,6 @@
     strobeRateStore,
     underTestStore,
     venueStore,
-  } from "../../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    VenueMetadata,
   } from "../../lib/ws/stores";
   import {
     fetchVenueScene,
@@ -180,7 +180,7 @@
   );
   /** A file view's fixtures are lit a neutral white, so lenses and beam
    *  directions read without pretending to be a show. */
-  const fileLight = $derived<Record<string, FixtureChannels>>(
+  const fileLight = $derived<StageValues["fixtures"]>(
     Object.fromEntries(
       Object.keys(fromFile ? shownMeta : {}).map((name) => [
         name,

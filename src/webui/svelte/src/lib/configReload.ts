@@ -14,6 +14,7 @@
 
 import { get } from "svelte/store";
 import { t } from "svelte-i18n";
+import type { RefusedReload } from "../gen/rules/mtrack_rules";
 
 /** What a config or profile save's reply says of the hardware reload: it
  *  ran (`applied`), waits until playback stops (`deferred`), or could not
@@ -98,8 +99,8 @@ export function reloadNotice(
 export interface DeferredReloads {
   started: number;
   /** The recent refusals, each with its generation. */
-  refused: { generation: number; error: string }[];
-  /** The process the playback updates come from. */
+  refused: RefusedReload[];
+  /** The process the playback updates come from; empty before the first. */
   process?: string;
 }
 
@@ -118,7 +119,7 @@ export function settleNotice(
   // Another process: mtrack restarted, and loaded the saved config as it
   // started. Its count is its own.
   const restarted =
-    reloads.process !== undefined &&
+    !!reloads.process &&
     notice.process !== undefined &&
     reloads.process !== notice.process;
   if (!restarted && reloads.started < notice.awaits) return notice;

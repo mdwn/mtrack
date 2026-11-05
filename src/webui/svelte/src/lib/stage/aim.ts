@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+
 /**
  * Aiming a fixed fixture: the rotation that makes it face a direction or
  * point at a place. Pure math, degrees, rounded to a tenth. The convention is
@@ -19,8 +21,6 @@
  * applied in that order; unrotated, a fixture points straight down (-Z).
  * Stage space is meters, +x stage-left, +y upstage, +z up.
  */
-
-export type Vec3 = [number, number, number];
 
 /** Bearings that face across the deck: the beam's horizontal heading, where
  *  0 is upstage (+y), -90 is stage-left (+x), 90 is stage-right (-x) and 180

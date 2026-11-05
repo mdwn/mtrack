@@ -2122,7 +2122,7 @@ pub(super) async fn evaluate_lighting(
         .evaluations
         .iter()
         .map(|evaluation| {
-            let maps = super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
+            let maps = super::super::state::stage_frame(&evaluation.fixtures, &evaluation.poses);
             let active: Vec<serde_json::Value> = evaluation
                 .active_effects
                 .iter()
@@ -8164,14 +8164,14 @@ show "test" {
             },
         );
         for (got, want) in evaluations.iter().zip(&direct) {
-            let maps = crate::webui::state::state_maps(&want.fixtures, &want.poses);
-            let (poses, cells) = (maps.poses, maps.cells);
+            let maps = crate::webui::state::stage_frame(&want.fixtures, &want.poses);
+            let (poses, cells) = (json!(maps.poses), json!(maps.cells));
             assert_eq!(got["fixtures"], json!(maps.fixtures));
             assert_eq!(got["strobe_rates"], json!(maps.strobe_rates));
             // Pan and tilt are exact; the beam's direction and footprint are
             // trigonometry, which two evaluations agree on to the last bit or
             // two, not always the last.
-            for (name, want_pose) in &poses {
+            for (name, want_pose) in poses.as_object().unwrap() {
                 let got_pose = &got["poses"][name];
                 assert_eq!(got_pose["pan"], want_pose["pan"]);
                 assert_eq!(got_pose["tilt"], want_pose["tilt"]);
@@ -8183,7 +8183,10 @@ show "test" {
                     }
                 }
             }
-            assert_eq!(got["poses"].as_object().unwrap().len(), poses.len());
+            assert_eq!(
+                got["poses"].as_object().unwrap().len(),
+                poses.as_object().unwrap().len()
+            );
             assert_eq!(got["cells"], json!(cells));
             assert_eq!(got["time"], json!(want.time.as_secs_f64()));
         }

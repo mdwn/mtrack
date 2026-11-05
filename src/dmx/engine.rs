@@ -41,6 +41,7 @@ use crate::{
 use super::universe::Universe;
 
 mod ambient;
+mod ambient_mode;
 mod midi_playback;
 mod pass;
 mod playback;
