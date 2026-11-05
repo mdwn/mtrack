@@ -674,15 +674,26 @@ mod tests {
         let types = parse_fixture_types(dsl).unwrap();
         let xml = description(&types["Mover"]).unwrap();
         strict(&xml);
+        // Shown on failure: the channel's own function line, not the
+        // description (it carries a generated UUID).
+        let function = |name: &str| {
+            xml.lines()
+                .find(|line| line.contains(&format!("Name=\"{name}\" Attribute=")))
+                .unwrap_or("no such function")
+                .trim()
+                .to_string()
+        };
         // 0° is a quarter of the way from -90° to 270°: 64 + 191 / 4.
         assert!(
             xml.contains("Name=\"pan\" Attribute=\"Pan\" DMXFrom=\"64/1\" Default=\"112/1\""),
-            "{xml}"
+            "{}",
+            function("pan")
         );
         // Tilt, with nothing said, is pointed over -135°..135°: centre 128.
         assert!(
             xml.contains("Name=\"tilt\" Attribute=\"Tilt\" DMXFrom=\"0/1\" Default=\"128/1\""),
-            "{xml}"
+            "{}",
+            function("tilt")
         );
     }
 
