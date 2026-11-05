@@ -117,7 +117,14 @@
       untouched = result.untouched;
       error = null;
       onfeed(
-        at ? { fixtures: at.fixtures, poses: at.poses, cells: at.cells } : null,
+        at
+          ? {
+              fixtures: at.fixtures,
+              poses: at.poses,
+              cells: at.cells,
+              strobe_rates: at.strobe_rates,
+            }
+          : null,
       );
     } catch (e) {
       if (mine !== sequence) return;

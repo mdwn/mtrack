@@ -162,9 +162,24 @@ export type AmbientSource = "profile" | "playlist" | "entry" | null;
 /** Ambient light's mode: between songs, held on, or none. */
 export type AmbientMode = "auto" | "on" | "off";
 
+/**
+ * A fixture's channel bytes by canonical name, as the `state` message's
+ * `fixtures` map carries them. (Hand-written mirror of the server's
+ * payload, like the rest of this file.)
+ */
 export interface FixtureChannels {
   [channel: string]: number;
 }
+
+/**
+ * The rate each strobing fixture flashes at, in hertz, by fixture: the
+ * `state` message's `strobe_rates` map (and an evaluation's). The player
+ * says it — a strobe byte read back through the fixture's own strobe rule;
+ * in an evaluation also a software strobe's rate — and the views flash at
+ * it rather than guess a rate from the byte. A fixture that is not
+ * strobing is absent.
+ */
+export type StrobeRates = Record<string, number>;
 
 export type Vec3 = [number, number, number];
 
@@ -266,6 +281,7 @@ export const playbackStore = writable<PlaybackState>({
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
+export const strobeRateStore = writable<StrobeRates>({});
 /**
  * Per-cell values for fixtures a per-cell effect is driving this frame;
  * a fixture absent here shows its own channels on every cell.
@@ -350,10 +366,12 @@ on("state", (msg) => {
     active_effects: string[];
     poses?: Record<string, FixturePose>;
     cells?: CellChannels;
+    strobe_rates?: StrobeRates;
     under_test?: string[];
   };
-  // Before the channels: a plot redraws on them and reads this.
+  // Before the channels: a plot redraws on them and reads these.
   underTestStore.set(m.under_test ?? []);
+  strobeRateStore.set(m.strobe_rates ?? {});
   fixtureStore.set(m.fixtures ?? {});
   effectsStore.set(m.active_effects ?? []);
   poseStore.set(m.poses ?? {});

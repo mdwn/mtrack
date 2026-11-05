@@ -1128,7 +1128,7 @@ fn declared_steps_pick_the_first_containing_step_else_the_nearest_end() {
         step(20, 29, 2.0, 10.0),
         step(30, 30, 12.0, 12.0),
     ];
-    let dmx = |hz| crate::lighting::engine::processing::declared_dmx(&steps, hz);
+    let dmx = |hz| crate::lighting::effects::declared_dmx(&steps, hz);
     assert_eq!(dmx(5.0), 10.0);
     assert_eq!(dmx(3.0), 14.5, "first step in DMX order wins an overlap");
     assert_eq!(dmx(6.0), 20.0 + 4.0 / 8.0 * 9.0);
@@ -1154,4 +1154,81 @@ fn a_descending_function_is_followed_in_its_direction() {
     let ten = strobe_byte(fixture, 10.0);
     // 7 + (10 − 25)/(0.4 − 25) × 248 = 158.2
     assert_eq!(ten, 158);
+}
+
+/// The state stream says the rate a fixture with a strobe channel is
+/// strobing at — its byte read back through the fixture's own rule, the
+/// reading the stage views flash at — and nothing once the strobe is
+/// over. A software strobe's rate is not on the stream: its bytes flip
+/// there frame by frame already. A single instant carries both (an
+/// evaluation; see `an_evaluation_reports_a_software_strobes_rate`).
+#[test]
+fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_pixelbrick_fixture("Brick", 1, 1));
+    let mut rgb = HashMap::new();
+    rgb.insert("red".to_string(), 1);
+    rgb.insert("green".to_string(), 2);
+    rgb.insert("blue".to_string(), 3);
+    engine.register_fixture(FixtureInfo::new(
+        "Par".to_string(),
+        1,
+        10,
+        "RGB".to_string(),
+        rgb,
+        None,
+    ));
+    let strobe = |id: &str, target: &str, hz: f64| {
+        EffectInstance::new(
+            id.to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(hz),
+                duration: Duration::from_secs(1),
+            },
+            vec![target.to_string()],
+            None,
+            None,
+            None,
+        )
+    };
+    engine.start_effect(strobe("hw", "Brick", 10.0)).unwrap();
+    engine.start_effect(strobe("sw", "Par", 7.0)).unwrap();
+    engine.update(Duration::from_millis(16), None).unwrap();
+
+    use crate::state::StrobeRates;
+    let rate_in = |engine: &EffectEngine, name: &str, rates: StrobeRates| {
+        let registry = engine.get_fixture_registry();
+        crate::state::fixture_snapshots_with_cells(
+            engine.shown_fixture_states(),
+            &HashMap::new(),
+            registry,
+            rates,
+        )
+        .into_iter()
+        .find(|s| s.name == name)
+        .and_then(|s| s.strobe_hz)
+    };
+    let rate = |engine: &EffectEngine, name: &str| rate_in(engine, name, StrobeRates::Live);
+    // The PixelBrick's period curve puts 10 Hz at byte 248, whose span
+    // (9.1–10.05 Hz: the curve is steep up here) reads back as its middle.
+    let brick = rate(&engine, "Brick").expect("the Brick strobes");
+    let registry = engine.get_fixture_registry();
+    assert_eq!(registry["Brick"].strobe_hz(248), Some(brick));
+    assert!((9.1..=10.05).contains(&brick), "{brick} Hz");
+    assert_eq!(
+        rate(&engine, "Par"),
+        None,
+        "a software strobe: not on the stream"
+    );
+    assert_eq!(
+        rate_in(&engine, "Par", StrobeRates::Instant),
+        Some(7.0),
+        "the effect's own rate, on a single instant"
+    );
+    assert_eq!(rate_in(&engine, "Brick", StrobeRates::Instant), Some(brick));
+
+    // Over: the Brick's channel is sent off (byte 0), the Par's state goes.
+    engine.update(Duration::from_secs(2), None).unwrap();
+    assert_eq!(rate(&engine, "Brick"), None);
+    assert_eq!(rate(&engine, "Par"), None);
 }

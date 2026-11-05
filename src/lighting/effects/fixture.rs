@@ -18,6 +18,7 @@ use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 use crate::lighting::engine::{base_channel, is_position_channel};
+use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
 /// Get the layer suffix for multiplier channel names
 #[inline]
@@ -716,6 +717,201 @@ impl FixtureInfo {
     pub fn profile(&self) -> &FixtureProfile {
         &self.cached_profile
     }
+
+    /// How a strobe rate becomes this fixture's strobe byte: the one rule
+    /// the engine writes through ([`StrobeMap::normalized`]) and the state
+    /// stream reads back through ([`FixtureInfo::strobe_hz`]). Which rule
+    /// is the type's stated curve, or the automatic one, over its strobe
+    /// function and range.
+    pub fn strobe_map(&self) -> StrobeMap<'_> {
+        let max = self.max_strobe_frequency.unwrap_or(20.0);
+        let min = self.min_strobe_frequency.unwrap_or(0.0);
+        let dmx_offset = self.strobe_dmx_offset.unwrap_or(0);
+        let offset = f64::from(dmx_offset) / 255.0;
+        let linear = matches!(
+            self.strobe_curve,
+            StrobeCurve::Linear | StrobeCurve::Declared
+        );
+        // Linear and declared follow the strobe function itself when there
+        // is one: its own table (declared), else one step from its
+        // endpoints — in its direction, over its DMX range.
+        let function = linear
+            .then(|| strobe_function(&self.channel_defs))
+            .flatten();
+        let endpoints = function.and_then(|f| {
+            let hz = f.physical.filter(|p| p.unit == PhysicalUnit::Hertz)?;
+            Some(FunctionStep {
+                dmx_from: f.dmx_from,
+                dmx_to: f.dmx_to,
+                from: hz.from,
+                to: hz.to,
+            })
+        });
+        match function {
+            Some(f) if self.strobe_curve == StrobeCurve::Declared && !f.steps.is_empty() => {
+                StrobeMap::Declared(&f.steps)
+            }
+            _ => match endpoints {
+                Some(step) => StrobeMap::Endpoints(step),
+                None if linear && max > min => StrobeMap::LinearHz { min, max, offset },
+                None if max > 0.0 && min > 0.0 && dmx_offset > 0 => {
+                    StrobeMap::Period { min, max, offset }
+                }
+                None => StrobeMap::Ratio { max },
+            },
+        }
+    }
+
+    /// The rate the fixture's strobe channel flashes at with `byte` on it,
+    /// read back through [`Self::strobe_map`]; `None` for a fixture with no
+    /// strobe channel, below the map's first byte (the function's "open"
+    /// range), outside a declared table's steps, or at byte 0 of a channel
+    /// no function declares a rate at (the engine's "strobe off"). A
+    /// function that starts at byte 0 declares it a rate, and it reads
+    /// back as one: the engine writes byte 0 for that rate too.
+    pub fn strobe_hz(&self, byte: u8) -> Option<f64> {
+        if !self.has_capability(FixtureCapabilities::STROBING) {
+            return None;
+        }
+        self.strobe_map().hz(byte).filter(|hz| *hz > 0.0)
+    }
+}
+
+/// A fixture's strobe rule (see [`FixtureInfo::strobe_map`]), with the
+/// forward mapping the engine drives the channel through and its inverse.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StrobeMap<'a> {
+    /// `declared` with a table: the function's own steps.
+    Declared(&'a [FunctionStep]),
+    /// `linear` or `declared` with a strobe function but no table: one
+    /// step from the function's endpoints.
+    Endpoints(FunctionStep),
+    /// `linear` without a function: hertz run linearly over
+    /// `offset..=1` of the channel.
+    LinearHz { min: f64, max: f64, offset: f64 },
+    /// `period`: the strobe period (1/Hz) runs linearly over
+    /// `offset..=1` of the channel, as many fixtures map it.
+    Period { min: f64, max: f64, offset: f64 },
+    /// No range to speak of: the rate as a fraction of the maximum.
+    Ratio { max: f64 },
+}
+
+impl StrobeMap<'_> {
+    /// The steps of a tabled map; empty otherwise.
+    fn steps(&self) -> &[FunctionStep] {
+        match self {
+            StrobeMap::Declared(steps) => steps,
+            StrobeMap::Endpoints(step) => std::slice::from_ref(step),
+            _ => &[],
+        }
+    }
+
+    /// The normalized (0..1) value the strobe channel is driven to for
+    /// `hz`, which [`coarse_byte`](super::coarse_byte) truncates to the
+    /// byte. A tabled map lands on the centre of its byte, so the
+    /// truncation lands on it.
+    pub fn normalized(&self, hz: f64) -> f64 {
+        match *self {
+            StrobeMap::Declared(_) | StrobeMap::Endpoints(_) => {
+                // The step the rate falls in, linear inside it; the centre
+                // of the byte, so the cast to DMX lands on it.
+                let dmx = declared_dmx(self.steps(), hz).round();
+                ((dmx + 0.5) / 255.0).clamp(0.0, 1.0)
+            }
+            StrobeMap::LinearHz { min, max, offset } => {
+                // Linear in hertz across the function's DMX range, as a
+                // GDTF declares it:
+                // DMX = start + (hz − min)/(max − min) × (255 − start).
+                let fraction = (hz.clamp(min, max) - min) / (max - min);
+                (offset + fraction * (1.0 - offset)).clamp(0.0, 1.0)
+            }
+            StrobeMap::Period { min, max, offset } => {
+                // Interpolate in period-space: many fixtures map DMX
+                // linearly to strobe period (1/freq), not frequency directly.
+                let max_period = 1.0 / min;
+                let min_period = 1.0 / max;
+                let desired_period = 1.0 / hz.clamp(min, max);
+                let period_range = max_period - min_period;
+                let period_fraction = if period_range.abs() < f64::EPSILON {
+                    1.0
+                } else {
+                    (max_period - desired_period) / period_range
+                };
+                (offset + period_fraction * (1.0 - offset)).clamp(0.0, 1.0)
+            }
+            StrobeMap::Ratio { max } => (hz / max).min(1.0),
+        }
+    }
+
+    /// The rate `byte` on the channel means, the inverse of
+    /// [`Self::normalized`]: for a tabled map the step's value at the byte
+    /// itself (`None` outside every step — byte 0 included, unless a step
+    /// starts there); for the others the value at the centre of the byte,
+    /// the bucket the truncating cast fills (`None` below the map's first
+    /// byte, and at byte 0, which no function declares a rate at: it is
+    /// what the engine writes for off).
+    pub fn hz(&self, byte: u8) -> Option<f64> {
+        let byte = f64::from(byte);
+        let from_fraction = |offset: f64| {
+            let fraction = ((byte + 0.5) / 255.0 - offset) / (1.0 - offset);
+            (byte > 0.0 && byte >= offset * 255.0).then_some(fraction.clamp(0.0, 1.0))
+        };
+        match *self {
+            StrobeMap::Declared(_) | StrobeMap::Endpoints(_) => {
+                let step = self
+                    .steps()
+                    .iter()
+                    .find(|s| f64::from(s.dmx_from) <= byte && byte <= f64::from(s.dmx_to))?;
+                let (dmx_from, dmx_to) = (f64::from(step.dmx_from), f64::from(step.dmx_to));
+                if (dmx_to - dmx_from).abs() < f64::EPSILON {
+                    return Some(step.from);
+                }
+                let fraction = (byte - dmx_from) / (dmx_to - dmx_from);
+                Some(step.from + fraction * (step.to - step.from))
+            }
+            StrobeMap::LinearHz { min, max, offset } => {
+                Some(min + from_fraction(offset)? * (max - min))
+            }
+            StrobeMap::Period { min, max, offset } => {
+                let max_period = 1.0 / min;
+                let min_period = 1.0 / max;
+                let period = max_period - from_fraction(offset)? * (max_period - min_period);
+                Some(1.0 / period)
+            }
+            StrobeMap::Ratio { max } => (byte > 0.0).then(|| ((byte + 0.5) / 255.0 * max).min(max)),
+        }
+    }
+}
+
+/// The DMX value a function's step table gives `hz`: the first step in
+/// DMX order whose physical range contains it, interpolated inside the
+/// step; else the nearest end of any step (so a rate past the table lands
+/// on its end). `steps` is non-empty.
+pub(crate) fn declared_dmx(steps: &[FunctionStep], hz: f64) -> f64 {
+    let at = |step: &FunctionStep, hz: f64| -> f64 {
+        let (dmx_from, dmx_to) = (f64::from(step.dmx_from), f64::from(step.dmx_to));
+        if (step.to - step.from).abs() < f64::EPSILON {
+            return dmx_from;
+        }
+        let fraction = ((hz - step.from) / (step.to - step.from)).clamp(0.0, 1.0);
+        dmx_from + fraction * (dmx_to - dmx_from)
+    };
+    if let Some(step) = steps
+        .iter()
+        .find(|s| s.from.min(s.to) <= hz && hz <= s.from.max(s.to))
+    {
+        return at(step, hz);
+    }
+    let mut best: Option<(f64, f64)> = None;
+    for step in steps {
+        for end in [step.from, step.to] {
+            let distance = (hz - end).abs();
+            if best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, at(step, end)));
+            }
+        }
+    }
+    best.map_or(0.0, |(_, dmx)| dmx)
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@
     metadataStore,
     fixtureStore,
     effectsStore,
+    strobeRateStore,
     venueStore,
     poseStore,
   } from "../../../lib/ws/stores";
@@ -41,6 +42,7 @@
     type Rect,
     type StageFrame,
   } from "../../../lib/stage/layout";
+  import { beamLook } from "../../../lib/stage/rig";
 
   const FIXTURE_RADIUS = 14;
   const GLOW_RADIUS = 32;
@@ -192,33 +194,18 @@
       h - 2 * PADDING + 20,
     );
 
+    const now = Date.now();
+    const strobeRates = get(strobeRateStore);
     for (const name of Object.keys($metadataStore)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
 
-      const state = fixtureStates[name] || {};
-      const r = state.red || 0;
-      const g = state.green || 0;
-      const b = state.blue || 0;
-      const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-      const strobe = state.strobe || 0;
-
-      const brightness = dimmer / 255;
-      const fr = Math.round(r * brightness);
-      const fg = Math.round(g * brightness);
-      const fb = Math.round(b * brightness);
-
-      let strobeVisible = true;
-      if (strobe > 10) {
-        const freq = 2 + (strobe / 255) * 18;
-        const phase = (Date.now() / 1000) * freq;
-        strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
-      }
-
-      const intensity = (fr + fg + fb) / (3 * 255);
-      const finalR = strobeVisible ? fr : 0;
-      const finalG = strobeVisible ? fg : 0;
-      const finalB = strobeVisible ? fb : 0;
+      const look = beamLook(fixtureStates[name], strobeRates[name], now);
+      const strobeVisible = look.strobeOn;
+      const [finalR, finalG, finalB] = look.rgb.map((c) =>
+        strobeVisible ? Math.round(c * 255) : 0,
+      );
+      const intensity = look.intensity;
 
       // Glow
       if (intensity > 0.02 && strobeVisible) {
@@ -272,7 +259,7 @@
           ctx,
           from,
           end,
-          fixtureStates[name] || {},
+          beamLook(fixtureStates[name], strobeRates[name], now),
           pose.floor !== null,
           {
             dark: isDark,

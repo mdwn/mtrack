@@ -38,6 +38,7 @@ import type {
   FixtureChannels,
   FixtureMetadata,
   FixturePose,
+  StrobeRates,
 } from "../ws/stores";
 
 /** An effect running at the previewed moment. */
@@ -56,11 +57,12 @@ export interface PreviewEffect {
   fixtures: string[];
 }
 
-/** What the scene is fed: the live state message's three maps. */
+/** What the scene is fed: the live state message's four maps. */
 export interface PreviewFrame {
   fixtures: Record<string, FixtureChannels>;
   poses: Record<string, FixturePose>;
   cells: CellChannels;
+  strobe_rates: StrobeRates;
 }
 
 export interface PreviewEvaluation extends PreviewFrame {
@@ -89,6 +91,7 @@ export function parsePreview(body: unknown): PreviewResult | null {
         fixtures: obj(e.fixtures) as unknown as PreviewFrame["fixtures"],
         poses: obj(e.poses) as unknown as PreviewFrame["poses"],
         cells: obj(e.cells) as unknown as PreviewFrame["cells"],
+        strobe_rates: obj(e.strobe_rates) as unknown as StrobeRates,
         active_effects: arr<PreviewEffect>(e.active_effects).filter(isObj),
       })),
     untouched: arr<string>(body.untouched),

@@ -23,6 +23,7 @@
     fixtureStore,
     cellStore,
     reloadStore,
+    strobeRateStore,
     venueStore,
     poseStore,
     underTestStore,
@@ -48,6 +49,7 @@
   import { deckFootprint, restAim } from "../lib/stage/aim";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
+  import { beamCss, beamLook } from "../lib/stage/rig";
   import {
     beamEnd,
     cellBar,
@@ -171,7 +173,12 @@
   );
   /** The previewed moment; null until the first evaluation. */
   let feed = $state<PreviewFrame | null>(null);
-  const EMPTY_FRAME: PreviewFrame = { fixtures: {}, poses: {}, cells: {} };
+  const EMPTY_FRAME: PreviewFrame = {
+    fixtures: {},
+    poses: {},
+    cells: {},
+    strobe_rates: {},
+  };
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -567,9 +574,10 @@
   }
 
   function draw(fixtureStates: Record<string, FixtureChannels>) {
-    // Per-cell values ride the same state message as the channels; read
-    // here so a redraw for either shows both.
+    // Per-cell values and strobe rates ride the same state message as
+    // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);
+    const strobeRates = get(strobeRateStore);
     if (!canvasEl || !ctx) return;
 
     const w = canvasEl.clientWidth;
@@ -617,35 +625,23 @@
       });
     }
 
+    // One instant for the frame, so every fixture's strobe reads the same
+    // clock.
+    const now = Date.now();
     for (const name of Object.keys(shownFixtures)) {
       const pos = layoutPositions[name];
       if (!pos) continue;
       const meta = shownFixtures[name];
       const isUnplaced = frame !== null && meta.position == null;
 
-      const state = fixtureStates[name] || {};
-      const r = state.red || 0;
-      const g = state.green || 0;
-      const b = state.blue || 0;
-      const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
-      const strobe = state.strobe || 0;
-
-      const brightness = dimmer / 255;
-      const fr = Math.round(r * brightness);
-      const fg = Math.round(g * brightness);
-      const fb = Math.round(b * brightness);
-
-      let strobeVisible = true;
-      if (strobe > 10) {
-        const freq = 2 + (strobe / 255) * 18;
-        const phase = (Date.now() / 1000) * freq;
-        strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
-      }
-
-      const intensity = (fr + fg + fb) / (3 * 255);
-      const finalR = strobeVisible ? fr : 0;
-      const finalG = strobeVisible ? fg : 0;
-      const finalB = strobeVisible ? fb : 0;
+      const state = fixtureStates[name];
+      const strobeHz = strobeRates[name];
+      const look = beamLook(state, strobeHz, now);
+      const strobeVisible = look.strobeOn;
+      const [finalR, finalG, finalB] = look.rgb.map((c) =>
+        strobeVisible ? Math.round(c * 255) : 0,
+      );
+      const intensity = look.intensity;
 
       // Glow
       if (intensity > 0.02 && strobeVisible) {
@@ -680,11 +676,11 @@
       const cellColor = (cell: { name: string }) => {
         const own = cellState?.[cell.name];
         if (!own) return `rgb(${finalR},${finalG},${finalB})`;
-        const k = (own.dimmer ?? dimmer) / 255;
-        const cr = strobeVisible ? Math.round((own.red ?? 0) * k) : 0;
-        const cg = strobeVisible ? Math.round((own.green ?? 0) * k) : 0;
-        const cb = strobeVisible ? Math.round((own.blue ?? 0) * k) : 0;
-        return `rgb(${cr},${cg},${cb})`;
+        // A cell without a dimmer of its own takes the fixture's, and
+        // every cell flashes with the fixture.
+        return beamCss(
+          beamLook({ dimmer: state?.dimmer, ...own }, strobeHz, now),
+        );
       };
       const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;
       if (bar) {
@@ -798,7 +794,7 @@
           ctx,
           from,
           end,
-          fixtureStates[name] || {},
+          beamLook(fixtureStates[name], strobeRates[name], now),
           pose.floor !== null,
           {
             dark: isDark,

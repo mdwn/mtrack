@@ -212,7 +212,12 @@ fn shown_bytes(
         .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
     let mut bytes = HashMap::new();
-    for snapshot in crate::state::fixture_snapshots_with_cells(states, &has_dimmer, registry) {
+    for snapshot in crate::state::fixture_snapshots_with_cells(
+        states,
+        &has_dimmer,
+        registry,
+        crate::state::StrobeRates::Live,
+    ) {
         let info = &registry[&snapshot.name];
         for (channel, &value) in &snapshot.channels {
             if let Some(&offset) = info.channels.get(channel) {

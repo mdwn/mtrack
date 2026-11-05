@@ -200,6 +200,7 @@ mod tests {
             map.insert(k.to_string(), *v);
         }
         FixtureSnapshot {
+            strobe_hz: None,
             name: name.to_string(),
             channels: map,
             cells: Default::default(),
