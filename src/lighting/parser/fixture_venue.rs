@@ -20,8 +20,8 @@ use super::super::types::{
     GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
 };
 use super::error::describe_pest_error_in;
-use super::grammar::{items, LightingParser, Rule};
-use super::utils::split_unit;
+use super::grammar::{LightingParser, Rule};
+use super::utils::{items, split_unit};
 use pest::iterators::Pair;
 use pest::Parser;
 

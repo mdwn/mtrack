@@ -22,8 +22,8 @@ use super::super::effects::EffectLayer;
 use super::super::tempo::TempoMap;
 use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, describe_pest_error};
-use super::grammar::{items, LightingParser, Rule};
-use super::include::{add_included, Include, IncludingFile};
+use super::grammar::{LightingParser, Rule};
+use super::include::{add_included, Include, IncludeReader, IncludingFile, Sources};
 use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
@@ -31,7 +31,7 @@ use super::types::{
     SequenceCall, SequenceLoop,
 };
 use super::utils::{
-    parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
+    items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
     parse_time_string,
 };
 use crate::tempo::{snap_beats, DEFAULT_BPM};
@@ -135,28 +135,25 @@ pub fn parse_light_shows_with_tempo(
     content: &str,
     external: Option<&TempoMap>,
 ) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file(content, None, external)
+    // Content with no path has no folder for an include to resolve against:
+    // the reader is never asked.
+    parse_light_file_with(content, None, None, external, &Sources::none())
 }
 
-/// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does.
-/// `path` is where the content lives, which its `include`s resolve against;
-/// content with an `include` and no path is an error.
-pub fn parse_light_file(
-    content: &str,
-    path: Option<&Path>,
-    external: Option<&TempoMap>,
-) -> Result<LightShows, Box<dyn Error>> {
-    parse_light_file_within(content, path, None, external)
-}
-
-/// Parses a `.light` file as `parse_light_file` does, its `include`s
-/// confined to `root` when one is given: for source from somewhere that may
-/// not read the whole disk, such as the web UI or an MCP client.
-pub fn parse_light_file_within(
+/// Parses a `.light` file's shows as `parse_light_shows_with_tempo` does,
+/// its `include`s read through `reader` -- the disk for the player, the
+/// sources it fetched for the web UI -- and confined to `root` when one is
+/// given (for source from somewhere that may not read the whole disk, such
+/// as the web UI or an MCP client). `path` is where the content lives,
+/// which its `include`s resolve against; content with an `include` and no
+/// path is an error. The one parse path: every caller, the player loading
+/// a song, the MCP service, the web UI's editor, comes through here.
+pub fn parse_light_file_with(
     content: &str,
     path: Option<&Path>,
     root: Option<&Path>,
     external: Option<&TempoMap>,
+    reader: &dyn IncludeReader,
 ) -> Result<LightShows, Box<dyn Error>> {
     let root = match root {
         Some(root) => Some(
@@ -196,7 +193,7 @@ pub fn parse_light_file_within(
 
     let mut library = SequenceLibrary::new(&global_tempo);
     let mut seen: HashSet<PathBuf> = path
-        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| reader.resolve(p).ok())
         .into_iter()
         .collect();
     add_included(
@@ -207,6 +204,7 @@ pub fn parse_light_file_within(
             display: None,
             root: root.as_deref(),
         },
+        reader,
         &mut seen,
     )?;
     library.add(sequence_pairs, None)?;

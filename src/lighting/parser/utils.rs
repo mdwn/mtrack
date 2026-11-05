@@ -23,6 +23,20 @@ use super::grammar::Rule;
 use pest::iterators::Pair;
 
 /// Parses a percentage string (e.g., "50%") to f64 (e.g., 0.5)
+/// The items a parsed file holds -- its includes, fixture types, venues,
+/// shows, sequences and tempo blocks -- out of the `file` rule's pair.
+pub(crate) fn items<'i>(
+    pairs: pest::iterators::Pairs<'i, Rule>,
+) -> impl Iterator<Item = pest::iterators::Pair<'i, Rule>> {
+    pairs.flat_map(|p| {
+        if p.as_rule() == Rule::file {
+            p.into_inner().collect::<Vec<_>>()
+        } else {
+            vec![p]
+        }
+    })
+}
+
 pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>> {
     let value = value.trim();
     if value.ends_with('%') {
