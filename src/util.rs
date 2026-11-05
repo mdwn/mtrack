@@ -53,12 +53,14 @@ pub fn duration_from_secs(secs: f64) -> Option<Duration> {
 }
 
 /// A playback position a client sent as text: seconds (`90`, `90s`,
-/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`). The one parser for
-/// a position as text; a position sent as a number of seconds goes through
+/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`), with or without the
+/// `@` a cue position is written with (`@1:30`). The one parser for a
+/// position as text; a position sent as a number of seconds goes through
 /// [`duration_from_secs`], as this does. Errors are the reason, for the
 /// surface to answer with.
 pub fn parse_position(value: &str) -> Result<Duration, String> {
     let trimmed = value.trim();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim();
     let seconds = if let Some(stripped) = trimmed
         .strip_suffix('s')
         .or_else(|| trimmed.strip_suffix('S'))
@@ -1371,6 +1373,29 @@ mod test {
             .unwrap();
         assert_ne!(crate::util::FileStamp::of(&path).unwrap(), first);
         assert!(crate::util::FileStamp::of(&dir.path().join("none")).is_none());
+    }
+
+    /// Every spelling a surface takes, the CLI's `@` included.
+    #[test]
+    fn a_position_parses_in_every_spelling() {
+        use crate::util::parse_position;
+        for (given, secs) in [
+            ("90", 90.0),
+            ("90s", 90.0),
+            (" 1:30 ", 90.0),
+            ("1:30.5s", 90.5),
+            ("@1:30", 90.0),
+            ("@ 45.25", 45.25),
+            ("1:23.456789", 83.456789),
+        ] {
+            assert_eq!(
+                parse_position(given),
+                Ok(Duration::from_secs_f64(secs)),
+                "{given}"
+            );
+        }
+        assert!(parse_position("chorus").is_err());
+        assert!(parse_position("@").is_err());
     }
 
     #[test]
