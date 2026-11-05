@@ -13,18 +13,10 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
-
-interface SubsystemStatus {
-  status: "connected" | "initializing" | "not_connected" | "not_configured";
-  name: string | null;
-}
-
-interface ControllerStatus {
-  kind: string;
-  status: string;
-  detail: string | null;
-  error: string | null;
-}
+import type {
+  ControllerStatus,
+  SubsystemStatus,
+} from "../../src/gen/rules/mtrack_rules";
 
 function statusFixture(overrides: {
   audio?: SubsystemStatus;

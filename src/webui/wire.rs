@@ -20,3 +20,4 @@
 
 pub mod messages;
 pub mod songs;
+pub mod status;

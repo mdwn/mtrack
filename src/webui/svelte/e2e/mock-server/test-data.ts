@@ -16,6 +16,7 @@ import type {
   FixtureMetadata,
   SocketMessage,
   SongList,
+  Status,
 } from "../../src/gen/rules/mtrack_rules";
 
 export const SONGS: SongList = {
@@ -178,11 +179,12 @@ export const CONFIG_STORE = {
   checksum: "abc123def456",
 };
 
-export const STATUS = {
+export const STATUS: Status = {
   build: {
     version: "0.1.0-test",
     git_hash: "deadbeef",
     build_time: "2026-01-01T00:00:00Z",
+    ui_build: null,
   },
   hardware: {
     init_done: true,
@@ -204,10 +206,12 @@ export const STATUS = {
     dmx: { status: "not_connected", name: null },
     trigger: { status: "not_connected", name: null },
     lighting_venue: { name: null, status: "none", error: null },
+    test_output: null,
   },
   controllers: [
     { kind: "osc", status: "running", detail: "0.0.0.0:9000", error: null },
   ],
+  locked: false,
 };
 
 export const AUDIO_DEVICES = [

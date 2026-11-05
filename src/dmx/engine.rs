@@ -48,8 +48,9 @@ mod playback;
 mod test_output;
 mod timeline;
 
+pub use crate::player::TestOutputStatus;
 pub use ambient::{AmbientMode, AmbientReport, AmbientStatus};
-pub use test_output::{TestOutput, TestOutputStatus, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
+pub use test_output::{TestOutput, EXPIRY_ENV, TEST_OUTPUT_EXPIRY};
 pub(crate) use timeline::lighting_timeline;
 
 /// The result of classifying a MIDI message for DMX purposes.

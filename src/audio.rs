@@ -34,6 +34,7 @@ pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
 pub mod monoclip;
+pub mod output_status;
 pub mod pilot;
 pub mod sample_source;
 pub(crate) mod song_loop;

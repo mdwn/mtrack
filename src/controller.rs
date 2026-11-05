@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::config;
+pub use crate::player::ControllerStatus;
 use crate::player::Player;
 use std::error::Error;
 use std::io;
@@ -107,19 +108,6 @@ impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
     }
-}
-
-/// Status of a single controller.
-#[derive(Clone, serde::Serialize)]
-pub struct ControllerStatus {
-    /// The kind of controller (grpc, osc, midi).
-    pub kind: String,
-    /// Whether the controller started successfully.
-    pub status: String,
-    /// Additional info (e.g. port number, device name).
-    pub detail: Option<String>,
-    /// Error message if the controller failed to start.
-    pub error: Option<String>,
 }
 
 /// Controls a playlist.

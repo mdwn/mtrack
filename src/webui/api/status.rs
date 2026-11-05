@@ -17,23 +17,23 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use crate::build_info;
+use crate::webui::wire::status::{BuildInfo, ControllersRestarted, Status};
 
 /// GET /api/status — returns build info, hardware status, and controller status.
 pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResponse {
     let hardware = state.player.hardware_status();
     let controllers = state.player.controller_statuses();
-    Json(json!({
-        "build": {
-            "version": build_info::VERSION,
-            "git_hash": build_info::GIT_HASH,
-            "build_time": build_info::BUILD_TIME,
-            // The web UI this server serves (null when its build had none).
-            "ui_build": super::super::server::ui_build(),
+    Json(Status {
+        build: BuildInfo {
+            version: build_info::VERSION.to_string(),
+            git_hash: build_info::GIT_HASH.to_string(),
+            build_time: build_info::BUILD_TIME.to_string(),
+            ui_build: super::super::server::ui_build(),
         },
-        "hardware": hardware,
-        "controllers": controllers,
-        "locked": state.player.is_locked(),
-    }))
+        hardware,
+        controllers,
+        locked: state.player.is_locked(),
+    })
 }
 
 /// POST /api/controllers/restart — restarts all controllers from current config.
@@ -49,12 +49,11 @@ pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl
     }
     match state.player.reload_controllers().await {
         Ok(()) => {
-            let statuses = state.player.controller_statuses();
-            (
-                axum::http::StatusCode::OK,
-                Json(json!({"status": "restarted", "controllers": statuses})),
-            )
-                .into_response()
+            let restarted = ControllersRestarted {
+                status: "restarted".to_string(),
+                controllers: state.player.controller_statuses(),
+            };
+            (axum::http::StatusCode::OK, Json(restarted)).into_response()
         }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -154,5 +153,136 @@ mod test {
         assert_eq!(parsed["hardware"]["midi"]["status"], "not_connected");
         assert_eq!(parsed["hardware"]["dmx"]["status"], "not_connected");
         assert_eq!(parsed["hardware"]["trigger"]["status"], "not_connected");
+    }
+
+    /// The status is what the `json!` it replaced built: that `json!`,
+    /// kept here as the oracle.
+    #[test]
+    fn status_matches_the_old_json() {
+        use crate::player::{
+            AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
+            SubsystemStatus, TestOutputStatus,
+        };
+        use crate::webui::wire::status::*;
+        use serde_json::json;
+
+        let subsystem = |status: &str, error: Option<&str>| SubsystemStatus {
+            status: status.to_string(),
+            name: Some("dev".to_string()),
+            error: error.map(String::from),
+        };
+        let hardware = HardwareStatusSnapshot {
+            init_done: true,
+            hostname: Some("pi".to_string()),
+            profile: None,
+            audio: subsystem("connected", None),
+            audio_output: Some(AudioOutputHealth {
+                status: crate::audio::health::OutputStatus::NeverStarted,
+                callback_alive: false,
+                writing_signal: false,
+                since_last_callback_ms: None,
+                since_last_signal_ms: Some(5),
+                callbacks: 0,
+                recoveries: 1,
+                underruns: 2,
+                last_error: None,
+            }),
+            midi: subsystem("failed", Some("gone")),
+            dmx: subsystem("not_connected", None),
+            trigger: subsystem("initializing", None),
+            lighting_venue: LightingVenueStatus {
+                name: None,
+                status: "none".to_string(),
+                error: None,
+            },
+            test_output: Some(TestOutputStatus {
+                universe: 1,
+                address: 10,
+                footprint: 4,
+                fixture_type: "par".to_string(),
+                mode: None,
+                expires_in_secs: 2.5,
+            }),
+        };
+        let controllers = vec![ControllerStatus {
+            kind: "osc".to_string(),
+            status: "running".to_string(),
+            detail: Some("port 9000".to_string()),
+            error: None,
+        }];
+        let status = Status {
+            build: BuildInfo {
+                version: "1".to_string(),
+                git_hash: "abc".to_string(),
+                build_time: "now".to_string(),
+                ui_build: None,
+            },
+            hardware: hardware.clone(),
+            controllers: controllers.clone(),
+            locked: true,
+        };
+        let old_subsystem = |status: &str, error: Option<&str>| {
+            let mut s = json!({"status": status, "name": "dev"});
+            if let Some(error) = error {
+                s["error"] = json!(error);
+            }
+            s
+        };
+        let old_hardware = json!({
+            "init_done": true,
+            "hostname": "pi",
+            "profile": null,
+            "audio": old_subsystem("connected", None),
+            "audio_output": {
+                "status": "never_started",
+                "callback_alive": false,
+                "writing_signal": false,
+                "since_last_callback_ms": null,
+                "since_last_signal_ms": 5,
+                "callbacks": 0,
+                "recoveries": 1,
+                "underruns": 2,
+                "last_error": null,
+            },
+            "midi": old_subsystem("failed", Some("gone")),
+            "dmx": old_subsystem("not_connected", None),
+            "trigger": old_subsystem("initializing", None),
+            "lighting_venue": {"name": null, "status": "none", "error": null},
+            "test_output": {
+                "universe": 1,
+                "address": 10,
+                "footprint": 4,
+                "fixture_type": "par",
+                "mode": null,
+                "expires_in_secs": 2.5,
+            },
+        });
+        let old_controllers = json!([{
+            "kind": "osc",
+            "status": "running",
+            "detail": "port 9000",
+            "error": null,
+        }]);
+        assert_eq!(
+            json!(status),
+            json!({
+                "build": {
+                    "version": "1",
+                    "git_hash": "abc",
+                    "build_time": "now",
+                    "ui_build": null,
+                },
+                "hardware": old_hardware,
+                "controllers": old_controllers,
+                "locked": true,
+            })
+        );
+        assert_eq!(
+            json!(ControllersRestarted {
+                status: "restarted".to_string(),
+                controllers,
+            }),
+            json!({"status": "restarted", "controllers": old_controllers})
+        );
     }
 }

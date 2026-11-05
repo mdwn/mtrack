@@ -86,6 +86,15 @@ pub mod pilot_config;
 #[path = "../../../src/config/section.rs"]
 mod config_section;
 
+/// What the audio output is doing (`src/audio/output_status.rs`).
+#[path = "../../../src/audio/output_status.rs"]
+pub mod output_status;
+
+/// The hardware and controllers as status reports them
+/// (`src/player/hardware_status.rs`).
+#[path = "../../../src/player/hardware_status.rs"]
+mod hardware_status;
+
 /// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
 #[path = "../../../src/audio/guessed_tempo.rs"]
 pub mod guessed_tempo;
@@ -111,12 +120,15 @@ pub mod wire_messages;
 /// The songs API's payloads.
 #[path = "../../../src/webui/wire/songs.rs"]
 pub mod wire_songs;
+/// The status API's payloads.
+#[path = "../../../src/webui/wire/status.rs"]
+pub mod wire_status;
 
 // The player's module paths the included sources name each other by
 // (`crate::audio::beat_grid`, `crate::config::Section`, …), so each
 // compiles as it is.
 pub mod audio {
-    pub use crate::{beat_grid, guessed_tempo};
+    pub use crate::{beat_grid, guessed_tempo, output_status};
 }
 
 pub mod config {
@@ -128,6 +140,10 @@ pub mod dmx {
     pub mod engine {
         pub use crate::ambient_mode::AmbientMode;
     }
+}
+
+pub mod player {
+    pub use crate::hardware_status::*;
 }
 
 pub mod playlist {
