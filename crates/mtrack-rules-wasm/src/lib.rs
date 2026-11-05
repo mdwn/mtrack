@@ -114,6 +114,9 @@ mod pose;
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
+/// The fixture test's payloads.
+#[path = "../../../src/webui/wire/fixture_test.rs"]
+pub mod wire_fixture_test;
 /// The websocket's messages.
 #[path = "../../../src/webui/wire/messages.rs"]
 pub mod wire_messages;

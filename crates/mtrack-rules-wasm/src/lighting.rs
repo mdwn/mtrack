@@ -17,17 +17,23 @@
 //! names a player source; the Makefile reads them for the UI build's
 //! dependencies.
 
-pub use crate::tempo;
+pub use crate::{patch, tempo};
 
 pub mod effects;
 #[path = "../../../src/lighting/findings.rs"]
 pub mod findings;
 #[path = "../../../src/lighting/fit/types.rs"]
 mod fit_types;
+#[path = "../../../src/lighting/fixture_test/types.rs"]
+mod fixture_test_types;
 #[path = "../../../src/lighting/geometry.rs"]
 pub mod geometry;
 pub mod parser;
 
 pub mod fit {
     pub use super::fit_types::*;
+}
+
+pub mod fixture_test {
+    pub use super::fixture_test_types::*;
 }
