@@ -368,11 +368,11 @@ pub struct Cue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub offset_measures: Option<u32>,
-    /// Each `offset` line's measures as written, when there are several,
-    /// for a save to keep the lines while their sum is still the above.
+    /// Each `offset` line as written, with its comments, for a save to
+    /// keep the lines while their sum is still the above.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub offsets: Option<Vec<u32>>,
+    pub offsets: Option<Vec<OffsetLine>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub reset_measures: Option<bool>,
@@ -392,14 +392,6 @@ pub struct Cue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub comment: Option<String>,
-    /// The comment lines above its `offset` line.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub offset_comments_before: Option<Vec<String>>,
-    /// A comment on its `offset` line.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "tsify", tsify(optional))]
-    pub offset_comment: Option<String>,
     /// The comment lines above its `reset_measures` line.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
@@ -417,6 +409,21 @@ pub struct Cue {
     /// Which of its lines was read last: where a comment on that line goes.
     #[serde(skip)]
     last: CueLine,
+}
+
+/// An `offset N measures` line as written.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct OffsetLine {
+    pub measures: u32,
+    /// The comment lines above it, as written (`# …`, `// …`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comments_before: Option<Vec<String>>,
+    /// A comment on its line, after it, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub comment: Option<String>,
 }
 
 /// The kinds of line a cue holds.
@@ -1537,7 +1544,14 @@ impl Cue {
             CueLine::Effect => &mut self.effects.last_mut().expect("an effect").comment,
             CueLine::Command => &mut self.commands.last_mut().expect("a command").comment,
             CueLine::Reference => &mut self.sequences.last_mut().expect("a reference").comment,
-            CueLine::Offset => &mut self.offset_comment,
+            CueLine::Offset => {
+                &mut self
+                    .offsets
+                    .as_mut()
+                    .and_then(|o| o.last_mut())
+                    .expect("an offset")
+                    .comment
+            }
             CueLine::Reset => &mut self.reset_comment,
             CueLine::Loop => {
                 &mut self
@@ -1576,8 +1590,6 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
         loops: None,
         line: Some(line),
         comments_before: None,
-        offset_comments_before: None,
-        offset_comment: None,
         reset_comments_before: None,
         reset_comment: None,
         lines: None,
@@ -1649,12 +1661,11 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
                     .transpose()?
                     .unwrap_or(0);
                 cue.offset_measures = Some(cue.offset_measures.unwrap_or(0) + measures);
-                cue.offsets.get_or_insert_with(Vec::new).push(measures);
-                if let Some(pending) = comments.take() {
-                    cue.offset_comments_before
-                        .get_or_insert_with(Vec::new)
-                        .extend(pending);
-                }
+                cue.offsets.get_or_insert_with(Vec::new).push(OffsetLine {
+                    measures,
+                    comments_before: comments.take(),
+                    comment: None,
+                });
                 cue.last = CueLine::Offset;
                 lines.push(CueLine::Offset);
                 comments.keep_inner(&inner, source, cue.last_line());
@@ -1684,9 +1695,6 @@ fn cue(pair: Pair<Rule>, source: &str) -> Result<CueAndTrailing, Box<dyn Error>>
     }
     if !lines.is_empty() {
         cue.lines = Some(lines);
-    }
-    if cue.offsets.as_ref().is_some_and(|o| o.len() < 2) {
-        cue.offsets = None;
     }
     Ok((cue, comments.take()))
 }
@@ -2101,7 +2109,10 @@ show "Song" {
         assert_eq!(cue.commands[0].comment.as_deref(), Some("# on command"));
         assert_eq!(cue.sequences[0].comments_before, v(&["# before ref"]));
         assert_eq!(cue.sequences[0].comment.as_deref(), Some("# on ref"));
-        assert_eq!(cue.offset_comment.as_deref(), Some("# on offset"));
+        assert_eq!(
+            cue.offsets.as_ref().unwrap()[0].comment.as_deref(),
+            Some("# on offset")
+        );
         assert_eq!(cue.reset_comment.as_deref(), Some("# on reset"));
         let second = &show.cues[1];
         assert_eq!(second.comments_before, v(&["# between cues"]));
@@ -2167,7 +2178,10 @@ show "Song" {
             cue.commands[0].comments_before,
             Some(vec!["# opened".to_string()])
         );
-        assert_eq!(cue.offset_comment.as_deref(), Some("# mid"));
+        assert_eq!(
+            cue.offsets.as_ref().unwrap()[0].comment.as_deref(),
+            Some("# mid")
+        );
     }
 
     #[test]
@@ -2180,6 +2194,28 @@ show "Song" {
         let written = start.written.unwrap();
         assert_eq!(written.text, "500ms");
         assert_eq!((written.value, written.unit), (500.0, DurationUnit::Ms));
+    }
+
+    #[test]
+    fn each_offset_line_keeps_its_own_comments() {
+        let doc = document(
+            "show \"S\" {\n    @1/1\n    offset 1 measures # a\n    # between\n    offset 2 measures # b\n}\n",
+            None,
+        )
+        .document
+        .unwrap();
+        let cue = &doc.shows[0].cues[0];
+        assert_eq!(cue.offset_measures, Some(3));
+        let lines = cue.offsets.as_ref().unwrap();
+        assert_eq!(lines[0].measures, 1);
+        assert_eq!(lines[0].comments_before, None);
+        assert_eq!(lines[0].comment.as_deref(), Some("# a"));
+        assert_eq!(lines[1].measures, 2);
+        assert_eq!(
+            lines[1].comments_before,
+            Some(vec!["# between".to_string()])
+        );
+        assert_eq!(lines[1].comment.as_deref(), Some("# b"));
     }
 
     #[test]

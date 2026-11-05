@@ -145,6 +145,23 @@ test("a tempo start is written as read until its value or unit changes", () => {
   expect(serializeLightFile(decimal)).toContain("start: 0.50s\n");
 });
 
+test("each offset line keeps its own comments", () => {
+  const source =
+    'show "S" {\n    @1/1\n    offset 1 measures # a\n    # between\n    offset 2 measures # b\n}\n';
+  const read = rules.document(source).document!;
+  // Untouched, the file comes back as it was.
+  expect(serializeLightFile(read)).toBe(source);
+  // An edited sum is one line, every comment kept in order.
+  const show = read.shows[0];
+  const edited = serializeLightFile({
+    ...read,
+    shows: [{ ...show, cues: [{ ...show.cues[0], offset_measures: 5 }] }],
+  });
+  expect(edited).toBe(
+    'show "S" {\n    @1/1\n    # a\n    # between\n    offset 5 measures # b\n}\n',
+  );
+});
+
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];
 if (process.env.MTRACK_LIGHT_CORPUS) {
   folders.push(process.env.MTRACK_LIGHT_CORPUS);

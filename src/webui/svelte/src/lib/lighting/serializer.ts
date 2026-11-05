@@ -26,6 +26,7 @@ import type {
 import type {
   CueLine,
   DocumentItem,
+  OffsetLine,
   Param,
   Remarks,
   TempoField,
@@ -298,13 +299,24 @@ function serializeCues(cues: Cue[]): string {
     // The cue's lines, each kind in its list's order, in the order the
     // file wrote them when the lists still match that order (an edit that
     // adds or removes a line writes the kinds grouped).
-    // Several `offset` lines stay several while they still add up.
-    const sum = (cue.offsets ?? []).reduce((a, b) => a + b, 0);
-    const offsets =
-      cue.offsets && sum === cue.offset_measures
-        ? cue.offsets
+    // The `offset` lines as written, each with its comments, while they
+    // still add up; an edited sum is one line, the comments kept on it.
+    const read = cue.offsets ?? [];
+    const sum = read.reduce((a, l) => a + l.measures, 0);
+    const offsets: OffsetLine[] =
+      read.length > 0 && sum === cue.offset_measures
+        ? read
         : cue.offset_measures !== undefined
-          ? [cue.offset_measures]
+          ? [
+              {
+                measures: cue.offset_measures,
+                comments_before: read.flatMap((l, i) => [
+                  ...(l.comments_before ?? []),
+                  ...(l.comment && i < read.length - 1 ? [l.comment] : []),
+                ]),
+                comment: read[read.length - 1]?.comment,
+              },
+            ]
           : [];
     const kinds = {
       effect: cue.effects.length,
@@ -353,12 +365,10 @@ function serializeCues(cues: Cue[]): string {
           line(`    ${serializeSequenceRef(ref, "        ")}`, ref.comment),
         );
       } else if (kind === "offset") {
-        if (i === 0) lines.push(...own(cue.offset_comments_before, "    "));
+        const offset = offsets[i];
+        lines.push(...own(offset.comments_before, "    "));
         lines.push(
-          line(
-            `    offset ${offsets[i]} measures`,
-            i === offsets.length - 1 ? cue.offset_comment : undefined,
-          ),
+          line(`    offset ${offset.measures} measures`, offset.comment),
         );
       } else if (kind === "reset") {
         lines.push(...own(cue.reset_comments_before, "    "));
