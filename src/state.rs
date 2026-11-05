@@ -127,11 +127,7 @@ pub(crate) fn apply_test_overlay(
         if info.parent.is_some() || info.universe != overlay.universe {
             continue;
         }
-        let at = |offset: u16| -> Option<u8> {
-            let absolute = u32::from(info.address) + u32::from(offset);
-            let absolute = u16::try_from(absolute.checked_sub(1)?).ok()?;
-            bytes.get(&absolute).copied()
-        };
+        let at = |offset: u16| bytes.get(&info.dmx_channel(offset)?).copied();
         let mut covered: Vec<(String, u8)> = Vec::new();
         for (channel, def) in &info.channel_defs {
             let fine_name = format!("{channel}_fine");

@@ -317,6 +317,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
+  to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
+  test's overlay already had it.
 - **A fixture test of a type with no channels lights no venue fixture**: the web UI's fixture
   test warned that a type with no channels was lit over the venue fixture at its address. It
   occupies nothing, as the venue's patch check has it.

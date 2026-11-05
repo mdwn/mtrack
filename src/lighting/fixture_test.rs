@@ -228,18 +228,18 @@ pub fn resolve_frame(
     let values = resolve_controls(info, controls);
     channel_names(info)
         .into_iter()
-        .map(|(offset, name)| {
+        .filter_map(|(offset, name)| {
             let (value, raw) = match raw.get(&offset) {
                 Some(&v) => (v, true),
                 None => (values.get(&offset).copied().unwrap_or(0), false),
             };
-            FrameChannel {
+            Some(FrameChannel {
                 offset,
-                address: info.dmx_channel(offset),
+                address: info.dmx_channel(offset)?,
                 name,
                 value,
                 raw,
-            }
+            })
         })
         .collect()
 }

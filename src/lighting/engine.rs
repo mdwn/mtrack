@@ -181,10 +181,12 @@ impl FixtureRegistry {
         #[cfg(test)]
         {
             for (channel_name, &offset) in &fixture.channels {
-                self.dmx_to_fixture_map.insert(
-                    (fixture.universe, fixture.dmx_channel(offset)),
-                    (fixture.name.clone(), channel_name.clone()),
-                );
+                if let Some(channel) = fixture.dmx_channel(offset) {
+                    self.dmx_to_fixture_map.insert(
+                        (fixture.universe, channel),
+                        (fixture.name.clone(), channel_name.clone()),
+                    );
+                }
             }
         }
         self.fixtures.insert(fixture.name.clone(), fixture);
@@ -531,10 +533,9 @@ impl EffectEngine {
         let mut kinds: HashMap<(u16, u16), CrossKind> = HashMap::new();
         for fixture in self.fixtures.as_map().values() {
             for (name, &offset) in &fixture.channels {
-                kinds.insert(
-                    (fixture.universe, fixture.dmx_channel(offset)),
-                    CrossKind::of(name),
-                );
+                if let Some(channel) = fixture.dmx_channel(offset) {
+                    kinds.insert((fixture.universe, channel), CrossKind::of(name));
+                }
             }
         }
 
@@ -587,16 +588,16 @@ impl EffectEngine {
     fn channels_where(&self, keep: impl Fn(&str) -> bool) -> HashSet<(u16, u16)> {
         let mut out = HashSet::new();
         for fixture in self.fixtures.as_map().values() {
-            let at = |offset: u16| (fixture.universe, fixture.dmx_channel(offset));
+            let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, def) in &fixture.channel_defs {
                 if !keep(name) {
                     continue;
                 }
-                out.insert(at(def.offset));
-                out.extend(def.fine.map(at));
+                out.extend(at(def.offset));
+                out.extend(def.fine.and_then(at));
                 for &(coarse, fine) in &def.mirrors {
-                    out.insert(at(coarse));
-                    out.extend(fine.map(at));
+                    out.extend(at(coarse));
+                    out.extend(fine.and_then(at));
                 }
             }
         }
@@ -1064,11 +1065,13 @@ impl EffectEngine {
                     if let Some(fixture_info) = self.fixtures.get(fixture_name) {
                         if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                             for (offset, byte) in resolve_normalized(def, normalized_value) {
-                                commands.push(DmxCommand {
-                                    universe: fixture_info.universe,
-                                    channel: fixture_info.dmx_channel(offset),
-                                    value: byte,
-                                });
+                                if let Some(channel) = fixture_info.dmx_channel(offset) {
+                                    commands.push(DmxCommand {
+                                        universe: fixture_info.universe,
+                                        channel,
+                                        value: byte,
+                                    });
+                                }
                             }
                             // Update merged state for simulator visibility.
                             self.last_merged_states
