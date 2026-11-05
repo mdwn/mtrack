@@ -71,17 +71,6 @@ fn clave_pattern(kind: ClaveKind) -> (&'static [usize], &'static [usize]) {
     }
 }
 
-/// Beat offsets within a measure that get a grouping accent.
-fn accent_group_starts(config: &MetronomeConfig) -> Vec<usize> {
-    let mut starts = vec![0usize];
-    let mut acc = 0usize;
-    for group in &config.accent {
-        acc += *group as usize;
-        starts.push(acc);
-    }
-    starts
-}
-
 /// Measure boundaries as beat-index ranges; without measure starts the
 /// whole grid is one measure.
 fn measure_bounds(grid: &BeatGrid) -> Vec<(usize, usize)> {
@@ -104,41 +93,15 @@ fn measure_bounds(grid: &BeatGrid) -> Vec<(usize, usize)> {
 }
 
 /// Resolves the accent level (0 silent, 1 normal, 2 half, 3 accent) of every
-/// beat in the grid: the per-beat pattern in effect (base `accents` swapped
-/// by positional `changes`), applied per measure — padded with the baseline
-/// level when a measure has more beats than the pattern, truncated when it
-/// has fewer. Without a pattern the `accent` grouping applies, and without
-/// either the downbeat gets a plain accent. This is the source of truth
-/// shared by the audio renderer and the web UI's visual metronome.
+/// beat in the grid: `MetronomeConfig::accent_pattern_at` applied to each
+/// measure. This is
+/// the source of truth shared by the audio renderer and the web UI's visual
+/// metronome.
 pub fn accent_levels(grid: &BeatGrid, config: &MetronomeConfig) -> Vec<u8> {
-    let group_starts = accent_group_starts(config);
-    let mut sorted_changes = config.changes.clone();
-    sorted_changes.sort_by_key(|c| c.measure);
-
     let mut levels = vec![1u8; grid.beats.len()];
-    let mut active_accents: &[u8] = &config.accents;
     for (measure_idx, &(measure_start, measure_end)) in measure_bounds(grid).iter().enumerate() {
-        for change in &sorted_changes {
-            if change.measure as usize == measure_idx + 1 {
-                if let Some(accents) = &change.accents {
-                    active_accents = accents;
-                }
-            }
-        }
-        let measure_len = measure_end - measure_start;
-        for beat_in_measure in 0..measure_len {
-            levels[measure_start + beat_in_measure] = if !active_accents.is_empty() {
-                active_accents
-                    .get(beat_in_measure)
-                    .copied()
-                    .unwrap_or(1)
-                    .min(3)
-            } else if group_starts.contains(&beat_in_measure) {
-                3
-            } else {
-                1
-            };
-        }
+        let pattern = config.accent_pattern_at(measure_idx as u32 + 1, measure_end - measure_start);
+        levels[measure_start..measure_end].copy_from_slice(&pattern);
     }
     levels
 }
@@ -664,6 +627,55 @@ mod tests {
         let grid = simple_grid(3, 0.5, 1);
         let config = config_with(vec![2, 1], vec![], Subdivision::Even(1));
         assert_eq!(accent_levels(&grid, &config), vec![3, 1, 3]);
+    }
+
+    /// `accent_levels` is `accent_pattern_at` bar by bar: the renderer and
+    /// the web UI's pads (which ask per measure) read one rule.
+    #[test]
+    fn accent_levels_are_the_per_measure_patterns() {
+        use crate::config::metronome::MetronomeChange;
+        let grid = BeatGrid {
+            beats: (0..18).map(|i| i as f64 * 0.5).collect(),
+            measure_starts: vec![0, 4, 8, 11, 15],
+        };
+        for config in [
+            MetronomeConfig::default(),
+            MetronomeConfig {
+                accent: vec![2, 2],
+                ..MetronomeConfig::default()
+            },
+            MetronomeConfig {
+                accents: vec![3, 0, 2],
+                changes: vec![
+                    MetronomeChange {
+                        measure: 3,
+                        accents: Some(vec![2, 2]),
+                        subdivision: None,
+                    },
+                    MetronomeChange {
+                        measure: 2,
+                        accents: None,
+                        subdivision: Some(Subdivision::Even(2)),
+                    },
+                ],
+                ..MetronomeConfig::default()
+            },
+        ] {
+            let levels = accent_levels(&grid, &config);
+            for (index, &start) in grid.measure_starts.iter().enumerate() {
+                let end = grid
+                    .measure_starts
+                    .get(index + 1)
+                    .copied()
+                    .unwrap_or(grid.beats.len());
+                assert_eq!(
+                    config.accent_pattern_at(index as u32 + 1, end - start),
+                    levels[start..end],
+                    "measure {} of {config:?}",
+                    index + 1
+                );
+            }
+        }
     }
 
     #[test]
