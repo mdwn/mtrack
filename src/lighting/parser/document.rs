@@ -1345,11 +1345,11 @@ fn tempo_change(pair: Pair<Rule>, source: &str) -> Result<TempoChange, Box<dyn E
                     };
                     let text = value.as_str().trim().to_string();
                     let name = match rule {
-                        Rule::tempo_change_bpm => {
+                        Rule::tempo_bpm => {
                             change.bpm = Some(text.parse()?);
                             "bpm"
                         }
-                        Rule::tempo_change_time_signature => {
+                        Rule::tempo_time_signature => {
                             change.time_signature = Some(signature(&text)?);
                             "time_signature"
                         }

@@ -66,14 +66,17 @@ pub struct FunctionStep {
     pub to: f64,
 }
 
-/// The variable-strobe function of a fixture's channels: the "strobe"
-/// function on the "strobe" channel, which the engine drives.
+/// The variable-strobe function of a fixture's channels: the first
+/// "strobe" function on the "strobe" channel, which the engine drives and
+/// the strobe fields describe.
 pub fn strobe_function(channel_defs: &HashMap<String, ChannelDef>) -> Option<&ChannelFunction> {
-    channel_defs
-        .get("strobe")?
-        .functions
-        .iter()
-        .find(|f| f.name == "strobe")
+    let def = channel_defs.get(STROBE_CHANNEL)?;
+    def.functions.get(strobe_function_index(def)?)
+}
+
+/// Where [`strobe_function`] is among the strobe channel's functions.
+fn strobe_function_index(def: &ChannelDef) -> Option<usize> {
+    def.functions.iter().position(|f| f.name == STROBE_FUNCTION)
 }
 
 /// One cell of a pixel fixture (design §17.2): its own channel offsets and
@@ -386,22 +389,14 @@ impl FixtureType {
     }
 
     /// Fills the v1 strobe fields from the strobe channel's variable strobe
-    /// function, if one is declared with a frequency range.
+    /// function, if it is declared with a frequency range.
     fn derive_strobe_fields(&mut self) {
-        let Some(def) = self.channel_defs.get(STROBE_CHANNEL) else {
+        let Some(func) = strobe_function(&self.channel_defs) else {
             return;
         };
-        let Some(func) = def
-            .functions
-            .iter()
-            .find(|f| f.name == STROBE_FUNCTION && f.physical.is_some())
-        else {
+        let Some(physical) = func.physical.filter(|p| p.unit == PhysicalUnit::Hertz) else {
             return;
         };
-        let physical = func.physical.expect("filtered on is_some");
-        if physical.unit != PhysicalUnit::Hertz {
-            return;
-        }
         self.strobe_dmx_offset = Some(func.dmx_from);
         self.min_strobe_frequency = Some(physical.from.min(physical.to));
         self.max_strobe_frequency = Some(physical.from.max(physical.to));
@@ -427,7 +422,7 @@ impl FixtureType {
         let Some(def) = self.channel_defs.get_mut(STROBE_CHANNEL) else {
             return;
         };
-        if let Some(func) = def.functions.iter_mut().find(|f| f.name == STROBE_FUNCTION) {
+        if let Some(func) = strobe_function_index(def).map(|i| &mut def.functions[i]) {
             let agrees = func.dmx_from == offset
                 && func.physical.is_some_and(|p| {
                     p.unit == PhysicalUnit::Hertz
@@ -1387,6 +1382,44 @@ mod tests {
         assert_eq!(func.dmx_to, u8::MAX);
         let physical = func.physical.unwrap();
         assert_eq!((physical.from, physical.to), (50.0, 99.0));
+    }
+
+    #[test]
+    fn the_strobe_fields_describe_the_strobe_function_the_engine_drives() {
+        // Two functions named "strobe": the first, with no rate range, is
+        // the one the engine drives, so there is no rate to derive. The
+        // fields came from the second before, and the first was rewritten
+        // to the second's range.
+        let function = |dmx_from, dmx_to, physical| ChannelFunction {
+            steps: Vec::new(),
+            name: "strobe".to_string(),
+            dmx_from,
+            dmx_to,
+            physical,
+        };
+        let hz = PhysicalRange {
+            from: 1.0,
+            to: 20.0,
+            unit: PhysicalUnit::Hertz,
+        };
+        let mut defs = HashMap::new();
+        defs.insert(
+            "strobe".to_string(),
+            ChannelDef {
+                offset: 1,
+                fine: None,
+                range: None,
+                functions: vec![function(8, 15, None), function(16, 255, Some(hz))],
+                mirrors: Vec::new(),
+            },
+        );
+        let ft = FixtureType::from_parts("Twin".to_string(), defs, None, None, None);
+        assert_eq!(
+            (ft.strobe_dmx_offset(), ft.max_strobe_frequency()),
+            (None, None)
+        );
+        let functions = &ft.channel_defs()["strobe"].functions;
+        assert_eq!((functions[0].dmx_from, functions[0].physical), (8, None));
     }
 
     #[test]

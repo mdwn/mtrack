@@ -21,6 +21,23 @@ pub struct Color {
     pub w: Option<u8>, // White channel for RGBW fixtures
 }
 
+/// The named colours a show may write in quotes (`color: "red"`), with
+/// their bytes; what the grammar's `named_color` accepts. Pink is CSS
+/// pink, the value the web UI's colour picker offers.
+pub const NAMED_COLORS: [(&str, (u8, u8, u8)); 11] = [
+    ("red", (255, 0, 0)),
+    ("green", (0, 255, 0)),
+    ("blue", (0, 0, 255)),
+    ("white", (255, 255, 255)),
+    ("black", (0, 0, 0)),
+    ("yellow", (255, 255, 0)),
+    ("cyan", (0, 255, 255)),
+    ("magenta", (255, 0, 255)),
+    ("orange", (255, 165, 0)),
+    ("purple", (128, 0, 128)),
+    ("pink", (255, 192, 203)),
+];
+
 impl Color {
     pub fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, w: None }
@@ -40,69 +57,12 @@ impl Color {
     }
 
     pub fn from_name(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        match name.to_lowercase().as_str() {
-            "red" => Ok(Color {
-                r: 255,
-                g: 0,
-                b: 0,
-                w: None,
-            }),
-            "green" => Ok(Color {
-                r: 0,
-                g: 255,
-                b: 0,
-                w: None,
-            }),
-            "blue" => Ok(Color {
-                r: 0,
-                g: 0,
-                b: 255,
-                w: None,
-            }),
-            "white" => Ok(Color {
-                r: 255,
-                g: 255,
-                b: 255,
-                w: None,
-            }),
-            "black" => Ok(Color {
-                r: 0,
-                g: 0,
-                b: 0,
-                w: None,
-            }),
-            "yellow" => Ok(Color {
-                r: 255,
-                g: 255,
-                b: 0,
-                w: None,
-            }),
-            "cyan" => Ok(Color {
-                r: 0,
-                g: 255,
-                b: 255,
-                w: None,
-            }),
-            "magenta" => Ok(Color {
-                r: 255,
-                g: 0,
-                b: 255,
-                w: None,
-            }),
-            "orange" => Ok(Color {
-                r: 255,
-                g: 165,
-                b: 0,
-                w: None,
-            }),
-            "purple" => Ok(Color {
-                r: 128,
-                g: 0,
-                b: 128,
-                w: None,
-            }),
-            _ => Err(format!("Unknown color name: {}", name).into()),
-        }
+        let lower = name.to_lowercase();
+        NAMED_COLORS
+            .iter()
+            .find(|(named, _)| *named == lower)
+            .map(|&(_, (r, g, b))| Color { r, g, b, w: None })
+            .ok_or_else(|| format!("Unknown color name: {}", name).into())
     }
 
     pub fn from_hsv(h: f64, s: f64, v: f64) -> Self {
@@ -277,6 +237,7 @@ mod tests {
             ("magenta", (255, 0, 255)),
             ("orange", (255, 165, 0)),
             ("purple", (128, 0, 128)),
+            ("pink", (255, 192, 203)),
         ];
         for (name, (r, g, b)) in cases {
             let c = Color::from_name(name).unwrap();

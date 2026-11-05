@@ -687,10 +687,11 @@ impl FixtureInfo {
     }
 
     /// The DMX channel (1-based, on the fixture's universe) a channel at
-    /// `offset` (1-based from the fixture's address) is patched to.
+    /// `offset` (1-based from the fixture's address) is patched to; `None`
+    /// for one no channel number holds (past 65535), which would wrap.
     #[inline]
-    pub fn dmx_channel(&self, offset: u16) -> u16 {
-        self.address + offset - 1
+    pub fn dmx_channel(&self, offset: u16) -> Option<u16> {
+        u16::try_from((u32::from(self.address) + u32::from(offset)).checked_sub(1)?).ok()
     }
 
     /// Get cached capabilities
@@ -959,6 +960,16 @@ mod tests {
             ]),
             None,
         )
+    }
+
+    #[test]
+    fn a_channel_past_65535_has_no_dmx_channel() {
+        let mut par = rgb_fixture();
+        par.address = 65534;
+        assert_eq!(par.dmx_channel(1), Some(65534));
+        assert_eq!(par.dmx_channel(2), Some(65535));
+        // It wrapped onto channel 0 before.
+        assert_eq!(par.dmx_channel(3), None);
     }
 
     // ── FixtureCapabilities ──────────────────────────────────────────

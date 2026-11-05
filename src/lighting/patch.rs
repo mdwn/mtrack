@@ -51,7 +51,7 @@ impl PatchSpan {
     }
 
     /// The addresses both spans use, inclusive, when they share a universe.
-    fn intersect(&self, other: &PatchSpan) -> Option<(u32, u32)> {
+    pub(crate) fn intersect(&self, other: &PatchSpan) -> Option<(u32, u32)> {
         if self.universe != other.universe {
             return None;
         }

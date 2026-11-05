@@ -127,27 +127,21 @@ pub(crate) fn apply_test_overlay(
         if info.parent.is_some() || info.universe != overlay.universe {
             continue;
         }
-        let at = |offset: u16| -> Option<u8> {
-            let absolute = u32::from(info.address) + u32::from(offset);
-            let absolute = u16::try_from(absolute.checked_sub(1)?).ok()?;
-            bytes.get(&absolute).copied()
-        };
+        let at = |offset: u16| bytes.get(&info.dmx_channel(offset)?).copied();
         let mut covered: Vec<(String, u8)> = Vec::new();
         for (channel, def) in &info.channel_defs {
-            let fine_name = format!("{channel}_fine");
             if let Some(b) = at(def.offset) {
                 covered.push((channel.clone(), b));
             }
             if let Some(b) = def.fine.and_then(at) {
-                covered.push((fine_name.clone(), b));
+                covered.push((format!("{channel}_fine"), b));
             }
-            for (i, (coarse, fine)) in def.mirrors.iter().enumerate() {
-                let n = i + 2;
-                if let Some(b) = at(*coarse) {
-                    covered.push((format!("{channel}#{n}"), b));
+            for ((mirror, coarse), fine) in mirror_sections(channel, def) {
+                if let Some(b) = at(coarse) {
+                    covered.push((mirror, b));
                 }
-                if let Some(b) = fine.and_then(at) {
-                    covered.push((format!("{fine_name}#{n}"), b));
+                if let Some((mirror_fine, b)) = fine.and_then(|(n, f)| Some((n, at(f)?))) {
+                    covered.push((mirror_fine, b));
                 }
             }
         }
@@ -532,6 +526,25 @@ pub(crate) fn attach_strobe_rates(
     }
 }
 
+/// The sections mirrored to `channel`, from the second: each one's name
+/// in a snapshot and offset, `{channel}#{n}`, and its fine byte's,
+/// `{channel}_fine#{n}`, where it has one.
+fn mirror_sections<'a>(
+    channel: &'a str,
+    def: &'a crate::lighting::types::ChannelDef,
+) -> impl Iterator<Item = ((String, u16), Option<(String, u16)>)> + 'a {
+    def.mirrors
+        .iter()
+        .enumerate()
+        .map(move |(i, &(coarse, fine))| {
+            let n = i + 2;
+            (
+                (format!("{channel}#{n}"), coarse),
+                fine.map(|fine| (format!("{channel}_fine#{n}"), fine)),
+            )
+        })
+}
+
 /// The bytes a ganged channel repeats on the wire, named: a channel with
 /// mirrors (an LED bar's sections ganged to one colour, a wash's zones)
 /// writes every mirror the same byte, and the snapshot
@@ -560,11 +573,10 @@ fn attach_mirrors(
                 continue;
             };
             let fine = snapshot.channels.get(&format!("{name}_fine")).copied();
-            for (i, (_, mirror_fine)) in def.mirrors.iter().enumerate() {
-                let n = i + 2;
-                extra.push((format!("{name}#{n}"), coarse));
-                if let (Some(fine), Some(_)) = (fine, mirror_fine) {
-                    extra.push((format!("{name}_fine#{n}"), fine));
+            for ((mirror, _), mirror_fine) in mirror_sections(name, def) {
+                extra.push((mirror, coarse));
+                if let (Some(fine), Some((mirror_fine, _))) = (fine, mirror_fine) {
+                    extra.push((mirror_fine, fine));
                 }
             }
         }

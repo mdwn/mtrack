@@ -16,8 +16,9 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::tempo::{
-    parse_signature_in, SignatureRange, TempoChange, TempoChangePosition, TempoMap,
-    TempoTransition, TransitionCurve, DEFAULT_TIME_SIGNATURE,
+    check_bpm, check_change_bpm, check_transition, parse_signature_in, SignatureRange, TempoChange,
+    TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
+    DEFAULT_TIME_SIGNATURE,
 };
 
 use super::grammar::Rule;
@@ -56,24 +57,8 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
                             }
                         }
                     }
-                    Rule::tempo_bpm => {
-                        for value_pair in content_pair.into_inner() {
-                            if value_pair.as_rule() == Rule::number_value {
-                                let bpm_str = value_pair.as_str().trim();
-                                bpm = bpm_str.parse().map_err(|e| {
-                                    format!("Failed to parse BPM '{}': {}", bpm_str, e)
-                                })?;
-                            }
-                        }
-                    }
-                    Rule::tempo_time_signature => {
-                        for value_pair in content_pair.into_inner() {
-                            if value_pair.as_rule() == Rule::time_sig_value {
-                                time_signature =
-                                    parse_signature_in(value_pair.as_str(), SignatureRange::Light)?;
-                            }
-                        }
-                    }
+                    Rule::tempo_bpm => bpm = bpm_of(content_pair)?,
+                    Rule::tempo_time_signature => time_signature = signature_of(content_pair)?,
                     Rule::tempo_changes => {
                         // tempo_changes = { "changes" ~ ":" ~ "[" ~ tempo_change_list? ~ "]" }
                         // tempo_change_list = { tempo_change ~ ("," ~ tempo_change)* }
@@ -97,11 +82,7 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
         }
     }
 
-    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
-    // later beat infinitely far away.
-    if !bpm.is_finite() || bpm <= 0.0 {
-        return Err(format!("tempo bpm must be positive, got {bpm}").into());
-    }
+    check_bpm(bpm)?;
 
     // Bar 1 is at `start`, so a change timed before it has no bar to fall in.
     for change in &changes {
@@ -118,6 +99,20 @@ pub(crate) fn parse_tempo_definition(pair: Pair<Rule>) -> Result<TempoMap, Box<d
     }
 
     Ok(TempoMap::new(start_offset, bpm, time_signature, changes))
+}
+
+/// The tempo a `bpm: N` sets: a tempo block's, or a change's.
+fn bpm_of(pair: Pair<Rule>) -> Result<f64, Box<dyn Error>> {
+    let value = pair.into_inner().next().map_or("", |p| p.as_str().trim());
+    Ok(value
+        .parse()
+        .map_err(|e| format!("Failed to parse BPM '{value}': {e}"))?)
+}
+
+/// The metre a `time_signature: N/D` sets: a tempo block's, or a change's.
+fn signature_of(pair: Pair<Rule>) -> Result<TimeSignature, Box<dyn Error>> {
+    let value = pair.into_inner().next().map_or("", |p| p.as_str());
+    Ok(parse_signature_in(value, SignatureRange::Light)?)
 }
 
 pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dyn Error>> {
@@ -140,31 +135,12 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                 for param_pair in inner_pair.into_inner() {
                     // tempo_change_content contains tempo_change_param pairs
                     // tempo_change_param is a wrapper, so we need to get its inner rule
-                    // The inner rule will be one of: tempo_change_bpm, tempo_change_time_signature, tempo_change_transition
+                    // The inner rule will be one of: tempo_bpm, tempo_time_signature, tempo_change_transition
                     for actual_param in param_pair.into_inner() {
                         match actual_param.as_rule() {
-                            Rule::tempo_change_bpm => {
-                                // tempo_change_bpm = { "bpm" ~ ":" ~ number_value }
-                                // So actual_param contains "bpm", ":", and number_value
-                                // We need to find number_value
-                                for value_pair in actual_param.into_inner() {
-                                    if value_pair.as_rule() == Rule::number_value {
-                                        let bpm_str = value_pair.as_str().trim();
-                                        let bpm_value: f64 = bpm_str.parse()?;
-                                        bpm = Some(bpm_value);
-                                        break;
-                                    }
-                                }
-                            }
-                            Rule::tempo_change_time_signature => {
-                                for value_pair in actual_param.into_inner() {
-                                    if value_pair.as_rule() == Rule::time_sig_value {
-                                        time_signature = Some(parse_signature_in(
-                                            value_pair.as_str(),
-                                            SignatureRange::Light,
-                                        )?);
-                                    }
-                                }
+                            Rule::tempo_bpm => bpm = Some(bpm_of(actual_param)?),
+                            Rule::tempo_time_signature => {
+                                time_signature = Some(signature_of(actual_param)?)
                             }
                             Rule::tempo_change_transition => {
                                 // tempo_change_transition = { "transition" ~ ":" ~ tempo_transition_duration }
@@ -232,22 +208,14 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
         }
     }
 
-    // The same rules as a song's `tempo:` config: a tempo of 0 puts every
-    // later beat infinitely far away, and a ramp of no length has no curve.
     let at = match position {
         TempoChangePosition::MeasureBeat(m, _) => format!("measure {m}"),
         TempoChangePosition::Time(t) => format!("{:.3}s", t.as_secs_f64()),
     };
     if let Some(bpm) = bpm {
-        if !bpm.is_finite() || bpm <= 0.0 {
-            return Err(format!("tempo change at {at} has invalid bpm {bpm}").into());
-        }
+        check_change_bpm(&at, bpm)?;
     }
-    if let TempoTransition::Beats(length, _) | TempoTransition::Measures(length, _) = transition {
-        if !length.is_finite() || length <= 0.0 {
-            return Err(format!("tempo change at {at} has invalid transition length").into());
-        }
-    }
+    check_transition(&at, transition)?;
 
     // Determine original measure/beat if position is MeasureBeat
     let original_measure_beat = match position {

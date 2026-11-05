@@ -306,6 +306,14 @@ impl FixtureState {
         cell_state: impl Fn(&str) -> Option<&'a FixtureState>,
     ) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
+        // A byte for the channel at `offset`, where the fixture has one.
+        let command = |(offset, value): (u16, u8)| {
+            Some(DmxCommand {
+                universe: fixture_info.universe,
+                channel: fixture_info.dmx_channel(offset)?,
+                value,
+            })
+        };
         let has_dedicated_dimmer = fixture_info.has_dimmer();
         let physical =
             super::physical::resolve_physical(&self.physical, &fixture_info.channel_defs);
@@ -322,13 +330,8 @@ impl FixtureState {
             }
             if let Some(def) = fixture_info.channel_defs.get(channel_name) {
                 let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
-                for (offset, byte) in super::physical::resolve_normalized(def, value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.dmx_channel(offset),
-                        value: byte,
-                    });
-                }
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         // A CMY fixture has no red, green or blue of its own: the engine's
@@ -345,35 +348,20 @@ impl FixtureState {
                     continue;
                 };
                 let value = self.effective_channel_value(rgb, state, has_dedicated_dimmer);
-                for (offset, byte) in super::physical::resolve_normalized(def, 1.0 - value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.dmx_channel(offset),
-                        value: byte,
-                    });
-                }
+                commands.extend(
+                    super::physical::resolve_normalized(def, 1.0 - value).filter_map(command),
+                );
             }
         }
         for cell in &fixture_info.cells {
             for (channel_name, value) in self.cell_values(cell, cell_state(&cell.name)) {
                 let def = &cell.channels[&channel_name];
-                for (offset, byte) in super::physical::resolve_normalized(def, value) {
-                    commands.push(DmxCommand {
-                        universe: fixture_info.universe,
-                        channel: fixture_info.dmx_channel(offset),
-                        value: byte,
-                    });
-                }
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         for (_, resolved) in physical {
-            for (offset, byte) in resolved.bytes {
-                commands.push(DmxCommand {
-                    universe: fixture_info.universe,
-                    channel: fixture_info.dmx_channel(offset),
-                    value: byte,
-                });
-            }
+            commands.extend(resolved.bytes.into_iter().filter_map(command));
         }
 
         commands

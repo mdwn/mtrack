@@ -43,6 +43,7 @@ use super::lighting_api::{
 };
 use crate::lighting;
 use crate::lighting::fixture_test::{self, TestControls};
+use crate::lighting::patch::{self, PatchSpan};
 use crate::lighting::system::TypeInModeError;
 use crate::lighting::types::FixtureType;
 
@@ -241,8 +242,9 @@ fn raw_from(
     Ok(out)
 }
 
-/// The current venue's fixtures the span runs into, by name.
-fn venue_overlaps(state: &WebUiState, universe: u16, from: u16, to: u16) -> Vec<String> {
+/// The current venue's fixtures the test's span runs into, by name, on
+/// the addresses a universe has: past 512 nothing is sent.
+fn venue_overlaps(state: &WebUiState, test: &PatchSpan) -> Vec<String> {
     let Some(system) = state
         .player
         .broadcast_handles()
@@ -257,10 +259,9 @@ fn venue_overlaps(state: &WebUiState, universe: u16, from: u16, to: u16) -> Vec<
     let mut names: Vec<String> = system
         .patch_spans(venue)
         .into_iter()
-        .filter(|span| span.universe == universe && span.footprint > 0)
         .filter(|span| {
-            let end = span.address.saturating_add(span.footprint - 1);
-            span.address <= to && end >= from
+            test.intersect(span)
+                .is_some_and(|(from, _)| from <= patch::UNIVERSE_SIZE)
         })
         .map(|span| span.fixture)
         .collect();
@@ -528,9 +529,13 @@ async fn warnings(
     unsupported: &[String],
 ) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    let from = request.address;
-    let to = from.saturating_add(footprint.saturating_sub(1));
-    let overlaps = venue_overlaps(state, request.universe, from, to.min(512));
+    let span = PatchSpan {
+        fixture: request.fixture_type.clone(),
+        universe: request.universe,
+        address: request.address,
+        footprint,
+    };
+    let overlaps = venue_overlaps(state, &span);
     if !overlaps.is_empty() {
         out.push(json!({
             "kind": "venue_overlap",
@@ -542,12 +547,12 @@ async fn warnings(
             ),
         }));
     }
-    if u32::from(from) + u32::from(footprint) - 1 > 512 && footprint > 0 {
+    for overrun in patch::venue_overruns(std::slice::from_ref(&span)) {
         out.push(json!({
             "kind": "past_universe_end",
             "message": format!(
-                "This fixture needs addresses {from}–{}, past the end of the universe (512); the channels past 512 are not sent.",
-                u32::from(from) + u32::from(footprint) - 1
+                "This fixture needs addresses {}–{}, past the end of the universe (512); the channels past 512 are not sent.",
+                overrun.address, overrun.last
             ),
         }));
     }
@@ -938,8 +943,10 @@ mod tests {
     #[tokio::test]
     async fn the_warnings_name_the_venue_fixtures_and_the_unpatched_universe() {
         let olad = fake_olad(r#"{"id":1,"name":"Universe 1","input_ports":[],"output_ports":[]}"#);
-        let venue =
-            "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n  fixture \"Back\" Par @ 1:30\n}\n";
+        // "Edge" sits past 512, where the test at 510 runs on into, but
+        // nothing is sent there: it is not lit over.
+        let venue = "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n  \
+            fixture \"Back\" Par @ 1:30\n  fixture \"Edge\" Par @ 1:513\n}\n";
         let (state, _dir, _p, _engine) = dmx_state(olad, Some(venue));
         let mut body = red_par();
         body["address"] = json!(510);
@@ -974,6 +981,31 @@ mod tests {
         .await;
         assert_eq!(options["universes"][0]["patched"], false);
         assert_eq!(options["olad"]["reachable"], true);
+    }
+
+    #[tokio::test]
+    async fn a_type_with_no_channels_lights_no_venue_fixture() {
+        let venue = "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n}\n";
+        let (state, dir, _p, _engine) = dmx_state(dead_port(), Some(venue));
+        std::fs::write(
+            dir.path().join("lighting/fixture_types/blank.light"),
+            "fixture_type \"Blank\" {\n}\n",
+        )
+        .unwrap();
+        let mut body = red_par();
+        body["fixture_type"] = json!("Blank");
+        body["address"] = json!(11);
+        let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["footprint"], 0);
+        assert!(
+            body["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["kind"] != "venue_overlap"),
+            "{body}"
+        );
     }
 
     #[tokio::test]

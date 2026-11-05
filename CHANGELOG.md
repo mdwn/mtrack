@@ -142,6 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turning the hue the short way while blending saturation and brightness. A plain `fade` blends
   red, green and blue separately, so colours far apart pass through a dull midpoint (yellow to
   blue is grey halfway); a hue fade stays vivid. `fade` is unchanged.
+- **`"pink"` is a named colour**: `color: "pink"` is CSS pink, `#FFC0CB`, the pink the web UI's
+  colour picker offers; the player refused it as an invalid colour.
 - **Sequence `length:` (#541)**: `sequence "x", length: 1measure { … }` fixes how long one pass of
   a sequence lasts, in the same units as `duration:`. A looped sequence whose effects end before
   the bar now restarts on the bar without a padding cue to stretch it, and an effect that runs
@@ -150,6 +152,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A fixture type's strobe rate is its first strobe function's**: the strobe fields
+  (`strobe_dmx_offset`, `min_strobe_frequency`, `max_strobe_frequency`) come from the first
+  function named `strobe` on the `strobe` channel, the one the engine drives. Where that one has
+  no rate range and a later `strobe` function does, they came from the later one and the first
+  was rewritten to its range; the type now has no strobe rate, as its strobe function has none.
+- **The lighting timeline's beat lines are the click grid's beats**: one line per beat of the
+  time signature's denominator, so a 6/8 bar has six, where it had three quarter-note lines. The
+  timeline and the song's beat grid walk the bars once, the same way.
 - **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
   reads a `.light` file through the player's grammar (its document model, compiled to
   WebAssembly with the parser) and places every cue, effect and sequence pass where the player
@@ -312,6 +322,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
+  to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
+  test's overlay already had it.
+- **A fixture test of a type with no channels lights no venue fixture**: the web UI's fixture
+  test warned that a type with no channels was lit over the venue fixture at its address. It
+  occupies nothing, as the venue's patch check has it.
 - **A tempo start keeps its time when its unit is switched**: in the web UI's tempo editor,
   switching a light show's tempo `start:` between ms and s relabelled the number, so `500ms`
   became `500s` and the tempo map moved by minutes. The switch now converts the value

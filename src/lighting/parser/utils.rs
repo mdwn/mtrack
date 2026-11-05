@@ -230,50 +230,38 @@ pub(crate) fn parse_measure_time(time_str: &str) -> Result<(u32, f64), Box<dyn E
     Ok((measure, beat))
 }
 
-pub(crate) fn parse_time_string(time_str: &str) -> Result<Duration, Box<dyn Error>> {
-    let time_str = time_str.trim_start_matches('@');
-    let parts: Vec<&str> = time_str.split(':').collect();
-
-    if parts.len() == 2 {
-        // MM:SS.mmm format
-        let minutes: u64 = parts[0].parse()?;
-        let seconds_part = parts[1];
-        let seconds_parts: Vec<&str> = seconds_part.split('.').collect();
-
-        let seconds: u64 = seconds_parts[0].parse()?;
-        let milliseconds: u64 = if seconds_parts.len() > 1 {
-            let ms_str = seconds_parts[1];
-            let ms_str = if ms_str.len() > 3 {
-                &ms_str[..3]
-            } else {
-                ms_str
-            };
-            ms_str.parse::<u64>()? * 10_u64.pow(3 - ms_str.len() as u32)
-        } else {
-            0
-        };
-
-        Ok(Duration::from_millis(
-            minutes * 60 * 1000 + seconds * 1000 + milliseconds,
-        ))
-    } else {
-        // SS.mmm format
-        let seconds_parts: Vec<&str> = time_str.split('.').collect();
-        let seconds: u64 = seconds_parts[0].parse()?;
-        let milliseconds: u64 = if seconds_parts.len() > 1 {
-            let ms_str = seconds_parts[1];
-            let ms_str = if ms_str.len() > 3 {
-                &ms_str[..3]
-            } else {
-                ms_str
-            };
-            ms_str.parse::<u64>()? * 10_u64.pow(3 - ms_str.len() as u32)
-        } else {
-            0
-        };
-
-        Ok(Duration::from_millis(seconds * 1000 + milliseconds))
+/// An `mm:ss.mmm` time's minutes, and its seconds as written (`ss.mmm`);
+/// the minutes are 0 when it has none. The one reader of the form: a cue's
+/// `@` time and a playback position a client sends as text
+/// ([`crate::util::parse_position`]) are both written in it.
+pub(crate) fn split_minutes(time: &str) -> Result<(u64, &str), std::num::ParseIntError> {
+    match time.split_once(':') {
+        Some((minutes, seconds)) => Ok((minutes.parse()?, seconds)),
+        None => Ok((0, time)),
     }
+}
+
+/// A cue's `@mm:ss.mmm` or `@ss.mmm` time, to the whole millisecond: digits
+/// past the third are dropped.
+pub(crate) fn parse_time_string(time_str: &str) -> Result<Duration, Box<dyn Error>> {
+    let (minutes, seconds_part) = split_minutes(time_str.trim_start_matches('@'))?;
+    let seconds_parts: Vec<&str> = seconds_part.split('.').collect();
+    let seconds: u64 = seconds_parts[0].parse()?;
+    let milliseconds: u64 = if seconds_parts.len() > 1 {
+        let ms_str = seconds_parts[1];
+        let ms_str = if ms_str.len() > 3 {
+            &ms_str[..3]
+        } else {
+            ms_str
+        };
+        ms_str.parse::<u64>()? * 10_u64.pow(3 - ms_str.len() as u32)
+    } else {
+        0
+    };
+
+    Ok(Duration::from_millis(
+        minutes * 60 * 1000 + seconds * 1000 + milliseconds,
+    ))
 }
 
 pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<dyn Error>> {
@@ -771,6 +759,20 @@ mod tests {
         // "30.1234" → truncated to 3 digits → 123ms
         let d = parse_time_string("30.1234").unwrap();
         assert_eq!(d, Duration::from_millis(30_123));
+    }
+
+    #[test]
+    fn time_string_counts_the_digits_not_a_float() {
+        // 2.01 s is 2009.999… ms through an f64: read off the digits, 2010.
+        assert_eq!(
+            parse_time_string("@2.01").unwrap(),
+            Duration::from_millis(2_010)
+        );
+        assert_eq!(
+            parse_time_string("@1:04.3519").unwrap(),
+            Duration::from_millis(64_351)
+        );
+        assert!(parse_time_string("@99999999999999999999:00.000").is_err());
     }
 
     #[test]

@@ -85,10 +85,11 @@ pub fn parse_position(value: &str) -> Result<Duration, String> {
         .ok_or_else(|| "duration must be a finite, non-negative number of seconds in range".into())
 }
 
-/// The seconds in an `mm:ss.mmm` time.
+/// The seconds in an `mm:ss.mmm` time, to the bit: a position is not
+/// rounded to the millisecond, as a cue's time is.
 fn parse_mm_ss(s: &str) -> Result<f64, String> {
-    let (mm, ss) = s.split_once(':').ok_or("expected mm:ss.mmm")?;
-    let minutes: u64 = mm.parse().map_err(|e| format!("invalid minutes: {e}"))?;
+    let (minutes, ss) = crate::lighting::parser::utils::split_minutes(s)
+        .map_err(|e| format!("invalid minutes: {e}"))?;
     let seconds: f64 = ss.parse().map_err(|e| format!("invalid seconds: {e}"))?;
     Ok((minutes as f64) * 60.0 + seconds)
 }
