@@ -25,7 +25,8 @@ import { resolve } from "node:path";
 import { loadRules } from "./rules-node";
 import { rules } from "../../src/lib/rules";
 import { serializeLightFile } from "../../src/lib/lighting/serializer";
-import { withParam } from "../../src/lib/lighting/params";
+import { withColors, withParam } from "../../src/lib/lighting/params";
+import type { EffectParams } from "../../src/lib/lighting/types";
 
 test.beforeAll(async () => {
   await loadRules();
@@ -225,6 +226,52 @@ test("an edit changes only the edited parameter's text", () => {
     ],
   });
   expect(panned).toContain("movers: move, pan: 50deg, # c\n");
+});
+
+/** `source` with its first effect's parameters edited by `edit`,
+ *  written out. */
+function editedEffect(
+  source: string,
+  edit: (effect: EffectParams) => EffectParams,
+): string {
+  const read = rules.document(source).document!;
+  const show = read.shows[0];
+  const cue = show.cues[0];
+  const [first, ...rest] = cue.effects;
+  return serializeLightFile({
+    ...read,
+    shows: [
+      {
+        ...show,
+        cues: [
+          {
+            ...cue,
+            effects: [{ ...first, effect: edit(first.effect) }, ...rest],
+          },
+          ...show.cues.slice(1),
+        ],
+      },
+    ],
+  });
+}
+
+test("a last parameter's comment and the effect's stay two comments", () => {
+  const panned = editedEffect(
+    'show "S" {\n    @1/1\n    movers: move, pan: 45deg, # c\n        tilt: 10deg # t\n}\n',
+    (e) => withParam(e, "tilt", ""),
+  );
+  expect(panned).toBe(
+    'show "S" {\n    @1/1\n    movers: move, pan: 45deg # c\n    # t\n}\n',
+  );
+  expect(commentLines(panned)).toEqual(["# c", "# t"]);
+  const coloured = editedEffect(
+    'show "S" {\n    @1/1\n    all: static, color: "red", # first\n        color: "blue" # second\n}\n',
+    (e) => withColors(e, ["green"]),
+  );
+  expect(coloured).toBe(
+    'show "S" {\n    @1/1\n    all: static, color: "green" # first\n    # second\n}\n',
+  );
+  expect(commentLines(coloured)).toEqual(["# first", "# second"]);
 });
 
 const folders = [resolve(process.cwd(), "../../../examples/lighting/shows")];

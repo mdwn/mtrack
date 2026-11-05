@@ -367,7 +367,11 @@ function serializeCues(cues: Cue[]): string {
         const s = serializeEffect(eff, "        ");
         if (!s) continue;
         lines.push(...own(eff.comments_before, "    "));
-        lines.push(line(`    ${s}`, eff.comment));
+        if (s.open && eff.comment) {
+          // Its last parameter's comment ends the line: the effect's own
+          // comment is a line of its own after it, never merged into it.
+          lines.push(`    ${s.text}`, `    ${eff.comment}`);
+        } else lines.push(line(`    ${s.text}`, eff.comment));
       } else if (kind === "command") {
         const cmd = cue.commands[i];
         lines.push(...own(cmd.comments_before, "    "));
@@ -426,21 +430,28 @@ export function formatTimestamp(ts: Timestamp): string {
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
 }
 
-/** An effect line; a line it goes on to starts at `indent`. */
-function serializeEffect(cueEffect: CueEffect, indent: string): string {
+/** An effect line; a line it goes on to starts at `indent`. `open`:
+ *  whether its last parameter's comment ends its last line. */
+function serializeEffect(
+  cueEffect: CueEffect,
+  indent: string,
+): { text: string; open: boolean } | undefined {
   const named = cueEffect.groups
     .map((g, i) => ({ ...cueEffect.group_remarks?.[i], text: g }))
     .filter((g) => g.text.length > 0);
-  if (named.length === 0) return ""; // Skip effects with no group names
+  if (named.length === 0) return undefined; // Skip effects with no group names
   const groups = list(named, indent, false);
   const effect = cueEffect.effect;
   const head = `${groups.text}: ${effect.type}`;
   // Each parameter as the document holds it, in order.
   if (effect.params.length > 0) {
     const params = list(effect.params.map(param), indent, true);
-    return `${head}${effect.no_comma ? "" : ","}${ended(params, indent)}`;
+    return {
+      text: `${head}${effect.no_comma ? "" : ","}${ended(params, indent)}`,
+      open: params.open,
+    };
   }
-  return head;
+  return { text: head, open: false };
 }
 
 function serializeLayerCommand(cmd: LayerCommand, indent: string): string {
