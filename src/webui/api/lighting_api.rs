@@ -487,14 +487,68 @@ pub(super) use crate::config::lighting::{DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENU
 /// `.light`, loaded as peers — the same pair the lighting system reads.
 const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_EXTENSIONS;
 
+/// What a lighting file declares, or why it does not read.
+type Declares = Result<Vec<String>, String>;
+
+/// The fixture types the file at `path` declares ([`Declares`]).
+fn fixture_types_declared(path: &std::path::Path) -> Declares {
+    let text = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
+    lighting::parser::parse_fixture_types(&text)
+        .map(|types| types.into_keys().collect())
+        .map_err(|e| e.to_string())
+}
+
+/// The venues the file at `path` declares ([`Declares`]).
+fn venues_declared(path: &std::path::Path) -> Declares {
+    let bytes = crate::util::read_file(path).map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "not valid UTF-8".to_string())?;
+    lighting::parser::parse_venues(text)
+        .map(|venues| venues.into_keys().collect())
+        .map_err(|e| e.to_string())
+}
+
 /// The fixture type names a file declares; none if it cannot be read or
 /// does not parse.
 fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
-    crate::util::read_to_string(path)
-        .ok()
-        .and_then(|content| lighting::parser::parse_fixture_types(&content).ok())
-        .map(|types| types.into_keys().collect())
-        .unwrap_or_default()
+    fixture_types_declared(path).unwrap_or_default()
+}
+
+/// The one rule for a venue or fixture type file a save or delete of
+/// `name` would act on (write over, rewrite or remove): only one that
+/// declares `name`. A file that does not read, or holds only other things
+/// (a file at the name's stem, in any case, holding another venue or type),
+/// is refused with 409, and nothing is written or removed. `declares` is
+/// what the file declares ([`fixture_types_declared`], [`venues_declared`]).
+#[allow(clippy::result_large_err)]
+fn require_declares(
+    kind: &str,
+    name: &str,
+    file: &std::path::Path,
+    declares: Declares,
+) -> Result<(), axum::response::Response> {
+    let why = match declares {
+        Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
+        Ok(names) if names.is_empty() => "it defines nothing".to_string(),
+        Ok(mut names) => {
+            names.sort();
+            let names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+            format!("it holds {}", names.join(", "))
+        }
+        Err(e) => format!("it does not read: {e}"),
+    };
+    let file = crate::util::filename_display(file).to_string();
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!(
+                "{file} does not define {kind} \"{name}\" ({why}), and would be replaced; fix \
+                 or move the file by hand first"
+            ),
+            "file": file,
+            "broken": true,
+        })),
+    )
+        .into_response())
 }
 
 /// The file a fixture type of this name lives in, if one exists, in the
@@ -1815,6 +1869,14 @@ pub(super) async fn put_fixture_type(
         Ok(relative) => lighting_write_path(&dir, &dir.join(relative))?,
         Err(_) => lighting_write_path(&dir, &file_path)?,
     };
+    if file_path.exists() {
+        require_declares(
+            "fixture type",
+            &name,
+            &file_path,
+            fixture_types_declared(&file_path),
+        )?;
+    }
     // The other forms of this type are retired, or the loader would register
     // the name twice: each file at the stem in another form that declares
     // this type. One that also declares a type the saved text does not is
@@ -1911,6 +1973,12 @@ pub(super) async fn delete_fixture_type(
                 .into_response()),
         };
     };
+    require_declares(
+        "fixture type",
+        &name,
+        &file_path,
+        fixture_types_declared(&file_path),
+    )?;
     if !others.is_empty() {
         return Err(shared_fixture_type_file_response(
             &name,
@@ -2653,6 +2721,14 @@ pub(super) async fn put_venue(
         if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
             return reply(r);
         }
+        // The file found for the name must hold it, whichever way the venue
+        // comes: one that does not parse, or holds another venue, is not
+        // replaced.
+        if let Some(l) = &located {
+            if let Err(r) = require_declares("venue", &name, &l.path, venues_declared(&l.path)) {
+                return reply(r);
+            }
+        }
         if let Some(expected) = &expected {
             let current = located.as_ref().map(LocatedVenue::version);
             if current.as_deref() != Some(expected.as_str()) {
@@ -2725,6 +2801,11 @@ pub(super) async fn put_venue(
             Ok(path) => path,
             Err(r) => return reply(r),
         };
+        if file_path.exists() {
+            if let Err(r) = require_declares("venue", &name, &file_path, venues_declared(&file_path)) {
+                return reply(r);
+            }
+        }
         config_io::staged_write(&file_path, &dsl)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover
@@ -2865,6 +2946,12 @@ pub(super) async fn delete_venue(
         )
             .into_response());
     };
+    require_declares(
+        "venue",
+        &name,
+        &located.path,
+        venues_declared(&located.path),
+    )?;
     // Deleting the file deletes everything in it.
     let mut others: Vec<String> = located
         .text()
@@ -7078,14 +7165,19 @@ show "test" {
         let ft_dir = _dir.path().join("ft_spelling");
         std::fs::create_dir(&ft_dir).unwrap();
         std::fs::write(ft_dir.join("Par.light"), sample_fixture_type_dsl("Par")).unwrap();
-        std::fs::write(ft_dir.join("Par.FIXTURE"), "// stray\n").unwrap();
+        std::fs::write(
+            ft_dir.join("Par.FIXTURE"),
+            sample_rich_fixture_type_dsl("Par"),
+        )
+        .unwrap();
 
+        let edited = sample_rich_fixture_type_dsl("Par").replace("270", "180");
         let (status, parsed) = fixture_type_request(
             state,
             "PUT",
             "/lighting/fixture-types/Par?dir=ft_spelling&ext=fixture".to_string(),
             "text/plain",
-            Body::from(sample_rich_fixture_type_dsl("Par")),
+            Body::from(edited.clone()),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{parsed}");
@@ -7096,8 +7188,96 @@ show "test" {
         assert_eq!(names, ["Par.FIXTURE"]);
         assert_eq!(
             std::fs::read_to_string(ft_dir.join("Par.FIXTURE")).unwrap(),
-            sample_rich_fixture_type_dsl("Par")
+            edited
         );
+    }
+
+    /// The one rule for a file a save or delete acts on: only one that
+    /// declares the name. A file at the stem (any case) that does not read,
+    /// or holds another venue, is refused with 409 by the venue's DSL save,
+    /// its form save and its delete, and a broken fixture type file by the
+    /// type's raw save, form save and delete; nothing is written or removed.
+    #[tokio::test]
+    async fn saves_and_deletes_refuse_a_file_not_holding_the_name() {
+        let (state, _dir) = test_state();
+        let other = sample_venue_dsl("Other");
+        let broken = "fixture_type \"Spot\" {\n  channels: 4\n";
+        for (rel, file) in [
+            ("v_other_upper", "Club.venue"),
+            ("v_other_lower", "club.venue"),
+        ] {
+            std::fs::create_dir(_dir.path().join(rel)).unwrap();
+            std::fs::write(_dir.path().join(rel).join(file), &other).unwrap();
+            let form = serde_json::json!({
+                "fixtures": [{"name": "A", "fixture_type": "Par", "universe": 1, "start_channel": 1}]
+            });
+            for (method, content_type, body) in [
+                ("PUT", "text/plain", Body::from(sample_venue_dsl("Club"))),
+                (
+                    "PUT",
+                    "application/json",
+                    Body::from(serde_json::to_vec(&form).unwrap()),
+                ),
+                ("DELETE", "text/plain", Body::empty()),
+            ] {
+                let (status, parsed) = fixture_type_request(
+                    state.clone(),
+                    method,
+                    format!("/lighting/venues/Club?dir={rel}"),
+                    content_type,
+                    body,
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::CONFLICT,
+                    "{file} {method} {content_type}: {parsed}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(_dir.path().join(rel).join(file)).unwrap(),
+                other
+            );
+        }
+        for (rel, file) in [
+            ("ft_broken_upper", "Par.light"),
+            ("ft_broken_lower", "par.light"),
+        ] {
+            std::fs::create_dir(_dir.path().join(rel)).unwrap();
+            std::fs::write(_dir.path().join(rel).join(file), broken).unwrap();
+            let form = serde_json::json!({"channels": {"red": 1}});
+            for (method, content_type, body) in [
+                (
+                    "PUT",
+                    "text/plain",
+                    Body::from(sample_fixture_type_dsl("Par")),
+                ),
+                (
+                    "PUT",
+                    "application/json",
+                    Body::from(serde_json::to_vec(&form).unwrap()),
+                ),
+                ("DELETE", "text/plain", Body::empty()),
+            ] {
+                let (status, parsed) = fixture_type_request(
+                    state.clone(),
+                    method,
+                    format!("/lighting/fixture-types/Par?dir={rel}"),
+                    content_type,
+                    body,
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::CONFLICT,
+                    "{file} {method} {content_type}: {parsed}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(_dir.path().join(rel).join(file)).unwrap(),
+                broken
+            );
+        }
     }
 
     /// A save does not write through a link to nothing, which would create
