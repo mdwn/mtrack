@@ -491,7 +491,9 @@ impl fmt::Display for FixtureType {
         writeln!(f, "  channels: {}", self.channels.len())?;
         writeln!(f, "  channel_map: {{")?;
         let mut entries: Vec<_> = self.channels.iter().collect();
-        entries.sort_by_key(|(_, v)| *v);
+        // By offset, then name: two channels on one offset come out in the
+        // same order every time.
+        entries.sort_by_key(|(name, offset)| (**offset, (*name).clone()));
         for (i, (name, offset)) in entries.iter().enumerate() {
             let comma = if i + 1 < entries.len() { "," } else { "" };
             writeln!(f, "    \"{}\": {}{}", name, offset, comma)?;
@@ -1051,6 +1053,23 @@ mod tests {
         assert!(output.contains("max_strobe_frequency: 25"), "{output}");
         assert!(output.contains("strobe_dmx_offset: 7"), "{output}");
         assert!(!output.contains("functions"), "{output}");
+    }
+
+    /// Channels sharing an offset are written by name, the same every time,
+    /// not in the map's order.
+    #[test]
+    fn fixture_type_display_orders_shared_offsets_by_name() {
+        let channels = ["white", "dimmer", "amber"]
+            .into_iter()
+            .map(|name| (name.to_string(), 1))
+            .chain([("red".to_string(), 2)])
+            .collect();
+        let ft = FixtureType::new("Shared".to_string(), channels);
+        let output = ft.to_string();
+        let at = |name: &str| output.find(&format!("\"{name}\"")).unwrap();
+        assert!(at("amber") < at("dimmer"), "{output}");
+        assert!(at("dimmer") < at("white"), "{output}");
+        assert!(at("white") < at("red"), "{output}");
     }
 
     #[test]
