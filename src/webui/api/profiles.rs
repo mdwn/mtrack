@@ -26,7 +26,7 @@ use tracing::warn;
 
 use super::config_api::apply_config_change;
 use super::helpers::{
-    require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
+    require_configured_dir, spawn_blocking_io, validate_resource_name,
     validate_resource_name_to_write,
 };
 use super::lighting_api::{content_version, if_match_version};
@@ -105,8 +105,7 @@ fn profile_path(
     filename: &str,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     let file = crate::util::yaml_file_at(profiles_dir, filename);
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
-    resolve_resource_path(profiles_dir, filename, ext)
+    super::helpers::resolve_named_file(profiles_dir, filename, &file)
 }
 
 /// The profile currently in `filename`, if there is one and it parses.

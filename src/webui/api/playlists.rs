@@ -24,8 +24,7 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::helpers::{
-    require_configured_dir, resolve_resource_path, validate_resource_name,
-    validate_resource_name_to_write,
+    require_configured_dir, validate_resource_name, validate_resource_name_to_write,
 };
 use crate::config;
 
@@ -53,8 +52,7 @@ fn playlist_path(
         )
             .into_response()
     })?;
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
-    resolve_resource_path(dir, name, ext)
+    super::helpers::resolve_named_file(dir, name, &file)
 }
 
 /// GET /api/playlists — list all playlists with name, song count, and active status.

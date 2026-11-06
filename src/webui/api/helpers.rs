@@ -107,6 +107,19 @@ pub(crate) fn require_configured_dir(
     })
 }
 
+/// The YAML file `file` holding resource `name` in `dir` (a playlist's or a
+/// profile's, as `util::yaml_file_at` found it), resolved as
+/// [`resolve_resource_path`] resolves it, by its own extension.
+#[allow(clippy::result_large_err)]
+pub(crate) fn resolve_named_file(
+    dir: &std::path::Path,
+    name: &str,
+    file: &std::path::Path,
+) -> Result<PathBuf, axum::response::Response> {
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
+    resolve_resource_path(dir, name, ext)
+}
+
 /// Resolves a resource file path within a directory, verifying that the result
 /// does not escape via symlinks or other tricks.
 ///
