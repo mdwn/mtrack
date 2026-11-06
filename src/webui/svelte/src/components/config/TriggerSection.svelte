@@ -135,15 +135,30 @@
     return Object.entries(event).filter(([key]) => key !== "type");
   }
 
+  /** The fields an event's kind has, each with the event's value (or the
+   *  kind's lowest, when the event leaves it out). Keys the kind does not
+   *  have -- a misspelling the player ignores -- are not drawn. */
+  function kindFields(event: MidiEvent): [string, number][] {
+    const kind = midi.kinds.find((k) => k.type === event.type);
+    if (!kind) return [];
+    const values = new Map(midiFields(event));
+    return midiFields(kind).map(([field, lowest]) => [
+      field,
+      values.get(field) ?? lowest,
+    ]);
+  }
+
   /** A MIDI input's event as another kind, with that kind's fields: the
-   *  ones the two share keep their values. */
+   *  ones the two share keep their values, and keys neither kind has stay
+   *  as written. */
   function setMidiType(input: MidiTriggerInput, type: string) {
     const kind = midi.kinds.find((k) => k.type === type);
     if (!kind) return;
-    const old = new Map(midiFields(input.event));
+    const drawn = new Set(kindFields(input.event).map(([field]) => field));
     const event = { ...kind };
-    for (const [field] of midiFields(kind)) {
-      if (old.has(field)) Object.assign(event, { [field]: old.get(field) });
+    for (const [field, value] of midiFields(input.event)) {
+      if (field in kind || !drawn.has(field))
+        Object.assign(event, { [field]: value });
     }
     input.event = event;
     onchange();
@@ -921,7 +936,7 @@
                   {/each}
                 </select>
               </div>
-              {#each midiFields(input.event) as [field, value] (field)}
+              {#each kindFields(input.event) as [field, value] (field)}
                 {@const [lowest, highest] = midi.ranges[field]}
                 <div class="field">
                   <label for="trigger-midi-{field}-{i}"

@@ -208,3 +208,40 @@ test("a MIDI field is held to the range the player reads", async ({ page }) => {
     value: 127,
   });
 });
+
+test("a MIDI event's misspelt key is kept, not drawn", async ({ page }) => {
+  await page.route("**/api/config/store", (route) =>
+    route.fulfill({
+      json: {
+        yaml: `profiles:
+  - hostname: test-host
+    trigger:
+      inputs:
+        - kind: midi
+          event: { type: note_on, channel: 1, key: 1, velcity: 3 }
+          sample: kick
+samples: {}
+`,
+        checksum: "abc123def456",
+      },
+    }),
+  );
+  await page.goto("/#/config");
+  await page.locator(".profile-row", { hasText: "test-host" }).click();
+  await page.locator(".tab", { hasText: "Triggers" }).click();
+
+  await expect(page.locator('[id^="trigger-midi-velcity-"]')).toHaveCount(0);
+  await page.locator('[id^="trigger-midi-channel-"]').fill("2");
+  await page.locator('[id^="trigger-midi-channel-"]').blur();
+
+  const saved = page.waitForRequest(
+    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+    type: "note_on",
+    channel: 2,
+    key: 1,
+    velcity: 3,
+  });
+});
