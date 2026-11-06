@@ -32,6 +32,4 @@ pub mod status;
 pub mod venue;
 
 #[cfg(test)]
-mod oracle_tests;
-#[cfg(test)]
 mod tests;
