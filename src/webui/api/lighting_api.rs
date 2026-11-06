@@ -306,31 +306,27 @@ pub(super) async fn get_lighting_file(
     }
 }
 
-/// Where lighting file `name` is, or would be written, under the songs root.
-fn resolve_lighting_path(
+/// Where the light show file `name` (a path below the songs root) is, or
+/// would be written: held inside the root by the one containment rule
+/// MCP's tools take (`SafePath::validate_relative`: no traversal, no linked
+/// way out, a link to nothing refused), and a lighting file by its
+/// extension (`FileKind`), as the delete takes it.
+#[allow(clippy::result_large_err)]
+fn light_show_path(
     state: &WebUiState,
     name: &str,
-) -> Result<std::path::PathBuf, super::super::safe_path::SafePathError> {
-    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
-
-    let root = VerifiedRoot::new(&state.songs_path())?;
-
-    // Resolve the file path under the songs root. For existing files, SafePath::resolve
-    // canonicalizes and verifies containment. For new files, resolve the parent directory
-    // and join the filename to it.
-    let candidate = root.as_path().join(name);
-    match SafePath::resolve(&candidate, &root) {
-        Ok(p) => Ok(p.as_path().to_path_buf()),
-        Err(_) => {
-            // File doesn't exist — resolve the parent and join the filename.
-            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
-                (Some(p), Some(f)) => (p, f),
-                _ => return Err(SafePathError::InvalidName),
-            };
-            let safe_parent = SafePath::resolve(parent, &root)?;
-            Ok(safe_parent.as_path().join(filename))
-        }
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, VerifiedRoot};
+    let root = VerifiedRoot::new(&state.songs_path()).map_err(|e| e.into_response())?;
+    let path = SafePath::validate_relative(name, &root).map_err(|e| e.into_response())?;
+    if crate::songs::FileKind::of(&path) != crate::songs::FileKind::Lighting {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only write .light files"})),
+        )
+            .into_response());
     }
+    Ok(path)
 }
 
 /// PUT /api/lighting/:name — validates and atomically writes a lighting DSL file.
@@ -339,9 +335,9 @@ pub(super) async fn put_lighting_file(
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    let verified_path = match resolve_lighting_path(&state, &name) {
+    let verified_path = match light_show_path(&state, &name) {
         Ok(path) => path,
-        Err(e) => return e.into_response(),
+        Err(e) => return e,
     };
 
     // Held from reading the song's tempo: a song save changing it reloads
@@ -443,9 +439,9 @@ pub(super) async fn validate_lighting(
         .and_then(|name| state.player.songs().get(name).ok());
     let tempo = song.as_ref().and_then(|song| song.lighting_tempo_map());
     let path = match query.file.as_deref() {
-        Some(file) => match resolve_lighting_path(&state, file) {
+        Some(file) => match light_show_path(&state, file) {
             Ok(path) => Some(path),
-            Err(e) => return e.into_response(),
+            Err(e) => return e,
         },
         None => song.as_ref().map(|song| song.lighting_draft_path()),
     };
@@ -4123,6 +4119,52 @@ show "test" {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(file_path.exists());
+    }
+
+    /// A light show save writes only a lighting file (`FileKind`, in any
+    /// case), as the delete deletes only one, and not through a link to
+    /// nothing.
+    #[tokio::test]
+    async fn put_lighting_file_writes_only_a_lighting_file() {
+        let (state, _dir) = test_state();
+        let content =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            outside.path().join("x.light"),
+            state.songs_path().join("dead.light"),
+        )
+        .unwrap();
+        let put = |uri: &'static str| {
+            router().with_state(state.clone()).oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .body(Body::from(content))
+                    .unwrap(),
+            )
+        };
+        for uri in ["/lighting/notes.txt", "/lighting/song.yaml"] {
+            assert_eq!(
+                put(uri).await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "{uri}"
+            );
+        }
+        assert!(!state.songs_path().join("notes.txt").exists());
+        assert_eq!(
+            put("/lighting/Show.LIGHT").await.unwrap().status(),
+            StatusCode::OK
+        );
+        #[cfg(unix)]
+        {
+            assert_ne!(
+                put("/lighting/dead.light").await.unwrap().status(),
+                StatusCode::OK
+            );
+            assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
     }
 
     #[tokio::test]
