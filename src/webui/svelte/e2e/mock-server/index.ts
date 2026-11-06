@@ -25,6 +25,7 @@ import type {
   MvrKept,
   SampleUploaded,
   SongFiles,
+  SongSaved,
   ConfigReload,
   ConfigSaved,
   MvrImportAnswer,
@@ -122,8 +123,8 @@ app.post("/api/songs/:name", (_req, res) => {
   res.json({ status: "created" });
 });
 
-app.put("/api/songs/:name", (_req, res) => {
-  res.json({ status: "updated" });
+app.put("/api/songs/:name", (req, res) => {
+  res.json({ status: "saved", name: req.params.name } satisfies SongSaved);
 });
 
 app.delete("/api/songs/:name", (_req, res) => {

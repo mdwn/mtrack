@@ -18,6 +18,7 @@
     PilotConfig,
     Section,
     SongFailure,
+    SongSaved,
     SongInfo,
     Track,
     TrackPeaks,
@@ -591,6 +592,7 @@
   }
 
   async function save() {
+    let renamedTo: string | null = null;
     if ($playbackStore.locked) {
       saveMsg = get(t)("common.locked");
       saveOk = false;
@@ -616,6 +618,9 @@
           return;
         }
         rawYaml = editedYaml;
+        // A rename in the config: the song is known by its new name now.
+        const saved: SongSaved | null = await res.json().catch(() => null);
+        renamedTo = saved && saved.name !== songName ? saved.name : null;
       }
 
       // The song's other lighting files, and the removed ones' deletion,
@@ -627,6 +632,14 @@
       saveMsg = get(t)("common.saved");
       saveOk = true;
       setTimeout(() => (saveMsg = ""), 2000);
+      // Renamed: open the song under its new name, where its next save
+      // goes.
+      if (renamedTo) {
+        const base = `#/songs/${encodeURIComponent(renamedTo)}`;
+        window.location.hash =
+          activeTab === "tracks" ? base : `${base}/${activeTab}`;
+        return;
+      }
       const result = await fetchSongs();
       song = result.songs.find((s) => s.name === songName) ?? null;
       // Clear failure banner if the song now loads successfully.

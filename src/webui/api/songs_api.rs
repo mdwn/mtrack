@@ -328,10 +328,11 @@ pub(super) async fn delete_song(
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song's YAML through the registry with path verification.
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, true) {
-        Ok(p) => p,
-        Err(e) => return *e,
-    };
+    let config_path =
+        match song_config_path(&state.player, &state.songs_path(), &name, Acting::Deleting) {
+            Ok(p) => p,
+            Err(e) => return *e,
+        };
     if !config_path.exists() {
         return (
             StatusCode::NOT_FOUND,
@@ -631,15 +632,22 @@ pub(super) async fn put_song(
     let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual YAML (handles
     // nested folders and flat `<name>.yaml` songs).
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, false) {
+    // The YAML is validated before writing to disk; the song it names, if
+    // it reads, decides which folder config it may write.
+    let saved = validate_song_body(&body);
+    let config_path = match song_config_path(
+        &state.player,
+        &state.songs_path(),
+        &name,
+        Acting::Saving(saved.as_ref().ok().map(|song| song.name())),
+    ) {
         Ok(p) => p,
         Err(e) => return *e,
     };
-
-    // Validate the YAML before writing to disk.
-    if let Err(e) = validate_song_body(&body) {
-        return e;
-    }
+    let saved = match saved {
+        Ok(saved) => saved,
+        Err(e) => return e,
+    };
 
     let cp = config_path;
     let body_owned = body;
@@ -654,7 +662,15 @@ pub(super) async fn put_song(
     if let Err(resp) = super::helpers::reload_songs(&state).await {
         return resp;
     }
-    (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
+    // The name the song is known by now, for the editor to follow a rename.
+    (
+        StatusCode::OK,
+        Json(crate::webui::wire::songs::SongSaved {
+            status: "saved".to_string(),
+            name: saved.name().to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// PUT /api/songs/:name/tracks/:filename — uploads a single track file.
@@ -810,12 +826,22 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// (`songs::song_config_to_write`: its `song.yaml`, else its `song.yml`,
 /// else a new `song.yaml`; 409 beside another song config); within
 /// the verified song folder, which is within the songs root.
+/// What a request does with a song's config ([`song_config_path`]).
+#[derive(Clone, Copy)]
+enum Acting<'a> {
+    Deleting,
+    /// Saving text that names the song this, when it reads (a rename in
+    /// the editor names the new name).
+    Saving(Option<&'a str>),
+}
+
 fn song_config_path(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
-    deleting: bool,
+    acting: Acting<'_>,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
+    let deleting = matches!(acting, Acting::Deleting);
     let song_dir = resolve_song_dir(player, songs_path, name)?;
     if let Some(path) = player
         .songs()
@@ -842,11 +868,14 @@ fn song_config_path(
     // A config already there is acted on only when it is this song's: one
     // naming another song is that song's, not to be overwritten or deleted
     // by this name; one that does not read cannot say, so is not deleted.
+    // A save may write one naming the song the saved text names: the
+    // folder's own song saved again after a rename in the editor.
     if path.is_file() {
         let declared = crate::config::Song::deserialize(&path).map(|c| c.name().to_string());
         let file = crate::util::filename_display(&path);
         match declared {
             Ok(declared) if declared == name => {}
+            Ok(declared) if matches!(acting, Acting::Saving(Some(saved)) if saved == declared) => {}
             Ok(declared) => {
                 return Err(conflict(format!(
                     "{file} in {name}'s folder holds the song \"{declared}\"; {} — edit or \
@@ -1429,6 +1458,80 @@ mod test {
         let body = response_body(response).await;
         assert!(body.contains("cannot be deleted"), "{body}");
         assert!(album.join("a.yaml").exists());
+    }
+
+    /// Renamed in the editor (Foo to Bar) and saved again under the name it
+    /// was opened by, the folder's config is written: it names the song the
+    /// saved text names.
+    #[tokio::test]
+    async fn a_song_renamed_in_the_editor_saves_again() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Foo");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let config =
+            |name: &str| format!("name: {name}\ntracks:\n  - name: track1\n    file: track1.wav\n");
+        std::fs::write(song_dir.join("song.yaml"), config("Foo")).unwrap();
+        state.player.reload_songs().await.unwrap();
+        let app = router().with_state(state);
+        let send = |body: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri("/songs/Foo")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let put = |body: String| {
+            let send = send.clone();
+            async move { send(body).await.status() }
+        };
+        // The reply names the song as it is known now, for the editor.
+        let response = send(config("Bar")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("\"name\":\"Bar\""), "{body}");
+        let again = config("Bar").replace("track1\n", "track1 \n");
+        assert_eq!(put(again.clone()).await, StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            again
+        );
+        // Text naming a third song is still refused there.
+        assert_eq!(put(config("Baz")).await, StatusCode::CONFLICT);
+    }
+
+    /// A folder config that does not read cannot say whose it is: a delete
+    /// by the folder's name leaves it.
+    #[tokio::test]
+    async fn a_folder_config_that_does_not_read_is_not_deleted() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Foo");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: Bar\ntracks: [\n").unwrap();
+        state.player.reload_songs().await.unwrap();
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/songs/Foo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(body.contains("does not read"), "{body}");
+        assert!(song_dir.join("song.yml").exists());
     }
 
     #[tokio::test]

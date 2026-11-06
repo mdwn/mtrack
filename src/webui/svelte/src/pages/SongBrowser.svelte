@@ -80,7 +80,10 @@
 </script>
 
 {#if songName}
-  <SongDetail {songName} {initialTab} {initialTimeMs} />
+  <!-- Another song (or a song renamed) is another editor, loaded afresh. -->
+  {#key songName}
+    <SongDetail {songName} {initialTab} {initialTimeMs} />
+  {/key}
 {:else}
   <SongList
     initialSearch={savedSearch}

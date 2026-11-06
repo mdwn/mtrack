@@ -14,6 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { parse } from "yaml";
+import type { SongSaved } from "../../src/gen/rules/mtrack_rules";
 
 test.describe("Song Detail", () => {
   test.beforeEach(async ({ page }) => {
@@ -407,6 +408,33 @@ test.describe("Song Detail - Section Editor", () => {
     };
     expect(saved.sections).toHaveLength(3);
     expect(saved.sections[2].color).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+
+  test("a save that renames the song opens it under its new name", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Timeline" }).click();
+    await expect(page.locator(".section-block")).toHaveCount(2);
+    // The config now names the song "Test Song Alpha", as a rename in the
+    // Config tab would.
+    await page.route("**/api/songs/Test%20Song%20Beta", async (route) => {
+      if (route.request().method() !== "PUT") return route.fallback();
+      await route.fulfill({
+        json: { status: "saved", name: "Test Song Alpha" } satisfies SongSaved,
+      });
+    });
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+    await page.getByRole("button", { name: "Delete" }).click();
+    await page.getByRole("button", { name: "Save" }).first().click();
+    await expect(page).toHaveURL(/#\/songs\/Test%20Song%20Alpha\/sections$/);
+    await expect(page.locator(".song-title")).toHaveText("Test Song Alpha");
   });
 
   test("deleting a section from its dialog removes it", async ({ page }) => {

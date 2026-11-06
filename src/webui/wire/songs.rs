@@ -125,6 +125,16 @@ pub struct BrowseEntry {
     pub is_dir: bool,
 }
 
+/// `PUT /api/songs/{name}`: saved, and the name the song has now (another
+/// when the config renamed it), which the editor follows.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SongSaved {
+    /// Always `saved`.
+    pub status: String,
+    pub name: String,
+}
+
 /// `POST /api/browse/bulk-import`: the songs made, by directory.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
