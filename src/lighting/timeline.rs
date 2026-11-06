@@ -524,6 +524,14 @@ impl LightingTimeline {
             .collect()
     }
 
+    /// Each cue's time and how many effects it starts, in firing order.
+    pub fn cue_effect_counts(&self) -> Vec<(Duration, usize)> {
+        self.cues
+            .iter()
+            .map(|cue| (cue.time, cue.effects.len()))
+            .collect()
+    }
+
     /// Get all cues with their times and indices
     pub fn cues(&self) -> Vec<(Duration, usize)> {
         self.cues

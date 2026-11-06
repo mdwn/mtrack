@@ -388,6 +388,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
   the way. Each byte now rounds to the nearest, by the engine's one interpolation, so a shared
   byte stays put and the rest may come out one higher (black to white halfway is 128, was 127).
+- **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
+  not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
+  song came from; it now writes the file the song was read from, as the web UI's song editor
+  does. A playlist listed as text says why a song is missing (`unable to find song <name>`, or
+  `song <name> failed to load: ...`) where it said `(unable to find song)`.
+- **MCP `set_ambient_mode` takes a mode in any case, as gRPC does**: `{mode: "On"}` was
+  refused by MCP and taken by gRPC `SetAmbientMode`; both now read a mode one way (any case,
+  spaces trimmed), and refuse another name with `unknown ambient mode '<name>': use auto, on or
+  off`.
+- **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
+  answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
+  the song's `lighting:` block for the exact filename it references".
+- **One parse and validation for a config section update, on every surface**: MCP
+  `update_audio`, `update_midi`, `update_dmx` and `update_controllers`, gRPC `UpdateAudio`,
+  `UpdateMidi`, `UpdateDmx` and `UpdateControllers`, and the web API's `PUT /api/config/audio`,
+  `/midi`, `/dmx` and `/controllers` all save through one parse and validation. What changes:
+  - A body that is not the section's shape (MCP `update_audio{body: 5}`) answers `Validation
+    error: invalid audio JSON: ...` everywhere. MCP said `invalid payload: ...`; gRPC said
+    `invalid audio JSON: ...` (`invalid MIDI JSON`, `invalid DMX JSON`, `invalid controllers
+    JSON`); the web API said `{"error": "invalid audio: ..."}`.
+  - A section that parses but does not validate (an audio block with a bad sample format, say)
+    is now refused by MCP and gRPC too, where only the web API checked; the web API now answers
+    `{"error": "Validation error: <errors joined by "; ">"}` where it answered
+    `{"errors": [...]}`.
+  - gRPC `UpdateAudio`, `UpdateMidi` and `UpdateDmx` with `*_json: "null"` now remove the
+    section, as an empty string always did; they were refused.
+  - gRPC `UpdateControllers{controllers_json: ""}` answers `Validation error: invalid
+    controllers JSON: invalid type: null, expected a sequence`, where it answered `invalid
+    controllers JSON: EOF while parsing a value`.
+  - `PUT /api/config/controllers` without a `controllers` field answers that same validation
+    error, where it answered `missing controllers field`.
+  - JSON gRPC cannot parse at all still answers `invalid <section> JSON: ...`, with the config's
+    section name (`audio`, `midi`, `dmx`, `controllers`).
+- **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
+  back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
+  the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's
+  log pane, as it is logged from a controller. An OSC address configured for both a transport
+  action and an OSC-only one (pause, stop samples, loop section, seek, seek section) is now
+  taken as the transport action.
+- **One lock refusal on every surface**: MCP refused a write while locked with the player's
+  `Player is locked. Unlock to make changes.` followed by its own hint naming the tool. It now
+  answers that sentence alone, as gRPC and the web UI do. Which operations stay open while
+  locked is one table for MCP, gRPC and the web UI; what each surface leaves open is unchanged.
+- **A status that could not read ambient light says so on every surface**: when the status's
+  read of the DMX engine timed out or failed, MCP `status` gave the ambient light as
+  `{"available": false, "reason": ...}`, but gRPC `Status` and the web UI's playback message left
+  it out, as though there were no DMX engine. gRPC's `AmbientStatus` now carries
+  `available: false` and `reason` (new fields 5 and 6; mode and state are then empty), and the
+  web UI's playback message carries `{"available": false, "reason": ...}`, shown on the
+  dashboard as "Ambient light: no reading".
+- **`mtrack verify --check` refuses a category it does not know**: `mtrack verify mtrack.yaml
+  --check track_mappings` (a typo) ran no checks and exited 0. It now fails with clap's error
+  listing the categories (`track-mappings`).
+- **One text for "no effect engine"**: with no DMX engine, gRPC `GetActiveEffects` (and so
+  `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
+  answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
+  MCP's lighting resource already said.
+- **A song that failed to load says why on every surface**: a song whose files are there but
+  did not load (a `.light` file that does not parse, say) was "unable to find song broken" to
+  every MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to
+  gRPC `PlaySongFrom`, and 404 `Song not found: broken` to the web API's waveform, tempo guess
+  and files (`GET /api/songs/broken/waveform`, `/tempo-guess`, `/files`). They now answer
+  `song broken failed to load: <the load error>` (400 on the web API). An unknown song answers
+  `unable to find song <name>` everywhere: gRPC `PlaySongFrom` said `Song '<name>' not found`,
+  the web API (those three, `GET /api/songs/<name>`, and the song file uploads) `Song not found:
+  <name>`, and the web preview (`POST /api/lighting/evaluate`)
+  `unknown song: <name>`; the preview's failed-to-load answer gains the `song <name> failed to
+  load: ` prefix.
+- **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
+  time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
+  now refuses more than 64 times (`at most 64 times per request`) and a time past a week
+  (`time out of range`). The web UI's preview now checks the song, and that it has lighting,
+  before these bounds: 65 times for an unknown song answers 404 `unable to find song <name>`
+  rather than 400, and for a song with no lighting `song `<name>` has no lighting loaded` rather
+  than `at most 64 times per request`.
+- **A per-section notification sound that does not load is logged like the others**: a section
+  override (`notifications.sections.<name>`, global or per song) that failed to load was logged
+  as `Failed to load section notification override` (or `Failed to load song section
+  notification override`) with a `section` field; it is now logged as `Failed to load
+  notification audio override` with `key=section:<name>`, as the event overrides are.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.

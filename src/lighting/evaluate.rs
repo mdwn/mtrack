@@ -183,6 +183,48 @@ pub struct SystemEvaluation {
     pub venue_error: Option<String>,
 }
 
+/// The most instants one evaluation may ask for. A scrubber asks for one;
+/// anything near this is a script.
+pub const MAX_EVALUATE_TIMES: usize = 64;
+
+/// The latest instant one evaluation may ask for: a week. No song is longer,
+/// and the evaluator steps through every second it is given.
+pub const MAX_EVALUATE_TIME: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// Why [`evaluate_with_system`] turned a request down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvaluateError {
+    /// More than [`MAX_EVALUATE_TIMES`] instants.
+    TooManyTimes,
+    /// An instant past [`MAX_EVALUATE_TIME`].
+    TimeOutOfRange,
+}
+
+impl std::fmt::Display for EvaluateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvaluateError::TooManyTimes => {
+                write!(f, "at most {MAX_EVALUATE_TIMES} times per request")
+            }
+            EvaluateError::TimeOutOfRange => write!(f, "time out of range"),
+        }
+    }
+}
+
+impl std::error::Error for EvaluateError {}
+
+/// Checks the instants one evaluation asks for against the bounds every
+/// surface shares.
+fn check_times(times: &[Duration]) -> Result<(), EvaluateError> {
+    if times.len() > MAX_EVALUATE_TIMES {
+        return Err(EvaluateError::TooManyTimes);
+    }
+    if times.iter().any(|t| *t > MAX_EVALUATE_TIME) {
+        return Err(EvaluateError::TimeOutOfRange);
+    }
+    Ok(())
+}
+
 /// Evaluates `shows` against the venue the lighting system has loaded: its
 /// fixtures, focus points and logical groups. With no system (no DMX device)
 /// there is no venue, and every fixture list is empty.
@@ -192,12 +234,16 @@ pub struct SystemEvaluation {
 /// MCP's `evaluate_show` and the web UI's preview call this, so the two
 /// resolve groups identically. Blocking: the lock is shared with the effects
 /// loop thread.
+///
+/// Turns down more than [`MAX_EVALUATE_TIMES`] instants, or one past
+/// [`MAX_EVALUATE_TIME`], before doing any work.
 pub fn evaluate_with_system(
     shows: Vec<LightShow>,
     fallback_tempo_map: Option<&TempoMap>,
     times: &[Duration],
     system: Option<&parking_lot::Mutex<crate::lighting::system::LightingSystem>>,
-) -> SystemEvaluation {
+) -> Result<SystemEvaluation, EvaluateError> {
+    check_times(times)?;
     let mut venue_error = None;
     let (fixtures, focus_points, group_map) = match system {
         Some(system) => {
@@ -254,13 +300,13 @@ pub fn evaluate_with_system(
             effect
         },
     );
-    SystemEvaluation {
+    Ok(SystemEvaluation {
         evaluations,
         targeted,
         venue_fixtures,
         effect_groups,
         venue_error,
-    }
+    })
 }
 
 /// Adds every known fixture that no effect is driving, with all its channels at

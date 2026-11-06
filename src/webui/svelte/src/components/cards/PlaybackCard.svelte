@@ -97,6 +97,9 @@
   }
 
   // Ambient mode is a show control, like transport: open while locked.
+  /** Ambient light's modes, from the player's own list. */
+  const ambientModes = rules.ambient_modes();
+
   async function setAmbientMode(mode: AmbientMode) {
     try {
       await playerClient.setAmbientMode({ mode });
@@ -218,6 +221,17 @@
 
   /** What comes after this song and how it will arrive. */
   let nextUp = $derived(describeNext($playbackStore.next, $t));
+
+  /** Ambient light as the status read it; `null` without a DMX engine or
+   * when the read did not answer. */
+  let ambient = $derived(
+    $playbackStore.ambient && "state" in $playbackStore.ambient
+      ? $playbackStore.ambient
+      : null,
+  );
+
+  /** Whether the status's read of ambient light did not answer. */
+  let ambientUnread = $derived(!!$playbackStore.ambient && ambient === null);
 
   /** Whole seconds until an auto-play song starts, rounded up. */
   let autoPlaySeconds = $derived(
@@ -396,26 +410,31 @@
       {#if $playbackStore.looping}
         <span class="badge badge--ctrl">LOOP</span>
       {/if}
-      {#if $playbackStore.ambient && $playbackStore.ambient.state !== "off"}
+      {#if ambientUnread}
+        <span class="badge" data-testid="ambient-badge"
+          >{$t("playback.ambientUnread")}</span
+        >
+      {/if}
+      {#if ambient && ambient.state !== "off"}
         <span
           class="badge"
           data-testid="ambient-badge"
-          title={$playbackStore.ambient.show ?? ""}
-          >{$playbackStore.ambient.state === "playing"
+          title={ambient.show ?? ""}
+          >{ambient.state === "playing"
             ? $t("playback.ambientPlaying")
-            : $playbackStore.ambient.state === "pending"
+            : ambient.state === "pending"
               ? $t("playback.ambientPending")
               : $t(
                   "playback.ambientUnavailable",
-                )}{#if $playbackStore.ambient.source && $playbackStore.ambient.state !== "unavailable"}<span
+                )}{#if ambient.source && ambient.state !== "unavailable"}<span
               class="playback-card__ambient-source"
               data-testid="ambient-source"
             >
-              {` · ${$t(`playback.ambientSource.${$playbackStore.ambient.source}`)}`}</span
+              {` · ${$t(`playback.ambientSource.${ambient.source}`)}`}</span
             >{/if}</span
         >
       {/if}
-      {#if $playbackStore.ambient}
+      {#if ambient}
         <div
           class="playback-card__ambient-mode"
           role="group"
@@ -423,12 +442,12 @@
           title={$t("playback.ambientModeHint")}
           data-testid="ambient-mode"
         >
-          {#each ["auto", "on", "off"] as const as mode (mode)}
+          {#each ambientModes as mode (mode)}
             <button
               type="button"
               class="playback-card__ambient-btn"
-              class:active={$playbackStore.ambient.mode === mode}
-              aria-pressed={$playbackStore.ambient.mode === mode}
+              class:active={ambient.mode === mode}
+              aria-pressed={ambient.mode === mode}
               data-testid={`ambient-mode-${mode}`}
               onclick={() => setAmbientMode(mode)}
               >{$t(`playback.ambientModes.${mode}`)}</button

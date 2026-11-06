@@ -20,6 +20,38 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The kinds of notification, by the key each is overridden and looked up
+/// under: the one table the config, the default tones and the engine key by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
+pub enum NotificationKind {
+    SectionEntering,
+    LoopArmed,
+    BreakRequested,
+    LoopExited,
+}
+
+impl NotificationKind {
+    /// Every kind (derived, so a new kind is in it).
+    pub const ALL: &'static [NotificationKind] =
+        <NotificationKind as strum::VariantArray>::VARIANTS;
+
+    /// The kind's key, as the config names its override.
+    pub fn key(self) -> &'static str {
+        match self {
+            NotificationKind::SectionEntering => "section_entering",
+            NotificationKind::LoopArmed => "loop_armed",
+            NotificationKind::BreakRequested => "break_requested",
+            NotificationKind::LoopExited => "loop_exited",
+        }
+    }
+}
+
+/// The key of a named section's own override, which falls back to
+/// [`NotificationKind::SectionEntering`]'s.
+pub fn section_key(section_name: &str) -> String {
+    format!("section:{section_name}")
+}
+
 /// Global notification audio configuration.
 ///
 /// Configured in the hardware profile to override default notification tones
@@ -60,20 +92,18 @@ pub struct NotificationConfig {
 impl NotificationConfig {
     /// Returns a map of event key → file path for the configured overrides.
     pub fn event_overrides(&self) -> HashMap<String, String> {
-        let mut overrides = HashMap::new();
-        if let Some(ref path) = self.loop_armed {
-            overrides.insert("loop_armed".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.break_requested {
-            overrides.insert("break_requested".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.loop_exited {
-            overrides.insert("loop_exited".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.section_entering {
-            overrides.insert("section_entering".to_string(), path.clone());
-        }
-        overrides
+        NotificationKind::ALL
+            .iter()
+            .filter_map(|&kind| {
+                let path = match kind {
+                    NotificationKind::SectionEntering => &self.section_entering,
+                    NotificationKind::LoopArmed => &self.loop_armed,
+                    NotificationKind::BreakRequested => &self.break_requested,
+                    NotificationKind::LoopExited => &self.loop_exited,
+                };
+                Some((kind.key().to_string(), path.clone()?))
+            })
+            .collect()
     }
 
     /// Returns the per-section-name audio overrides.

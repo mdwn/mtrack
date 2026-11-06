@@ -273,26 +273,6 @@ pub(super) async fn get_config_store(State(state): State<WebUiState>) -> impl In
     }
 }
 
-/// Trait for config section types that support validation.
-trait Validatable {
-    fn validate(&self) -> Result<(), Vec<String>>;
-}
-impl Validatable for config::Audio {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
-    }
-}
-impl Validatable for config::Midi {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
-    }
-}
-impl Validatable for config::Dmx {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        self.validate()
-    }
-}
-
 /// Extracts the expected_checksum from a JSON body, or returns a 400 error.
 #[allow(clippy::result_large_err)]
 fn extract_checksum(body: &serde_json::Value) -> Result<String, axum::response::Response> {
@@ -306,51 +286,6 @@ fn extract_checksum(body: &serde_json::Value) -> Result<String, axum::response::
             )
                 .into_response()
         })
-}
-
-/// Deserializes an optional config section from a JSON body field.
-/// Returns `None` if the field is absent or null; returns a 400 error on
-/// deserialization failure.
-#[allow(clippy::result_large_err)]
-fn deserialize_optional_section<T: serde::de::DeserializeOwned>(
-    body: &serde_json::Value,
-    field: &str,
-) -> Result<Option<T>, axum::response::Response> {
-    match body.get(field) {
-        Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map(Some).map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("invalid {}: {}", field, e)})),
-            )
-                .into_response()
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// Shared preamble for optional, validatable config section updates.
-///
-/// Handles: checksum extraction, deserialization, validation,
-/// config store lookup. Returns the deserialized value, checksum, and store on
-/// success.
-#[allow(clippy::result_large_err)]
-async fn prepare_optional_update<T>(
-    state: &WebUiState,
-    body: &serde_json::Value,
-    field: &str,
-) -> Result<(Option<T>, String, std::sync::Arc<config::ConfigStore>), axum::response::Response>
-where
-    T: serde::de::DeserializeOwned + Validatable,
-{
-    let checksum = extract_checksum(body)?;
-    let value: Option<T> = deserialize_optional_section(body, field)?;
-    if let Some(ref v) = value {
-        if let Err(errors) = v.validate() {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
-        }
-    }
-    let store = require_config_store(state)?;
-    Ok((value, checksum, store))
 }
 
 /// Completes a config section update: calls the store updater, reloads hardware,
@@ -368,17 +303,35 @@ async fn finish_config_update(
     }
 }
 
+/// Updates `section` from the body's `field` (absent or `null` removes an
+/// optional section), through the store's one parse and validation, as
+/// MCP and gRPC do.
+async fn put_config_section(
+    state: &WebUiState,
+    body: &serde_json::Value,
+    section: config::store::ConfigSection,
+) -> axum::response::Response {
+    let checksum = match extract_checksum(body) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let store = match require_config_store(state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let value = body
+        .get(section.name())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    finish_config_update(state, store.update_section(section, value, &checksum).await).await
+}
+
 /// PUT /api/config/audio — update audio config section.
 pub(super) async fn put_config_audio(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (audio, checksum, store) =
-        match prepare_optional_update::<config::Audio>(&state, &body, "audio").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_audio(audio, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Audio).await
 }
 
 /// PUT /api/config/midi — update MIDI config section.
@@ -386,12 +339,7 @@ pub(super) async fn put_config_midi(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (midi, checksum, store) =
-        match prepare_optional_update::<config::Midi>(&state, &body, "midi").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_midi(midi, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Midi).await
 }
 
 /// PUT /api/config/dmx — update DMX config section.
@@ -399,12 +347,7 @@ pub(super) async fn put_config_dmx(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let (dmx, checksum, store) =
-        match prepare_optional_update::<config::Dmx>(&state, &body, "dmx").await {
-            Ok(t) => t,
-            Err(e) => return e,
-        };
-    finish_config_update(&state, store.update_dmx(dmx, &checksum).await).await
+    put_config_section(&state, &body, config::store::ConfigSection::Dmx).await
 }
 
 /// PUT /api/config/controllers — update controllers config.
@@ -412,42 +355,7 @@ pub(super) async fn put_config_controllers(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let checksum = match extract_checksum(&body) {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-
-    let controllers: Vec<config::Controller> = match body.get("controllers") {
-        Some(v) => match serde_json::from_value(v.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid controllers: {}", e)})),
-                )
-                    .into_response()
-            }
-        },
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing controllers field"})),
-            )
-                .into_response()
-        }
-    };
-
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    match store.update_controllers(controllers, &checksum).await {
-        Ok(snapshot) => {
-            let reload = apply_config_change(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK, reload)
-        }
-        Err(e) => config_store_error_response(e),
-    }
+    put_config_section(&state, &body, config::store::ConfigSection::Controllers).await
 }
 
 /// PUT /api/config/samples — replace all sample definitions.

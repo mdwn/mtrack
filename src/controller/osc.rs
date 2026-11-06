@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing::{error, info, span, Level};
 
-use super::{AbortOnDrop, TransportAction};
+use super::{AbortOnDrop, TransportAction, TransportBindings};
 use crate::{config, player::Player, util};
 
 /// This is the all hosts multicast address.
@@ -72,38 +72,18 @@ pub struct Driver {
 }
 
 pub(super) struct OscEvents {
-    /// The OSC address to look for to play the current song in the playlist.
-    play: Matcher,
+    /// The OSC address for each transport action.
+    transport: TransportBindings<Matcher>,
     /// The OSC address to pause playback while preserving position.
     pause: Matcher,
-    /// The OSC address to look for to move the playlist to the previous item.
-    prev: Matcher,
-    /// The OSC address to look for to move the playlist to the next item.
-    next: Matcher,
-    /// The OSC address to look for to stop playback.
-    stop: Matcher,
-    /// The OSC address to look for to switch from the current playlist to an all songs playlist.
-    all_songs: Matcher,
-    /// The OSC address to look for to switch back to the current playlist.
-    playlist: Matcher,
     /// The OSC address to look for to stop all triggered samples.
     stop_samples: Matcher,
-    /// The OSC address to acknowledge the current section (arm section loop).
-    section_ack: Matcher,
-    /// The OSC address to break out of the current section loop.
-    stop_section_loop: Matcher,
     /// The OSC address to loop a specific section by name.
     loop_section: Matcher,
     /// The OSC address to seek to a position (numeric seconds argument).
     seek: Matcher,
     /// The OSC address to seek to the start of a named section.
     seek_section: Matcher,
-    /// The OSC addresses to set ambient light's mode.
-    ambient_on: Matcher,
-    ambient_off: Matcher,
-    ambient_auto: Matcher,
-    /// The OSC address to call off an auto play waiting to start.
-    cancel_auto_play: Matcher,
     /// The OSC address pattern to set an output track's gain in dB.
     track_gain: Matcher,
     /// The raw track gain pattern; the `*` segment carries the track name and
@@ -123,6 +103,49 @@ pub(super) struct OscEvents {
     timeline: String,
 }
 
+impl OscEvents {
+    /// The addresses `config` sets.
+    pub(super) fn new(config: &config::OscController) -> Result<OscEvents, Box<dyn Error>> {
+        Ok(OscEvents {
+            transport: TransportBindings::new(|action| {
+                Ok(Some(Matcher::new(osc_address_for(config, action))?))
+            })?,
+            pause: Matcher::new(config.pause())?,
+            stop_samples: Matcher::new(config.stop_samples())?,
+            loop_section: Matcher::new(config.loop_section())?,
+            seek: Matcher::new(config.seek())?,
+            seek_section: Matcher::new(config.seek_section())?,
+            track_gain: Matcher::new(config.track_gain())?,
+            track_gain_pattern: config.track_gain().to_string(),
+            status: config.status().to_string(),
+            audio_health: config.audio_health().to_string(),
+            playlist_current: config.playlist_current().to_string(),
+            playlist_current_song: config.playlist_current_song().to_string(),
+            playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+            timeline: config.timeline().to_string(),
+        })
+    }
+}
+
+/// The OSC address `config` binds to `action`.
+fn osc_address_for(config: &config::OscController, action: TransportAction) -> &str {
+    use crate::dmx::engine::AmbientMode;
+    match action {
+        TransportAction::Play => config.play(),
+        TransportAction::Prev => config.prev(),
+        TransportAction::Next => config.next(),
+        TransportAction::Stop => config.stop(),
+        TransportAction::AllSongs => config.all_songs(),
+        TransportAction::Playlist => config.playlist(),
+        TransportAction::SectionAck => config.section_ack(),
+        TransportAction::StopSectionLoop => config.stop_section_loop(),
+        TransportAction::AmbientMode(AmbientMode::On) => config.ambient_on(),
+        TransportAction::AmbientMode(AmbientMode::Off) => config.ambient_off(),
+        TransportAction::AmbientMode(AmbientMode::Auto) => config.ambient_auto(),
+        TransportAction::CancelAutoPlay => config.cancel_auto_play(),
+    }
+}
+
 impl Driver {
     pub fn new(
         config: Box<config::OscController>,
@@ -140,33 +163,7 @@ impl Driver {
             player,
             addr,
             broadcast_addresses,
-            osc_events: Arc::new(OscEvents {
-                play: Matcher::new(config.play())?,
-                pause: Matcher::new(config.pause())?,
-                prev: Matcher::new(config.prev())?,
-                next: Matcher::new(config.next())?,
-                stop: Matcher::new(config.stop())?,
-                all_songs: Matcher::new(config.all_songs())?,
-                playlist: Matcher::new(config.playlist())?,
-                stop_samples: Matcher::new(config.stop_samples())?,
-                section_ack: Matcher::new(config.section_ack())?,
-                stop_section_loop: Matcher::new(config.stop_section_loop())?,
-                loop_section: Matcher::new(config.loop_section())?,
-                seek: Matcher::new(config.seek())?,
-                seek_section: Matcher::new(config.seek_section())?,
-                ambient_on: Matcher::new(config.ambient_on())?,
-                ambient_off: Matcher::new(config.ambient_off())?,
-                ambient_auto: Matcher::new(config.ambient_auto())?,
-                cancel_auto_play: Matcher::new(config.cancel_auto_play())?,
-                track_gain: Matcher::new(config.track_gain())?,
-                track_gain_pattern: config.track_gain().to_string(),
-                status: config.status().to_string(),
-                audio_health: config.audio_health().to_string(),
-                playlist_current: config.playlist_current().to_string(),
-                playlist_current_song: config.playlist_current_song().to_string(),
-                playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
-                timeline: config.timeline().to_string(),
-            }),
+            osc_events: Arc::new(OscEvents::new(&config)?),
         }))
     }
 }
@@ -545,43 +542,22 @@ impl Driver {
 
 /// Classifies an OSC address against the configured event matchers.
 fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box<dyn Error>> {
-    use crate::dmx::engine::AmbientMode;
     let address = OscAddress::new(addr.to_string())?;
-    let transport = |action| Ok(OscAction::Transport(action));
-    if osc_events.play.match_address(&address) {
-        transport(TransportAction::Play)
+    if let Some(action) = osc_events
+        .transport
+        .classify(|matcher| matcher.match_address(&address))
+    {
+        Ok(OscAction::Transport(action))
     } else if osc_events.pause.match_address(&address) {
         Ok(OscAction::Pause)
-    } else if osc_events.prev.match_address(&address) {
-        transport(TransportAction::Prev)
-    } else if osc_events.next.match_address(&address) {
-        transport(TransportAction::Next)
-    } else if osc_events.stop.match_address(&address) {
-        transport(TransportAction::Stop)
-    } else if osc_events.all_songs.match_address(&address) {
-        transport(TransportAction::AllSongs)
-    } else if osc_events.playlist.match_address(&address) {
-        transport(TransportAction::Playlist)
     } else if osc_events.stop_samples.match_address(&address) {
         Ok(OscAction::StopSamples)
-    } else if osc_events.section_ack.match_address(&address) {
-        transport(TransportAction::SectionAck)
-    } else if osc_events.stop_section_loop.match_address(&address) {
-        transport(TransportAction::StopSectionLoop)
     } else if osc_events.loop_section.match_address(&address) {
         Ok(OscAction::LoopSection)
     } else if osc_events.seek.match_address(&address) {
         Ok(OscAction::Seek)
     } else if osc_events.seek_section.match_address(&address) {
         Ok(OscAction::SeekToSection)
-    } else if osc_events.ambient_on.match_address(&address) {
-        transport(TransportAction::AmbientMode(AmbientMode::On))
-    } else if osc_events.ambient_off.match_address(&address) {
-        transport(TransportAction::AmbientMode(AmbientMode::Off))
-    } else if osc_events.ambient_auto.match_address(&address) {
-        transport(TransportAction::AmbientMode(AmbientMode::Auto))
-    } else if osc_events.cancel_auto_play.match_address(&address) {
-        transport(TransportAction::CancelAutoPlay)
     } else if osc_events.track_gain.match_address(&address) {
         Ok(OscAction::SetTrackGain)
     } else {
@@ -720,6 +696,7 @@ mod test {
     use crate::{
         config,
         controller::osc::{Driver, STATUS_PLAYING, STATUS_STOPPED},
+        controller::TransportAction,
         playlist,
         playlist::Playlist,
         songs,
@@ -762,12 +739,48 @@ mod test {
         let device = binding.to_mock()?;
 
         let driver = Driver::new(Box::new(config::OscController::new()), player.clone())?;
-        let next = driver.osc_events.next.pattern.clone();
-        let prev = driver.osc_events.prev.pattern.clone();
-        let play = driver.osc_events.play.pattern.clone();
-        let stop = driver.osc_events.stop.pattern.clone();
-        let all_songs = driver.osc_events.all_songs.pattern.clone();
-        let playlist = driver.osc_events.playlist.pattern.clone();
+        let next = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Next)
+            .expect("bound")
+            .pattern
+            .clone();
+        let prev = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Prev)
+            .expect("bound")
+            .pattern
+            .clone();
+        let play = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Play)
+            .expect("bound")
+            .pattern
+            .clone();
+        let stop = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Stop)
+            .expect("bound")
+            .pattern
+            .clone();
+        let all_songs = driver
+            .osc_events
+            .transport
+            .event(TransportAction::AllSongs)
+            .expect("bound")
+            .pattern
+            .clone();
+        let playlist = driver
+            .osc_events
+            .transport
+            .event(TransportAction::Playlist)
+            .expect("bound")
+            .pattern
+            .clone();
 
         let osc_packet = |address| async {
             let packet = osc_event(address);
@@ -1179,37 +1192,9 @@ mod test {
         build_broadcast_packets, build_timeline_packet, classify_message, format_playlist_content,
         OscAction, OscEvents, SectionTiming,
     };
-    use rosc::address::Matcher;
 
     fn make_default_osc_events() -> OscEvents {
-        let config = config::OscController::new();
-        OscEvents {
-            play: Matcher::new(config.play()).unwrap(),
-            pause: Matcher::new(config.pause()).unwrap(),
-            prev: Matcher::new(config.prev()).unwrap(),
-            next: Matcher::new(config.next()).unwrap(),
-            stop: Matcher::new(config.stop()).unwrap(),
-            all_songs: Matcher::new(config.all_songs()).unwrap(),
-            playlist: Matcher::new(config.playlist()).unwrap(),
-            stop_samples: Matcher::new(config.stop_samples()).unwrap(),
-            section_ack: Matcher::new(config.section_ack()).unwrap(),
-            stop_section_loop: Matcher::new(config.stop_section_loop()).unwrap(),
-            loop_section: Matcher::new(config.loop_section()).unwrap(),
-            seek: Matcher::new(config.seek()).unwrap(),
-            seek_section: Matcher::new(config.seek_section()).unwrap(),
-            ambient_on: Matcher::new(config.ambient_on()).unwrap(),
-            ambient_off: Matcher::new(config.ambient_off()).unwrap(),
-            ambient_auto: Matcher::new(config.ambient_auto()).unwrap(),
-            cancel_auto_play: Matcher::new(config.cancel_auto_play()).unwrap(),
-            track_gain: Matcher::new(config.track_gain()).unwrap(),
-            track_gain_pattern: config.track_gain().to_string(),
-            status: config.status().to_string(),
-            audio_health: config.audio_health().to_string(),
-            playlist_current: config.playlist_current().to_string(),
-            playlist_current_song: config.playlist_current_song().to_string(),
-            playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
-            timeline: config.timeline().to_string(),
-        }
+        OscEvents::new(&config::OscController::new()).unwrap()
     }
 
     mod classify_message_tests {
