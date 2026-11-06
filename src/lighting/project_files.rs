@@ -171,31 +171,20 @@ pub type Declares = Result<Vec<String>, Unread>;
 /// broken file is said to "maybe hold".
 const NAMED_BLOCKS: &[&str] = &["venue", "fixture_type", "show", "sequence"];
 
-/// Whether a `{` follows `from` on the same line, outside strings: a block
-/// opening its header there.
-fn opens_on_line(chars: &[char], from: usize) -> bool {
-    let mut in_string = false;
-    for &c in chars.iter().skip(from) {
-        match c {
-            '\n' => return false,
-            '"' => in_string = !in_string,
-            '{' if !in_string => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
 /// The named blocks `text` seems to open. Never a decision on whether a file
 /// may be written or removed (a file that does not parse cannot be read
 /// exactly): it is what the 409 says a broken file may hold, and how
 /// [`locate`] finds a broken file that seems to open the name's block
-/// elsewhere. Each of [`NAMED_BLOCKS`] as a whole word (letters, digits,
-/// `_` and `-`, as the grammar's names run) outside strings and comments,
-/// followed past any whitespace or comments by a quoted name, which as in
-/// the grammar has no escapes, and a `{` on that line; a keyword with no
-/// quoted name, or a reference with no block (`sequence "x"` in a show), is
-/// passed over.
+/// elsewhere. It errs toward finding one: an extra mention only offers one
+/// more file for replacing (kept aside if replaced), where a missed one
+/// leaves a broken file behind to declare the name again. Each of
+/// [`NAMED_BLOCKS`] as a whole word (letters, digits, `_` and `-`, as the
+/// grammar's names run) outside strings and comments, followed past any
+/// whitespace or comments by a quoted name, which as in the grammar has no
+/// escapes, wherever it stands (`fixture_type "Par"` with `from gdtf(…)` and
+/// its `{` on lines of their own, as the GDTF import writes a record; a
+/// show's `sequence "x"` reference counts too); a keyword with no quoted
+/// name is passed over.
 fn block_headers(text: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = text.chars().collect();
     let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
@@ -237,10 +226,7 @@ fn block_headers(text: &str) -> Vec<(String, String)> {
             let next = skip(end);
             if NAMED_BLOCKS.contains(&word.as_str()) && chars.get(next) == Some(&'"') {
                 let (name, past) = string_at(next);
-                // A block opens on its header's line (`{` after the name and
-                // any parameters or `from gdtf(…)`); `sequence "x"(…)` with
-                // no `{` there is a show's reference to a sequence.
-                if !name.is_empty() && opens_on_line(&chars, past) {
+                if !name.is_empty() {
                     out.push((word, name));
                 }
                 i = past;
@@ -702,10 +688,37 @@ mod tests {
         .map(|(k, _)| k)
         .collect();
         assert_eq!(kinds, ["sequence", "show", "fixture_type"]);
-        // A show's reference to a sequence opens no block.
+        // A show's reference to a sequence is listed too: the scan errs
+        // toward finding a block.
         let in_show =
             names("show \"Song\" {\n  @1/1\n  sequence \"strike\"(hit: \"#FF0000\"), loop: 2\n");
-        assert_eq!(in_show, [("show".to_string(), "Song".to_string())]);
+        assert_eq!(in_show.len(), 2, "{in_show:?}");
+        // A header whose `{` is on a line of its own, as the GDTF import
+        // writes a record, one with a comment before it, and one with a
+        // quote in a comment after the name, are all found.
+        let description =
+            crate::lighting::gdtf::parse_archive(&crate::lighting::gdtf::build_zip(&[(
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+            )]))
+            .unwrap();
+        let record = crate::lighting::import::gdtf_definition(
+            "Par",
+            "lighting/library/par.gdtf",
+            "par.gdtf",
+            &description,
+        );
+        let par = ("fixture_type".to_string(), "Par".to_string());
+        assert_eq!(names(&record), std::slice::from_ref(&par), "{record}");
+        let club = ("venue".to_string(), "Club".to_string());
+        for text in [
+            "venue \"Club\"\n{\n",
+            "venue \"Club\" // the hall\n{\n",
+            "venue \"Club\" // \"{\nvenue \"Arena\" {\n",
+        ] {
+            assert_eq!(names(text).first(), Some(&club), "{text:?}");
+        }
+        assert_eq!(names("venue \"Club\" // \"{\nvenue \"Arena\" {\n").len(), 2);
         for nothing in [
             "// TODO: move this to the show\n",
             "fixture show-par {",
