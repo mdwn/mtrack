@@ -85,6 +85,31 @@ pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
 }
 
+/// `time` in UTC as `YYYYMMDD-HHMMSS`: a file name's timestamp.
+pub fn utc_stamp(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}-{:02}{:02}{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
 pub fn filename_display(path: &Path) -> &str {
     path.file_name()
         .and_then(|f| f.to_str())
@@ -1317,6 +1342,14 @@ mod test {
         assert_eq!(duration_from_secs(-1.0), None);
         assert_eq!(duration_from_secs(f64::NAN), None);
         assert_eq!(duration_from_secs(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn utc_stamp_is_a_civil_date_and_time() {
+        let at = |secs: u64| super::utc_stamp(std::time::UNIX_EPOCH + Duration::from_secs(secs));
+        assert_eq!(at(0), "19700101-000000");
+        assert_eq!(at(951_782_400), "20000229-000000");
+        assert_eq!(at(1_793_995_500), "20261106-200500");
     }
 
     #[test]

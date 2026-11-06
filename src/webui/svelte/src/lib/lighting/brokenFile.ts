@@ -17,7 +17,7 @@
 import { get } from "svelte/store";
 import { t } from "svelte-i18n";
 import type { LightingFileRefusal } from "../../gen/rules/mtrack_rules";
-import { showConfirm } from "../dialog.svelte";
+import { showAlert, showConfirm } from "../dialog.svelte";
 
 /** `path` with one `replace_broken=<file>` query parameter per file, each
  *  as written, when there are any. */
@@ -72,5 +72,22 @@ export async function offeringToReplaceBroken(
         : "lighting.brokenFileRemoveLabel",
     ),
   });
-  return confirmed ? send(broken.map((f) => f.file)) : res;
+  if (!confirmed) return res;
+  const retried = await send(broken.map((f) => f.file));
+  if (retried.ok) {
+    // The server keeps each broken file aside rather than losing it; say
+    // where, so nothing it held is a surprise to find gone.
+    const answer: { kept?: string[] } = await retried
+      .clone()
+      .json()
+      .catch(() => ({}));
+    if (answer.kept && answer.kept.length > 0) {
+      void showAlert(
+        tr("lighting.brokenFileKept", {
+          values: { files: answer.kept.join(", ") },
+        }),
+      );
+    }
+  }
+  return retried;
 }

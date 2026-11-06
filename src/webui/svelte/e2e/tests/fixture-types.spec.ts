@@ -452,7 +452,11 @@ test.describe("Fixture Types Management", () => {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ status: "saved", name: "par" }),
+          body: JSON.stringify({
+            status: "saved",
+            name: "par",
+            kept: ["par.light.replaced-20261106-101500"],
+          }),
         });
       }
       return route.fulfill({
@@ -494,6 +498,10 @@ test.describe("Fixture Types Management", () => {
     await dialog.getByRole("button", { name: "Replace it" }).click();
     await expect.poll(() => puts.length).toBe(3);
     expect(puts[2]).toContain("replace_broken=par.light");
+    // The old file was kept aside, and the editor says where.
+    await expect(dialog).toContainText(
+      "The old file was kept as par.light.replaced-20261106-101500.",
+    );
   });
 
   test("cancel button closes editor form", async ({ page }) => {

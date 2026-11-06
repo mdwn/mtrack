@@ -241,6 +241,11 @@ pub struct FixtureTypeDeleted {
     pub archive_removed: Option<String>,
     /// Another fixture uses the archive, so it stays.
     pub archive_kept: bool,
+    /// A broken file removed at the person's word, kept aside: where it
+    /// went, by its path in the directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub kept: Vec<String>,
 }
 
 /// `GET /api/lighting/fixture-types/{name}/settings`: what is the user's

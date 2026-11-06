@@ -727,6 +727,7 @@
   "lighting.brokenFileReplace": "{file} doesn't read: {error}. Replace it?",
   "lighting.brokenFileRemove": "{file} doesn't read: {error}. Remove it?",
   "lighting.brokenFilesReplace": "These files don't read: {files}. Replace them?",
+  "lighting.brokenFileKept": "The old file was kept as {files}.",
   "lighting.brokenFileReplaceLabel": "Replace it",
   "lighting.brokenFileRemoveLabel": "Remove it",
   "lighting.channelMap": "Channel Map",

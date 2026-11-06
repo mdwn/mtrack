@@ -408,7 +408,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   save replace, or the delete remove, exactly those broken files, never one that reads, nor a
   namesake in another subdirectory. A broken file that also opens blocks for other names (a
   broken `tour/all.light` holding Club and Arena) is refused with 409 naming them, and nothing is
-  offered: replacing it would lose them. A name with no letters or digits (`!!!`, `★`) is written
+  offered: replacing it would lose them. A replaced or removed broken file is never lost: it is
+  first moved aside beside itself as `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC), which no loader
+  reads, and the reply and the web UI say "The old file was kept as …". The blocks a broken file
+  opens are found however they are written (`venue  "Arena"`, a newline or comment before the
+  name, several on one line, any block the grammar allows: `show`, `sequence`, `tempo`, `include`
+  as well), and in a file that is not UTF-8 too. A broken file at the name's stem that opens only
+  other names' blocks is theirs: "Club Main" beside a broken `club_main.light` holding only "Club
+  (Main)" is saved to `club_main_2.light`. An MVR import whose GDTFs share a file stem ("Par", "par
+  a", "par_a") writes each record to a file of its own (`par`, `par_a`, `par_a_2`); the last
+  overwrote another's. A name with no letters or digits (`!!!`, `★`) is written
   as `untitled.light`, not a hidden `.light`, and no lighting file is ever written under a hidden
   name. A fixture type save checks the file found for the name as a venue save does,
   whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got a `Par.fixture`

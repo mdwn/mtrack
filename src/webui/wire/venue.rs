@@ -57,4 +57,9 @@ pub struct VenueSaved {
     /// The venue's load failure, when the save left the current venue
     /// failing.
     pub venue_error: Option<VenueError>,
+    /// A broken file replaced at the person's word, kept aside: where it
+    /// went, by its path in the venues directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub kept: Vec<String>,
 }
