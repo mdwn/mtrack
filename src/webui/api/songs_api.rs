@@ -891,11 +891,7 @@ fn remove_song_from_playlists(
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file()
-                        && path.extension().is_some_and(|ext| {
-                            crate::playlist::PLAYLIST_EXTENSIONS
-                                .iter()
-                                .any(|known| ext == *known)
-                        })
+                        && crate::songs::has_extension(&path, crate::playlist::PLAYLIST_EXTENSIONS)
                     {
                         files_to_check.push(path);
                     }

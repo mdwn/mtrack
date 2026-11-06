@@ -378,7 +378,7 @@ fn plan(
             let gdtf_bytes = mvr::read_gdtf_entry(bytes, &entry)?;
             let description = gdtf::parse_archive(&gdtf_bytes).map_err(|e| e.to_string());
             let mut file_name = mvr::entry_basename(&entry).to_string();
-            if !file_name.to_ascii_lowercase().ends_with(".gdtf") {
+            if !crate::songs::has_extension(Path::new(&file_name), &["gdtf"]) {
                 file_name.push_str(".gdtf");
             }
             embedded.insert(

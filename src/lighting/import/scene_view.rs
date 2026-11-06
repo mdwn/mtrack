@@ -123,7 +123,7 @@ fn object_bounds(bytes: &[u8], entries: &[String], object: &MvrSceneObject) -> O
     let object_matrix = object.matrix.unwrap_or(mvr::IDENTITY);
     let mut total: Option<BoundsMm> = None;
     for mesh in &object.meshes {
-        if !mesh.file.to_ascii_lowercase().ends_with(".glb") {
+        if !crate::songs::has_extension(std::path::Path::new(&mesh.file), &["glb"]) {
             continue;
         }
         let Some(entry) = find_entry(entries, &mesh.file) else {

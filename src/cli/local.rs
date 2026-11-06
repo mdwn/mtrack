@@ -153,7 +153,7 @@ pub async fn start(
     // Otherwise treat it as a project directory and look for mtrack.yaml inside.
     let input = Path::new(path);
     let player_path =
-        &if input.is_file() || input.extension().is_some_and(|e| e == "yaml" || e == "yml") {
+        &if input.is_file() || crate::songs::has_extension(input, crate::songs::YAML_EXTENSIONS) {
             input.to_path_buf()
         } else {
             input.join("mtrack.yaml")

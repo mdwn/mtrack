@@ -978,14 +978,8 @@ pub(super) async fn get_lighting_asset(
 ) -> impl IntoResponse {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let content_type = std::path::Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .and_then(|ext| {
-            ASSET_TYPES
-                .iter()
-                .find(|(known, _)| known.eq_ignore_ascii_case(ext))
-        })
+    let content_type = crate::songs::extension_of(std::path::Path::new(&path))
+        .and_then(|ext| ASSET_TYPES.iter().find(|(known, _)| *known == ext))
         .map(|(_, mime)| *mime);
     let Some(content_type) = content_type else {
         return Err((

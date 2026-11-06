@@ -122,7 +122,7 @@ async fn read_form(multipart: &mut axum::extract::Multipart) -> Result<MvrForm, 
     let Some((file_name, bytes)) = file else {
         return Err(bad_request("No file uploaded"));
     };
-    if !file_name.to_ascii_lowercase().ends_with(".mvr") {
+    if !crate::songs::has_extension(std::path::Path::new(&file_name), &["mvr"]) {
         return Err(bad_request(format!(
             "{file_name} is not an .mvr file; choose the venue's MVR export"
         )));

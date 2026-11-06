@@ -220,12 +220,7 @@ pub fn unrecorded_types_given(
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("gdtf"))
-        })
+        .filter(|p| p.is_file() && crate::songs::has_extension(p, &["gdtf"]))
         .collect();
     files.sort();
     if files.is_empty() {

@@ -1523,11 +1523,7 @@ pub fn load_playlists(
                 .map(|e| e.path())
                 .filter(|path| {
                     path.is_file()
-                        && path.extension().is_some_and(|ext| {
-                            playlist::PLAYLIST_EXTENSIONS
-                                .iter()
-                                .any(|known| ext == *known)
-                        })
+                        && crate::songs::has_extension(path, playlist::PLAYLIST_EXTENSIONS)
                 })
                 .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
                 .collect();
@@ -4340,7 +4336,7 @@ mod test {
         let src = Path::new("assets/songs");
         for entry in fs::read_dir(src)? {
             let entry = entry?;
-            if entry.path().extension().is_some_and(|e| e == "yaml") {
+            if crate::songs::has_extension(&entry.path(), &["yaml"]) {
                 fs::copy(entry.path(), songs_dir.join(entry.file_name()))?;
             }
         }
@@ -4459,9 +4455,12 @@ mod test {
         // takes the player's own `all_songs`.
         fs::write(pl_dir.join("my_set.yml"), "songs:\n- Song 1\n")?;
         fs::write(pl_dir.join("all_songs.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("Encore.YAML"), "songs:\n- Song 1\n")?;
         let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
         assert_eq!(playlists["my_set"].songs().len(), 2);
         assert!(playlists["all_songs"].songs().len() > 1);
+        // The extension is read in any case.
+        assert_eq!(playlists["Encore"].songs().len(), 1);
 
         Ok(())
     }

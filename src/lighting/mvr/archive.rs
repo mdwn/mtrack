@@ -177,7 +177,7 @@ pub fn list_gdtf_entries(bytes: &[u8]) -> Result<Vec<String>, MvrError> {
     let archive = open(bytes)?;
     let mut names: Vec<String> = entry_names(&archive)
         .into_iter()
-        .filter(|name| name.to_ascii_lowercase().ends_with(".gdtf"))
+        .filter(|name| crate::songs::has_extension(std::path::Path::new(name), &["gdtf"]))
         .collect();
     names.sort();
     Ok(names)

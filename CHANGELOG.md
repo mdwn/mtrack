@@ -338,6 +338,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **File extensions are read in any case, by one rule**: a playlist kept as `Encore.YAML` was
+  passed over by the player; it now loads, and the web UI and MCP save and delete it in place.
+  A song config named `Album.YAML` or `song.YML` is now loaded as one, and `mtrack start
+  ./Live.YAML` / `mtrack migrate ./Live.YAML` take it as the config file rather than a directory.
+  GDTF archives (`.GDTF`), MVR files (`.MVR`, also as an export name) and their `.GLB` meshes
+  were already matched in any case, and still are.
 - **A light show file's extension is read in any case, and hidden directories are passed over**:
   `Show.LIGHT` in a song directory was taken by `mtrack songs --init` but missing from the web UI's
   lighting file list, and could not be deleted there ("Can only delete .light files") or edited

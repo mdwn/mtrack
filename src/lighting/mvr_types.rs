@@ -57,7 +57,7 @@ pub fn export_file_name(output: Option<&str>, venue: &str) -> Result<String, Str
             "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
         ));
     }
-    if !output.to_ascii_lowercase().ends_with(".mvr") || output.len() <= 4 {
+    if !crate::songs::has_extension(std::path::Path::new(&output), &["mvr"]) || output.len() <= 4 {
         return Err(format!("output \"{output}\" must end in .mvr"));
     }
     Ok(output)

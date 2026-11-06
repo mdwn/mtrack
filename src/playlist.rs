@@ -552,7 +552,7 @@ pub fn is_reserved_name(name: &str) -> bool {
 }
 
 /// A playlist file's extensions, the one a new file takes first.
-pub const PLAYLIST_EXTENSIONS: &[&str] = &["yaml", "yml"];
+pub const PLAYLIST_EXTENSIONS: &[&str] = crate::songs::YAML_EXTENSIONS;
 
 /// The name of a playlist was the player's own ([`is_reserved_name`]).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -560,7 +560,8 @@ pub const PLAYLIST_EXTENSIONS: &[&str] = &["yaml", "yml"];
 pub struct ReservedName(pub String);
 
 /// The file in `dir` that holds the playlist `name`: the existing
-/// `<name>.yaml`, else the existing `<name>.yml`, else a new `<name>.yaml`.
+/// `<name>.yaml`, else the existing `<name>.yml`, the extension in any case
+/// (`Set.YAML`), else a new `<name>.yaml`.
 /// The loader reads this file for the name, and every write and delete goes
 /// to it, so an edit to a `.yml` playlist is not lost to a new `.yaml`
 /// beside it. The reserved name has no file. `name` is not checked for
@@ -569,11 +570,7 @@ pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
     if is_reserved_name(name) {
         return Err(ReservedName(name.to_string()));
     }
-    let existing: Vec<PathBuf> = PLAYLIST_EXTENSIONS
-        .iter()
-        .map(|ext| dir.join(format!("{name}.{ext}")))
-        .filter(|path| path.is_file())
-        .collect();
+    let existing = crate::lighting::project_files::files_at_stem(dir, name, PLAYLIST_EXTENSIONS);
     if let [file, others @ ..] = existing.as_slice() {
         for other in others {
             warn!(
