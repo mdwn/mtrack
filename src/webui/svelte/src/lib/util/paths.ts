@@ -40,13 +40,30 @@ export function withoutExtension(file: string): string {
   return file.replace(/\.[^.]+$/, "");
 }
 
+/** A file picker's `accept=` for `extensions`, which browsers match in any case. */
+function accept(extensions: string[]): string {
+  return extensions.map((ext) => "." + ext).join(",");
+}
+
 /**
  * What a file picker for audio accepts (`accept=`): the player's audio
- * extensions (`songs::AUDIO_EXTENSIONS`). Browsers match them in any case.
+ * extensions (`songs::AUDIO_EXTENSIONS`).
  */
 export function audioAccept(): string {
-  return rules
-    .audio_extensions()
-    .map((ext) => "." + ext)
-    .join(",");
+  return accept(rules.audio_extensions());
+}
+
+/**
+ * What a file picker for MIDI accepts (`accept=`): the player's MIDI
+ * extensions (`songs::MIDI_EXTENSIONS`).
+ */
+export function midiAccept(): string {
+  return accept(rules.midi_extensions());
+}
+
+/** Whether `name` is a MIDI file to the player (`songs::MIDI_EXTENSIONS`), in any case. */
+export function isMidiFile(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  return rules.midi_extensions().includes(name.slice(dot + 1).toLowerCase());
 }

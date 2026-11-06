@@ -201,7 +201,7 @@ pub mod state {
 }
 
 pub mod songs {
-    pub use crate::file_kind::{FileKind, AUDIO_EXTENSIONS};
+    pub use crate::file_kind::{FileKind, AUDIO_EXTENSIONS, MIDI_EXTENSIONS};
 }
 
 pub mod webui {
@@ -1094,6 +1094,17 @@ pub fn metronome_sounds() -> BuiltinSounds {
 #[wasm_bindgen]
 pub fn audio_extensions() -> Vec<String> {
     songs::AUDIO_EXTENSIONS
+        .iter()
+        .map(|ext| ext.to_string())
+        .collect()
+}
+
+/// The extensions of the MIDI files the player finds in a song directory,
+/// in any case (`songs::MIDI_EXTENSIONS`): what a file picker for MIDI
+/// accepts.
+#[wasm_bindgen]
+pub fn midi_extensions() -> Vec<String> {
+    songs::MIDI_EXTENSIONS
         .iter()
         .map(|ext| ext.to_string())
         .collect()

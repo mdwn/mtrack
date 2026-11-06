@@ -24,6 +24,10 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
     "wav", "flac", "mp3", "ogg", "aac", "m4a", "mp4", "aiff", "aif",
 ];
 
+/// The extensions of the MIDI files the player finds in a song directory
+/// (playback, or a `dmx_` light show), lowercase.
+pub const MIDI_EXTENSIONS: &[&str] = &["mid"];
+
 /// What a file is to the player, by its extension.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +51,7 @@ impl FileKind {
             .to_lowercase();
         if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             FileKind::Audio
-        } else if ext == "mid" {
+        } else if MIDI_EXTENSIONS.contains(&ext.as_str()) {
             FileKind::Midi
         } else if ext == "light" {
             FileKind::Lighting

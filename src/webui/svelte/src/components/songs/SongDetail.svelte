@@ -55,7 +55,11 @@
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
   import NotificationsSection from "../config/NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
-  import { audioAccept, withoutExtension } from "../../lib/util/paths";
+  import {
+    audioAccept,
+    midiAccept,
+    withoutExtension,
+  } from "../../lib/util/paths";
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -1141,7 +1145,7 @@
               </div>
               <div class="upload-area">
                 <FileUpload
-                  accept=".mid"
+                  accept={midiAccept()}
                   label={uploading
                     ? $t("common.uploading")
                     : $t("songs.detail.dropMidi")}
