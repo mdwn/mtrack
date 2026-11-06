@@ -15,13 +15,20 @@
 //! Ambient light's mode, as the operator sets it and every surface reports
 //! it: light, so the web UI's WebAssembly module compiles it as it is.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// What the operator asks of ambient light. Set at run time and not kept:
 /// every start is [`AmbientMode::Auto`].
+///
+/// Its names come from one place, strum's `serialize_all`: [`Self::as_str`]
+/// and [`Self::parse`] use them, and serde writes and reads through those,
+/// so every surface takes a mode the same way (any case, spaces trimmed).
+/// The TypeScript type says the same names (the `serde` attribute below is
+/// read only by tsify).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "tsify", serde(rename_all = "lowercase"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum AmbientMode {
     /// Between songs and under a song without lights, after its delay.
     #[default]
@@ -49,19 +56,31 @@ impl AmbientMode {
 
     /// The mode's name: `auto`, `on` or `off`.
     pub fn as_str(self) -> &'static str {
-        match self {
-            AmbientMode::Auto => "auto",
-            AmbientMode::On => "on",
-            AmbientMode::Off => "off",
-        }
+        self.into()
     }
 
-    /// The mode named `name` (`auto`, `on` or `off`, any case).
+    /// The mode named `name` (`auto`, `on` or `off`, any case, spaces
+    /// trimmed).
     pub fn parse(name: &str) -> Option<AmbientMode> {
-        let name = name.trim();
-        AmbientMode::ALL
-            .into_iter()
-            .find(|mode| mode.as_str().eq_ignore_ascii_case(name))
+        name.trim().parse().ok()
+    }
+}
+
+impl Serialize for AmbientMode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AmbientMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        AmbientMode::parse(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown ambient mode '{name}': use {}",
+                AmbientMode::names()
+            ))
+        })
     }
 }
 
@@ -80,5 +99,17 @@ mod tests {
         }
         assert_eq!(AmbientMode::names(), "auto, on or off");
         assert_eq!(AmbientMode::parse("dim"), None);
+    }
+
+    /// serde writes a mode's name and reads it as `parse` does, so MCP
+    /// takes `On` as gRPC does.
+    #[test]
+    fn serde_goes_through_the_names() {
+        for mode in AmbientMode::ALL {
+            assert_eq!(serde_json::to_value(mode).unwrap(), mode.as_str());
+            let upper = serde_json::json!(format!(" {} ", mode.as_str().to_uppercase()));
+            assert_eq!(serde_json::from_value::<AmbientMode>(upper).unwrap(), mode);
+        }
+        assert!(serde_json::from_value::<AmbientMode>(serde_json::json!("dim")).is_err());
     }
 }

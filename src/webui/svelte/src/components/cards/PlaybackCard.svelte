@@ -97,6 +97,9 @@
   }
 
   // Ambient mode is a show control, like transport: open while locked.
+  /** Ambient light's modes, from the player's own list. */
+  const ambientModes = rules.ambient_modes();
+
   async function setAmbientMode(mode: AmbientMode) {
     try {
       await playerClient.setAmbientMode({ mode });
@@ -439,7 +442,7 @@
           title={$t("playback.ambientModeHint")}
           data-testid="ambient-mode"
         >
-          {#each ["auto", "on", "off"] as const as mode (mode)}
+          {#each ambientModes as mode (mode)}
             <button
               type="button"
               class="playback-card__ambient-btn"

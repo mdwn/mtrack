@@ -338,6 +338,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP `set_ambient_mode` takes a mode in any case, as gRPC does**: `{mode: "On"}` was
+  refused by MCP and taken by gRPC `SetAmbientMode`; both now read a mode one way (any case,
+  spaces trimmed), and refuse another name with `unknown ambient mode '<name>': use auto, on or
+  off`.
 - **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
   answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
   the song's `lighting:` block for the exact filename it references".
