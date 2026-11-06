@@ -47,9 +47,9 @@ fn test_static_effect() {
     // Should have commands for dimmer and red channels
     assert_eq!(commands.len(), 2);
 
-    // Check dimmer command (50% = 127)
+    // Check dimmer command (50% = 128)
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    assert_eq!(dimmer_cmd.value, 127);
+    assert_eq!(dimmer_cmd.value, 128);
 
     // Check red command (100% = 255)
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();

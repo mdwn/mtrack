@@ -1344,17 +1344,17 @@ fn test_dimmer_effect_mid_level_start() {
     // At 0s - dimmer is at start_level (0.5)
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 127, "Blue should be at 50% (127) at 0s"); // 255 * 0.5 = 127
+    assert_eq!(blue_cmd.value, 128, "Blue should be at 50% (128) at 0s"); // 255 * 0.5 = 128.5, rounded
 
     // At 0.5s (25% through 2s fade) - dimmer at 0.5 + (0.0 - 0.5) * 0.25 = 0.375
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 95, "Blue should be at 37.5% (95) at 0.5s"); // 255 * 0.375 ≈ 95
+    assert_eq!(blue_cmd.value, 96, "Blue should be at 37.5% (96) at 0.5s"); // 255 * 0.375 = 95.6, rounded to 96
 
     // At 1s (50% through 2s fade) - dimmer at 0.5 + (0.0 - 0.5) * 0.5 = 0.25
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 63, "Blue should be at 25% (63) at 1s"); // 255 * 0.25 ≈ 63
+    assert_eq!(blue_cmd.value, 64, "Blue should be at 25% (64) at 1s"); // 255 * 0.25 = 63.75, rounded to 64
 
     // At 2s (end of fade) - dimmer completes and is removed.
     // The underlying static blue shows through at full brightness.

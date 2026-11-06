@@ -175,9 +175,9 @@ test.describe("stage rig math", () => {
     // Nothing that lights it: a head's position alone is dark.
     expect(css({ pan: 128 })).toBe("rgb(0,0,0)");
     // A CMY fixture's flags: cyan closed takes the red out of its white.
-    expect(
-      css({ cyan: 255, magenta: 0, yellow: 0, dimmer: 255 }),
-    ).toBe("rgb(0,255,255)");
+    expect(css({ cyan: 255, magenta: 0, yellow: 0, dimmer: 255 })).toBe(
+      "rgb(0,255,255)",
+    );
   });
 
   test("a fixture is lit as the engine has it: by the light it emits", async () => {
