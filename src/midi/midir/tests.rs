@@ -2509,18 +2509,33 @@ mod run_playback_tests {
         delay_ms: u64,
         jumps: Arc<crate::playsync::SectionJumpLog>,
     ) -> (Vec<f64>, usize) {
-        struct Sender(Arc<VirtualTime>, Vec<f64>);
+        let replays = crate::playsync::JumpCursor::new(jumps.clone())
+            .peek()
+            .is_some();
+        let (sent, reads) = play_virtual_messages(callbacks, frames, times, delay_ms, jumps);
+        if !replays {
+            assert_eq!(sent.len(), times.len(), "notes missing");
+        }
+        (sent.into_iter().map(|(at, _)| at).collect(), reads)
+    }
+
+    /// As [`play_virtual`], each message with when it went out.
+    fn play_virtual_messages(
+        callbacks: &[f64],
+        frames: u64,
+        times: &[u64],
+        delay_ms: u64,
+        jumps: Arc<crate::playsync::SectionJumpLog>,
+    ) -> (Vec<(f64, Vec<u8>)>, usize) {
+        struct Sender(Arc<VirtualTime>, Vec<(f64, Vec<u8>)>);
         impl MidiSender for Sender {
-            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-                self.1.push(self.0.wall());
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.1.push((self.0.wall(), bytes.to_vec()));
                 Ok(())
             }
         }
         let time = VirtualTime::new(callbacks, frames);
         let midi = make_events(times);
-        let replays = crate::playsync::JumpCursor::new(jumps.clone())
-            .peek()
-            .is_some();
         let mut sender = Sender(time.clone(), Vec::new());
         play_streams(
             &NoteStreams {
@@ -2537,9 +2552,6 @@ mod run_playback_tests {
             &mut crate::playsync::JumpCursor::new(jumps),
             &mut sender,
         );
-        if !replays {
-            assert_eq!(sender.1.len(), times.len(), "notes missing");
-        }
         (sender.1, time.reads.load(Ordering::Relaxed))
     }
 
@@ -2894,6 +2906,51 @@ mod run_playback_tests {
         for (sent, ms) in sent[2..].iter().zip([3_200, 3_300]) {
             let off = sent - (20 + ms) as f64 / 1000.0 / rate;
             assert!(off.abs() < 0.003, "{ms}ms note {:.1}ms off", off * 1000.0);
+        }
+    }
+
+    /// A crossfading loop's passes, in virtual time: each pass's notes
+    /// keep to the audio from its jump, the pass it leaves playing on for
+    /// the overlap in time with it, older pass first at the same moment.
+    /// Pins the times [`crossfading_loop_overlaps_its_passes`] checks on
+    /// real threads only to a loaded machine's bounds.
+    #[test]
+    fn overlapping_passes_play_their_notes_on_time() {
+        // A 1 s song with a 0.4 s overlap: a pass every 0.6 s, notes 60,
+        // 61, 62 at 0, 0.3 and 0.9 s into each; the last pass plays out.
+        let feed = callbacks(1.0, 512, 0.001, false, 0.0, 3.0);
+        let (sent, _) = play_virtual_messages(
+            &feed,
+            512,
+            &[0, 300, 900],
+            20,
+            passes(&[600, 1_200], 600, 400),
+        );
+        let notes: Vec<(f64, u8)> = sent
+            .iter()
+            .filter(|(_, bytes)| bytes[0] & 0xF0 == 0x90)
+            .map(|(at, bytes)| (*at, bytes[1]))
+            .collect();
+        let expected = [
+            (0, 60),
+            (300, 61),
+            (600, 60),
+            (900, 62),
+            (900, 61),
+            (1_200, 60),
+            (1_500, 62),
+            (1_500, 61),
+            (2_100, 62),
+        ];
+        assert_eq!(notes.len(), expected.len(), "{notes:?}");
+        for ((at, note), (ms, want)) in notes.iter().zip(expected) {
+            let off = at - (20 + ms) as f64 / 1000.0;
+            assert!(
+                off.abs() < 0.003,
+                "{ms}ms note {:.1}ms off: {notes:?}",
+                off * 1000.0
+            );
+            assert_eq!(*note, want, "{notes:?}");
         }
     }
 
