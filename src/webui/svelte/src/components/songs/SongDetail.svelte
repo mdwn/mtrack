@@ -23,6 +23,7 @@
     Track,
     TrackPeaks,
   } from "../../gen/rules/mtrack_rules";
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import YAML from "yaml";
@@ -78,7 +79,15 @@
     initialTimeMs?: number | null;
   }
 
-  let { songName, initialTab, initialTimeMs = null }: Props = $props();
+  let {
+    songName: openedAs,
+    initialTab,
+    initialTimeMs = null,
+  }: Props = $props();
+  // The name the song is known by: the one it was opened by, until a save
+  // renames it. (A song opened by another name is another editor: the page
+  // keys this component on it.)
+  let songName = $state(untrack(() => openedAs));
 
   let song = $state<SongInfo | null>(null);
   let songFiles = $state<SongFile[]>([]);
@@ -591,8 +600,19 @@
     browseTarget = null;
   }
 
+  /** The song is `name` now: this editor goes on under it, and the address
+   * says so without opening the song afresh. */
+  function followRename(name: string) {
+    songName = name;
+    const base = `#/songs/${encodeURIComponent(name)}`;
+    history.replaceState(
+      history.state,
+      "",
+      activeTab === "tracks" ? base : `${base}/${activeTab}`,
+    );
+  }
+
   async function save() {
-    let renamedTo: string | null = null;
     if ($playbackStore.locked) {
       saveMsg = get(t)("common.locked");
       saveOk = false;
@@ -618,13 +638,15 @@
           return;
         }
         rawYaml = editedYaml;
-        // A rename in the config: the song is known by its new name now.
+        // A rename in the config: the song is known by its new name now,
+        // before anything else is saved, so a later failure leaves the
+        // editor (and its address) on that name.
         const saved: SongSaved | null = await res.json().catch(() => null);
-        renamedTo = saved && saved.name !== songName ? saved.name : null;
+        if (saved?.name && saved.name !== songName) followRename(saved.name);
       }
 
-      // The song's other lighting files, and the removed ones' deletion,
-      // once the config no longer names them.
+      // The song's other lighting files, checked against the tempo the
+      // saved config loads them with.
       if (lightingDirty && lightingEditorRef) {
         await lightingEditorRef.saveLightingFiles("after");
       }
@@ -632,14 +654,6 @@
       saveMsg = get(t)("common.saved");
       saveOk = true;
       setTimeout(() => (saveMsg = ""), 2000);
-      // Renamed: open the song under its new name, where its next save
-      // goes.
-      if (renamedTo) {
-        const base = `#/songs/${encodeURIComponent(renamedTo)}`;
-        window.location.hash =
-          activeTab === "tracks" ? base : `${base}/${activeTab}`;
-        return;
-      }
       const result = await fetchSongs();
       song = result.songs.find((s) => s.name === songName) ?? null;
       // Clear failure banner if the song now loads successfully.
