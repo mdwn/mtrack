@@ -23,35 +23,14 @@ use tracing::{error, info};
 use crate::{dmx, playsync::CancelHandle, songs::Song};
 
 use super::{
-    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayHandles,
-    PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
+    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayDeclined,
+    PlayHandles, PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
 };
 
 /// The entry whose gap the player is in on `playlist`: the one it is on,
 /// but for none after the last song has played to its end.
 fn waiting_entry_at(playlist: &crate::playlist::Playlist, past_last_entry: bool) -> Option<usize> {
     playlist.entry().filter(|_| !past_last_entry)
-}
-
-/// Why a play started no song.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayDeclined {
-    AlreadyPlaying,
-    EmptyPlaylist,
-    NotStarted,
-}
-
-impl std::fmt::Display for PlayDeclined {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            PlayDeclined::AlreadyPlaying => "song already playing",
-            PlayDeclined::EmptyPlaylist => {
-                "the playlist is empty — no songs loaded, which usually \
-                 means none passed validation at startup (check the log)"
-            }
-            PlayDeclined::NotStarted => "the player did not start a song",
-        })
-    }
 }
 
 impl Player {

@@ -14,6 +14,7 @@
 mod hardware;
 mod hardware_status;
 mod navigation;
+mod play_declined;
 mod playback;
 mod seek;
 mod status;
@@ -23,7 +24,7 @@ pub use hardware_status::{
     AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
     SubsystemStatus, TestOutputStatus,
 };
-pub use playback::PlayDeclined;
+pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
 pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;

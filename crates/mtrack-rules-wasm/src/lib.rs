@@ -107,6 +107,10 @@ pub mod device_info;
 #[path = "../../../src/position.rs"]
 pub mod position;
 
+/// Why a play started no song (`src/player/play_declined.rs`).
+#[path = "../../../src/player/play_declined.rs"]
+mod play_declined;
+
 /// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
 #[path = "../../../src/audio/guessed_tempo.rs"]
 pub mod guessed_tempo;
@@ -180,6 +184,7 @@ pub mod dmx {
 
 pub mod player {
     pub use crate::hardware_status::*;
+    pub use crate::play_declined::*;
 }
 
 pub mod playlist {
@@ -1148,6 +1153,13 @@ pub struct Triple(pub [f64; 3]);
 pub fn rest_beam(rotation: TripleJs) -> Option<Triple> {
     let Triple(rotation) = read(JsValue::from(rotation))?;
     Some(Triple(lighting::effects::rest_beam(rotation)))
+}
+
+/// The gRPC metadata a declined play names its reason under
+/// (`PLAY_DECLINED_KEY`), the reason a `PlayDeclined`.
+#[wasm_bindgen]
+pub fn play_declined_key() -> String {
+    play_declined::PLAY_DECLINED_KEY.to_string()
 }
 
 // ── Positions ───────────────────────────────────────────────────────────────

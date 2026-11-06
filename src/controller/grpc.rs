@@ -21,7 +21,7 @@ use crate::util::FaultKind;
 
 use crate::{
     config,
-    player::{PlayDeclined, Player},
+    player::{Player, PLAY_DECLINED_KEY},
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
@@ -138,12 +138,13 @@ impl PlayerServer {
             Ok(Some(song)) => song,
             Ok(None) => {
                 let declined = self.player.play_declined().await;
-                return Err(match declined {
-                    // Its own code, so a client tells a song in the way
-                    // from the other refusals without matching words.
-                    PlayDeclined::AlreadyPlaying => Status::aborted(declined.to_string()),
-                    _ => Status::failed_precondition(declined.to_string()),
-                });
+                let mut status = Status::failed_precondition(declined.to_string());
+                // The reason by key too, so a client tells a song in the
+                // way from the other refusals without matching words.
+                if let Ok(key) = declined.key().parse() {
+                    status.metadata_mut().insert(PLAY_DECLINED_KEY, key);
+                }
+                return Err(status);
             }
             Err(e) => return Err(Status::failed_precondition(e)),
         };
@@ -1146,10 +1147,16 @@ mod test {
         assert!(resp.into_inner().song.is_some());
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Second play while already playing should fail, with its own code.
+        // Second play while already playing should fail, naming why by key.
         let status = client.play(PlayRequest {}).await.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Aborted);
-        assert!(status.message().contains("already playing"));
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::player::PLAY_DECLINED_KEY)
+                .map(|v| v.to_str().unwrap()),
+            Some("already_playing")
+        );
 
         client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped");

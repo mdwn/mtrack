@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import { Code, ConnectError } from "@connectrpc/connect";
+  import { ConnectError } from "@connectrpc/connect";
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     fetchLightingFile,
@@ -40,6 +40,7 @@
   import type {
     IncludeSource,
     Layout,
+    PlayDeclined,
     SongInfo,
     TempoSource,
     TrackPeaks,
@@ -200,8 +201,12 @@
         startTime: create(DurationSchema, { seconds, nanos }),
       });
     } catch (e) {
-      // A song in the way is the player's `Aborted`.
-      if (e instanceof ConnectError && e.code === Code.Aborted) {
+      // The player names why a play was declined by key.
+      const declined =
+        e instanceof ConnectError
+          ? e.metadata.get(rules.play_declined_key())
+          : null;
+      if (declined === ("already_playing" satisfies PlayDeclined)) {
         error = "Another song is playing. Stop it first.";
       } else {
         error = `Playback failed: ${e instanceof Error ? e.message : e}`;
