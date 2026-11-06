@@ -113,42 +113,58 @@ impl Light {
         }
     }
 
-    /// The light it emits above 0: its brightest emitter -- the white its
-    /// flags pass counting as one, all of it while any flag is open and
-    /// none with all three closed -- times its dimmer, where it has each;
-    /// with neither emitter nor dimmer, none.
-    fn is_lit(&self) -> bool {
+    /// Its brightest emitter -- the white its flags pass counting as one,
+    /// all of it while any flag is open and none with all three closed --
+    /// or `None` when it has no emitter.
+    fn emitted(&self) -> Option<f64> {
         let passed = self
             .flags
             .map(|f| FULL - f.into_iter().fold(FULL, f64::min));
-        let emitted = match (self.emitted, passed) {
+        match (self.emitted, passed) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
-        };
-        match (self.dimmer, emitted) {
-            (None, None) => false,
-            (dimmer, emitted) => dimmer.unwrap_or(FULL) * emitted.unwrap_or(FULL) > 0.0,
         }
     }
 }
 
 /// Whether a fixture whose channels hold `values` (DMX values, 0 to 255)
-/// is lit: the light it emits is above 0 -- its brightest emitter (red,
-/// green, blue, white, amber, UV, …, or the white its cyan, magenta and
-/// yellow flags pass) times its dimmer, where it has each. A fixture with
-/// a dimmer and no emitter of its own follows its dimmer; one with
-/// emitters and no dimmer follows them. Nothing else lights it: a strobe,
-/// a colour wheel, where it points, an optic or a colour temperature. A
-/// ganged fixture's mirrors and a pixel fixture's cells (`#n`) count as its
-/// own channels. The rig is dark when no fixture is lit.
+/// is lit: the light it emits is above 0. A part of it -- the fixture
+/// itself, a section of a GDTF profile's (`red:2`), a cell or a ganged
+/// mirror (`red#2`) -- emits its brightest emitter (red, green, blue,
+/// white, amber, UV, …, or the white its cyan, magenta and yellow flags
+/// pass) times its dimmer, or the fixture's where it has none of its own;
+/// the fixture is lit when any part with an emitter is. A fixture with no
+/// emitter at all follows its dimmers. Nothing else lights it: a strobe,
+/// a colour wheel, where it points, an optic or a colour temperature. The
+/// rig is dark when no fixture is lit.
 pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
-    let mut light = Light::default();
+    // Each part's light, by what its channels name it after the attribute
+    // (`:section`, `#cell`); the fixture's own under "#".
+    let mut parts: std::collections::BTreeMap<String, Light> = Default::default();
     for (name, value) in values {
-        if is_level_channel(name) {
-            light.add(base_channel(name.split('#').next().unwrap_or(name)), value);
+        if !is_level_channel(name) {
+            continue;
         }
+        let (channel, cell) = name.split_once('#').unwrap_or((name, ""));
+        let section = channel.split_once(':').map_or("", |(_, section)| section);
+        parts
+            .entry(format!("{section}#{cell}"))
+            .or_default()
+            .add(base_channel(channel), value);
     }
-    light.is_lit()
+    let own_dimmer = parts.get("#").and_then(|light| light.dimmer);
+    let emitting: Vec<(&Light, f64)> = parts
+        .values()
+        .filter_map(|light| Some((light, light.emitted()?)))
+        .collect();
+    if emitting.is_empty() {
+        return parts
+            .values()
+            .any(|light| light.dimmer.is_some_and(|d| d > 0.0));
+    }
+    emitting
+        .iter()
+        .any(|(light, emitted)| light.dimmer.or(own_dimmer).unwrap_or(FULL) * emitted > 0.0)
 }
 
 #[cfg(test)]
@@ -179,6 +195,32 @@ mod tests {
         assert!(lit(&[("white", 3.0)]));
         // A ganged mirror's or a cell's level is the fixture's.
         assert!(lit(&[("red#2", 9.0), ("dimmer", 255.0)]));
+    }
+
+    /// Each section or cell is lit by its own dimmer and emitters (or the
+    /// fixture's dimmer), not the brightest dimmer times the brightest
+    /// emitter across them.
+    #[test]
+    fn sections_and_cells_are_lit_each_by_their_own() {
+        assert!(!lit(&[
+            ("dimmer:1", 255.0),
+            ("red:1", 0.0),
+            ("dimmer:2", 0.0),
+            ("red:2", 255.0),
+        ]));
+        assert!(lit(&[
+            ("dimmer:1", 255.0),
+            ("red:1", 9.0),
+            ("dimmer:2", 0.0),
+            ("red:2", 255.0),
+        ]));
+        // A section with no dimmer of its own takes the fixture's.
+        assert!(!lit(&[("dimmer", 0.0), ("red:1", 255.0)]));
+        assert!(lit(&[("dimmer", 255.0), ("red:1", 0.0), ("red:2", 3.0)]));
+        // A cell, likewise.
+        assert!(!lit(&[("dimmer", 0.0), ("red#2", 255.0)]));
+        // Sectioned dimmers alone: any open.
+        assert!(lit(&[("dimmer:1", 0.0), ("dimmer:2", 4.0)]));
     }
 
     /// Cyan, magenta and yellow are flags filtering white: open passes it,

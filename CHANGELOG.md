@@ -154,8 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
-  fixture follows its dimmer and one without a dimmer its colour. A colour under a closed dimmer
-  (red 255, dimmer 0) and an open dimmer with no colour (RGB 0, dimmer 255) were counted lit; MCP's
+  fixture follows its dimmer and one without a dimmer its colour. Cyan, magenta and yellow are
+  flags filtering white: an open CMY fixture under an open dimmer is lit, and one with all three
+  flags closed is dark. Each section of a GDTF profile (`red:2`) and each cell is lit by its own
+  dimmer, or the fixture's, times its own emitters. A colour under a closed dimmer (red 255,
+  dimmer 0) and an open dimmer with no colour (RGB 0, dimmer 255) were counted lit; MCP's
   `evaluate_show` now reports `dark: true` for both, and the web UI's stage views draw every
   fixture lit or dark by the same rule.
 
