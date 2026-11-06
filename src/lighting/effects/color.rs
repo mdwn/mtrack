@@ -132,31 +132,31 @@ impl Color {
         };
         let turn = (h2 - h1 + 540.0).rem_euclid(360.0) - 180.0;
         let hue = (h1 + turn * t).rem_euclid(360.0);
-        let blended = Color::from_hsv(hue, s1 + (s2 - s1) * t, v1 + (v2 - v1) * t);
+        let lerp = |a, b| crate::lighting::channels::lerp(a, b, t);
+        let blended = Color::from_hsv(hue, lerp(s1, s2), lerp(v1, v2));
         Self {
             w: self.lerp(other, t).w,
             ..blended
         }
     }
 
-    /// Linearly interpolate between two colors.
-    /// `t` should be between 0.0 (returns `self`) and 1.0 (returns `other`).
+    /// Linearly interpolate between two colors, each byte by the engine's
+    /// one interpolation (`channels::lerp`) rounded to the nearest: a byte
+    /// both colours share stays exactly as it is. `t` should be between
+    /// 0.0 (returns `self`) and 1.0 (returns `other`); a white only one
+    /// side has fades from or to 0.
     pub fn lerp(&self, other: &Color, t: f64) -> Self {
         let t = t.clamp(0.0, 1.0);
-        let t_inv = 1.0 - t;
-
-        // Helper to interpolate between two u8 values
-        let lerp_u8 = |a: u8, b: u8| -> u8 { (a as f64 * t_inv + b as f64 * t) as u8 };
-
+        let byte = |a: u8, b: u8| -> u8 {
+            crate::lighting::channels::lerp(f64::from(a), f64::from(b), t).round() as u8
+        };
         Self {
-            r: lerp_u8(self.r, other.r),
-            g: lerp_u8(self.g, other.g),
-            b: lerp_u8(self.b, other.b),
+            r: byte(self.r, other.r),
+            g: byte(self.g, other.g),
+            b: byte(self.b, other.b),
             w: match (self.w, other.w) {
-                (Some(w1), Some(w2)) => Some(lerp_u8(w1, w2)),
-                (Some(w1), None) => Some((w1 as f64 * t_inv) as u8),
-                (None, Some(w2)) => Some((w2 as f64 * t) as u8),
                 (None, None) => None,
+                (w1, w2) => Some(byte(w1.unwrap_or(0), w2.unwrap_or(0))),
             },
         }
     }
@@ -374,6 +374,34 @@ mod tests {
         };
         let result = a.lerp(&b, 0.5);
         assert_eq!(result.w, Some(127));
+    }
+
+    /// A byte both colours share stays exactly as it is all the way
+    /// through, and the rest round to the nearest.
+    #[test]
+    fn lerp_keeps_equal_bytes_and_rounds() {
+        let white = Color::new(255, 255, 255);
+        assert_eq!(white.lerp(&white, 0.04), white);
+        for a in 0..=255u8 {
+            for step in 0..=100 {
+                let t = f64::from(step) / 100.0;
+                let c = Color::new(a, a, a).lerp(&Color::new(a, a, a), t);
+                assert_eq!((c.r, c.g, c.b), (a, a, a), "{a} at t {t}");
+            }
+        }
+        let half = Color::new(0, 0, 0).lerp(&Color::new(255, 255, 255), 0.5);
+        assert_eq!(half.r, 128);
+    }
+
+    /// A `cycle` fading from red to orange holds red at full all the way.
+    #[test]
+    fn a_fade_from_red_to_orange_holds_red_at_full() {
+        let red = Color::new(255, 0, 0);
+        let orange = Color::new(255, 165, 0);
+        for step in 0..=100 {
+            let t = f64::from(step) / 100.0;
+            assert_eq!(red.lerp(&orange, t).r, 255, "at t {t}");
+        }
     }
 
     #[test]

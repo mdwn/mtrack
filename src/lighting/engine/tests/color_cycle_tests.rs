@@ -635,3 +635,34 @@ fn test_color_cycle_hue_transition_stays_saturated() {
     assert_eq!(r.max(g).max(b), 255, "full brightness: {r} {g} {b}");
     assert_eq!(r.min(g).min(b), 0, "full saturation: {r} {g} {b}");
 }
+
+/// A cycle fading from red to orange holds red at full all the way: the
+/// byte both colours share stays put rather than dipping to 254.
+#[test]
+fn a_cycle_fade_from_red_to_orange_holds_red_at_full() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+    engine
+        .start_effect(EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0), Color::new(255, 165, 0)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+                duration: Duration::from_secs(10),
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+    let mut dt = Duration::ZERO;
+    for _ in 0..100 {
+        let commands = engine.update(dt, None).unwrap();
+        let red = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        assert_eq!(red.value, 255);
+        dt = Duration::from_millis(10);
+    }
+}

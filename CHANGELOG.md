@@ -345,6 +345,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blend the web UI's view of the crossfade uses. A GDTF fixture's fine bytes and mirrored sections
   cross by their channel's rule too: a mirrored strobe or gobo switches at the midpoint, and a
   mover's fine byte holds where one side does not point it, rather than fading to 0.
+- **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
+  other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
+  mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
+  the way. Each byte now rounds to the nearest, by the engine's one interpolation, so a shared
+  byte stays put and the rest may come out one higher (black to white halfway is 128, was 127).
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.
