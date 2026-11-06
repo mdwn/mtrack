@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import type { LightingFileRefusal } from "../../src/gen/rules/mtrack_rules";
 
 /** The card of one named type. The mock serves three, in all three forms,
  *  so position no longer identifies one. */
@@ -435,6 +436,61 @@ test.describe("Fixture Types Management", () => {
     );
     await dialog.getByRole("button", { name: "Confirm" }).click();
     await requestPromise;
+  });
+
+  test("a save over a file that does not read offers to replace it", async ({
+    page,
+  }) => {
+    // The server refuses a save over a broken file with its name and parse
+    // error; the editor asks, and only a confirmed retry names that file.
+    const puts: string[] = [];
+    await page.route("**/api/lighting/fixture-types/par*", async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      const url = route.request().url();
+      puts.push(url);
+      if (url.includes("replace_broken=par.light")) {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "saved", name: "par" }),
+        });
+      }
+      return route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error:
+            'par.light does not define fixture type "par" (it does not read: line 3: expected }), and would be replaced; fix or move the file by hand first',
+          file: "par.light",
+          broken: true,
+          parse_error: "line 3: expected }",
+        } satisfies LightingFileRefusal),
+      });
+    });
+
+    const save = () =>
+      page
+        .locator(".editor-form")
+        .getByRole("button", { name: "Save" })
+        .click();
+    const dialog = page.locator(".dialog-overlay");
+
+    // Kept: one request, nothing named.
+    await card(page, "par").click();
+    await save();
+    await expect(dialog).toContainText(
+      "par.light doesn't read: line 3: expected }. Replace it?",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await page.waitForTimeout(300);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).not.toContain("replace_broken");
+
+    // Replaced: the retry names exactly that file.
+    await save();
+    await dialog.getByRole("button", { name: "Replace it" }).click();
+    await expect.poll(() => puts.length).toBe(3);
+    expect(puts[2]).toContain("replace_broken=par.light");
   });
 
   test("cancel button closes editor form", async ({ page }) => {

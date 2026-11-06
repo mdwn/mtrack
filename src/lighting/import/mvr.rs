@@ -59,9 +59,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use super::{
-    create_dir, fixture_filename_stem, place_in_library, write, write_library_entry, LibraryEntry,
-};
+use super::{create_dir, place_in_library, write, write_library_entry, LibraryEntry};
 use crate::lighting::gdtf;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::parse_venues;
@@ -290,7 +288,7 @@ fn plan(
             let file = format!(
                 "{}/{}.venue",
                 options.venues_dir.trim_end_matches('/'),
-                fixture_filename_stem(&venue_name)
+                crate::lighting::project_files::name_stem(&venue_name)
             );
             (project.join(&file), file)
         }
@@ -887,35 +885,24 @@ fn find_existing_venue(
     if let Some(declared) = venues.get(venue_name) {
         return Ok(Some((declared.file.clone(), declared.item.clone())));
     }
-    // The file the venue would be written to holds something else: other
-    // venues, or text that does not parse (a file that parsed declares its
-    // names, whichever rule set them aside).
-    let stem = fixture_filename_stem(venue_name);
-    if let Some(path) = crate::util::files_at_stem(
-        &project.join(venues_dir),
-        &stem,
-        crate::lighting::project_files::VENUE_EXTENSIONS,
-    )
-    .into_iter()
-    .next()
-    {
-        let holds = venues.names_in(&path);
-        if holds.is_empty() {
-            if let Some(problem) = venues.problems.iter().find(|p| p.file == path) {
-                return Err(format!("{} does not parse: {}", path.display(), problem.error).into());
-            }
+    // The file the venue would be written to, at its name's stem as the web
+    // UI's venue save finds it, holds something else: other venues, or text
+    // that does not parse. The one rule for the file a save acts on
+    // (`project_files::may_act_on`) refuses it, as the web UI's does.
+    let dir = project.join(venues_dir);
+    if let Some(path) = crate::lighting::project_files::venue_file_at_stem(&dir, venue_name) {
+        let declares = crate::lighting::project_files::venues_declared(&path);
+        if let Err(refusal) =
+            crate::lighting::project_files::may_act_on(venue_name, &path, &declares, None)
+        {
+            return Err(format!(
+                "{} does not define a venue named \"{venue_name}\" ({}); import under a \
+                 different --name, or fix or move the file by hand",
+                path.display(),
+                refusal.why
+            )
+            .into());
         }
-        return Err(format!(
-            "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
-             import under a different --name",
-            path.display(),
-            holds
-                .iter()
-                .map(|k| format!("\"{k}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .into());
     }
     Ok(None)
 }
@@ -2410,16 +2397,19 @@ mod existing_venue_tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains(
-                "exists but does not define a venue named \"House\" (it holds: \"Other\")"
-            ),
+            error.contains("does not define a venue named \"House\" (it holds \"Other\")"),
             "{error}"
         );
 
         let error = find_existing_venue(dir.path(), "venues", "Broken")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("broken.venue does not parse: "), "{error}");
+        assert!(
+            error.contains(
+                "broken.venue does not define a venue named \"Broken\" (it does not read: "
+            ),
+            "{error}"
+        );
 
         assert!(find_existing_venue(dir.path(), "venues", "Nowhere")
             .unwrap()

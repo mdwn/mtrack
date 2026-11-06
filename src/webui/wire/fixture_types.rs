@@ -201,6 +201,22 @@ pub struct TypeVenueFixture {
     pub mode: Option<String>,
 }
 
+/// The 409 for a venue or fixture type save or delete refused because the
+/// file it would act on does not hold the name (`project_files::may_act_on`).
+/// One that does not read carries its parse error: the web UI asks whether
+/// to replace (or remove) it, and sends the request again with
+/// `?replace_broken=<file>`.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightingFileRefusal {
+    pub error: String,
+    /// The file's name.
+    pub file: String,
+    /// Whether it does not read (and may be replaced).
+    pub broken: bool,
+    pub parse_error: Option<String>,
+}
+
 /// A deleted fixture type, and what became of its archive.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

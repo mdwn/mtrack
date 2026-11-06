@@ -66,6 +66,10 @@ import type {
   VenueScene,
 } from "../../gen/rules/mtrack_rules";
 import { readAnswer } from "../lighting/answer";
+import {
+  offeringToReplaceBroken,
+  withReplaceBroken,
+} from "../lighting/brokenFile";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
 import {
   get,
@@ -591,9 +595,10 @@ export async function saveFixtureType(
   dir?: string,
 ): Promise<void> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await put(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
-    JSON.stringify(data),
+  const path = `/lighting/fixture-types/${encodeURIComponent(name)}${params}`;
+  const res = await offeringToReplaceBroken(
+    (broken) => put(withReplaceBroken(path, broken), JSON.stringify(data)),
+    "save",
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
   fixtureTypesChanged();
@@ -609,9 +614,10 @@ export async function saveFixtureTypeText(
 ): Promise<void> {
   const params = new URLSearchParams({ ext });
   if (dir) params.set("dir", dir);
-  const res = await putText(
-    `/lighting/fixture-types/${encodeURIComponent(name)}?${params}`,
-    dsl,
+  const path = `/lighting/fixture-types/${encodeURIComponent(name)}?${params}`;
+  const res = await offeringToReplaceBroken(
+    (broken) => putText(withReplaceBroken(path, broken), dsl),
+    "save",
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
   fixtureTypesChanged();
@@ -624,8 +630,10 @@ export async function deleteFixtureType(
   dir?: string,
 ): Promise<FixtureTypeDeleted> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await del(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
+  const path = `/lighting/fixture-types/${encodeURIComponent(name)}${params}`;
+  const res = await offeringToReplaceBroken(
+    (broken) => del(withReplaceBroken(path, broken)),
+    "delete",
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
   fixtureTypesChanged();
@@ -709,10 +717,15 @@ export async function saveVenue(
   version?: string,
 ): Promise<SavedVenue> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await put(
-    `/lighting/venues/${encodeURIComponent(name)}${params}`,
-    JSON.stringify(data),
-    version ? { "If-Match": version } : undefined,
+  const path = `/lighting/venues/${encodeURIComponent(name)}${params}`;
+  const res = await offeringToReplaceBroken(
+    (broken) =>
+      put(
+        withReplaceBroken(path, broken),
+        JSON.stringify(data),
+        version ? { "If-Match": version } : undefined,
+      ),
+    "save",
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
   venueChanged(name);
@@ -772,8 +785,10 @@ export async function fetchVenueScene(
 
 export async function deleteVenue(name: string, dir?: string): Promise<void> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await del(
-    `/lighting/venues/${encodeURIComponent(name)}${params}`,
+  const path = `/lighting/venues/${encodeURIComponent(name)}${params}`;
+  const res = await offeringToReplaceBroken(
+    (broken) => del(withReplaceBroken(path, broken)),
+    "delete",
   );
   if (!res.ok) throw await apiError(res, "Failed to delete venue");
   venueChanged(name);

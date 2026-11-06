@@ -100,6 +100,92 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
     Ok(out)
 }
 
+/// The stem a venue or fixture type file takes for a name, as a new file is
+/// named and an existing one is found at it: lowercase, with spaces and
+/// anything but letters, digits, `_` and `-` as `_` (`Club-2` is `club-2`).
+pub fn name_stem(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            ' ' => '_',
+            c if c.is_alphanumeric() || c == '_' || c == '-' => c,
+            _ => '_',
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// The venue file at `name`'s stem ([`name_stem`]) directly in `dir`, in
+/// any case (`util::files_at_stem`), `.venue` before `.light`: the file a
+/// save of the venue would write when no file declares it.
+pub fn venue_file_at_stem(dir: &Path, name: &str) -> Option<PathBuf> {
+    crate::util::files_at_stem(dir, &name_stem(name), VENUE_EXTENSIONS)
+        .into_iter()
+        .next()
+}
+
+/// What a lighting file declares, or why it does not read.
+pub type Declares = Result<Vec<String>, String>;
+
+/// The fixture types the file at `path` declares ([`Declares`]).
+pub fn fixture_types_declared(path: &Path) -> Declares {
+    let text = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
+    super::parser::parse_fixture_types(&text)
+        .map(|types| types.into_keys().collect())
+        .map_err(|e| e.to_string())
+}
+
+/// The venues the file at `path` declares ([`Declares`]).
+pub fn venues_declared(path: &Path) -> Declares {
+    let bytes = crate::util::read_file(path).map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "not valid UTF-8".to_string())?;
+    super::parser::parse_venues(text)
+        .map(|venues| venues.into_keys().collect())
+        .map_err(|e| e.to_string())
+}
+
+/// Why a save or delete of a name may not act on a file ([`may_act_on`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refusal {
+    /// The file's name.
+    pub file: String,
+    /// What is wrong with it: `it holds "Other"`, `it does not read: …`.
+    pub why: String,
+    /// Its parse error, when it does not read: the one case a person may
+    /// choose to replace it.
+    pub parse_error: Option<String>,
+}
+
+/// The one rule for a venue or fixture type file that a save or delete of
+/// `name` would act on (write over, rewrite or remove), wherever it is
+/// asked: the web UI's saves and deletes, and the MVR import. Only a file
+/// that declares `name`; one that holds only other names is refused, and so
+/// is one that does not read, unless `replace_broken` names exactly that
+/// file (a person who was shown its parse error and chose to replace it).
+pub fn may_act_on(
+    name: &str,
+    file: &Path,
+    declares: &Declares,
+    replace_broken: Option<&str>,
+) -> Result<(), Refusal> {
+    let shown = crate::util::filename_display(file).to_string();
+    let (why, parse_error) = match declares {
+        Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
+        Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None),
+        Ok(names) => {
+            let mut names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+            names.sort();
+            (format!("it holds {}", names.join(", ")), None)
+        }
+        Err(_) if replace_broken == Some(shown.as_str()) => return Ok(()),
+        Err(e) => (format!("it does not read: {e}"), Some(e.clone())),
+    };
+    Err(Refusal {
+        file: shown,
+        why,
+        parse_error,
+    })
+}
+
 /// A file that could not be read or parsed, or a name two files declare.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileProblem {
@@ -270,6 +356,35 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name's stem, for the web UI's saves and the MVR import alike.
+    #[test]
+    fn name_stem_keeps_dashes() {
+        assert_eq!(name_stem("Club-2"), "club-2");
+        assert_eq!(name_stem("Main Hall"), "main_hall");
+        assert_eq!(name_stem("a/b.c"), "a_b_c");
+    }
+
+    /// The one rule for a file a save or delete acts on: one declaring the
+    /// name; a broken one only when the person named exactly it; never one
+    /// that reads and holds other names.
+    #[test]
+    fn may_act_on_a_broken_file_only_when_named() {
+        let file = Path::new("dir/Par.light");
+        let broken: Declares = Err("line 2: expected }".to_string());
+        let foreign: Declares = Ok(vec!["Spot".to_string()]);
+        let own: Declares = Ok(vec!["Par".to_string(), "Spot".to_string()]);
+
+        assert!(may_act_on("Par", file, &own, None).is_ok());
+        let refused = may_act_on("Par", file, &broken, None).unwrap_err();
+        assert_eq!(refused.file, "Par.light");
+        assert_eq!(refused.parse_error.as_deref(), Some("line 2: expected }"));
+        assert!(may_act_on("Par", file, &broken, Some("Par.light")).is_ok());
+        assert!(may_act_on("Par", file, &broken, Some("Other.light")).is_err());
+        let refused = may_act_on("Par", file, &foreign, Some("Par.light")).unwrap_err();
+        assert_eq!(refused.parse_error, None);
+        assert!(refused.why.contains("\"Spot\""), "{refused:?}");
+    }
 
     /// A link is followed to what is inside the directory only: one out of
     /// it, or to nothing, is not listed, as the tools reading the listed
