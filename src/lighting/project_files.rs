@@ -400,10 +400,11 @@ pub struct Located {
 /// The one rule for the file a name lives in, in a lighting directory: the
 /// first file at any depth that declares it (as the lighting system loads
 /// it); else a file at the name's stem ([`name_stem`], in any case) that
-/// does not read; else a file elsewhere that does not read but opens a
-/// block for the name (one an older stem named, half-edited). A stem file
-/// that reads and holds other names is not the name's: a new file is named
-/// past it ([`new_file_stem`]). `None` is a name no file holds or claims.
+/// does not read, unless the blocks it opens are all other names'; else a
+/// file elsewhere that does not read but opens a block for the name (one an
+/// older stem named, half-edited). A stem file that holds other names,
+/// whether it reads or not, is not the name's: a new file is named past it
+/// ([`new_file_stem`]). `None` is a name no file holds or claims.
 fn locate(
     dir: &Path,
     name: &str,
@@ -429,7 +430,13 @@ fn locate(
     }
     for path in crate::util::files_at_stem(dir, &name_stem(name), extensions) {
         let declares = declared(&path);
-        if declares.is_err() {
+        // A broken stem file that opens blocks only for other names is
+        // theirs, as one that reads would be: a new file is named past it.
+        let others_only = declares.as_ref().err().is_some_and(|unread| {
+            !unread.blocks.is_empty()
+                && !unread.blocks.iter().any(|(k, n)| k == keyword && n == name)
+        });
+        if declares.is_err() && !others_only {
             return Ok(Some(Located { path, declares }));
         }
     }
@@ -647,8 +654,14 @@ mod tests {
             new_file_stem(d, "Club-2", VENUE_EXTENSIONS, &|_| false),
             "club-2_2"
         );
-        // A broken one is.
+        // Nor is a broken one opening only another venue's block; a broken
+        // one opening nothing but this name's, or no block at all, is.
         write(d, "club-2.venue", "venue \"Other\" {\n");
+        assert_eq!(
+            locate_venue(d, "Club-2").unwrap().unwrap().path,
+            d.join("club_2.venue")
+        );
+        write(d, "club-2.venue", "{{{\n");
         assert_eq!(
             locate_venue(d, "Club-2").unwrap().unwrap().path,
             d.join("club-2.venue")

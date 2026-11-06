@@ -4945,7 +4945,7 @@ show "test" {
     fn existing_files_at_the_stem_are_found_in_any_case() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("par.FIXTURE"), "not a type").unwrap();
-        std::fs::write(dir.path().join("house.VENUE"), "not a venue").unwrap();
+        std::fs::write(dir.path().join("house.VENUE"), "{{{").unwrap();
         assert_eq!(
             existing_fixture_type_file(dir.path(), "par"),
             Some(dir.path().join("par.FIXTURE"))
@@ -7234,6 +7234,43 @@ show "test" {
             .contains("\"Club (Main)\""));
     }
 
+    /// A broken stem file that opens blocks only for another name is that
+    /// name's: "Club Main" beside a broken `club_main.light` holding only
+    /// "Club (Main)" gets a file of its own, and a delete finds nothing.
+    #[tokio::test]
+    async fn a_broken_stem_file_holding_only_others_is_named_past() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_broken_stem");
+        std::fs::create_dir(&dir).unwrap();
+        let broken = "venue \"Club (Main)\" {\n";
+        std::fs::write(dir.join("club_main.light"), broken).unwrap();
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "DELETE",
+            "/lighting/venues/Club%20Main?dir=v_broken_stem".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{parsed}");
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/venues/Club%20Main?dir=v_broken_stem".to_string(),
+            "text/plain",
+            Body::from(sample_venue_dsl("Club Main")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club_main.light")).unwrap(),
+            broken
+        );
+        assert!(std::fs::read_to_string(dir.join("club_main_2.light"))
+            .unwrap()
+            .contains("\"Club Main\""));
+    }
+
     /// No file is written under a hidden name, which the loaders pass over.
     #[test]
     fn a_hidden_file_name_is_refused() {
@@ -7279,11 +7316,11 @@ show "test" {
     }
 
     /// The one rule for a file a save or delete acts on: only one that
-    /// declares the name. A venue file at the stem (any case) that reads and
-    /// holds another venue is not the venue's, so a save writes a file of
-    /// its own past it and leaves it be; a broken fixture type file opening
-    /// another type's block is refused with 409 by the type's raw save, form
-    /// save and delete; nothing is written or removed.
+    /// declares the name. A file at the stem (any case) that holds another
+    /// venue or type, whether it reads (a venue's) or not (a broken fixture
+    /// type file opening only Spot's block), is not the name's: a save writes
+    /// a file of its own past it, a delete acts on that one, and the file at
+    /// the stem is left as it is.
     #[tokio::test]
     async fn saves_and_deletes_refuse_a_file_not_holding_the_name() {
         let (state, _dir) = test_state();
@@ -7356,7 +7393,7 @@ show "test" {
                 .await;
                 assert_eq!(
                     status,
-                    StatusCode::CONFLICT,
+                    StatusCode::OK,
                     "{file} {method} {content_type}: {parsed}"
                 );
             }
