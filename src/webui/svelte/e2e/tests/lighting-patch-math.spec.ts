@@ -84,6 +84,19 @@ test("rows that cannot be saved are named, never dropped", () => {
     [3, ["noType"]],
     [4, ["badUniverse", "badAddress"]],
   ]);
+  // A blank field (null) is its own row's problem alone.
+  expect(
+    byRow(
+      rules.venue_row_problems(
+        [row("A"), row("A"), { ...row("E"), universe: null }],
+        [],
+      ),
+    ),
+  ).toEqual([
+    [0, ["duplicateName"]],
+    [1, ["duplicateName"]],
+    [2, ["badUniverse"]],
+  ]);
   // Past any universe the player addresses.
   expect(byRow(rules.venue_row_problems([row("D", "par", 70000)], []))).toEqual(
     [[0, ["badUniverse"]]],

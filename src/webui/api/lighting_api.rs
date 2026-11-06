@@ -2880,7 +2880,7 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
             .ok_or(format!("Channel '{}' offset must be a number", ch_name))?;
         rows.push(lighting::venue_rows::ChannelRow {
             name: ch_name.to_string(),
-            offset: offset as f64,
+            offset: Some(offset as f64),
         });
     }
     if let Some(found) = lighting::venue_rows::channel_row_problems(&rows).first() {
@@ -3139,8 +3139,8 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         rows.push(lighting::venue_rows::VenueRow {
             name: text("name")?.to_string(),
             fixture_type: text("fixture_type")?.to_string(),
-            universe: number("universe")? as f64,
-            start_channel: number("start_channel")? as f64,
+            universe: Some(number("universe")? as f64),
+            start_channel: Some(number("start_channel")? as f64),
             mode: None,
         });
     }
@@ -3157,11 +3157,11 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             RowProblem::NoType | RowProblem::NoMode => {
                 format!("Fixture '{name}' has no fixture type")
             }
-            RowProblem::BadUniverse if row.universe == 0.0 => {
+            RowProblem::BadUniverse if row.universe == Some(0.0) => {
                 format!("Fixture '{name}': universe must be 1 or more")
             }
             RowProblem::BadUniverse => "Fixture 'universe' out of range".to_string(),
-            RowProblem::BadAddress if row.start_channel == 0.0 => {
+            RowProblem::BadAddress if row.start_channel == Some(0.0) => {
                 format!("Fixture '{name}': start channel must be 1 or more")
             }
             RowProblem::BadAddress => "Fixture 'start_channel' out of range".to_string(),
@@ -3185,8 +3185,8 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             fix_name.to_string(),
             fix_type.to_string(),
             // Both in 1..=65535, by the check above.
-            row.universe as u16,
-            row.start_channel as u16,
+            row.universe.unwrap_or_default() as u16,
+            row.start_channel.unwrap_or_default() as u16,
             tags,
         )
         .with_position(optional_vec3(fix, "position")?)

@@ -25,8 +25,11 @@ use serde::{Deserialize, Serialize};
 pub struct VenueRow {
     pub name: String,
     pub fixture_type: String,
-    pub universe: f64,
-    pub start_channel: f64,
+    /// `None` for a field left blank.
+    #[cfg_attr(feature = "tsify", tsify(type = "number | null"))]
+    pub universe: Option<f64>,
+    #[cfg_attr(feature = "tsify", tsify(type = "number | null"))]
+    pub start_channel: Option<f64>,
     #[serde(default)]
     #[cfg_attr(feature = "tsify", tsify(optional, type = "string | null"))]
     pub mode: Option<String>,
@@ -44,7 +47,7 @@ pub enum RowProblem {
     NoType,
     /// A fixture from a GDTF names no mode.
     NoMode,
-    /// Not a whole number from 1 to 65535.
+    /// Blank, or not a whole number from 1 to 65535.
     BadUniverse,
     BadAddress,
 }
@@ -62,7 +65,9 @@ pub struct RowProblems {
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct ChannelRow {
     pub name: String,
-    pub offset: f64,
+    /// `None` for a field left blank.
+    #[cfg_attr(feature = "tsify", tsify(type = "number | null"))]
+    pub offset: Option<f64>,
 }
 
 /// Why a channel row cannot be saved (the editor's
@@ -73,7 +78,7 @@ pub struct ChannelRow {
 pub enum ChannelProblem {
     NoName,
     DuplicateName,
-    /// Not a whole number from 1 to 65535.
+    /// Blank, or not a whole number from 1 to 65535.
     BadOffset,
 }
 
@@ -85,10 +90,10 @@ pub struct ChannelProblems {
     pub problems: Vec<ChannelProblem>,
 }
 
-/// Whether `value` is a DMX universe, address or offset: a whole number
-/// from 1 to 65535.
-fn in_range(value: f64) -> bool {
-    value.fract() == 0.0 && (1.0..=f64::from(u16::MAX)).contains(&value)
+/// Whether `value` is a DMX universe, address or offset: given, and a
+/// whole number from 1 to 65535.
+fn in_range(value: Option<f64>) -> bool {
+    value.is_some_and(|v| v.fract() == 0.0 && (1.0..=f64::from(u16::MAX)).contains(&v))
 }
 
 /// How many rows have each name, trimmed; a blank name is none.
@@ -163,8 +168,8 @@ mod tests {
         VenueRow {
             name: name.to_string(),
             fixture_type: fixture_type.to_string(),
-            universe,
-            start_channel,
+            universe: Some(universe),
+            start_channel: Some(start_channel),
             mode: None,
         }
     }
@@ -181,6 +186,12 @@ mod tests {
             row("D", "par", 70000.0, 1.5),
             row("E", "gdtf", 1.0, 1.0),
         ];
+        let mut rows = rows.to_vec();
+        // A blank field marks its own row alone.
+        rows.push(VenueRow {
+            universe: None,
+            ..row("F", "par", 1.0, 1.0)
+        });
         let found = venue_row_problems(&rows, |t| t == "gdtf");
         let by_row: Vec<(u32, Vec<RowProblem>)> =
             found.into_iter().map(|p| (p.row, p.problems)).collect();
@@ -194,6 +205,7 @@ mod tests {
                 (4, vec![BadUniverse, BadAddress]),
                 (5, vec![BadUniverse, BadAddress]),
                 (6, vec![NoMode]),
+                (7, vec![BadUniverse]),
             ]
         );
     }
@@ -205,8 +217,12 @@ mod tests {
             name: name.to_string(),
             offset,
         };
-        let found =
-            channel_row_problems(&[channel("red", 1.0), channel("red ", 2.0), channel(" ", 0.0)]);
+        let found = channel_row_problems(&[
+            channel("red", Some(1.0)),
+            channel("red ", Some(2.0)),
+            channel(" ", Some(0.0)),
+            channel("green", None),
+        ]);
         let by_row: Vec<(u32, Vec<ChannelProblem>)> =
             found.into_iter().map(|p| (p.row, p.problems)).collect();
         assert_eq!(
@@ -214,7 +230,8 @@ mod tests {
             vec![
                 (0, vec![DuplicateName]),
                 (1, vec![DuplicateName]),
-                (2, vec![NoName, BadOffset])
+                (2, vec![NoName, BadOffset]),
+                (3, vec![BadOffset]),
             ]
         );
     }

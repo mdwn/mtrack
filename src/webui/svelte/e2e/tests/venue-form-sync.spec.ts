@@ -337,6 +337,33 @@ test.describe("A mode per fixture in the venue form", () => {
     expect(puts).toHaveLength(0);
   });
 
+  test("a blank universe marks its own row and leaves the others checked", async ({
+    page,
+  }) => {
+    // A cleared number field is null; it is that row's problem, and the
+    // check goes on for every other row (a duplicate name here).
+    const { puts } = await serve(page, {
+      rig: [
+        { ...placed("A", 1), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("A", 20), fixture_type: "brick", mode: "8: RGBS" },
+        { ...placed("C", 40), fixture_type: "brick", mode: "8: RGBS" },
+      ],
+    });
+    await card(page, "rig").locator('[data-testid^="venue-edit-"]').click();
+    await page.locator("#fix-universe-2").fill("");
+    await save(page);
+    await expect(rows(page).nth(2).getByTestId("venue-row-error")).toHaveText(
+      "The universe must be a whole number from 1 to 65535.",
+    );
+    for (const i of [0, 1]) {
+      await expect(rows(page).nth(i).getByTestId("venue-row-error")).toHaveText(
+        "Another fixture has this name.",
+      );
+    }
+    await page.waitForTimeout(300);
+    expect(puts).toHaveLength(0);
+  });
+
   test("an overlap is marked, and the save asks first", async ({ page }) => {
     const { puts } = await serve(page, {
       rig: [
