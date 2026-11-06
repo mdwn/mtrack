@@ -27,8 +27,10 @@ use crate::config::metronome::{
 };
 use crate::config::samples::{SampleDefinition, DEFAULT_VELOCITY};
 use crate::config::trigger::AudioTriggerInput;
-use crate::config::{Audio, Dmx, MetronomeConfig, MetronomeDefaults, Midi, OscController, Player};
-use crate::testutil::markdown::{table, tables_headed};
+use crate::config::{
+    Audio, Dmx, MetronomeConfig, MetronomeDefaults, Midi, OscController, Player, Profile,
+};
+use crate::testutil::markdown::{plain, table, tables_headed, Table};
 
 const PLAYER_CONFIG_MD: &str = include_str!("../../docs/src/configuration/player-config.md");
 const OSC_MD: &str = include_str!("../../docs/src/interfaces/osc.md");
@@ -49,35 +51,118 @@ fn secs(d: Duration) -> String {
     d.as_secs_f64().to_string()
 }
 
-/// `table`'s Default column holds `code`'s value for every key `code`
-/// names, and every key it lists is either in `code` or in `no_default`
-/// (a key whose default is not a value: absent, or described).
+/// One row of a key table: the key, its Default cell, and its Required
+/// cell where the table has that column.
+struct Row {
+    key: String,
+    default: String,
+    required: Option<String>,
+}
+
+/// The rows of `table`, a key table with a `Default` column.
+fn rows(table: &Table) -> Vec<Row> {
+    let default = table.column("Default");
+    let required = table.header.iter().position(|h| h == "Required");
+    table
+        .rows
+        .iter()
+        .map(|row| Row {
+            key: plain(&row[0]),
+            default: plain(&row[default]),
+            required: required.map(|c| plain(&row[c])),
+        })
+        .collect()
+}
+
+/// What a key table says of the keys whose default is not a value.
+struct NoValue<'a> {
+    /// Keys with no default at all: their Default cell is a dash.
+    none: &'a [&'a str],
+    /// Keys whose default the table describes in words, with the words.
+    described: &'a [(&'a str, &'a str)],
+}
+
+/// The cell a key without a default has.
+const NO_DEFAULT: &str = "—";
+
+/// `rows` against the code: the Default cell of every key in `code` is
+/// its value, of a key in `no_value.none` a dash, and of one in
+/// `no_value.described` its words; every row is one of those. Where the
+/// table has a Required column, it says "yes" exactly for the keys
+/// `requires` says must be written (`None`: no Required column).
 fn assert_defaults(
     what: &str,
-    rows: Vec<(String, String)>,
+    rows: Vec<Row>,
     code: BTreeMap<&str, String>,
-    no_default: &[&str],
+    no_value: NoValue,
+    requires: Option<&dyn Fn(&str) -> bool>,
 ) {
     for (key, value) in &code {
         let row = rows
             .iter()
-            .find(|(k, _)| k == key)
+            .find(|r| r.key == *key)
             .unwrap_or_else(|| panic!("{what}: no row for {key}"));
-        assert_eq!(stated(&row.1), stated(value), "{what}: {key}");
+        assert_eq!(stated(&row.default), stated(value), "{what}: {key}");
     }
-    for (key, _) in &rows {
-        assert!(
-            code.contains_key(key.as_str()) || no_default.contains(&key.as_str()),
-            "{what}: {key} is in the table but not compared with the code"
-        );
+    for row in &rows {
+        let key = row.key.as_str();
+        if no_value.none.contains(&key) {
+            assert!(
+                row.default.starts_with(NO_DEFAULT),
+                "{what}: {key} has no default, but the table gives {}",
+                row.default
+            );
+        } else if let Some((_, words)) = no_value.described.iter().find(|(k, _)| *k == key) {
+            assert_eq!(row.default, *words, "{what}: {key}");
+        } else {
+            assert!(
+                code.contains_key(key),
+                "{what}: {key} is in the table but not compared with the code"
+            );
+        }
+        if let (Some(required), Some(requires)) = (&row.required, requires) {
+            assert_eq!(
+                required.starts_with("yes"),
+                requires(key),
+                "{what}: {key} is required: {required}"
+            );
+        }
     }
+}
+
+/// `whole` without `key`: a field of it, or `section.field` of one of its
+/// sections.
+fn without(whole: &serde_json::Value, key: &str) -> serde_json::Value {
+    let mut out = whole.clone();
+    let (fields, field) = match key.split_once('.') {
+        Some((section, field)) => (out.get_mut(section), field),
+        None => (Some(&mut out), key),
+    };
+    if let Some(fields) = fields.and_then(|f| f.as_object_mut()) {
+        fields.remove(field);
+    }
+    out
+}
+
+/// Whether `key` must be written: `minimal` (which is accepted) is not
+/// without it.
+fn must_write(
+    minimal: &serde_json::Value,
+    key: &str,
+    parses: fn(&serde_json::Value) -> bool,
+) -> bool {
+    assert!(parses(minimal), "{minimal}");
+    !parses(&without(minimal, key))
 }
 
 #[test]
 fn the_top_level_keys_table_is_the_players_defaults() {
     let player = Player::deserialize_from_str("songs: .").unwrap();
     let metronome = MetronomeDefaults::default();
-    let rows = table(PLAYER_CONFIG_MD, &["Key", "Type", "Default", "Required"]).pairs("Default");
+    let rows = rows(&table(
+        PLAYER_CONFIG_MD,
+        &["Key", "Type", "Default", "Required"],
+    ));
     let code = BTreeMap::from([
         ("active_playlist", player.active_playlist().to_string()),
         ("metronome.enabled", metronome.enabled.to_string()),
@@ -91,19 +176,29 @@ fn the_top_level_keys_table_is_the_players_defaults() {
         ("max_sample_voices", player.max_sample_voices().to_string()),
         ("samples", "{}".to_string()),
     ]);
+    // A player config is YAML, of which JSON is a part.
+    let parses = |v: &serde_json::Value| {
+        Player::deserialize_from_str(&v.to_string()).is_ok_and(|p| p.validate().is_ok())
+    };
+    let minimal = json!({"songs": ".", "metronome": {}});
     assert_defaults(
         "top-level keys",
         rows,
         code,
-        &[
-            "songs",
-            "playlists_dir",
-            "playlist",
-            "profiles_dir",
-            "profiles",
-            "metronome.sounds",
-            "samples_file",
-        ],
+        NoValue {
+            none: &[
+                "songs",
+                "playlist",
+                "profiles_dir",
+                "profiles",
+                "samples_file",
+            ],
+            described: &[
+                ("playlists_dir", "playlists/ next to mtrack.yaml"),
+                ("metronome.sounds", "synthesized"),
+            ],
+        },
+        Some(&|key| must_write(&minimal, key, parses)),
     );
     // The volume's stated range is the one the player checks.
     let volume_type = table(PLAYER_CONFIG_MD, &["Key", "Type", "Default", "Required"])
@@ -127,10 +222,9 @@ fn the_profile_keys_table_is_the_profiles_defaults() {
     let audio: Audio = serde_json::from_value(json!({"device": "d"})).unwrap();
     let midi: Midi = serde_json::from_value(json!({"device": "d"})).unwrap();
     let dmx: Dmx = serde_json::from_value(json!({"universes": []})).unwrap();
-    // `universes` has no default: a `dmx` section must list them.
-    assert!(serde_json::from_value::<Dmx>(json!({})).is_err());
     // The second table of its header: the first is the top-level keys.
-    let rows = &tables_headed(PLAYER_CONFIG_MD, &["Key", "Type", "Default", "Required"])[1];
+    let profile_table =
+        &tables_headed(PLAYER_CONFIG_MD, &["Key", "Type", "Default", "Required"])[1];
     let code = BTreeMap::from([
         ("kind", "hardware_profile".to_string()),
         ("audio.buffer_size", audio.buffer_size().to_string()),
@@ -165,24 +259,38 @@ fn the_profile_keys_table_is_the_profiles_defaults() {
         audio.stream_buffer_size().is_none(),
         "defaults to buffer_size"
     );
+    // Written: read and checked, as a profile is loaded.
+    let parses = |v: &serde_json::Value| {
+        serde_json::from_value::<Profile>(v.clone()).is_ok_and(|p| p.validate().is_ok())
+    };
+    let minimal = json!({
+        "audio": {"device": "d"},
+        "midi": {"device": "d"},
+        "dmx": {"universes": []},
+    });
     assert_defaults(
         "profile keys",
-        rows.pairs("Default"),
+        rows(profile_table),
         code,
-        &[
-            "hostname",
-            "audio.device",
-            "audio.stream_buffer_size",
-            "midi.device",
-            "dmx.lighting",
-            "dmx.universes",
-            // `DEFAULT_OLA_PORT` and `Dmx::ola_port` are left out of test
-            // builds, so no test reaches the OLA daemon.
-            "dmx.ola_port",
-            "trigger",
-            "status_events",
-            "notifications",
-        ],
+        NoValue {
+            none: &[
+                "hostname",
+                "audio.device",
+                "midi.device",
+                "dmx.lighting",
+                "dmx.universes",
+                "trigger",
+                "status_events",
+                "notifications",
+            ],
+            described: &[
+                ("audio.stream_buffer_size", "buffer_size"),
+                // `DEFAULT_OLA_PORT` and `Dmx::ola_port` are left out of
+                // test builds, so no test reaches the OLA daemon.
+                ("dmx.ola_port", "9010"),
+            ],
+        },
+        Some(&|key| must_write(&minimal, key, parses)),
     );
 }
 
@@ -268,10 +376,10 @@ fn the_osc_examples_show_the_default_addresses() {
 fn the_trigger_tables_are_the_inputs_defaults() {
     let input: AudioTriggerInput =
         serde_json::from_value(json!({"channel": 1, "sample": "kick"})).unwrap();
-    let mut rows = Vec::new();
-    for t in tables_headed(TRIGGERS_MD, &["Parameter", "Default", "Description"]) {
-        rows.extend(t.pairs("Default"));
-    }
+    let rows: Vec<Row> = tables_headed(TRIGGERS_MD, &["Parameter", "Default", "Description"])
+        .iter()
+        .flat_map(rows)
+        .collect();
     let disabled = "(disabled)".to_string();
     let optional = |v: Option<String>| v.unwrap_or_else(|| disabled.clone());
     let code = BTreeMap::from([
@@ -315,7 +423,15 @@ fn the_trigger_tables_are_the_inputs_defaults() {
         "trigger inputs",
         rows,
         code,
-        &["sample_format", "bits_per_sample", "buffer_size"],
+        NoValue {
+            none: &[],
+            described: &[
+                ("sample_format", "device native"),
+                ("bits_per_sample", "device native"),
+                ("buffer_size", "device default"),
+            ],
+        },
+        None,
     );
 }
 
