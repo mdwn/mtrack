@@ -508,7 +508,8 @@ impl Readiness {
                     ..Finding::new(Severity::Blocked, what, in_song())
                 });
             }
-            for w in &show.warnings {
+            // An empty group is the Groups check's, which already says it.
+            for w in show.warnings.iter().filter(|w| w.kind != "empty-group") {
                 // A focus point the venue does not bind is fitted on the
                 // Fit shows page, where it is placed on the plan; every
                 // other finding is fixed in the song.
@@ -685,6 +686,8 @@ mod tests {
         assert_eq!(checks[3].findings[0].severity, Severity::Note);
         r.shows[0].warnings = vec![warning("capability-gap", Severity::Attention)];
         assert_eq!(state(&r, CheckKey::Shows), Attention);
+        r.shows[0].warnings = vec![warning("empty-group", Severity::Note)];
+        assert!(r.verdicts()[3].findings.is_empty());
     }
 
     #[test]
