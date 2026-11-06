@@ -153,17 +153,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The TUI and the web UI show a fixture in the same colour**: the TUI drew a fixture in its raw
-  red, green and blue, so `red 255` under `dimmer 0` showed full red and a dimmer-only fixture
-  black, where the web UI's stage views showed black and a warm white. Both now draw the player's
-  one reading, beside its test of a lit fixture: each part that lights the fixture in its colour
-  times its dimmer, white added, a dimmer alone (or amber or UV alone) a warm white, and nothing
-  where nothing lights it. In the stage views this also changes: a fixture mixing subtractively
-  shows the white its cyan, magenta and yellow flags pass (`cyan 255` under a full dimmer is
-  cyan, was a warm white); a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`) show
+  red, green and blue, so `red 255` under `dimmer 0` showed full red, a dimmer-only fixture black,
+  and a CMY fixture, a GDTF profile's sections and an amber-only fixture no colour, where the web
+  UI's stage views drew their own reading. Both now draw the player's one reading, beside its test
+  of a lit fixture: each emitter of each part that lights the fixture -- red, green, blue, white,
+  amber, lime, UV, warm and cool white, ... -- in its own colour at its level, added, times the
+  part's dimmer; a fixture mixing subtractively in the white its cyan, magenta and yellow flags
+  pass; a dimmer alone a warm white; and black exactly where nothing lights it. In the TUI, `red
+  255` under `dimmer 0` is black, a dimmer alone a warm white, white adds to the mix, a CMY fixture
+  shows the white its flags pass, a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`)
+  show their colours under their own dimmers, and amber alone shows amber. In the stage views: `cyan
+  255` under a full dimmer on a CMY fixture is cyan (was a warm white); sections and mirrors show
   their colours under their own dimmers (they showed as a warm white at the fixture's dimmer, or
-  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black
-  (was a warm white); and amber or UV alone shows a warm white at its level times the dimmer
-  (was the dimmer alone).
+  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black (was
+  a warm white); and an RGBA, RGBW+UV or RGB+WW fixture lit by its amber, UV or warm white shows
+  that colour (`red 0, green 0, blue 0, amber 255` is amber, was black; amber or UV alone was a warm
+  white at the dimmer).
 
 - **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to its
   byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI DMX.

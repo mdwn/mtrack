@@ -161,8 +161,9 @@ export interface BeamLook {
  * The colour and level a fixture's state shows, the one reading every
  * stage view (2D plot, timeline preview, 3D scene) draws from: the
  * player's own (`rules.fixture_color`, which the TUI draws by too) --
- * each part that lights the fixture in its colour times its dimmer, white
- * added, a dimmer alone a warm white -- and lit as the player has it
+ * each part that lights the fixture in its emitters' colours (red, amber,
+ * UV, white, ...) at their levels, added, times its dimmer; a dimmer alone
+ * a warm white -- and lit as the player has it
  * (`rules.fixture_lit`). The level is the colour's mean.
  *
  * `strobeHz` is the rate the player says the fixture is flashing at (the

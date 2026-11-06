@@ -172,6 +172,14 @@ test.describe("stage rig math", () => {
     expect(css({ red: 255, dimmer: 51 })).toBe("rgb(51,0,0)");
     expect(css({ dimmer: 255 })).toBe("rgb(255,235,204)");
     expect(css({ red: 0, white: 100, dimmer: 255 })).toBe("rgb(100,100,100)");
+    // Every emitter in its own colour: amber, UV, a warm white.
+    expect(css({ red: 0, green: 0, blue: 0, amber: 255, dimmer: 255 })).toBe(
+      "rgb(255,191,0)",
+    );
+    expect(css({ uv: 255 })).toBe("rgb(102,0,255)");
+    expect(css({ red: 0, green: 0, blue: 0, warm_white: 255 })).toBe(
+      "rgb(255,235,204)",
+    );
     // Nothing that lights it: a head's position alone is dark.
     expect(css({ pan: 128 })).toBe("rgb(0,0,0)");
     // A CMY fixture's flags: cyan closed takes the red out of its white.

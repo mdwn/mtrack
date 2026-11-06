@@ -1137,7 +1137,8 @@ pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
 
 /// The colour a fixture with these channel values shows, red, green and
 /// blue each 0 to 1 (`channels::shown_color`: each part that lights it,
-/// by `fixture_lit`'s rule, in its colour times its dimmer, white added):
+/// by `fixture_lit`'s rule, in its emitters' colours at their levels,
+/// added, times its dimmer; black exactly where it is dark):
 /// what every stage view draws a fixture in. Black for a value that is
 /// not channels.
 #[wasm_bindgen]

@@ -104,15 +104,10 @@ impl CrossKind {
     pub(crate) fn of(channel: &str) -> CrossKind {
         match base_channel(channel) {
             "pan" | "tilt" => CrossKind::Position,
-            "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
-            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "indigo" | "zoom" | "focus"
-            | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
-            // GDTF's amber and lime, as their attributes come through.
-            | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
-            // GDTF's other additive and RGB colour attributes, likewise.
-            base if base.starts_with("coloradd_") || base.starts_with("colorrgb_") => {
-                CrossKind::Fade
-            }
+            "dimmer" | "zoom" | "focus" | "iris" | "frost" | "ct" | "cto" | "ctb"
+            | "color_temp" => CrossKind::Fade,
+            // Every emitter: a colour of light.
+            base if emitter_hue(base).is_some() => CrossKind::Fade,
             _ => CrossKind::Snap,
         }
     }
@@ -133,6 +128,74 @@ pub fn is_level_channel(name: &str) -> bool {
 /// A channel's full value: what a DMX channel reaches.
 const FULL: f64 = 255.0;
 
+/// Each emitter a fixture may have, by its channel's attribute, and the
+/// colour it gives off at full (red, green and blue each 0 to 1): the one
+/// list of what lights a fixture ([`is_lit`]) and what colour it shows
+/// ([`shown_color`]). Cyan, magenta and yellow are emitters on a fixture
+/// mixing additively; on one mixing subtractively they are flags
+/// ([`mixes_subtractively`]). GDTF's additive and RGB colour attributes
+/// come through under their own names (`coloradd_ry`, amber).
+const EMITTERS: [(&str, [f64; 3]); 35] = [
+    ("red", [1.0, 0.0, 0.0]),
+    ("green", [0.0, 1.0, 0.0]),
+    ("blue", [0.0, 0.0, 1.0]),
+    ("white", [1.0, 1.0, 1.0]),
+    ("warm_white", WARM),
+    ("cool_white", COOL),
+    ("amber", AMBER),
+    ("lime", LIME),
+    ("uv", UV),
+    ("indigo", INDIGO),
+    ("cyan", [0.0, 1.0, 1.0]),
+    ("magenta", [1.0, 0.0, 1.0]),
+    ("yellow", [1.0, 1.0, 0.0]),
+    ("coloradd_r", [1.0, 0.0, 0.0]),
+    ("coloradd_g", [0.0, 1.0, 0.0]),
+    ("coloradd_b", [0.0, 0.0, 1.0]),
+    ("coloradd_c", [0.0, 1.0, 1.0]),
+    ("coloradd_m", [1.0, 0.0, 1.0]),
+    ("coloradd_y", [1.0, 1.0, 0.0]),
+    ("coloradd_ry", AMBER),
+    ("coloradd_gy", LIME),
+    ("coloradd_gc", [0.0, 1.0, 0.5]),
+    ("coloradd_bc", [0.0, 0.5, 1.0]),
+    ("coloradd_bm", [0.5, 0.0, 1.0]),
+    ("coloradd_rm", [1.0, 0.0, 0.5]),
+    ("coloradd_w", [1.0, 1.0, 1.0]),
+    ("coloradd_ww", WARM),
+    ("coloradd_cw", COOL),
+    ("coloradd_uv", UV),
+    ("colorrgb_red", [1.0, 0.0, 0.0]),
+    ("colorrgb_green", [0.0, 1.0, 0.0]),
+    ("colorrgb_blue", [0.0, 0.0, 1.0]),
+    ("colorrgb_cyan", [0.0, 1.0, 1.0]),
+    ("colorrgb_magenta", [1.0, 0.0, 1.0]),
+    ("colorrgb_yellow", [1.0, 1.0, 0.0]),
+];
+
+/// The warm white of a warm white emitter, and of a dimmer that is a
+/// light of its own.
+const WARM: [f64; 3] = [1.0, 0.92, 0.8];
+const COOL: [f64; 3] = [0.85, 0.92, 1.0];
+const AMBER: [f64; 3] = [1.0, 0.75, 0.0];
+const LIME: [f64; 3] = [0.75, 1.0, 0.0];
+const UV: [f64; 3] = [0.4, 0.0, 1.0];
+const INDIGO: [f64; 3] = [0.3, 0.0, 0.5];
+
+/// The colour an emitter named `attribute` gives off at full
+/// ([`EMITTERS`]); a GDTF colour attribute the table does not name, a warm
+/// white. `None` for a channel that is no emitter.
+fn emitter_hue(attribute: &str) -> Option<[f64; 3]> {
+    EMITTERS
+        .iter()
+        .find(|(name, _)| *name == attribute)
+        .map(|&(_, hue)| hue)
+        .or_else(|| {
+            (attribute.starts_with("coloradd_") || attribute.starts_with("colorrgb_"))
+                .then_some(WARM)
+        })
+}
+
 /// Each additive primary and the subtractive channel that removes it.
 pub const CMY_OF_RGB: [(&str, &str); 3] =
     [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
@@ -143,6 +206,12 @@ pub const CMY_OF_RGB: [(&str, &str); 3] =
 /// its white; otherwise they are emitters like any other colour.
 pub fn mixes_subtractively(has: impl Fn(&str) -> bool) -> bool {
     CMY_OF_RGB.iter().all(|(_, cmy)| has(cmy)) && !CMY_OF_RGB.iter().any(|(rgb, _)| has(rgb))
+}
+
+/// Whether `name` is one of the cyan, magenta and yellow channels a
+/// fixture mixing subtractively filters its white by.
+fn is_flag(name: &str) -> bool {
+    CMY_OF_RGB.iter().any(|(_, cmy)| *cmy == name)
 }
 
 /// What one part of a fixture emits, read off its level channels: each
@@ -164,26 +233,30 @@ impl Light {
         self.levels.get("dimmer").copied()
     }
 
-    /// Its colour, each primary 0 to 255, given what it emits
-    /// ([`Self::emitted`]): on a part mixing subtractively (`subtractive`)
-    /// with a flag of its own, the white its flags pass (a flag it lacks
-    /// being `flag`'s); else its red, green and blue where it has any; else
-    /// none where it has a white, or a warm white at `emitted`; its white
-    /// added.
-    fn color(&self, subtractive: bool, flag: impl Fn(&str) -> f64, emitted: f64) -> [f64; 3] {
-        let level = |name: &str| self.levels.get(name).copied();
-        let has = |name: &str| self.levels.contains_key(name);
-        let white = level("white");
-        let base = if subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| has(cmy)) {
-            CMY_OF_RGB.map(|(_, cmy)| FULL - level(cmy).unwrap_or_else(|| flag(cmy)))
-        } else if CMY_OF_RGB.iter().any(|(rgb, _)| has(rgb)) {
-            CMY_OF_RGB.map(|(rgb, _)| level(rgb).unwrap_or(0.0))
-        } else if white.is_some() {
-            [0.0; 3]
+    /// Its colour, each primary 0 to 255: each emitter's colour
+    /// ([`EMITTERS`]) at its level, added, and on a part mixing
+    /// subtractively (`subtractive`) with a flag of its own the white its
+    /// flags pass (full less each flag, a flag it lacks being `flag`'s);
+    /// each primary at most full. Not black exactly where
+    /// [`Self::emitted`] is above 0.
+    fn color(&self, subtractive: bool, flag: impl Fn(&str) -> f64) -> [f64; 3] {
+        let mut color = if subtractive && self.levels.keys().any(|name| is_flag(name)) {
+            CMY_OF_RGB
+                .map(|(_, cmy)| FULL - self.levels.get(cmy).copied().unwrap_or_else(|| flag(cmy)))
         } else {
-            WARM.map(|c| c * emitted)
+            [0.0; 3]
         };
-        base.map(|c| (c + white.unwrap_or(0.0)).min(FULL))
+        for (name, &level) in &self.levels {
+            if subtractive && is_flag(name) {
+                continue;
+            }
+            if let Some(hue) = emitter_hue(name) {
+                for (c, h) in color.iter_mut().zip(hue) {
+                    *c += h * level;
+                }
+            }
+        }
+        color.map(|c| c.clamp(0.0, FULL))
     }
 
     /// Its brightest emitter -- on a fixture mixing subtractively
@@ -192,7 +265,7 @@ impl Light {
     /// all three closed, a flag it lacks being `flag`'s -- or `None` when
     /// it has no emitter. A colour temperature is a setting, not light.
     fn emitted(&self, subtractive: bool, flag: impl Fn(&str) -> f64) -> Option<f64> {
-        let is_flag = |name: &str| subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| *cmy == name);
+        let is_flag = |name: &str| subtractive && is_flag(name);
         let passed = self.levels.keys().any(|name| is_flag(name)).then(|| {
             FULL - CMY_OF_RGB
                 .iter()
@@ -201,13 +274,7 @@ impl Light {
         });
         self.levels
             .iter()
-            .filter(|(name, _)| {
-                !is_flag(name)
-                    && !matches!(
-                        name.as_str(),
-                        "dimmer" | "ct" | "cto" | "ctb" | "color_temp"
-                    )
-            })
+            .filter(|(name, _)| !is_flag(name) && emitter_hue(name).is_some())
             .map(|(_, &level)| level)
             .chain(passed)
             .reduce(f64::max)
@@ -240,12 +307,14 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
 /// The colour a fixture whose channels hold `values` (DMX values, 0 to
 /// 255) shows, red, green and blue each 0.0 to 1.0: what every view of
 /// the rig (the web UI's stage views, the TUI) draws it in. Each part
-/// that lights it by [`is_lit`]'s rule shows its colour times its dimmer,
-/// and the fixture the brightest of them in each primary: a part's red,
-/// green and blue -- on one mixing subtractively, the white its cyan,
-/// magenta and yellow flags pass (full less each flag) -- with its white
-/// added; a part with no colour of its own (a dimmer-only fixture, a
-/// part lit by amber or UV alone) a warm white at the level it emits.
+/// that may light it by [`is_lit`]'s rule shows its colour times its
+/// dimmer, and the fixture the brightest of them in each primary. A
+/// part's colour is each of its emitters' ([`EMITTERS`]: red, amber, UV,
+/// white, ...) at its level, added -- on one mixing subtractively, with
+/// the white its cyan, magenta and yellow flags pass (full less each
+/// flag) -- each primary at most full; a dimmer that is a light of its
+/// own shows a warm white. So the colour is black exactly where `is_lit`
+/// has the fixture dark.
 pub fn shown_color<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> [f64; 3] {
     let mut shown = [0.0_f64; 3];
     for lamp in lamps(values) {
@@ -255,10 +324,6 @@ pub fn shown_color<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> [f64
     }
     shown.map(|c| c.clamp(0.0, 1.0))
 }
-
-/// The warm white a part with no colour of its own shows, each primary
-/// a share of its level.
-const WARM: [f64; 3] = [1.0, 0.92, 0.8];
 
 /// One part of a fixture that may light it ([`lamps`]): what it emits,
 /// its colour (each primary 0 to 255) and the dimmer it takes.
@@ -319,7 +384,7 @@ fn lamps<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> Vec<Lamp> {
             };
             let subtractive = subtractive(key);
             let emitted = light.emitted(subtractive, flag);
-            let color = emitted.map(|emitted| light.color(subtractive, flag, emitted));
+            let color = emitted.map(|_| light.color(subtractive, flag));
             (key, emitted.zip(color))
         })
         .collect();
@@ -367,6 +432,8 @@ fn lamps<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> Vec<Lamp> {
 mod tests {
     use super::{is_lit, shown_color};
 
+    type Case<'a> = (&'a [(&'a str, f64)], [u8; 3]);
+
     fn color(channels: &[(&str, f64)]) -> [u8; 3] {
         shown_color(channels.iter().copied()).map(|c| (c * 255.0).round() as u8)
     }
@@ -376,7 +443,6 @@ mod tests {
     /// where `is_lit` has it dark.
     #[test]
     fn a_fixture_shows_its_colour_times_its_dimmer() {
-        type Case<'a> = (&'a [(&'a str, f64)], [u8; 3]);
         let cases: &[Case] = &[
             (&[("red", 255.0), ("dimmer", 0.0)], [0, 0, 0]),
             (&[("red", 255.0), ("dimmer", 51.0)], [51, 0, 0]),
@@ -433,6 +499,89 @@ mod tests {
                 is_lit(channels.iter().copied()),
                 "{channels:?}"
             );
+        }
+    }
+
+    /// Every emitter shows its own colour: an RGBA, RGBW+UV or RGB+WW
+    /// fixture lit by its amber, UV or warm white alone is not black.
+    #[test]
+    fn every_emitter_shows_its_colour() {
+        let cases: &[Case] = &[
+            (
+                &[
+                    ("red", 0.0),
+                    ("green", 0.0),
+                    ("blue", 0.0),
+                    ("amber", 255.0),
+                    ("dimmer", 255.0),
+                ],
+                [255, 191, 0],
+            ),
+            (&[("white", 0.0), ("amber", 255.0)], [255, 191, 0]),
+            (
+                &[
+                    ("red", 0.0),
+                    ("green", 0.0),
+                    ("blue", 0.0),
+                    ("warm_white", 255.0),
+                ],
+                [255, 235, 204],
+            ),
+            // Red added to amber, each primary at most full.
+            (&[("red", 10.0), ("amber", 255.0)], [255, 191, 0]),
+            (&[("red", 10.0), ("amber", 100.0)], [110, 75, 0]),
+            (&[("amber", 255.0)], [255, 191, 0]),
+            (&[("uv", 255.0)], [102, 0, 255]),
+            (&[("uv", 255.0), ("dimmer", 0.0)], [0, 0, 0]),
+            (
+                &[
+                    ("red", 0.0),
+                    ("white", 0.0),
+                    ("uv", 255.0),
+                    ("dimmer", 51.0),
+                ],
+                [20, 0, 51],
+            ),
+        ];
+        for (channels, expected) in cases {
+            let shown = color(channels);
+            assert_eq!(shown, *expected, "{channels:?}");
+            assert_eq!(
+                shown != [0, 0, 0],
+                is_lit(channels.iter().copied()),
+                "{channels:?}"
+            );
+        }
+    }
+
+    /// Shown is black exactly where the fixture is dark, for every emitter
+    /// alone, beside a red, green and blue at 0, and under any dimmer.
+    #[test]
+    fn shown_is_black_exactly_where_dark_for_every_emitter() {
+        let names = super::EMITTERS
+            .iter()
+            .map(|(name, _)| *name)
+            .chain(["coloradd_unknown", "colorrgb_quality"]);
+        for name in names {
+            for level in [0.0, 1.0, 128.0, 255.0] {
+                for dimmer in [None, Some(0.0), Some(1.0), Some(255.0)] {
+                    for rgb in [false, true] {
+                        let mut channels = vec![(name, level)];
+                        channels.extend(dimmer.map(|d| ("dimmer", d)));
+                        if rgb && !matches!(name, "red" | "green" | "blue") {
+                            channels.extend([("red", 0.0), ("green", 0.0), ("blue", 0.0)]);
+                        }
+                        let lit = is_lit(channels.iter().copied());
+                        let shown = shown_color(channels.iter().copied());
+                        assert_eq!(
+                            shown != [0.0; 3],
+                            lit,
+                            "{channels:?}: shown {shown:?}, lit {lit}"
+                        );
+                        assert!(lit || level == 0.0 || dimmer == Some(0.0), "{channels:?}");
+                    }
+                }
+            }
         }
     }
 

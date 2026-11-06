@@ -333,6 +333,10 @@ mod tests {
             assert_eq!(rgb(&[("red", 255), ("dimmer", 51)]), (51, 0, 0));
             assert_eq!(rgb(&[("dimmer", 255)]), (255, 235, 204));
             assert_eq!(
+                rgb(&[("red", 0), ("green", 0), ("blue", 0), ("amber", 255)]),
+                (255, 191, 0)
+            );
+            assert_eq!(
                 rgb(&[("red", 255), ("blue", 0), ("white", 100), ("dimmer", 255)]),
                 (255, 100, 100)
             );
