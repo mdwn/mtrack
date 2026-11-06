@@ -465,63 +465,116 @@ impl EffectEngine {
 
     /// The frame `t` of the way (0.0 to 1.0) through a crossfade from
     /// `outgoing` (another engine's frame for the same rig) to `incoming`
-    /// (this engine's), channel by channel as a console crosses cues:
+    /// (this engine's), channel by channel as a console crosses cues, by
+    /// the blend the fixture states cross by ([`CrossKind::cross`]):
     /// intensity, colour and other continuous channels fade, a channel only
     /// one side drives fading from or to zero; pan and tilt fade too, but a
     /// mover only one side drives holds that side's position rather than
     /// swinging home; and discrete channels -- strobe, gobo, prism and the
     /// like, where a value in between is some other setting -- switch at
-    /// the midpoint.
+    /// the midpoint. A 16-bit channel's coarse and fine bytes cross as the
+    /// one value they make, so it moves straight from one to the other.
     pub fn crossfade_commands(
         &self,
         outgoing: &[DmxCommand],
         incoming: &[DmxCommand],
         t: f64,
     ) -> Vec<DmxCommand> {
+        use std::collections::BTreeMap;
         let t = t.clamp(0.0, 1.0);
-        let mut kinds: HashMap<(u16, u16), CrossKind> = HashMap::new();
-        for fixture in self.fixtures.as_map().values() {
-            for (name, &offset) in &fixture.channels {
-                if let Some(channel) = fixture.dmx_channel(offset) {
-                    kinds.insert((fixture.universe, channel), CrossKind::of(name));
-                }
-            }
-        }
-
-        let mut pairs: std::collections::BTreeMap<(u16, u16), (Option<u8>, Option<u8>)> =
-            std::collections::BTreeMap::new();
+        let places = self.cross_places();
+        let mut pairs: BTreeMap<(u16, u16), (Option<u8>, Option<u8>)> = BTreeMap::new();
         for c in outgoing {
             pairs.entry((c.universe, c.channel)).or_default().0 = Some(c.value);
         }
         for c in incoming {
             pairs.entry((c.universe, c.channel)).or_default().1 = Some(c.value);
         }
+        let byte = |kind: CrossKind, (old, new): (Option<u8>, Option<u8>)| {
+            kind.cross(old.map(f64::from), new.map(f64::from), t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
 
-        let lerp = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
-        pairs
-            .into_iter()
-            .map(|((universe, channel), (old, new))| {
-                let value = match kinds.get(&(universe, channel)).copied() {
-                    Some(CrossKind::Position) => {
-                        let old = old.or(new).unwrap_or(0);
-                        lerp(old, new.unwrap_or(old))
-                    }
-                    Some(CrossKind::Snap) => {
-                        if t < 0.5 {
-                            old.unwrap_or(0)
-                        } else {
-                            new.unwrap_or(0)
-                        }
-                    }
-                    Some(CrossKind::Fade) | None => lerp(old.unwrap_or(0), new.unwrap_or(0)),
-                };
-                DmxCommand {
-                    universe,
-                    channel,
-                    value,
+        let mut out = BTreeMap::new();
+        for (&(universe, channel), &values) in &pairs {
+            let at = |channel| (universe, channel);
+            match places.get(&(universe, channel)).copied() {
+                // A 16-bit value: written with its coarse byte, when either
+                // side writes its fine one.
+                Some(CrossPlace::Coarse(kind, fine)) if pairs.contains_key(&at(fine)) => {
+                    let (fine_old, fine_new) = pairs[&at(fine)];
+                    let side = |coarse: Option<u8>, fine: Option<u8>| {
+                        (coarse.is_some() || fine.is_some()).then(|| {
+                            f64::from(u16::from_be_bytes([coarse.unwrap_or(0), fine.unwrap_or(0)]))
+                        })
+                    };
+                    let value = kind
+                        .cross(side(values.0, fine_old), side(values.1, fine_new), t)
+                        .round()
+                        .clamp(0.0, f64::from(u16::MAX)) as u16;
+                    let [high, low] = value.to_be_bytes();
+                    out.insert(at(channel), high);
+                    out.insert(at(fine), low);
                 }
+                Some(CrossPlace::Fine(kind, coarse)) => {
+                    // Its coarse byte writes it, above; with none on either
+                    // side, it crosses as a byte of its own.
+                    if !pairs.contains_key(&at(coarse)) {
+                        out.insert(at(channel), byte(kind, values));
+                    }
+                }
+                Some(CrossPlace::Coarse(kind, _) | CrossPlace::Byte(kind)) => {
+                    out.insert(at(channel), byte(kind, values));
+                }
+                None => {
+                    out.insert(at(channel), byte(CrossKind::Fade, values));
+                }
+            }
+        }
+        out.into_iter()
+            .map(|((universe, channel), value)| DmxCommand {
+                universe,
+                channel,
+                value,
             })
             .collect()
+    }
+
+    /// How each DMX channel (universe, channel) of the patched fixtures
+    /// crosses a crossfade: by its channel's kind, as a byte of its own or
+    /// as the coarse or fine byte of a 16-bit value -- the channel's own
+    /// bytes and each mirror's.
+    fn cross_places(&self) -> HashMap<(u16, u16), CrossPlace> {
+        let mut places = HashMap::new();
+        for fixture in self.fixtures.as_map().values() {
+            let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
+            for (name, &offset) in &fixture.channels {
+                if let Some(address) = at(offset) {
+                    places.insert(address, CrossPlace::Byte(CrossKind::of(name)));
+                }
+            }
+            for (name, def) in &fixture.channel_defs {
+                let kind = CrossKind::of(name);
+                for (coarse, fine) in
+                    std::iter::once((def.offset, def.fine)).chain(def.mirrors.iter().copied())
+                {
+                    let (Some(coarse), fine) = (at(coarse), fine.and_then(at)) else {
+                        continue;
+                    };
+                    match fine {
+                        Some(fine) => {
+                            places.insert(coarse, CrossPlace::Coarse(kind, fine.1));
+                            places.insert(fine, CrossPlace::Fine(kind, coarse.1));
+                        }
+                        None => {
+                            places.insert(coarse, CrossPlace::Byte(kind));
+                        }
+                    }
+                }
+            }
+        }
+        places
     }
 
     /// The channels (universe, DMX channel) of the patched fixtures that
@@ -572,7 +625,8 @@ impl EffectEngine {
     /// The fixture states `t` of the way through a crossfade from
     /// `outgoing`'s last frame to this engine's, and the poses likewise: the
     /// states [`Self::crossfade_commands`] makes of the two frames' DMX, by
-    /// the same rules, for what shows the rig rather than drives it.
+    /// the same blend ([`CrossKind::cross`]), for what shows the rig rather
+    /// than drives it.
     pub fn crossfade_states(
         &self,
         outgoing: &EffectEngine,
@@ -591,7 +645,7 @@ impl EffectEngine {
     ) -> (HashMap<String, FixtureState>, HashMap<String, Pose>) {
         let (onto_states, onto_poses) = onto;
         let t = t.clamp(0.0, 1.0);
-        let lerp = |a: f64, b: f64| a + (b - a) * t;
+        let lerp = |a: f64, b: f64| crate::lighting::channels::lerp(a, b, t);
         // Each side as it shows, multipliers applied and cells resolved, as
         // the DMX of each frame is: a multiplier one side has and the other
         // not is neutral there, not a level crossing from zero.
@@ -613,16 +667,8 @@ impl EffectEngine {
                 old.channels.keys().chain(new.channels.keys()).collect();
             for channel in channels {
                 let (o, n) = (old.channels.get(channel), new.channels.get(channel));
-                let value = |c: Option<&ChannelState>| c.map_or(0.0, |c| c.value);
-                let blended = match CrossKind::of(channel) {
-                    CrossKind::Position => {
-                        let from = o.or(n).map_or(0.0, |c| c.value);
-                        lerp(from, n.map_or(from, |c| c.value))
-                    }
-                    CrossKind::Snap if t < 0.5 => value(o),
-                    CrossKind::Snap => value(n),
-                    CrossKind::Fade => lerp(value(o), value(n)),
-                };
+                let blended =
+                    CrossKind::of(channel).cross(o.map(|c| c.value), n.map(|c| c.value), t);
                 let like = n.or(o).expect("a channel one side has");
                 state.channels.insert(
                     channel.clone(),
@@ -1963,6 +2009,19 @@ pub struct Prepared {
     /// The history, to replay again at the install (see `PoseReads`).
     again: Option<crate::lighting::timeline::SeekHistory>,
     errors: Vec<EffectError>,
+}
+
+/// How a DMX channel crosses a crossfade ([`EffectEngine::crossfade_commands`]).
+#[derive(Clone, Copy)]
+enum CrossPlace {
+    /// A byte of its own.
+    Byte(CrossKind),
+    /// The coarse byte of a 16-bit value, with the DMX channel of its fine
+    /// byte.
+    Coarse(CrossKind, u16),
+    /// The fine byte of a 16-bit value, with the DMX channel of its coarse
+    /// byte.
+    Fine(CrossKind, u16),
 }
 
 /// How a replay from another engine's pose memory used it (see

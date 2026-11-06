@@ -17,8 +17,8 @@
 //! and its fade to dark, the snapshots and the web UI's stage views all
 //! read a channel by these.
 
-/// How a channel crosses a crossfade between two engines' frames
-/// (the engine's `crossfade_commands`).
+/// How a channel crosses a crossfade between two engines: their fixture
+/// states and their frames' bytes alike ([`CrossKind::cross`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CrossKind {
     /// Intensity, colour, zoom, focus: fade.
@@ -65,7 +65,32 @@ pub(crate) fn is_position_channel(channel: &str) -> bool {
     matches!(CrossKind::of(channel), CrossKind::Position)
 }
 
+/// The value `t` of the way (0.0 to 1.0) from `a` to `b`: exactly `a` at
+/// 0 and exactly `b` at 1, and exactly `a` throughout when the two are
+/// equal.
+pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
 impl CrossKind {
+    /// A channel's value `t` of the way (0.0 to 1.0) through a crossfade
+    /// from `old` to `new`, `None` where that side drives none, on any
+    /// scale (a level, a byte, a 16-bit value): faded, from or to 0 for a
+    /// side that drives none; a position held where only one side drives
+    /// it; a setting switched at the midpoint, 0 for a side that drives
+    /// none. The one blend the engine crosses states and DMX by.
+    pub(crate) fn cross(self, old: Option<f64>, new: Option<f64>, t: f64) -> f64 {
+        match self {
+            CrossKind::Position => {
+                let from = old.or(new).unwrap_or(0.0);
+                lerp(from, new.unwrap_or(from), t)
+            }
+            CrossKind::Snap if t < 0.5 => old.unwrap_or(0.0),
+            CrossKind::Snap => new.unwrap_or(0.0),
+            CrossKind::Fade => lerp(old.unwrap_or(0.0), new.unwrap_or(0.0), t),
+        }
+    }
+
     pub(crate) fn of(channel: &str) -> CrossKind {
         match base_channel(channel) {
             "pan" | "tilt" => CrossKind::Position,

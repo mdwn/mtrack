@@ -338,6 +338,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a
+  loop break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes
+  each on its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through
+  and overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same
+  blend the web UI's view of the crossfade uses. A GDTF fixture's fine bytes and mirrored sections
+  cross by their channel's rule too: a mirrored strobe or gobo switches at the midpoint, and a
+  mover's fine byte holds where one side does not point it, rather than fading to 0.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.
