@@ -162,21 +162,27 @@ const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
         EffectKind::Rainbow,
         &["speed", "saturation", "brightness", "duration"],
     ),
-    (
-        EffectKind::Move,
-        &[
-            "focus",
-            "to",
-            "from",
-            "from_pan",
-            "from_tilt",
-            "pan",
-            "tilt",
-            "easing",
-            "duration",
-        ],
-    ),
+    (EffectKind::Move, &MOVE_KIND_PARAMS),
 ];
+
+/// What a `move` reads: each of [`MOVE_PARAMS`], each of [`MOVE_ALIASES`],
+/// then its easing and duration.
+const MOVE_KIND_PARAMS: [&str; MOVE_PARAMS.len() + MOVE_ALIASES.len() + 2] = {
+    let mut out = [""; MOVE_PARAMS.len() + MOVE_ALIASES.len() + 2];
+    let mut i = 0;
+    while i < MOVE_PARAMS.len() {
+        out[i] = MOVE_PARAMS[i].1;
+        i += 1;
+    }
+    let mut j = 0;
+    while j < MOVE_ALIASES.len() {
+        out[i + j] = MOVE_ALIASES[j].0;
+        j += 1;
+    }
+    out[i + j] = "easing";
+    out[i + j + 1] = "duration";
+    out
+};
 
 /// A `move`'s target and start parameters.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
