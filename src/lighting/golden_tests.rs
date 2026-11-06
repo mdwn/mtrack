@@ -655,7 +655,7 @@ fn a_cmy_fixture_shows_colour_as_its_complement_on_the_wire() {
     assert_eq!(cmy(&frames[2]), [255, 0, 255, 255], "dimmer only");
     // A mix: green full, blue half, red none.
     let f = cmy(&frames[3]);
-    assert_eq!(f[0], 127, "dimmer 50%");
+    assert_eq!(f[0], 128, "dimmer 50%");
     assert_eq!(f[1], 255, "cyan removes all the red");
     assert_eq!(f[2], 0, "no magenta: green is full");
     assert!(

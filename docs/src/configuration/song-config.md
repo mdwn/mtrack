@@ -100,8 +100,8 @@ loop_playback: true
 
 # (Optional) Overlap consecutive passes of a looping song: each pass starts this
 # long before the last ends, and the audio, lights and MIDI cross over the
-# overlap. 6s, 500ms, 8beats or 2measures; beats and measures count back from
-# the end of the song. See "Song Looping" below.
+# overlap. 6s, 1.5s, 500ms, 2m (minutes), 8beats or 2measures; beats and
+# measures count back from the end of the song. See "Song Looping" below.
 loop_crossfade: 2measures
 
 # (Optional) Tracks that switch over at the crossfade's midpoint instead of

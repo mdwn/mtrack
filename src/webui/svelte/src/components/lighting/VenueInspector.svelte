@@ -354,11 +354,12 @@
     void sharedBeam;
     beamEdited = false;
   });
-  /** Empty removes the override; otherwise 0 < angle <= 180. */
+  /** Empty removes the override; otherwise a beam angle by the player's
+   *  rule (`rules.beam_angle_valid`). */
   let beamValue = $derived.by<number | null | undefined>(() => {
     if (beamDraft.trim() === "") return null;
     const v = Number(beamDraft);
-    return Number.isFinite(v) && v > 0 && v <= 180 ? v : undefined;
+    return rules.beam_angle_valid(v) ? v : undefined;
   });
 
   function setBeamAngle() {

@@ -85,7 +85,9 @@ impl ChannelState {
     /// Blend this channel state with another
     pub fn blend_with(&self, other: ChannelState) -> ChannelState {
         let blended_value = match other.blend_mode {
-            BlendMode::Replace => self.value + (other.value - self.value) * other.mix,
+            BlendMode::Replace => {
+                crate::lighting::channels::lerp(self.value, other.value, other.mix)
+            }
             BlendMode::Multiply => self.value * other.value,
             BlendMode::Add => (self.value + other.value).min(1.0),
             BlendMode::Overlay => {
@@ -825,7 +827,7 @@ mod tests {
         let bytes: Vec<(u16, u8)> = cmds.iter().map(|c| (c.channel, c.value)).collect();
         assert_eq!(
             bytes,
-            vec![(10, 0x80), (11, 0x00), (12, 127)],
+            vec![(10, 0x80), (11, 0x00), (12, 128)],
             "0° is mid-travel over coarse+fine at address 10/11; the dimmer byte is untouched"
         );
     }
@@ -893,7 +895,7 @@ mod tests {
         );
         let cmds = fs.to_dmx_commands(&fixture);
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].value, 127); // 0.5 * 255 = 127
+        assert_eq!(cmds[0].value, 128); // 0.5 * 255 = 128.5, rounded
     }
 
     // ── to_dmx_commands_with_cells (design §17.3) ─────────────────────
@@ -952,8 +954,8 @@ mod tests {
         );
         let cmds = fs.to_dmx_commands_with_cells(&fixture, |_| None);
         // Channel 10 = byte 1 (cell "a"), channel 11 = byte 2 (cell "b").
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a == fixture value");
-        assert_eq!(byte_at(&cmds, 11), 127, "cell b == fixture value");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a == fixture value");
+        assert_eq!(byte_at(&cmds, 11), 128, "cell b == fixture value");
     }
 
     #[test]
@@ -980,7 +982,7 @@ mod tests {
                     }
                 },
             );
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a stays at the fixture value");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a stays at the fixture value");
         assert_eq!(byte_at(&cmds, 11), 255, "cell b takes the cell's value");
     }
 
@@ -1008,9 +1010,9 @@ mod tests {
                     }
                 },
             );
-        assert_eq!(byte_at(&cmds, 10), 127, "cell a untouched");
-        // 0.5 * 0.5 = 0.25 -> resolve_normalized(0.25) = 63
-        assert_eq!(byte_at(&cmds, 11), 63, "cell b is the product");
+        assert_eq!(byte_at(&cmds, 10), 128, "cell a untouched");
+        // 0.5 * 0.5 = 0.25 -> resolve_normalized(0.25) = 63.75, rounded to 64
+        assert_eq!(byte_at(&cmds, 11), 64, "cell b is the product");
     }
 
     #[test]

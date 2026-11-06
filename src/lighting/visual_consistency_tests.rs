@@ -121,13 +121,13 @@ mod tests {
             .iter()
             .find(|cmd| cmd.channel == 20 && cmd.universe == 1);
 
-        // RGB+dimmer fixture should have dimmer command at 50% (127)
+        // RGB+dimmer fixture should have dimmer command at 50% (128)
         assert!(rgb_dimmer_cmd.is_some());
-        assert_eq!(rgb_dimmer_cmd.unwrap().value, 127);
+        assert_eq!(rgb_dimmer_cmd.unwrap().value, 128);
 
-        // Dimmer-only fixture should have dimmer command at 50% (127)
+        // Dimmer-only fixture should have dimmer command at 50% (128)
         assert!(dimmer_cmd.is_some());
-        assert_eq!(dimmer_cmd.unwrap().value, 127);
+        assert_eq!(dimmer_cmd.unwrap().value, 128);
 
         // RGB-only fixture should have no direct DMX commands (uses _dimmer_multiplier)
         // This is the key benefit: same visual result, different implementation
@@ -384,7 +384,7 @@ mod tests {
         // RGB+dimmer engine: should have dimmer command at 50% (127)
         let dimmer_cmd = commands_rgb_dimmer.iter().find(|cmd| cmd.channel == 1);
         assert!(dimmer_cmd.is_some());
-        assert_eq!(dimmer_cmd.unwrap().value, 127);
+        assert_eq!(dimmer_cmd.unwrap().value, 128);
 
         // Both engines produce the same visual result (50% brightness) but use different
         // implementation strategies based on fixture capabilities. This is the power

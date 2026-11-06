@@ -284,14 +284,7 @@ impl Audio {
                 ));
             }
         }
-        if let Some(ref delay) = self.playback_delay {
-            if super::parse_duration_string(delay).is_err() {
-                errors.push(format!(
-                    "audio playback_delay '{}' is not a valid duration",
-                    delay
-                ));
-            }
-        }
+        errors.extend(super::playback_delay_problem("audio", &self.playback_delay));
         if let Some(size) = self.buffer_size {
             if size == 0 {
                 errors.push("audio buffer_size must be greater than 0".to_string());

@@ -264,12 +264,15 @@ pub fn extract_tempo_from_midi(
             return None;
         }
         let max_time = grid.beats.last().copied().unwrap_or(0.0);
+        // Scored beat for beat against the grid, which counts a bar's
+        // beats by its own rule (a 6/8 bar is six).
         let midi_beats = midi_beat_times(
             tempo_events,
             time_sig_events,
             tpb,
             start_offset_seconds,
             max_time,
+            grid_step_ticks,
         );
         let score = alignment_score(&midi_beats, &grid.beats);
         if score == f64::NEG_INFINITY {
@@ -326,11 +329,25 @@ fn beat_step_ticks(numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
     }
 }
 
+/// The tick step between the beats the beat grid counts in a time
+/// signature: one per denominator note, as
+/// [`TimeSignature::grid_beats_per_measure`] counts a bar (a 6/8 bar is six
+/// eighths, where [`beat_step_ticks`] has two dotted quarters). Whole ticks,
+/// rounded down as [`beat_step_ticks`] rounds its simple metres.
+fn grid_step_ticks(_numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
+    // Four quarter notes a whole note, over the notes a whole note holds.
+    let whole = tpb.saturating_mul(4);
+    whole
+        .checked_shr(u32::from(denominator_power))
+        .unwrap_or(0)
+        .max(1)
+}
+
 /// Generates expected beat positions (in seconds) from the MIDI tempo map.
 ///
-/// Steps through ticks using the natural pulse of the current time signature
-/// (quarter notes for simple meter, dotted quarters for compound meter, etc.),
-/// so the predicted beat positions match what a typical click track marks.
+/// Steps through ticks by `step` in the current time signature --
+/// [`beat_step_ticks`]'s natural pulse to find where beat 1 falls, or
+/// [`grid_step_ticks`]'s grid beats to score the result against the grid.
 /// Stops when the generated time exceeds `max_seconds`.
 fn midi_beat_times(
     tempo_events: &[TempoEntry],
@@ -338,6 +355,7 @@ fn midi_beat_times(
     tpb: u16,
     start_seconds: f64,
     max_seconds: f64,
+    step: fn(u8, u8, u64) -> u64,
 ) -> Vec<f64> {
     let start_tick = seconds_to_tick(start_seconds, tempo_events, tpb);
     let mut walk = TempoWalk::new(tempo_events, tpb);
@@ -359,7 +377,7 @@ fn midi_beat_times(
             .map(|e| (e.numerator, e.denominator_power))
             .unwrap_or((4, 2)); // default: 4/4
 
-        tick += beat_step_ticks(num, denom_pow, tpb as u64);
+        tick += step(num, denom_pow, tpb as u64);
     }
 
     beats
@@ -450,7 +468,14 @@ fn find_best_offset(
     let mut best_start = grid_first;
 
     for &candidate in &candidates {
-        let midi_beats = midi_beat_times(tempo_events, time_sig_events, tpb, candidate, max_time);
+        let midi_beats = midi_beat_times(
+            tempo_events,
+            time_sig_events,
+            tpb,
+            candidate,
+            max_time,
+            beat_step_ticks,
+        );
         let score = alignment_score(&midi_beats, &grid.beats);
         let closer = (candidate - grid_first).abs() < (best_start - grid_first).abs();
         let meaningfully_better = score > best_score + score_epsilon;
@@ -470,7 +495,14 @@ fn find_best_offset(
 
     let mut t = fine_start;
     while t <= fine_end {
-        let midi_beats = midi_beat_times(tempo_events, time_sig_events, tpb, t, max_time);
+        let midi_beats = midi_beat_times(
+            tempo_events,
+            time_sig_events,
+            tpb,
+            t,
+            max_time,
+            beat_step_ticks,
+        );
         let score = alignment_score(&midi_beats, &grid.beats);
         let closer = (t - grid_first).abs() < (best_start - grid_first).abs();
         let meaningfully_better = score > best_score + score_epsilon;
@@ -846,6 +878,23 @@ mod tests {
         );
     }
 
+    /// A 6/8 click clicks every eighth, as the beat grid counts a 6/8 bar
+    /// (`TimeSignature::grid_beats_per_measure`): a correct 6/8 map
+    /// scores as well as a correct 4/4 one, not an eighth off on four
+    /// clicks in six.
+    #[test]
+    fn alignment_rms_ms_low_for_a_compound_metre_clicked_in_eighths() {
+        let f = write_test_midi(&[
+            (0, MidiMetaEvent::TimeSig(6, 3)),
+            (0, MidiMetaEvent::Tempo(bpm_to_micros(120))),
+        ]);
+        // Quarter = 0.5s, so an eighth click every 0.25s, six to a bar.
+        let grid = make_beat_grid(240.0, 0.0, 96, 6);
+        let result = extract_tempo_from_midi(f.path(), Some(&grid)).unwrap();
+        let rms = result.alignment_rms_ms.expect("a grid was given");
+        assert!(rms < 2.0, "a correct 6/8 map scored {rms:.3}ms");
+    }
+
     #[test]
     fn alignment_rms_ms_high_for_mismatched_grid() {
         // MIDI at 120 BPM but beat grid at 90 BPM — wildly mismatched.
@@ -1102,6 +1151,7 @@ mod tests {
             tpb,
             result.start_seconds,
             max_time,
+            beat_step_ticks,
         );
 
         eprintln!(
@@ -1254,11 +1304,25 @@ mod tests {
 
         // Score at the found offset vs offset=0.
         let score_found = {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, found_offset, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                found_offset,
+                max_time,
+                beat_step_ticks,
+            );
             alignment_score(&mb, &grid.beats)
         };
         let score_zero = {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, 0.0, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                0.0,
+                max_time,
+                beat_step_ticks,
+            );
             alignment_score(&mb, &grid.beats)
         };
 
@@ -1326,7 +1390,14 @@ mod tests {
         candidates.extend(grid.beats.iter().copied().filter(|&t| t <= 10.0));
         candidates.dedup_by(|a, b| (*a - *b).abs() < 0.001);
         for c in &candidates {
-            let mb = midi_beat_times(&tempo_events, &time_sig_events, tpb, *c, max_time);
+            let mb = midi_beat_times(
+                &tempo_events,
+                &time_sig_events,
+                tpb,
+                *c,
+                max_time,
+                beat_step_ticks,
+            );
             let score = alignment_score(&mb, &grid.beats);
             let marker = if (*c - found_offset).abs() < 0.002 {
                 " ← chosen"
@@ -1665,6 +1736,34 @@ mod tests {
     }
 
     // ── beat_step_ticks tests ─────────────────────────────────────────────────
+
+    /// A bar is the grid's beats of the grid's step, and a simple metre's
+    /// step is the click's pulse; a compound metre's grid counts eighths.
+    #[test]
+    fn grid_step_ticks_count_the_grids_beats() {
+        let tpb = 480u64;
+        for (numerator, power) in [(4u8, 2u8), (3, 2), (2, 1), (6, 3), (7, 3), (12, 3), (5, 4)] {
+            let signature = TimeSignature::new(u32::from(numerator), 1 << power);
+            let bar = tpb as f64 * signature.beats_per_measure();
+            let step = grid_step_ticks(numerator, power, tpb);
+            assert_eq!(
+                (step * u64::from(signature.grid_beats_per_measure())) as f64,
+                bar,
+                "{numerator}/{}",
+                1 << power
+            );
+        }
+        for (numerator, power) in [(4u8, 2u8), (2, 1), (7, 3), (5, 4)] {
+            for tpb in [480, 25, 97] {
+                assert_eq!(
+                    grid_step_ticks(numerator, power, tpb),
+                    beat_step_ticks(numerator, power, tpb)
+                );
+            }
+        }
+        assert_eq!(grid_step_ticks(6, 3, 25), 12);
+        assert_eq!(grid_step_ticks(4, 200, 480), 1);
+    }
 
     #[test]
     fn beat_step_ticks_simple_meters() {

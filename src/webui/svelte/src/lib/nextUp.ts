@@ -14,7 +14,8 @@
 
 import type { FadeStatus, NextUp } from "../gen/rules/mtrack_rules";
 import type { Translate } from "./i18n";
-import { formatFadeLength, formatGapMs } from "./util/format";
+import { rules } from "./rules";
+import { formatFadeLength } from "./util/format";
 
 /** The dashboard's "next up" line: what comes after the current song and
  *  how it will arrive. Empty when there is nothing to say. */
@@ -55,7 +56,7 @@ export function describeNext(
     return t("playback.nextAutoNow", { values: { song } });
   }
   return t("playback.nextAuto", {
-    values: { song, gap: formatGapMs(next.auto_play_ms) },
+    values: { song, gap: rules.gap_text(next.auto_play_ms) },
   });
 }
 

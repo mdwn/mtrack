@@ -146,9 +146,11 @@ impl AutoPlayConfig {
         match self {
             AutoPlayConfig::On(false) => Ok(None),
             AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
-            AutoPlayConfig::Gap(gap) => super::parse_duration_string(gap).map(Some).map_err(|_| {
-                format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
-            }),
+            AutoPlayConfig::Gap(gap) => {
+                super::length::parse_clock(gap).map(Some).ok_or_else(|| {
+                    format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
+                })
+            }
         }
     }
 }
@@ -180,7 +182,8 @@ impl<'de> Deserialize<'de> for AutoPlayConfig {
                 Ok(AutoPlayConfig::Gap(format!("{v}s")))
             }
             fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(AutoPlayConfig::Gap(format!("{}ms", (v * 1000.0).round())))
+                // Seconds, which the clock reads decimal (`1.5s`).
+                Ok(AutoPlayConfig::Gap(format!("{v}s")))
             }
         }
         deserializer.deserialize_any(AutoPlayVisitor)
@@ -301,8 +304,8 @@ impl Ambient {
 }
 
 pub(super) fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
-    super::parse_duration_string(value)
-        .map_err(|_| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
+    super::length::parse_clock(value)
+        .ok_or_else(|| format!("ambient {field}: '{value}' is not a duration (e.g. 2s, 500ms)"))
 }
 
 impl PlaylistAmbient {

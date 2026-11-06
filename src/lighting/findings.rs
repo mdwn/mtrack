@@ -37,6 +37,17 @@ pub enum Want {
     Dimmer,
 }
 
+impl Want {
+    /// Every want, in the order a fixture's page lists them.
+    pub const ALL: [Want; 5] = [
+        Want::Color,
+        Want::Dimmer,
+        Want::Strobe,
+        Want::Move,
+        Want::Cells,
+    ];
+}
+
 /// A non-fatal finding.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
