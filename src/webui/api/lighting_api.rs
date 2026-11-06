@@ -642,7 +642,7 @@ pub(super) fn existing_fixture_type(
     // Only a broken stem file that may hold neither the type nor its
     // archive is unrelated; in any doubt, it is the type's record, offered
     // for replacing, and the library does not answer.
-    if found.declares.is_err() && found.other_broken.is_empty() {
+    if lighting::project_files::is_broken(&found.declares) && found.other_broken.is_empty() {
         if let Some(library) = lighting::library::unrecorded_types(root, Some(dir)).get(name) {
             if !lighting::project_files::file_may_hold(
                 &found.path,
@@ -5787,6 +5787,63 @@ show "test" {
                 .to_string();
             assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), *text);
         }
+    }
+
+    /// A file holding only other blocks (a sequence library in a shared
+    /// directory) reads: it is not offered for replacing, only refused; an
+    /// empty one at the name's stem is the name's, offered for replacing on
+    /// a save and for removing on a delete (not passed over for
+    /// `club_2.light`, nor a 404).
+    #[tokio::test]
+    async fn a_file_of_other_blocks_reads_and_an_empty_stem_file_is_offered() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_seq");
+        std::fs::create_dir_all(&dir).unwrap();
+        let library =
+            "sequence \"q\" {\n    @0.000\n    spot: static color: \"blue\", duration: 1s\n}\n";
+        std::fs::write(dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
+        std::fs::write(dir.join("club.venue"), library).unwrap();
+        let typed = "venue \"Club\" {\n  focus \"DS\" (0, 0, 0)\n}\n";
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "PUT",
+            "/lighting/venues/Club?dir=v_seq&replace_broken=club.venue".to_string(),
+            "text/plain",
+            Body::from(typed),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken"], false, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.venue")).unwrap(),
+            library
+        );
+
+        let dir = _dir.path().join("v_empty_stem");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("club.light"), "// later\n").unwrap();
+        let send = |method: &'static str, query: &'static str| {
+            fixture_type_request(
+                state.clone(),
+                method,
+                format!("/lighting/venues/Club?dir=v_empty_stem{query}"),
+                "text/plain",
+                Body::from(sample_venue_dsl("Club")),
+            )
+        };
+        let (status, parsed) = send("DELETE", "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "club.light", "{parsed}");
+        let (status, parsed) = send("PUT", "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "club.light", "{parsed}");
+        let (status, parsed) = send("PUT", "&replace_broken=club.light").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.light")).unwrap(),
+            sample_venue_dsl("Club")
+        );
+        assert!(!dir.join("club_2.light").exists());
     }
 
     /// A raw-text save that would retire a `.light` twin holding another

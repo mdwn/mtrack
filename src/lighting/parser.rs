@@ -65,6 +65,15 @@ impl IncludeReader for DiskReader {
     }
 }
 
+/// Whether `content` holds anything at all by the whole grammar (`file`): a
+/// venue, fixture type, show, sequence, tempo or include. `false` for an
+/// empty or comment-only file, and for one that does not parse.
+pub fn holds_any_block(content: &str) -> bool {
+    LightingParser::parse(Rule::file, content)
+        .map(|pairs| items(pairs).any(|pair| pair.as_rule() != Rule::EOI))
+        .unwrap_or(false)
+}
+
 /// Parses a `.light` file's shows, as `parse_light_shows_with_tempo` does.
 /// `path` is where the content lives, which its `include`s resolve against;
 /// content with an `include` and no path is an error.

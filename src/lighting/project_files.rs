@@ -258,8 +258,18 @@ fn declared_by(path: &Path, parse: fn(&str) -> Result<Vec<String>, String>) -> D
     let lossy = String::from_utf8_lossy(&bytes);
     let text =
         std::str::from_utf8(&bytes).map_err(|_| unread("not valid UTF-8".to_string(), &lossy))?;
-    parse(text).map_err(|e| unread(e, text))
+    let names = parse(text).map_err(|e| unread(e, text))?;
+    // A file that holds nothing at all (empty, comments only) cannot say
+    // whose it is: it is broken ([`is_broken`]). One holding other blocks
+    // (a sequence library) reads, and declares none of these names.
+    if names.is_empty() && !super::parser::holds_any_block(text) {
+        return Err(unread(EMPTY.to_string(), text));
+    }
+    Ok(names)
 }
+
+/// Why a file that parses is broken all the same: it holds nothing.
+const EMPTY: &str = "it is empty or holds only comments";
 
 /// The fixture types the file at `path` declares ([`Declares`]).
 pub fn fixture_types_declared(path: &Path) -> Declares {
@@ -321,10 +331,14 @@ pub fn may_act_on(
     let (why, parse_error, also_mentions) = match declares {
         Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
         _ if is_broken(declares) && replace_broken.iter().any(|f| f == shown) => return Ok(()),
-        Ok(names) if names.is_empty() => {
-            let error = "it is empty or holds only comments".to_string();
-            (error.clone(), Some(error), Vec::new())
-        }
+        Ok(names) if names.is_empty() => (
+            format!(
+                "it holds no {} (only other blocks)",
+                keyword.replace('_', " ")
+            ),
+            None,
+            Vec::new(),
+        ),
         Ok(names) => {
             let mut names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
             names.sort();
@@ -356,13 +370,11 @@ pub fn may_act_on(
 
 /// Whether a venue or fixture type file is one a person may choose to
 /// replace or remove ([`may_act_on`]), and a save or delete then sets
-/// aside: it does not read, or reads and declares nothing (empty, or
-/// comments only), so a save cannot say whose it is.
+/// aside: it does not read, or holds nothing at all by the whole grammar
+/// (empty, or comments only: [`declared_by`]), so a save cannot say whose
+/// it is. One holding only shows or sequences reads, and is not broken.
 pub fn is_broken(declares: &Declares) -> bool {
-    match declares {
-        Ok(names) => names.is_empty(),
-        Err(_) => true,
-    }
+    declares.is_err()
 }
 
 /// Sets a file aside before a save replaces it or a delete removes it (a
@@ -473,7 +485,7 @@ pub fn broken_type_files(dir: &Path) -> Vec<PathBuf> {
     files_under(dir, FIXTURE_TYPE_EXTENSIONS)
         .unwrap_or_default()
         .into_iter()
-        .filter(|path| fixture_types_declared(path).is_err())
+        .filter(|path| is_broken(&fixture_types_declared(path)))
         .collect()
 }
 
@@ -529,7 +541,7 @@ fn locate(
             let declares = declared(&path);
             (path, declares)
         })
-        .find(|(_, declares)| declares.is_err());
+        .find(|(_, declares)| is_broken(declares));
     let mut candidates: Vec<(PathBuf, Declares)> = stem.into_iter().collect();
     for (path, declares) in mentions {
         if !candidates.iter().any(|(p, _)| *p == path) {
@@ -1020,6 +1032,39 @@ mod tests {
 
     const PAR: &str =
         "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";
+
+    /// A file is broken when it does not read or holds nothing at all; one
+    /// holding only shows or sequences reads and declares no venue.
+    #[test]
+    fn only_a_file_holding_nothing_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write(d, "empty.light", "");
+        write(d, "notes.light", "# to do\n// later\n");
+        write(
+            d,
+            "seq.light",
+            "sequence \"q\" {\n    @0.000\n    spot: static color: \"blue\", duration: 1s\n}\n",
+        );
+        write(d, "inc.light", "include \"seq.light\"\n");
+        for file in ["empty.light", "notes.light"] {
+            assert!(is_broken(&venues_declared(&d.join(file))), "{file}");
+            assert!(is_broken(&fixture_types_declared(&d.join(file))), "{file}");
+        }
+        for file in ["seq.light", "inc.light"] {
+            assert_eq!(venues_declared(&d.join(file)), Ok(Vec::new()), "{file}");
+        }
+        write(d, "club.light", "");
+        let found = locate_venue(d, "Club")
+            .unwrap()
+            .expect("the empty stem file");
+        assert_eq!(found.path, d.join("club.light"));
+        assert_eq!(
+            broken_type_files(d).len(),
+            3,
+            "the empty, comment-only and club files"
+        );
+    }
 
     /// A link to nothing at the stem takes the name: a new file is named
     /// past it, not written through it.
