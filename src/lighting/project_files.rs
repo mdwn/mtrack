@@ -420,8 +420,9 @@ pub fn put_back(set_aside: &[(PathBuf, PathBuf)]) -> String {
 /// The one rule for whether a file's text may hold a name or an archive's
 /// record, read as far as it reads: the header scan ([`block_headers`])
 /// finds the `keyword "name"` block, or the name appears after a quote
-/// (`"Club"`, `"Club` with its quote left open), or the archive's path
-/// appears (`lighting/library/par.gdtf`, for a fixture type's record). It
+/// (`"Club"`, `"Club` with its quote left open), or the archive's path or
+/// its file name appears (`lighting/library/par.gdtf`, or `par.gdtf` in a
+/// record naming it from elsewhere: `gdtf("library/par.gdtf")`). It
 /// errs toward yes: a yes only offers a file for replacing (kept aside if
 /// replaced) or keeps a name or an archive from being taken, where a wrong
 /// no can leave a broken file to declare the name again, or delete an
@@ -434,12 +435,16 @@ pub fn may_hold(text: &str, name: Option<(&str, &str)>, archive: Option<&str>) -
                 .iter()
                 .any(|(k, n)| k == keyword && n == name)
     });
-    named || archive.is_some_and(|archive| text.contains(archive))
+    named
+        || archive.is_some_and(|archive| {
+            let file_name = archive.rsplit(['/', '\\']).next().unwrap_or(archive);
+            text.contains(archive) || (!file_name.is_empty() && text.contains(file_name))
+        })
 }
 
 /// A file's text as far as it reads (`from_utf8_lossy`); none if it cannot
 /// be read at all.
-fn lossy_text(path: &Path) -> String {
+pub fn lossy_text(path: &Path) -> String {
     let bytes = crate::util::read_file(path).unwrap_or_default();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -854,8 +859,8 @@ mod tests {
 
     /// The one "may hold" rule over-reports: a quote left open mid-file,
     /// which hides later headers from the scan, or one left open inside a
-    /// name, still lets the name be found, and an archive's path names its
-    /// record.
+    /// name, still lets the name be found, and an archive's path or file
+    /// name names its record.
     #[test]
     fn may_hold_finds_a_name_the_scan_cannot() {
         let hidden = "venue \"Other\" {\n  color: \"#FF0000\n}\nvenue \"Club\" {\n";
@@ -865,6 +870,17 @@ mod tests {
         assert!(may_hold(
             "{{{ lighting/library/par.gdtf\n",
             Some(("fixture_type", "Spot")),
+            Some("lighting/library/par.gdtf")
+        ));
+        // A record naming the archive by another path still names it.
+        assert!(may_hold(
+            "fixture_type \"Spot\" from gdtf(\"library/par.gdtf\") {{\n",
+            None,
+            Some("lighting/library/par.gdtf")
+        ));
+        assert!(!may_hold(
+            "fixture_type \"Spot\" from gdtf(\"library/spot.gdtf\") {\n",
+            None,
             Some("lighting/library/par.gdtf")
         ));
         assert!(!may_hold(

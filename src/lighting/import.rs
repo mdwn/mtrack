@@ -334,8 +334,7 @@ pub fn place_in_library(
     let broken_types: Vec<(PathBuf, String)> = super::project_files::broken_type_files(fixture_dir)
         .into_iter()
         .map(|path| {
-            let text = String::from_utf8_lossy(&crate::util::read_file(&path).unwrap_or_default())
-                .into_owned();
+            let text = super::project_files::lossy_text(&path);
             (path, text)
         })
         .collect();
