@@ -30,6 +30,7 @@ use super::document::{
 };
 use super::effect_parse::{
     CHASE_DIRECTIONS, CHASE_PATTERNS, COMMON_PARAMS, CYCLE_DIRECTIONS, DIMMER_CURVES, EASINGS,
+    MOVE_ALIASES,
 };
 use super::grammar::{LightingParser, Rule};
 use super::show::parse_sequence_loop_param;
@@ -118,30 +119,7 @@ pub fn vocabulary() -> Vocabulary {
     }
 }
 
-/// A `move`'s target and start parameters.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum MoveParam {
-    Focus,
-    Pan,
-    Tilt,
-    From,
-    FromPan,
-    FromTilt,
-}
-
-/// Each `move` parameter: its name, the parameters setting it clears (a
-/// point or angles, never both), and whether its value is a quoted focus
-/// point (else an angle).
-const MOVE_PARAMS: [(MoveParam, &str, &[&str], bool); 6] = [
-    (MoveParam::Focus, "focus", &["pan", "tilt", "to"], true),
-    (MoveParam::Pan, "pan", &["focus", "to"], false),
-    (MoveParam::Tilt, "tilt", &["focus", "to"], false),
-    (MoveParam::From, "from", &["from_pan", "from_tilt"], true),
-    (MoveParam::FromPan, "from_pan", &["from"], false),
-    (MoveParam::FromTilt, "from_tilt", &["from"], false),
-];
+pub use super::effect_parse::MoveParam;
 
 /// An effect's parameters as a form shows them: the last value of each
 /// name as written (a `to:` read as `focus`, a focus point and a `from:`
@@ -174,17 +152,19 @@ impl CueEffect {
                 next
             }
             EffectEdit::Move { key, value } => {
-                let (_, name, clears, point) = MOVE_PARAMS
-                    .iter()
-                    .find(|(k, ..)| k == key)
-                    .expect("every move parameter");
                 let value = value.as_deref().filter(|v| !v.is_empty());
                 let next = match value {
-                    Some(_) => self.without_params(clears),
+                    Some(_) => self.without_params(&key.excludes()),
                     None => self.clone(),
                 };
-                let written = value.map(|v| if *point { quoted(v) } else { with_deg(v) });
-                next.with_param(name, written.as_deref())
+                let written = value.map(|v| {
+                    if key.is_point() {
+                        quoted(v)
+                    } else {
+                        with_deg(v)
+                    }
+                });
+                next.with_param(key.name(), written.as_deref())
             }
         }
     }
@@ -268,14 +248,16 @@ impl EffectParams {
         for p in &self.params {
             values.insert(p.name.clone(), p.value.clone());
         }
-        if !values.contains_key("focus") {
-            if let Some(to) = values.get("to").cloned() {
-                values.insert("focus".to_string(), to);
+        for (alias, param) in MOVE_ALIASES {
+            if !values.contains_key(param.name()) {
+                if let Some(value) = values.get(alias).cloned() {
+                    values.insert(param.name().to_string(), value);
+                }
             }
         }
-        for name in ["focus", "from"] {
-            let shown = values.get(name).map(|v| unquoted(v).to_string());
-            values.insert(name.to_string(), shown.unwrap_or_default());
+        for param in MoveParam::points() {
+            let shown = values.get(param.name()).map(|v| unquoted(v).to_string());
+            values.insert(param.name().to_string(), shown.unwrap_or_default());
         }
         let colors = self
             .params
