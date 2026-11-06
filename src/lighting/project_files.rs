@@ -124,8 +124,9 @@ pub fn name_stem(name: &str) -> String {
     }
 }
 
-/// The stem a NEW file for `name` takes in `dir`: [`name_stem`], unless a
-/// file is already at it (in any of `extensions`, in any case) or `taken`
+/// The stem a NEW file for `name` takes in `dir`: [`name_stem`], unless an
+/// entry is already at it (a file, a directory or a link to nothing:
+/// `util::entries_at_stem`, in any of `extensions`, in any case) or `taken`
 /// claims it, when it is the first free `{stem}_{n}` from 2. Names that
 /// share a stem ("Club (Main)" and "Club Main") get files of their own: the
 /// one rule for naming a new file, for the web UI and the MVR and GDTF
@@ -138,7 +139,7 @@ pub fn new_file_stem(
 ) -> String {
     let base = name_stem(name);
     let free =
-        |stem: &str| !taken(stem) && crate::util::files_at_stem(dir, stem, extensions).is_empty();
+        |stem: &str| !taken(stem) && crate::util::entries_at_stem(dir, stem, extensions).is_empty();
     if free(&base) {
         return base;
     }
@@ -1003,6 +1004,21 @@ mod tests {
 
     const PAR: &str =
         "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";
+
+    /// A link to nothing at the stem takes the name: a new file is named
+    /// past it, not written through it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_the_stem_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::os::unix::fs::symlink(d.join("nowhere"), d.join("club.light")).unwrap();
+        assert_eq!(
+            new_file_stem(d, "Club", VENUE_EXTENSIONS, &|_| false),
+            "club_2"
+        );
+        assert!(crate::util::files_at_stem(d, "club", VENUE_EXTENSIONS).is_empty());
+    }
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let path = dir.join(rel);

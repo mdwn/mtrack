@@ -8469,11 +8469,13 @@ show "test" {
     }
 
     /// A save does not write through a link to nothing, which would create
-    /// the file it names, outside the project or not: the one containment
-    /// rule MCP's tools take.
+    /// the file it names, outside the project or not: a new file is named
+    /// past it (`project_files::new_file_stem` takes any entry as taken),
+    /// and a write to one is refused by the one containment rule MCP's
+    /// tools take.
     #[cfg(unix)]
     #[tokio::test]
-    async fn saves_refuse_a_link_to_nothing() {
+    async fn saves_do_not_write_through_a_link_to_nothing() {
         let (state, _dir) = test_state();
         let outside = tempfile::tempdir().unwrap();
         for (rel, file) in [("ft_dead", "par.light"), ("v_dead", "club.light")] {
@@ -8490,7 +8492,8 @@ show "test" {
             Body::from(sample_fixture_type_dsl("par")),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(_dir.path().join("ft_dead/par_2.light").is_file());
 
         let (status, parsed) = fixture_type_request(
             state,
@@ -8500,8 +8503,12 @@ show "test" {
             Body::from(sample_venue_dsl("club")),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(_dir.path().join("v_dead/club_2.light").is_file());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+
+        let dir = _dir.path().join("v_dead");
+        assert!(lighting_write_path(&dir, &dir.join("club.light")).is_err());
     }
 
     #[tokio::test]

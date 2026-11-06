@@ -38,6 +38,18 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 /// first, then by `extensions`' order, then by path, so the answer is the
 /// same however the directory lists its files.
 pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf> {
+    entries_at_stem(dir, stem, extensions)
+        .into_iter()
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+/// Every entry directly in `dir` at `<stem>.<extension>`, as
+/// [`files_at_stem`] matches them, whatever it is: a file, a directory, or
+/// a link to nothing. A name any of them has is taken for a new file
+/// (`project_files::new_file_stem`), as writing there would fail or write
+/// through the link.
+pub fn entries_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -45,11 +57,9 @@ pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf
     let mut found: Vec<((bool, usize), PathBuf)> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|path| {
-            path.is_file()
-                && path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s.to_lowercase() == stem)
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.to_lowercase() == stem)
         })
         .filter_map(|path| {
             let extension = crate::songs::extension_of(&path)?;
