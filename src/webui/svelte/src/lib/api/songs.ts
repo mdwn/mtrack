@@ -12,72 +12,21 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type {
+  Browse,
+  BulkImport,
+  SongFile,
+  SongFiles,
+  SongList,
+  TempoGuess,
+  Waveform,
+} from "../../gen/rules/mtrack_rules";
 import { get, post, postYaml, putYaml, uploadFile, uploadFiles } from "./rest";
 
-export interface SongSummary {
-  name: string;
-  duration_ms: number;
-  duration_display: string;
-  num_channels: number;
-  sample_format: string;
-  track_count: number;
-  tracks: string[];
-  has_midi: boolean;
-  has_lighting: boolean;
-  /** Song directory path relative to the songs root */
-  base_dir: string;
-  /** DSL lighting file paths relative to the songs root */
-  lighting_files: string[];
-  /** MIDI DMX file paths relative to the songs root */
-  midi_dmx_files: string[];
-  /** Beat grid, from the explicit tempo map or click track analysis */
-  beat_grid: BeatGrid | null;
-  /** Whether the song has an explicit tempo map configured */
-  has_tempo_map: boolean;
-  /** Whether this song loops when it finishes playing */
-  loop_playback: boolean;
-  /** The resolved loop crossfade, when the song has one. */
-  loop_crossfade_ms?: number | null;
-  loop_crossfade_cut?: string[];
-  /** Named sections defined by measure boundaries, optionally offset to a
-   * (possibly fractional) beat within the boundary measures. */
-  sections: {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-    start_beat?: number | null;
-    end_beat?: number | null;
-    color?: string | null;
-  }[];
-}
-
-export interface WaveformTrack {
-  name: string;
-  peaks: number[];
-}
-
-export interface WaveformData {
-  song_name: string;
-  tracks: WaveformTrack[];
-}
-
-export interface SongFailure {
-  name: string;
-  error: string;
-  base_dir: string;
-  failed: true;
-}
-
-export interface FetchSongsResult {
-  songs: SongSummary[];
-  failures: SongFailure[];
-}
-
-export async function fetchSongs(): Promise<FetchSongsResult> {
+export async function fetchSongs(): Promise<SongList> {
   const res = await get("/songs");
   if (!res.ok) throw new Error(`Failed to fetch songs: ${res.status}`);
-  const data = await res.json();
-  return { songs: data.songs, failures: data.failures ?? [] };
+  return res.json();
 }
 
 export async function fetchSongConfig(name: string): Promise<string> {
@@ -135,8 +84,8 @@ export async function deleteSong(name: string): Promise<Response> {
 // The song.yaml `tempo:` and `metronome:` blocks, and the beat grid: the
 // player's own types, generated from the Rust structs with the rules module
 // (`lib/rules.ts`), so the UI holds no copy of them to drift.
-import type { BeatGrid } from "../../gen/rules/mtrack_rules";
 export type {
+  SongFile,
   BeatGrid,
   TempoConfig,
   TempoChangeConfig,
@@ -148,83 +97,29 @@ export type {
   Subdivision as SubdivisionValue,
 } from "../../gen/rules/mtrack_rules";
 
-/** The song.yaml `pilot:` block — labeled voice hints at song positions. */
-export interface PilotHintConfig {
-  at: { measure: number; beat?: number } | { time: number };
-  label: string;
-  file?: string;
-  align?: "end" | "start";
-  offset?: number;
-}
-
-export interface PilotConfig {
-  track?: string;
-  hints?: PilotHintConfig[];
-}
-
-export interface GuessedTempo {
-  start_seconds: number;
-  bpm: number;
-  time_signature: [number, number];
-  changes: {
-    measure: number;
-    beat: number;
-    bpm: number;
-    time_signature: [number, number];
-    transition_beats?: number;
-  }[];
-  /** RMS alignment error in ms vs the click-track beat grid. Only present for
-   *  MIDI-sourced tempos. Values above 15ms suggest the MIDI may not match
-   *  the recorded audio. */
-  alignment_rms_ms?: number;
-}
-
-export interface TempoGuessResult {
-  source: "midi" | "beat_grid";
-  tempo: GuessedTempo;
-}
-
 export async function fetchTempoGuess(
   name: string,
-): Promise<TempoGuessResult | null> {
+): Promise<TempoGuess | null> {
   const res = await get(`/songs/${encodeURIComponent(name)}/tempo-guess`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to fetch tempo guess: ${res.status}`);
   return res.json();
 }
 
-export async function fetchWaveform(name: string): Promise<WaveformData> {
+export async function fetchWaveform(name: string): Promise<Waveform> {
   const res = await get(`/songs/${encodeURIComponent(name)}/waveform`);
   if (!res.ok) throw new Error(`Failed to fetch waveform: ${res.status}`);
   return res.json();
 }
 
-export interface SongFile {
-  name: string;
-  type: "audio" | "midi" | "lighting" | "other";
-}
-
 export async function fetchSongFiles(name: string): Promise<SongFile[]> {
   const res = await get(`/songs/${encodeURIComponent(name)}/files`);
   if (!res.ok) throw new Error(`Failed to fetch song files: ${res.status}`);
-  const data = await res.json();
+  const data: SongFiles = await res.json();
   return data.files;
 }
 
-export interface BrowseEntry {
-  name: string;
-  path: string;
-  type: "directory" | "audio" | "midi" | "lighting" | "other";
-  is_dir: boolean;
-}
-
-export interface BrowseResult {
-  path: string;
-  root: string;
-  entries: BrowseEntry[];
-}
-
-export async function browseDirectory(path?: string): Promise<BrowseResult> {
+export async function browseDirectory(path?: string): Promise<Browse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   const res = await get(`/browse${query}`);
   if (!res.ok) {
@@ -241,15 +136,7 @@ export async function createSongInDirectory(
   return post("/browse/create-song", JSON.stringify({ path: dirPath, name }));
 }
 
-export interface BulkImportResult {
-  created: string[];
-  skipped: string[];
-  failed: { name: string; error: string }[];
-}
-
-export async function bulkImportSongs(
-  dirPath: string,
-): Promise<BulkImportResult> {
+export async function bulkImportSongs(dirPath: string): Promise<BulkImport> {
   const res = await post(
     "/browse/bulk-import",
     JSON.stringify({ path: dirPath }),

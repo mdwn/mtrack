@@ -38,6 +38,7 @@
 //! than inside the cpal implementation so a second backend — or a second
 //! interface, once multi-interface output lands — reports health the same way.
 
+pub use super::output_status::OutputStatus;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -266,12 +267,6 @@ impl OutputHealth {
     }
 }
 
-impl serde::Serialize for OutputStatus {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 /// A point-in-time read of [`OutputHealth`].
 ///
 /// Deliberately facts rather than a verdict. "Silent" is correct and expected when
@@ -297,61 +292,6 @@ pub struct OutputHealthSnapshot {
     pub since_open: Duration,
     /// The most recent backend error, if there has been one.
     pub last_error: Option<String>,
-}
-
-/// What the output is doing, as one word.
-///
-/// The individual facts are still there for anyone who wants them; this exists
-/// because "is the audio all right?" is the question actually being asked, and
-/// answering it by reading four fields is how an operator ends up looking at
-/// `connected` and believing it.
-///
-/// Deliberately says nothing about whether audio reached the room. `Healthy`
-/// means the callback is running and being handed buffers — a device can still
-/// accept every one and produce nothing, which is not observable from here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputStatus {
-    /// The callback is running.
-    Healthy,
-    /// The callback has stopped, and the output thread is rebuilding the stream.
-    /// Someone is coming for it.
-    Recovering,
-    /// The callback has stopped and no rebuild is in progress. The wedge case:
-    /// the stream still looks open and nothing is going to fix it.
-    Stalled,
-    /// The device is open but the callback has never run once.
-    NeverStarted,
-}
-
-impl OutputStatus {
-    /// The canonical name for this state.
-    ///
-    /// One vocabulary for every surface — the JSON status endpoint, the gRPC
-    /// status response, the OSC broadcast and the web UI all use these exact
-    /// strings, and the UI switches on them. Serialization goes through here so
-    /// they cannot drift apart.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            OutputStatus::Healthy => "healthy",
-            OutputStatus::Recovering => "recovering",
-            OutputStatus::Stalled => "stalled",
-            OutputStatus::NeverStarted => "never_started",
-        }
-    }
-
-    /// Whether this state should be shown to an operator as something wrong.
-    ///
-    /// `NeverStarted` is not a fault: it only survives for one liveness window
-    /// after the device opens, and flagging it would make every start look
-    /// broken for its first moments. A device that never calls back is reported
-    /// as `Stalled` once that window passes, which is a fault.
-    ///
-    /// Kept in step with `StatusPage.audioFault()` deliberately — the two used to
-    /// disagree about `NeverStarted`, so the first caller to reach for this
-    /// helper would have contradicted the UI sitting next to it.
-    pub fn is_fault(&self) -> bool {
-        matches!(self, OutputStatus::Recovering | OutputStatus::Stalled)
-    }
 }
 
 impl OutputHealthSnapshot {

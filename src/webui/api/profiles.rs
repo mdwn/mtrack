@@ -24,13 +24,14 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use tracing::warn;
 
-use super::config_api::{apply_config_change, with_reload};
+use super::config_api::apply_config_change;
 use super::helpers::{
     require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
     validate_resource_name_to_write,
 };
 use super::lighting_api::{content_version, if_match_version};
 use crate::config::Profile;
+use crate::webui::wire::config::{FileSaved, ProfileFile, ProfileFileInfo};
 use config::Config;
 
 /// Validates a profile filename for use in file paths.
@@ -152,7 +153,7 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
     // codeql[rust/path-injection] profiles_dir comes from server config, not user input.
     let result = spawn_blocking_io("read profiles dir", move || {
         let entries = std::fs::read_dir(&profiles_dir)?;
-        let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+        let mut items: Vec<ProfileFileInfo> = Vec::new();
         for entry in entries {
             let entry = match entry {
                 Ok(e) => e,
@@ -185,24 +186,21 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
                 Err(_) => continue,
             };
 
-            items.push((
-                filename.clone(),
-                json!({
-                    "filename": filename,
-                    "hostname": profile.hostname(),
-                    "has_audio": profile.audio_config().is_some(),
-                    "has_midi": profile.midi().is_some(),
-                    "has_dmx": profile.dmx().is_some(),
-                    "has_trigger": profile.trigger().is_some(),
-                    "has_controllers": !profile.controllers().is_empty(),
-                }),
-            ));
+            items.push(ProfileFileInfo {
+                hostname: profile.hostname().map(str::to_string),
+                has_audio: profile.audio_config().is_some(),
+                has_midi: profile.midi().is_some(),
+                has_dmx: profile.dmx().is_some(),
+                has_trigger: profile.trigger().is_some(),
+                has_controllers: !profile.controllers().is_empty(),
+                filename,
+            });
         }
-        items.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok::<_, std::io::Error>(items.into_iter().map(|(_, v)| v).collect::<Vec<_>>())
+        items.sort_by(|a, b| a.filename.cmp(&b.filename));
+        Ok::<_, std::io::Error>(items)
     })
     .await?;
-    Ok::<_, axum::response::Response>((StatusCode::OK, Json(json!(result))).into_response())
+    Ok::<_, axum::response::Response>((StatusCode::OK, Json(result)).into_response())
 }
 
 /// GET /api/profiles/:filename — read a single profile file.
@@ -263,11 +261,11 @@ pub(super) async fn get_profile(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "profile": profile_json,
-                "yaml": raw,
-                "version": content_version(raw.as_bytes()),
-            })),
+            Json(ProfileFile {
+                profile: profile_json,
+                version: content_version(raw.as_bytes()),
+                yaml: raw,
+            }),
         )
             .into_response(),
     )
@@ -410,10 +408,12 @@ pub(super) async fn put_profile(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(with_reload(
-                json!({"status": "saved", "filename": filename, "version": version}),
+            Json(FileSaved {
+                status: "saved".to_string(),
+                filename: Some(filename),
+                version: Some(version),
                 reload,
-            )),
+            }),
         )
             .into_response(),
     )
@@ -485,10 +485,12 @@ pub(super) async fn delete_profile_file(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(with_reload(
-                json!({"status": "deleted", "filename": filename}),
+            Json(FileSaved {
+                status: "deleted".to_string(),
+                filename: Some(filename),
+                version: None,
                 reload,
-            )),
+            }),
         )
             .into_response(),
     )

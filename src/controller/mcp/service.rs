@@ -1867,14 +1867,10 @@ impl McpServer {
         let group = report
             .groups
             .iter()
-            .find(|g| g["name"] == json!(args.group))
-            .cloned()
+            .find(|g| g.name == args.group)
+            .map(|g| json!(g))
             .ok_or_else(|| {
-                let known: Vec<&str> = report
-                    .groups
-                    .iter()
-                    .filter_map(|g| g["name"].as_str())
-                    .collect();
+                let known: Vec<&str> = report.groups.iter().map(|g| g.name.as_str()).collect();
                 McpError::invalid_params(
                     format!(
                         "no song's show targets a group named '{}'; groups the shows use: {known:?}",
@@ -3755,7 +3751,7 @@ fn transitions_json(playlist: &crate::playlist::Playlist) -> Value {
 /// is the default (a fade-out's `loop_crossfade_cut`, a fade-in's none),
 /// as is a `null` `lights` (the length).
 fn fade_json(fade: Option<&crate::config::Fade>) -> Value {
-    fade.map_or(Value::Null, crate::config::Fade::to_json)
+    fade.map_or(Value::Null, |fade| json!(fade.status()))
 }
 
 impl McpServer {

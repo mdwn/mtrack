@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
 
 // The Venues plan's selection, arrange and aim tools (design §10). Every test
@@ -19,7 +20,6 @@ import { test, expect, type Page } from "@playwright/test";
 // a per-test venue name, so nothing depends on state another test left in the
 // shared mock server.
 
-type Vec3 = [number, number, number];
 interface FixtureBody {
   name: string;
   fixture_type: string;

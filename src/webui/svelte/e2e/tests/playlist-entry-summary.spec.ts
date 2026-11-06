@@ -26,10 +26,10 @@ import en from "../../src/lib/i18n/en.json" with { type: "json" };
 const strings = en as Record<string, string>;
 
 /** English, with `{name}` filled in, as svelte-i18n would. */
-function tr(key: string, values?: Record<string, string>): string {
+function tr(key: string, opts?: { values?: Record<string, string> }): string {
   const text = strings[key];
   if (text === undefined) throw new Error(`missing string ${key}`);
-  return text.replace(/\{(\w+)\}/g, (_, name) => values?.[name] ?? "");
+  return text.replace(/\{(\w+)\}/g, (_, name) => opts?.values?.[name] ?? "");
 }
 
 const noFades = { fade_out: null, fade_in: null };

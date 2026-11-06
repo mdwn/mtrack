@@ -46,6 +46,10 @@ use crate::lighting::fixture_test::{self, TestControls};
 use crate::lighting::patch::{self, PatchSpan};
 use crate::lighting::system::TypeInModeError;
 use crate::lighting::types::FixtureType;
+use crate::webui::wire::fixture_test::{
+    TestAnswer, TestChannel, TestMode, TestOlad, TestOptions, TestRequest, TestUnavailable,
+    TestUniverse, TestWarning,
+};
 
 /// The directories a test works in, as the page passes them from the
 /// running profile.
@@ -56,21 +60,7 @@ pub(super) struct TestQuery {
     fixture_type: Option<String>,
 }
 
-/// A test request.
-#[derive(serde::Deserialize)]
-pub(super) struct TestRequest {
-    fixture_type: String,
-    #[serde(default)]
-    mode: Option<String>,
-    universe: u16,
-    address: u16,
-    #[serde(default)]
-    controls: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    raw: BTreeMap<String, serde_json::Value>,
-}
-
-fn refuse(status: StatusCode, reason: &str, error: impl Into<String>) -> Response {
+fn refuse(status: StatusCode, reason: impl serde::Serialize, error: impl Into<String>) -> Response {
     (
         status,
         Json(json!({"error": error.into(), "reason": reason})),
@@ -79,28 +69,28 @@ fn refuse(status: StatusCode, reason: &str, error: impl Into<String>) -> Respons
 }
 
 /// Why testing is not possible right now, if it is not.
-async fn unavailable(state: &WebUiState) -> Option<(&'static str, String)> {
+async fn unavailable(state: &WebUiState) -> Option<(TestUnavailable, String)> {
     if state.player.is_locked() {
         return Some((
-            "locked",
+            TestUnavailable::Locked,
             "The player is locked. Unlock it to test a fixture.".to_string(),
         ));
     }
     if state.player.is_playing().await {
         return Some((
-            "playing",
+            TestUnavailable::Playing,
             "A song is playing. Stop it to test a fixture.".to_string(),
         ));
     }
     let Some(engine) = state.player.dmx_engine() else {
         return Some((
-            "no_dmx",
+            TestUnavailable::NoDmx,
             "The running profile has no DMX output, so there is nothing to send to.".to_string(),
         ));
     };
     if engine.configured_universes().is_empty() {
         return Some((
-            "no_universes",
+            TestUnavailable::NoUniverses,
             "The running profile's DMX section names no universes.".to_string(),
         ));
     }
@@ -271,21 +261,17 @@ fn venue_overlaps(state: &WebUiState, test: &PatchSpan) -> Vec<String> {
 
 /// The profile's universes, with olad's patch state for each (null when
 /// olad was not reachable).
-fn universes_with_olad(
-    engine: &crate::dmx::engine::Engine,
-) -> (Vec<serde_json::Value>, Option<bool>) {
+fn universes_with_olad(engine: &crate::dmx::engine::Engine) -> (Vec<TestUniverse>, Option<bool>) {
     let configured = engine.configured_universes();
     let report = crate::dmx::patch_check::probe_universes(engine.ola_http_port(), &configured);
     let reachable = report.reachable;
     let names = engine.universe_names();
     let universes = configured
         .iter()
-        .map(|u| {
-            json!({
-                "universe": u,
-                "name": names.get(u),
-                "patched": reachable.then(|| !report.unpatched.contains(u)),
-            })
+        .map(|u| TestUniverse {
+            universe: *u,
+            name: names.get(u).cloned(),
+            patched: reachable.then(|| !report.unpatched.contains(u)),
         })
         .collect();
     (universes, Some(reachable))
@@ -331,64 +317,63 @@ pub(super) async fn get_options(
                 vec![None]
             }
         };
-        let modes: Vec<serde_json::Value> = mode_names
+        let modes: Vec<TestMode> = mode_names
             .into_iter()
             .map(
                 |mode| match system.type_in_mode(&name, mode.as_deref(), &root) {
                     Ok(fixture_type) => {
                         let info =
                             lighting::system::fixture_info_for(&name, 1, 1, &name, &fixture_type);
-                        let channels: Vec<serde_json::Value> = fixture_test::channel_names(&info)
-                            .into_iter()
-                            .map(|(offset, name)| json!({"offset": offset, "name": name}))
-                            .collect();
-                        json!({
-                            "name": mode,
-                            "drivable": true,
-                            "error": null,
-                            "footprint": fixture_test::footprint(&info),
-                            "controls": fixture_test::control_support(&info),
-                            "channels": channels,
-                        })
+                        TestMode {
+                            name: mode,
+                            drivable: true,
+                            error: None,
+                            footprint: Some(fixture_test::footprint(&info)),
+                            controls: Some(fixture_test::control_support(&info)),
+                            channels: fixture_test::channel_names(&info)
+                                .into_iter()
+                                .map(|(offset, name)| TestChannel { offset, name })
+                                .collect(),
+                        }
                     }
-                    Err(e) => json!({
-                        "name": mode,
-                        "drivable": false,
-                        "error": e.to_string(),
-                        "footprint": null,
-                        "controls": null,
-                        "channels": [],
-                    }),
+                    Err(e) => TestMode {
+                        name: mode,
+                        drivable: false,
+                        error: Some(e.to_string()),
+                        footprint: None,
+                        controls: None,
+                        channels: Vec::new(),
+                    },
                 },
             )
             .collect();
         let default_mode = modes
             .iter()
-            .find(|m| m["drivable"] == true)
-            .map(|m| m["name"].clone())
-            .unwrap_or(serde_json::Value::Null);
+            .find(|m| m.drivable)
+            .and_then(|m| m.name.clone());
         let (universes, reachable) = match &engine {
             Some(engine) => universes_with_olad(engine),
             None => (Vec::new(), None),
         };
         let olad_port = engine.as_ref().map(|e| e.ola_http_port());
-        Ok::<_, String>(Some(json!({
-            "fixture_type": name,
-            "gdtf": gdtf.is_some(),
-            "modes": modes,
-            "default_mode": default_mode,
-            "universes": universes,
-            "olad": {"reachable": reachable, "port": olad_port},
-        })))
+        Ok::<_, String>(Some(TestOptions {
+            fixture_type: name,
+            gdtf: gdtf.is_some(),
+            modes,
+            default_mode,
+            universes,
+            olad: TestOlad {
+                reachable,
+                port: olad_port,
+            },
+            available: why_not.is_none(),
+            unavailable: why_not.as_ref().map(|(r, _)| *r),
+            unavailable_message: why_not.map(|(_, m)| m),
+        }))
     })
     .await;
     match outcome {
-        Ok(Ok(Some(mut body))) => {
-            body["available"] = json!(why_not.is_none());
-            body["unavailable"] = json!(why_not.as_ref().map(|(r, _)| r));
-            body["unavailable_message"] = json!(why_not.map(|(_, m)| m));
-            (StatusCode::OK, Json(body)).into_response()
-        }
+        Ok(Ok(Some(options))) => (StatusCode::OK, Json(options)).into_response(),
         Ok(Ok(None)) => refuse(
             StatusCode::NOT_FOUND,
             "type",
@@ -409,7 +394,7 @@ pub(super) async fn post_test(
     Json(request): Json<TestRequest>,
 ) -> Response {
     if let Some((reason, message)) = unavailable(&state).await {
-        let status = if reason == "locked" {
+        let status = if reason == TestUnavailable::Locked {
             StatusCode::LOCKED
         } else {
             StatusCode::CONFLICT
@@ -503,17 +488,17 @@ pub(super) async fn post_test(
     .await;
     (
         StatusCode::OK,
-        Json(json!({
-            "active": true,
-            "universe": request.universe,
-            "address": request.address,
-            "footprint": footprint,
-            "fixture_type": request.fixture_type,
-            "mode": request.mode,
-            "expires_in_secs": expiry.as_secs_f64(),
-            "frame": frame,
-            "warnings": warnings,
-        })),
+        Json(TestAnswer {
+            active: true,
+            universe: request.universe,
+            address: request.address,
+            footprint,
+            fixture_type: request.fixture_type,
+            mode: request.mode,
+            expires_in_secs: expiry.as_secs_f64(),
+            frame,
+            warnings,
+        }),
     )
         .into_response()
 }
@@ -527,7 +512,7 @@ async fn warnings(
     request: &TestRequest,
     footprint: u16,
     unsupported: &[String],
-) -> Vec<serde_json::Value> {
+) -> Vec<TestWarning> {
     let mut out = Vec::new();
     let span = PatchSpan {
         fixture: request.fixture_type.clone(),
@@ -537,24 +522,22 @@ async fn warnings(
     };
     let overlaps = venue_overlaps(state, &span);
     if !overlaps.is_empty() {
-        out.push(json!({
-            "kind": "venue_overlap",
-            "fixtures": overlaps,
-            "message": format!(
+        out.push(TestWarning::VenueOverlap {
+            message: format!(
                 "These addresses belong to {} in the current venue; the test overrides {} while it runs.",
                 overlaps.join(", "),
                 if overlaps.len() == 1 { "it" } else { "them" },
             ),
-        }));
+            fixtures: overlaps,
+        });
     }
     for overrun in patch::venue_overruns(std::slice::from_ref(&span)) {
-        out.push(json!({
-            "kind": "past_universe_end",
-            "message": format!(
+        out.push(TestWarning::PastUniverseEnd {
+            message: format!(
                 "This fixture needs addresses {}–{}, past the end of the universe (512); the channels past 512 are not sent.",
                 overrun.address, overrun.last
             ),
-        }));
+        });
     }
     let port = engine.ola_http_port();
     let universe = request.universe;
@@ -565,27 +548,24 @@ async fn warnings(
     .ok();
     if let Some(report) = report {
         if !report.reachable {
-            out.push(json!({
-                "kind": "olad_unreachable",
-                "message": format!(
+            out.push(TestWarning::OladUnreachable {
+                message: format!(
                     "mtrack cannot reach olad (the DMX service) on port {port}, so nothing reaches the lights."
                 ),
-            }));
+            });
         } else if report.unpatched.contains(&universe) {
-            out.push(json!({
-                "kind": "universe_unpatched",
-                "message": format!(
+            out.push(TestWarning::UniverseUnpatched {
+                message: format!(
                     "olad has no output patched to universe {universe}: mtrack sends, but nothing leaves the computer."
                 ),
-            }));
+            });
         }
     }
     for control in unsupported {
-        out.push(json!({
-            "kind": "unsupported_control",
-            "control": control,
-            "message": format!("This mode has no channel for {control}."),
-        }));
+        out.push(TestWarning::UnsupportedControl {
+            control: control.clone(),
+            message: format!("This mode has no channel for {control}."),
+        });
     }
     out
 }

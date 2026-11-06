@@ -21,10 +21,13 @@ pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod export;
+pub mod findings;
 pub mod fit;
+pub mod fixture_data;
 pub mod fixture_patch;
 pub mod fixture_test;
 pub mod gdtf;
+pub mod geometry;
 #[cfg(test)]
 mod golden_tests;
 pub mod import;
@@ -33,10 +36,12 @@ mod layering_tests;
 pub mod library;
 pub mod lint;
 pub mod mvr;
+pub mod mvr_types;
 pub mod parser;
 pub mod patch;
 pub mod project_files;
 pub mod readiness;
+pub mod stage_model;
 pub mod system;
 // Tempo lives at the crate root (shared with the metronome and song config);
 // re-exported here so existing `lighting::tempo::…` paths keep working.

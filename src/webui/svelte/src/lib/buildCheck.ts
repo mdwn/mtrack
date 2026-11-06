@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { BuildInfo } from "../gen/rules/mtrack_rules";
+
 /**
  * Whether this tab runs an older UI than the server now serves. A single-page
  * app keeps its bundle until it is reloaded, so after mtrack is replaced and
@@ -19,11 +21,7 @@
  */
 
 /** The server's build as `/api/status` reports it. */
-export interface ServerBuild {
-  build_time: string;
-  /** The UI the server serves, when its build stamped one. */
-  ui_build?: string | null;
-}
+export type ServerBuild = Pick<BuildInfo, "build_time" | "ui_build">;
 
 /**
  * Two rules, the exact one when it can be asked:

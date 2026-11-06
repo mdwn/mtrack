@@ -21,7 +21,10 @@
 //! A rename rewrites every venue line that names the type, planned in full
 //! before anything is written.
 
-use std::collections::{BTreeMap, HashMap};
+use crate::webui::wire::fixture_types::{
+    FixtureSettingsData, Rename, RenamedLines, SettingsRequest, SettingsSaved, StrobeTable,
+};
+use std::collections::BTreeMap;
 
 /// The version a fixture with no record answers, and a save to it sends as
 /// `If-Match`: "no record yet". A save against it refuses if a record has
@@ -54,24 +57,6 @@ use crate::lighting::types::{Fixture, MovementLimits, StrobeCurve, Venue};
 pub(super) struct SettingsQuery {
     dir: Option<String>,
     venues_dir: Option<String>,
-}
-
-/// The body of a settings plan or save.
-#[derive(serde::Deserialize)]
-pub(super) struct SettingsRequest {
-    name: String,
-    #[serde(default)]
-    movement: MovementLimits,
-    /// How a strobe rate maps onto the strobe channel; absent or null is
-    /// automatic.
-    #[serde(default)]
-    strobe_curve: Option<StrobeCurve>,
-    /// `false` answers what the save would do and writes nothing.
-    write: bool,
-    /// The venue files' versions the plan was made against, by file name; a
-    /// save refuses when any has changed since.
-    #[serde(default)]
-    venue_versions: HashMap<String, String>,
 }
 
 /// A refusal; a 409 carries `conflict` so a client reloads and asks again,
@@ -120,13 +105,13 @@ pub(super) async fn get_settings(
         };
         let strobe = strobe_info(root, archive).await;
         return Ok::<_, Response>(
-            Json(json!({
-                "name": name,
-                "movement": MovementLimits::default(),
-                "strobe_curve": null,
-                "strobe": strobe,
-                "version": UNRECORDED,
-            }))
+            Json(FixtureSettingsData {
+                name,
+                movement: MovementLimits::default(),
+                strobe_curve: None,
+                strobe,
+                version: UNRECORDED.to_string(),
+            })
             .into_response(),
         );
     };
@@ -146,16 +131,16 @@ pub(super) async fn get_settings(
         .and_then(|types| types.get(&name)?.source().map(|s| s.path.clone()));
     let strobe = match archive {
         Some(archive) => strobe_info(root, archive).await,
-        None => serde_json::Value::Null,
+        None => None,
     };
     Ok::<_, Response>(
-        Json(json!({
-            "name": settings.name,
-            "movement": settings.movement,
-            "strobe_curve": settings.strobe_curve,
-            "strobe": strobe,
-            "version": content_version(content.as_bytes()),
-        }))
+        Json(FixtureSettingsData {
+            name: settings.name,
+            movement: settings.movement,
+            strobe_curve: settings.strobe_curve,
+            strobe,
+            version: content_version(content.as_bytes()),
+        })
         .into_response(),
     )
 }
@@ -166,18 +151,17 @@ pub(super) async fn get_settings(
 /// declared curve is linear in hertz) and the curve mtrack uses when the
 /// record states none (always `declared` for a GDTF, the spec's rule). An
 /// archive that cannot be read is `null` too.
-async fn strobe_info(root: PathBuf, archive: String) -> serde_json::Value {
+async fn strobe_info(root: PathBuf, archive: String) -> Option<StrobeTable> {
     tokio::task::spawn_blocking(move || {
         let bytes = crate::util::read_file(&root.join(&archive)).ok()?;
         let description = lighting::gdtf::parse_archive(&bytes).ok()?;
         let steps = lighting::gdtf::strobe_table_steps(&description)?;
         let automatic = StrobeCurve::automatic(true);
-        Some(json!({"steps": steps, "automatic": automatic}))
+        Some(StrobeTable { steps, automatic })
     })
     .await
     .ok()
     .flatten()
-    .unwrap_or(serde_json::Value::Null)
 }
 
 /// One venue file's planned rewrite for a rename.
@@ -581,7 +565,7 @@ pub(super) async fn post_settings(
     let (plan, new_name) = outcome.map_err(|(status, message)| error(status, message))?;
 
     let renamed = new_name != name;
-    let mut venue_error = serde_json::Value::Null;
+    let mut venue_error = None;
     if write {
         // One reload after every write: types and venues together, so the
         // engine never sees a venue naming a type it has not read yet.
@@ -602,13 +586,15 @@ pub(super) async fn post_settings(
         plan.type_version.clone()
     };
     let rename = renamed.then(|| {
-        let venues: Vec<serde_json::Value> = plan
+        let venues = plan
             .rewrites
             .iter()
             .flat_map(|r| {
-                r.venues.iter().map(
-                    move |(venue, lines)| json!({"venue": venue, "file": r.file, "lines": lines}),
-                )
+                r.venues.iter().map(move |(venue, lines)| RenamedLines {
+                    venue: venue.clone(),
+                    file: r.file.clone(),
+                    lines: *lines,
+                })
             })
             .collect();
         let lines: usize = plan
@@ -617,7 +603,12 @@ pub(super) async fn post_settings(
             .flat_map(|r| &r.venues)
             .map(|(_, n)| n)
             .sum();
-        json!({"from": name, "to": new_name, "venues": venues, "lines": lines})
+        Rename {
+            from: name.clone(),
+            to: new_name.clone(),
+            venues,
+            lines,
+        }
     });
     let mut venue_versions = plan.venue_versions.clone();
     if write {
@@ -626,12 +617,12 @@ pub(super) async fn post_settings(
         }
     }
     Ok::<_, Response>(
-        Json(json!({
-            "version": version,
-            "rename": rename,
-            "venue_versions": venue_versions,
-            "venue_error": venue_error,
-        }))
+        Json(SettingsSaved {
+            version,
+            rename,
+            venue_versions,
+            venue_error,
+        })
         .into_response(),
     )
 }

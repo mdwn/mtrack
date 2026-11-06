@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import type { FadeConfig } from "../../lib/api/config";
+  import type { FadeConfig } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
 
   interface Props {

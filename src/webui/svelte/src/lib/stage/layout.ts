@@ -25,9 +25,8 @@
  * region, everything else lands on the front row.
  */
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
 import type { BeamLook } from "./rig";
-
-export type Vec3 = [number, number, number];
 
 export interface Pt {
   x: number;

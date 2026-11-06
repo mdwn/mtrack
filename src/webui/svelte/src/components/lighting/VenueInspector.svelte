@@ -19,6 +19,15 @@
    * Every operation is one venue save, made through the plan's own `persist`
    * so it and a drag can never race, and the plan redraws from the reload.
    */
+  import type {
+    FixtureMetadata,
+    FixtureTypeEntry,
+    FixtureTypeGdtf,
+    Vec3,
+    Venue,
+    VenueMetadata,
+    VenuePatch,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { untrack } from "svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
@@ -31,10 +40,6 @@
     fetchFixtureTypes,
     fetchVenue,
     fetchVenuePatch,
-    type FixtureTypeEntry,
-    type FixtureTypeGdtf,
-    type VenueData,
-    type VenuePatch,
   } from "../../lib/api/config";
   import {
     listed,
@@ -47,11 +52,6 @@
   import { isRefused } from "../../lib/lighting/modes";
   import { rules } from "../../lib/rules";
   import { metadataStore, poseStore } from "../../lib/ws/stores";
-  import type {
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
-  } from "../../lib/ws/stores";
   import {
     BEARINGS,
     MOVER_MOUNTINGS,
@@ -72,7 +72,7 @@
     selection: string[];
     onSelect: (names: string[]) => void;
     /** The plan's read-change-write of the venue file. */
-    persist: (update: (venue: VenueData) => void) => Promise<boolean>;
+    persist: (update: (venue: Venue) => void) => Promise<boolean>;
     saving: boolean;
     /** The fixture types directory override (a profile's setting). */
     fixtureTypesDir?: string;
@@ -103,7 +103,7 @@
   $effect(() => {
     const dir = fixtureTypesDir;
     fetchFixtureTypes(dir || undefined)
-      .then((r) => (fixtureTypes = r.fixtureTypes))
+      .then((r) => (fixtureTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });
@@ -180,7 +180,7 @@
   }
 
   async function apply(
-    compute: (venue: VenueData) => {
+    compute: (venue: Venue) => {
       changes: Record<string, Change>;
       notes?: string[];
     },
@@ -200,7 +200,7 @@
           rotated.push(name);
         }
         if (change.beam_angle !== undefined)
-          fixture.beam_angle = change.beam_angle;
+          fixture.beam_angle = change.beam_angle ?? undefined;
       }
     });
     if (ok) {
@@ -210,7 +210,7 @@
   }
 
   /** The selected fixtures the file places, as arrange wants them. */
-  function placedIn(venue: VenueData, names: string[]): Placed[] {
+  function placedIn(venue: Venue, names: string[]): Placed[] {
     return names
       .filter((n) => venue.fixtures[n]?.position)
       .map((n) => ({
@@ -640,7 +640,7 @@
     }
     const ok = await persist((venue) => {
       const fixture = venue.fixtures[name];
-      if (fixture) fixture.mode = next || null;
+      if (fixture) fixture.mode = next || undefined;
     });
     if (ok) {
       draft.mode = next || null;

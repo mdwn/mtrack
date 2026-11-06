@@ -13,12 +13,14 @@
      *
      * -->
 <script lang="ts">
-  /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { ProfileDraft } from "../../lib/api/config";
+
+  import type {} from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
   interface Props {
-    profile: any;
+    profile: ProfileDraft;
     index: number;
     onclick: () => void;
   }

@@ -15,20 +15,26 @@ pub mod ambient;
 mod audio;
 mod controller;
 mod dmx;
+mod duration;
 mod error;
+mod fade;
 mod hostname;
+mod kind_data;
 pub mod lighting;
 pub mod metronome;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
+mod midi_event;
 pub mod notification;
 pub mod pilot;
 mod player;
 mod playlist;
+mod playlist_settings;
 mod profile;
 pub mod samples;
+mod section;
 mod song;
 mod statusevents;
 pub mod store;
@@ -67,9 +73,10 @@ pub use self::player::{MetronomeDefaults, Player};
 #[allow(unused_imports)]
 pub use self::playlist::{
     AutoPlayConfig, ConfiguredEntry, EntryFades, EntryTransitions, Fade, FadeConfig, FadeCurve,
-    Playlist, PlaylistEntry,
+    FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
+pub(crate) use self::duration::{parse_duration_string, parse_playback_delay};
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};
 pub(crate) use self::player::list_profile_files;
@@ -79,7 +86,8 @@ pub use self::samples::{
     ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
-pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Section, Song};
+pub use self::section::Section;
+pub use self::song::{LightShow, LightingShow, LoopCrossfade, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};
@@ -87,27 +95,6 @@ pub use self::track::Track;
 
 mod kind;
 pub use self::kind::{peek_kind, ConfigKind};
-
-use std::time::Duration;
-
-/// A duration as a config string (`500ms`, `2s`): the one parse of one,
-/// for every field that takes one. The error is the parser's; a validator
-/// words its own.
-pub(crate) fn parse_duration_string(raw: &str) -> Result<Duration, duration_string::Error> {
-    duration_string::DurationString::from_string(raw.to_string()).map(Duration::from)
-}
-
-/// Parses an optional duration string (e.g. "500ms") into a `Duration`,
-/// returning `default` when `raw` is `None`.
-pub(crate) fn parse_playback_delay(
-    raw: &Option<String>,
-    default: Duration,
-) -> Result<Duration, Box<dyn std::error::Error>> {
-    match raw {
-        Some(s) => Ok(parse_duration_string(s)?),
-        None => Ok(default),
-    }
-}
 
 #[cfg(test)]
 mod duration_string_test {

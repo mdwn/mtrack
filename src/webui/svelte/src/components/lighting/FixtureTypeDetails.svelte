@@ -21,11 +21,9 @@
    * them, the user's own settings for the fixture (`FixtureSettingsForm`)
    * (mtrack keeps those in a record of its own, never shown as a file).
    */
+  import type { FixtureTypeGdtf } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import {
-    fetchFixtureTypeGdtf,
-    type FixtureTypeGdtf,
-  } from "../../lib/api/config";
+  import { fetchFixtureTypeGdtf } from "../../lib/api/config";
   import {
     abilities,
     extras,

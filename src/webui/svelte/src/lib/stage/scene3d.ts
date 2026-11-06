@@ -28,6 +28,16 @@
  * which is how a pre-viz reads.
  */
 
+import type {
+  FixtureMetadata,
+  Matrix4,
+  PoseSnapshot,
+  RigModel,
+  SceneryModel,
+  StageValues,
+  Vec3,
+  VenueMetadata,
+} from "../../gen/rules/mtrack_rules";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -40,9 +50,6 @@ import {
   genericRig,
   poseRotations,
   trayPositions,
-  type Mat4,
-  type RigModel,
-  type SceneryModel,
 } from "./rig";
 import { fittedMesh } from "./fit";
 import {
@@ -54,15 +61,6 @@ import {
   packDeckLights,
   type DeckLight,
 } from "./decklight";
-import type {
-  CellChannels,
-  FixtureChannels,
-  FixtureMetadata,
-  FixturePose,
-  StrobeRates,
-  Vec3,
-  VenueMetadata,
-} from "../ws/stores";
 
 export type CameraPreset = "foh" | "top" | "side";
 
@@ -205,7 +203,7 @@ class RigCache {
   }
 }
 
-function matrixOf(node: { transform: Mat4 }): THREE.Matrix4 {
+function matrixOf(node: { transform: Matrix4 }): THREE.Matrix4 {
   const t = node.transform;
   // prettier-ignore
   return new THREE.Matrix4().set(
@@ -298,10 +296,10 @@ export class StageScene {
   private underTest = new Set<string>();
   private selectionBoxes = new Map<string, THREE.Box3Helper>();
   private labels = true;
-  private channels: Record<string, FixtureChannels> = {};
-  private cells: CellChannels = {};
-  private strobeRates: StrobeRates = {};
-  private poses: Record<string, FixturePose> = {};
+  private channels: StageValues["fixtures"] = {};
+  private cells: StageValues["cells"] = {};
+  private strobeRates: StageValues["strobe_rates"] = {};
+  private poses: Record<string, PoseSnapshot> = {};
   private extent: [number, number, number, number] = [-4, 4, 0, 6];
   /** The longest beam drawn, meters, once `frameFixtures` has set one. */
   private beamCap: number | null = null;
@@ -437,22 +435,22 @@ export class StageScene {
   }
 
   /** The live channel values, per fixture. */
-  setChannels(channels: Record<string, FixtureChannels>) {
+  setChannels(channels: StageValues["fixtures"]) {
     this.channels = channels;
   }
 
   /** The live poses, per mover. */
-  setPoses(poses: Record<string, FixturePose>) {
+  setPoses(poses: Record<string, PoseSnapshot>) {
     this.poses = poses;
   }
 
   /** Per-cell values for fixtures a per-cell effect drives (design §17.4). */
-  setCells(cells: CellChannels) {
+  setCells(cells: StageValues["cells"]) {
     this.cells = cells;
   }
 
   /** The rate each strobing fixture flashes at, from the player. */
-  setStrobeRates(rates: StrobeRates) {
+  setStrobeRates(rates: StageValues["strobe_rates"]) {
     this.strobeRates = rates;
   }
 

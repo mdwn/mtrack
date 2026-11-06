@@ -21,13 +21,12 @@
 //! import is, by construction, a fixture type that will load.
 
 mod mvr;
+mod report;
 pub mod scene_view;
 
 use std::collections::HashSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-
-use serde::Serialize;
 
 use super::gdtf;
 use super::system::LightingSystem;
@@ -38,40 +37,7 @@ pub use mvr::{
     MvrImportOptions, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
     RemovedFixture,
 };
-
-/// What an import did, for reporting: the fixture the user now has, in
-/// their terms, and the files behind it for the CLI and MVR import.
-#[derive(Debug, Serialize)]
-pub struct GdtfImport {
-    /// The fixture type's name — what venues and shows call it.
-    pub type_name: String,
-    /// The archive's own fixture name.
-    pub fixture: String,
-    pub manufacturer: String,
-    /// How many modes the archive has; a venue fixture may use any it can
-    /// drive.
-    pub modes: usize,
-    /// Where the archive is, project-relative.
-    pub archive: String,
-    /// The archive was already in the project as `type_name`: nothing was
-    /// written.
-    pub already_imported: bool,
-    /// The name the archive's fixture name would have given, when another
-    /// fixture already has it and the archive's file stem was added.
-    pub renamed_from: Option<String>,
-    /// Modes mtrack cannot drive, and why.
-    pub refused_modes: Vec<RefusedMode>,
-    /// mtrack's record of the type, project-relative, when one was written
-    /// (a name given, or one pinned on a collision).
-    pub fixture_file: Option<String>,
-}
-
-/// A mode of an archive that cannot be imported, and why.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct RefusedMode {
-    pub mode: String,
-    pub reason: String,
-}
+pub use report::{GdtfImport, RefusedMode};
 
 /// An archive of the same file name but different content is already in
 /// the project's library. Its own error type so a caller can tell it from

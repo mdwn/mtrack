@@ -13,14 +13,12 @@
      *
      * -->
 <script lang="ts">
-  import {
-    fetchSongs,
-    fetchWaveform,
-    deleteSong,
-    type SongSummary,
-    type SongFailure,
-    type WaveformData,
-  } from "../../lib/api/songs";
+  import type {
+    SongFailure,
+    SongInfo,
+    Waveform as SongWaveform,
+  } from "../../gen/rules/mtrack_rules";
+  import { fetchSongs, fetchWaveform, deleteSong } from "../../lib/api/songs";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
@@ -38,7 +36,7 @@
 
   let { initialSearch = "", onSearchChange }: Props = $props();
 
-  let songs = $state<SongSummary[]>([]);
+  let songs = $state<SongInfo[]>([]);
   let failures = $state<SongFailure[]>([]);
   let waveforms = $state<Record<string, number[]>>({});
   let loading = $state(true);
@@ -53,7 +51,7 @@
 
   let collapsedGroups = new SvelteSet<string>();
 
-  type SongOrFailure = SongSummary | SongFailure;
+  type SongOrFailure = SongInfo | SongFailure;
 
   function isSongFailure(item: SongOrFailure): item is SongFailure {
     return "failed" in item && item.failed === true;
@@ -109,7 +107,7 @@
     }
   }
 
-  function compositePeaks(waveform: WaveformData): number[] {
+  function compositePeaks(waveform: SongWaveform): number[] {
     if (waveform.tracks.length === 0) return [];
     if (waveform.tracks.length === 1) return waveform.tracks[0].peaks;
     const len = waveform.tracks[0].peaks.length;

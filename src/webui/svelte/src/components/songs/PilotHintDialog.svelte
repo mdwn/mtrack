@@ -13,13 +13,9 @@
      *
      * -->
 <script lang="ts">
+  import type { PilotHint } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import type {
-    BeatGrid,
-    PilotHintConfig,
-    SongFile,
-    TempoConfig,
-  } from "../../lib/api/songs";
+  import type { BeatGrid, SongFile, TempoConfig } from "../../lib/api/songs";
   import { rules } from "../../lib/rules";
   import NumberStepper from "../NumberStepper.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
@@ -28,7 +24,7 @@
   import SongFileField from "./SongFileField.svelte";
 
   interface Props {
-    hint: PilotHintConfig;
+    hint: PilotHint;
     hasBeatGrid?: boolean;
     /** Beat times (seconds) + measure start indices, for converting the
      * position when switching between measure and time anchoring. */
@@ -42,7 +38,7 @@
     songName?: string;
     /** The song directory listing, for the clip picker. */
     songFiles?: SongFile[];
-    onchange: (patch: Partial<PilotHintConfig>) => void;
+    onchange: (patch: Partial<PilotHint>) => void;
     ondelete: () => void;
     onclose: () => void;
   }

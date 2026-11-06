@@ -2362,12 +2362,15 @@ name = "mtrack-rules-wasm"
 version = "0.1.0"
 dependencies = [
  "config",
+ "duration-string",
  "indexmap",
+ "midly",
  "pest",
  "pest_derive",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "tracing",
  "tsify-next",
  "wasm-bindgen",
 ]

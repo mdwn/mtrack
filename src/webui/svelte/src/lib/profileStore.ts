@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Hardware profile loading and saving, shared by Config (the profile editor)
  * and Lighting (the Groups page).
@@ -23,6 +22,11 @@
  * write "a profile" and gets the same behaviour either way.
  */
 
+import type {
+  ConfigReload,
+  Lighting,
+  StoreSnapshot,
+} from "../gen/rules/mtrack_rules";
 import YAML from "yaml";
 import {
   addProfile,
@@ -31,15 +35,11 @@ import {
   fetchProfileFiles,
   saveProfileFile,
   updateProfile,
-  type ConfigSnapshot,
-  type ProfileFileInfo,
+  type ProfileDraft,
 } from "./api/config";
+import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
 import { get } from "./api/rest";
-import {
-  reloadNotice,
-  type ConfigReload,
-  type ReloadNotice,
-} from "./configReload";
+import { reloadNotice, type ReloadNotice } from "./configReload";
 
 /** Where one profile is stored. */
 export type ProfileRef =
@@ -62,7 +62,7 @@ export interface ProfileSet {
   checksum: string;
   profilesDir: string | null;
   /** Inline profiles (empty in file mode). */
-  inline: any[];
+  inline: ProfileDraft[];
   /** Profile files (empty in inline mode). */
   files: ProfileFileInfo[];
   entries: ProfileEntry[];
@@ -71,14 +71,17 @@ export interface ProfileSet {
 /** Pulls the profile-related parts out of a config's YAML. */
 export function parseProfileYaml(yaml: string): {
   profilesDir: string | null;
-  inline: any[];
+  inline: ProfileDraft[];
 } {
   const parsed = YAML.parse(yaml);
   const profilesDir: string | null = parsed?.profiles_dir || null;
   return { profilesDir, inline: profilesDir ? [] : parsed?.profiles || [] };
 }
 
-export function inlineProfileName(profile: any, index: number): string {
+export function inlineProfileName(
+  profile: ProfileDraft,
+  index: number,
+): string {
   return profile?.hostname || `Profile #${index}`;
 }
 
@@ -88,7 +91,7 @@ export function fileProfileName(filename: string): string {
 
 function buildEntries(
   profilesDir: string | null,
-  inline: any[],
+  inline: ProfileDraft[],
   files: ProfileFileInfo[],
 ): ProfileEntry[] {
   if (profilesDir) {
@@ -137,8 +140,8 @@ export async function loadProfileSet(): Promise<ProfileSet> {
  *  profiles are fetched. The profile is a copy the caller may edit freely. */
 export async function readProfileVersioned(
   ref: ProfileRef,
-  inline: any[],
-): Promise<{ profile: any; version: string | null }> {
+  inline: ProfileDraft[],
+): Promise<{ profile: ProfileDraft; version: string | null }> {
   if (ref.kind === "file") {
     const got = await fetchProfileFile(ref.filename);
     return { profile: got.profile, version: got.version ?? null };
@@ -151,8 +154,8 @@ export async function readProfileVersioned(
 
 export async function readProfile(
   ref: ProfileRef,
-  inline: any[],
-): Promise<any> {
+  inline: ProfileDraft[],
+): Promise<ProfileDraft> {
   return (await readProfileVersioned(ref, inline)).profile;
 }
 
@@ -161,9 +164,9 @@ export async function readProfile(
  *  a file profile (which the next save must present), and what became of
  *  the hardware reload either way. */
 export interface ProfileWrite {
-  snapshot: ConfigSnapshot | null;
+  snapshot: StoreSnapshot | null;
   version: string | null;
-  reload: ConfigReload;
+  reload: Partial<ConfigReload>;
 }
 
 /** Writes one profile. Inline profiles are saved against the config
@@ -223,7 +226,7 @@ export async function fetchRunningProfile(): Promise<string | null> {
  *  venue. */
 export async function loadRunningLighting(): Promise<{
   profileName: string;
-  lighting: any;
+  lighting: Lighting;
 } | null> {
   try {
     const [set, running] = await Promise.all([
@@ -263,8 +266,7 @@ export async function addUniverseToRunningProfile(
     entry.ref,
     set.inline,
   );
-  const dmx = (profile.dmx ??= {});
-  const universes: any[] = (dmx.universes ??= []);
+  const universes = (profile.dmx ??= { universes: [] }).universes;
   let notice: ReloadNotice | null = null;
   if (!universes.some((u) => u?.universe === universe)) {
     universes.push({ universe, name: `u${universe}` });

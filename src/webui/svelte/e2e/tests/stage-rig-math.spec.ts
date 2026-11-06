@@ -16,6 +16,7 @@
 // mounting conventions the 3D view relies on, pinned against the Rust
 // pointing math in src/lighting/effects/pointing.rs.
 
+import type { RigModel } from "../../src/gen/rules/mtrack_rules";
 import { test, expect } from "@playwright/test";
 import { Euler, Vector3 } from "three";
 import {
@@ -27,7 +28,6 @@ import {
   isMover,
   poseRotations,
   trayPositions,
-  type RigModel,
 } from "../../src/lib/stage/rig";
 
 /** pointing.rs `out_of_frame`: R = Rz·Ry·Rx applied to a vector. */

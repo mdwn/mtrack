@@ -362,11 +362,11 @@ async fn upload_sample_file(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "uploaded",
-                "file": filename,
-                "path": relative_path,
-            })),
+            Json(crate::webui::wire::config::SampleUploaded {
+                status: "uploaded".to_string(),
+                file: filename,
+                path: relative_path,
+            }),
         )
             .into_response(),
     )

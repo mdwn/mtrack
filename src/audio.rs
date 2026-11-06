@@ -27,12 +27,14 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod guessed_tempo;
 pub mod health;
 pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
 pub mod monoclip;
+pub mod output_status;
 pub mod pilot;
 pub mod sample_source;
 pub(crate) mod song_loop;
@@ -317,20 +319,6 @@ impl fmt::Display for ProbeOutcome {
 }
 
 impl ProbeOutcome {
-    /// Stable wire name for this outcome.
-    ///
-    /// The single source for the strings the web UI switches on, so a renamed
-    /// variant cannot quietly change the API. `Display` is prose for a human
-    /// and is free to be reworded.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            ProbeOutcome::Streaming { .. } => "streaming",
-            ProbeOutcome::OpenedButSilent => "opened_but_silent",
-            ProbeOutcome::CouldNotOpen(_) => "could_not_open",
-            ProbeOutcome::OpenedCannotReport => "opened_cannot_report",
-        }
-    }
-
     /// Whether the device proved it can stream.
     pub fn is_ok(&self) -> bool {
         matches!(

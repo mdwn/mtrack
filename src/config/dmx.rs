@@ -27,25 +27,31 @@ pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the DMX configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
+    #[serde(default)]
     dim_speed_modifier: Option<f64>,
 
     /// Controls how long to wait before playback of a DMX lighting file starts.
+    #[serde(default)]
     playback_delay: Option<String>,
 
     /// The OLA port. Defaults to the default OLA port.
+    #[serde(default)]
     ola_port: Option<u16>,
 
     /// The port of olad's web server, used only to check that the configured
     /// universes have an output port patched to them. Defaults to olad's.
+    #[serde(default)]
     ola_http_port: Option<u16>,
 
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
 
     /// The lighting configuration.
+    #[serde(default)]
     lighting: Option<Lighting>,
 
     /// When true, use a no-op OLA client if the OLA daemon is unavailable.
@@ -177,6 +183,7 @@ impl Dmx {
 }
 
 /// A YAML representation of a DMX universe configuration.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Universe {
     /// The OpenLighting universe.

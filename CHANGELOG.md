@@ -160,6 +160,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The lighting timeline's beat lines are the click grid's beats**: one line per beat of the
   time signature's denominator, so a 6/8 bar has six, where it had three quarter-note lines. The
   timeline and the song's beat grid walk the bars once, the same way.
+- **A section's unset bounds are left out of its JSON**: a section with no `start_beat`,
+  `end_beat` or `color` now leaves the field out instead of sending it as `null`, as the song's
+  YAML does -- in the web UI's playback updates, `GET /api/songs` and MCP's song summary.
+- **`GET /api/lighting/venues/{name}/patch` names an overlap's fields as the player does**:
+  `first`, `second`, `first_gang` and `second_gang` instead of `a`, `b`, `a_gang` and `b_gang`.
 - **The web UI's lighting timeline lays shows out with the player's own parser**: the editor
   reads a `.light` file through the player's grammar (its document model, compiled to
   WebAssembly with the parser) and places every cue, effect and sequence pass where the player

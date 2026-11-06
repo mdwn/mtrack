@@ -11,19 +11,10 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+pub use super::kind_data::*;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
-/// Identifies the type of an mtrack YAML configuration file.
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ConfigKind {
-    Song,
-    Playlist,
-    #[serde(rename = "hardware_profile")]
-    HardwareProfile,
-}
+use serde::Deserialize;
 
 impl std::fmt::Display for ConfigKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

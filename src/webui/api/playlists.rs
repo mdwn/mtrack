@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::playlists::{PlaylistBody, PlaylistDetail, PlaylistInfo};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -45,19 +46,19 @@ pub(super) async fn get_playlists(State(state): State<WebUiState>) -> impl IntoR
         let active_playlist = state.player.get_playlist();
         active_playlist.name().to_string()
     };
-    let items: Vec<serde_json::Value> = playlists
+    let items: Vec<PlaylistInfo> = playlists
         .iter()
         .map(|name| {
             let playlist_map = state.player.playlists_snapshot();
             let song_count = playlist_map.get(name).map(|p| p.songs().len()).unwrap_or(0);
-            json!({
-                "name": name,
-                "song_count": song_count,
-                "is_active": name == &active,
-            })
+            PlaylistInfo {
+                name: name.clone(),
+                song_count,
+                is_active: name == &active,
+            }
         })
         .collect();
-    (StatusCode::OK, Json(json!(items))).into_response()
+    (StatusCode::OK, Json(items)).into_response()
 }
 
 /// GET /api/playlists/:name — get a playlist's songs and available songs.
@@ -80,36 +81,33 @@ pub(super) async fn get_playlist_by_name(
         .map(|s| s.name().to_string())
         .collect();
     // Each song's tracks, for picking the ones a fade leaves out.
-    let song_tracks: serde_json::Map<String, serde_json::Value> = registry
+    let song_tracks = registry
         .sorted_list()
         .iter()
-        .map(|s| (s.name().to_string(), json!(s.output_track_names())))
+        .map(|s| (s.name().to_string(), s.output_track_names()))
         .collect();
     // Each entry's auto play as the editor writes it: `true` for at once,
     // a gap, or null for none.
-    let auto_play: Vec<serde_json::Value> = pl
+    let auto_play = pl
         .entry_auto_play()
         .into_iter()
         .map(|gap| match gap {
-            None => serde_json::Value::Null,
-            Some(gap) if gap.is_zero() => json!(true),
-            Some(gap) => json!(format_gap(gap)),
+            None => None,
+            Some(gap) if gap.is_zero() => Some(config::AutoPlayConfig::On(true)),
+            Some(gap) => Some(config::AutoPlayConfig::Gap(format_gap(gap))),
         })
         .collect();
-    (
-        StatusCode::OK,
-        Json(json!({
-            "name": name,
-            "songs": pl.songs(),
-            "auto_play": auto_play,
-            "fades": pl.entry_fades(),
-            "ambient": pl.ambient(),
-            "entry_ambient": pl.entry_ambient(),
-            "available_songs": all_songs,
-            "song_tracks": song_tracks,
-        })),
-    )
-        .into_response()
+    let detail = PlaylistDetail {
+        songs: pl.songs().clone(),
+        auto_play,
+        fades: pl.entry_fades().to_vec(),
+        ambient: pl.ambient().cloned(),
+        entry_ambient: pl.entry_ambient().to_vec(),
+        available_songs: all_songs,
+        song_tracks,
+        name,
+    };
+    (StatusCode::OK, Json(detail)).into_response()
 }
 
 /// A gap as written in a playlist: whole seconds as `2s`, else `1500ms`.
@@ -120,38 +118,6 @@ fn format_gap(gap: std::time::Duration) -> String {
     } else {
         format!("{ms}ms")
     }
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct PlaylistBody {
-    songs: Vec<String>,
-    /// Each song's auto play, in the order of `songs`; absent keeps each
-    /// entry's as it was.
-    #[serde(default)]
-    auto_play: Option<Vec<Option<config::AutoPlayConfig>>>,
-    /// Each song's fade out and fade in, in the order of `songs`, null for
-    /// none; absent keeps each entry's as it was.
-    #[serde(default)]
-    fades: Option<Vec<config::EntryFades>>,
-    /// Each song's ambient light before it, in the order of `songs`: null
-    /// for the playlist's, `false` for none, a map overriding settings;
-    /// absent keeps each entry's as it was.
-    #[serde(default)]
-    entry_ambient: Option<Vec<Option<config::ambient::PlaylistAmbient>>>,
-    /// The playlist's ambient light: absent keeps it, null removes it (the
-    /// profile's plays), `false` turns it off, a map overrides settings.
-    #[serde(default, deserialize_with = "present")]
-    ambient: Option<Option<config::ambient::PlaylistAmbient>>,
-}
-
-/// A field that is there, null or not: `Some(None)` for null, against the
-/// `None` of a field left out.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// Held by each playlist save and delete from reading the file to reloading

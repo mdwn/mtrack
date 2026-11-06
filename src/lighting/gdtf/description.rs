@@ -58,12 +58,7 @@ pub struct Description {
     pub about: Option<String>,
 }
 
-/// A 4×4 transform as this crate uses it: `M · v` takes a point from the
-/// node's frame into its parent's, with the rotation's columns the node's
-/// axes and the translation in the fourth column, meters. Not quite as
-/// GDTF writes it: see [`parse_matrix`] for the reading of the file's
-/// rows, which is Blender DMX's.
-pub type Matrix4 = [[f64; 4]; 4];
+pub use crate::lighting::stage_model::Matrix4;
 
 /// The identity transform.
 pub const IDENTITY: Matrix4 = [

@@ -14,13 +14,13 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type { Controller, MidiEvent } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import MidiEventEditor from "./MidiEventEditor.svelte";
-  import type { MidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
-    controllers: any[];
+    controllers: Controller[];
     onchange: () => void;
   }
 
@@ -144,7 +144,7 @@
     onchange();
   }
 
-  function getMorningstarModel(ctrl: any): string {
+  function getMorningstarModel(ctrl: Controller): string {
     const ms = ctrl.morningstar;
     if (!ms?.model) return "mc4pro";
     if (typeof ms.model === "string") return ms.model;
@@ -166,7 +166,7 @@
     onchange();
   }
 
-  function getCustomModelId(ctrl: any): number {
+  function getCustomModelId(ctrl: Controller): number {
     const model = ctrl.morningstar?.model;
     if (typeof model === "object" && model.custom) {
       return model.custom.model_id ?? 0;

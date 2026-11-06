@@ -115,7 +115,18 @@
     framed = false;
     void live
       .setVenue(
-        { [name]: { tags: [], type: name, position: [0, 0, 2], rig: path } },
+        {
+          [name]: {
+            tags: [],
+            type: name,
+            position: [0, 0, 2],
+            rotation: null,
+            beam_angle: null,
+            rig: path,
+            capabilities: [],
+            cells: [],
+          },
+        },
         null,
       )
       .then(() => {

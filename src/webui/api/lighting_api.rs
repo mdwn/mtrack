@@ -12,6 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use crate::webui::wire::fixture_types::{
+    BeamBrief, FixtureTypeDeleted, FixtureTypeEntry, FixtureTypeGdtf, FixtureTypeList, GdtfBeam,
+    GdtfInspection, GdtfMode, GdtfSummary, LightingFileError, ModeUse, SceneFixture, StrobeRange,
+    TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
+};
+use crate::webui::wire::messages::FixturePlacement;
+use crate::webui::wire::preview::{
+    LightFileInfo, LightFiles, LightingGroup, LightingGroups, LightingValidation,
+};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -90,20 +99,24 @@ use lighting::import::suggested_type_name;
 /// footprint, what a show can do in it (capabilities, cells, strobe range),
 /// its channel map and the distiller's warnings, or the reason it cannot be
 /// imported.
-fn inspect_description(description: &lighting::gdtf::Description) -> serde_json::Value {
+fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspection {
     // Distilling every mode is a few milliseconds each (design 12.2), so the
     // picker can say what each one lets a show do before anything is written.
     let suggested = suggested_type_name(&description.name);
     let summaries = lighting::gdtf::mode_summaries(description);
-    let modes: Vec<serde_json::Value> = summaries
+    let modes = summaries
         .iter()
         .enumerate()
         .map(|(index, summary)| {
-            let mut mode = json!({
-                "name": summary.name,
-                "footprint": summary.footprint,
-            });
-            let fields = mode.as_object_mut().expect("a json object");
+            let mut mode = GdtfMode {
+                name: summary.name.clone(),
+                footprint: summary.footprint,
+                capabilities: None,
+                cells: None,
+                strobe_range: None,
+                channels: None,
+                refused: None,
+            };
             // The importer finds a mode by name and takes the first match, so
             // a repeat could only ever import its namesake.
             let repeats = summaries[..index].iter().any(|m| m.name == summary.name);
@@ -125,36 +138,35 @@ fn inspect_description(description: &lighting::gdtf::Description) -> serde_json:
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    fields.insert(
-                        "capabilities".into(),
-                        json!(lighting::fit::FitFixture::from_info(&info, &[]).capability_names()),
+                    mode.capabilities = Some(
+                        lighting::fit::FitFixture::from_info(&info, &[])
+                            .capability_names()
+                            .into_iter()
+                            .map(String::from)
+                            .collect(),
                     );
-                    fields.insert("cells".into(), json!(fixture_type.cells().len()));
-                    if let Some(max_hz) = fixture_type.max_strobe_frequency() {
-                        fields.insert(
-                            "strobe_range".into(),
-                            json!({
-                                "min_hz": fixture_type.min_strobe_frequency(),
-                                "max_hz": max_hz,
-                            }),
-                        );
-                    }
-                    let mut channels: Vec<(&u16, &String)> = fixture_type
+                    mode.cells = Some(fixture_type.cells().len());
+                    mode.strobe_range =
+                        fixture_type
+                            .max_strobe_frequency()
+                            .map(|max_hz| StrobeRange {
+                                min_hz: fixture_type.min_strobe_frequency(),
+                                max_hz,
+                            });
+                    let mut channels: Vec<(u16, String)> = fixture_type
                         .channels()
                         .iter()
-                        .map(|(name, offset)| (offset, name))
+                        .map(|(name, offset)| (*offset, name.clone()))
                         .collect();
                     channels.sort();
-                    fields.insert("channels".into(), json!(channels));
+                    mode.channels = Some(channels);
                 }
-                Err(reason) => {
-                    fields.insert("refused".into(), json!(reason));
-                }
+                Err(reason) => mode.refused = Some(reason),
             }
             mode
         })
         .collect();
-    json!({ "modes": modes })
+    GdtfInspection { modes }
 }
 
 /// Query parameters for the GDTF import endpoint.
@@ -207,13 +219,7 @@ pub(super) async fn import_gdtf(
     })
     .await?
     .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
-    Ok::<_, axum::response::Response>(
-        (
-            StatusCode::OK,
-            Json(serde_json::to_value(&report).unwrap_or_default()),
-        )
-            .into_response(),
-    )
+    Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
 }
 
 /// GET /api/lighting — lists available .light files from the songs directory.
@@ -230,20 +236,15 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
             Ok(f) => f,
             Err(e) => return e,
         };
-    light_files.sort_by(|a, b| {
-        a.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("path").and_then(|v| v.as_str()).unwrap_or(""))
-    });
-    (StatusCode::OK, Json(json!({"files": light_files}))).into_response()
+    light_files.sort_by(|a, b| a.path.cmp(&b.path));
+    (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
 /// Recursively finds .light files under a directory.
 pub(crate) fn find_light_files(
     base: &std::path::Path,
     dir: &std::path::Path,
-    results: &mut Vec<serde_json::Value>,
+    results: &mut Vec<LightFileInfo>,
 ) -> Result<(), std::io::Error> {
     // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
     if !dir.is_dir() {
@@ -266,10 +267,10 @@ pub(crate) fn find_light_files(
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            results.push(json!({
-                "name": name,
-                "path": relative,
-            }));
+            results.push(LightFileInfo {
+                name,
+                path: relative,
+            });
         }
     }
     Ok(())
@@ -465,10 +466,20 @@ pub(super) async fn validate_lighting(
         Some(&state.songs_path()),
         tempo.as_ref(),
     ) {
-        Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(LightingValidation {
+                valid: true,
+                errors: None,
+            }),
+        )
+            .into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({"valid": false, "errors": errors})),
+            Json(LightingValidation {
+                valid: false,
+                errors: Some(errors),
+            }),
         )
             .into_response(),
     }
@@ -1062,11 +1073,11 @@ pub(super) async fn get_fixture_types(
         // how it may be edited.
         let project = lighting::project_files::fixture_types(&root, Some(&dir));
         let shown = |path: &std::path::Path| lighting::project_files::display_in(&dir, path);
-        let mut errors: Vec<FileError> = project
+        let mut errors: Vec<LightingFileError> = project
             .files
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: shown(&p.file),
                 error: p.error.clone(),
             })
@@ -1078,23 +1089,30 @@ pub(super) async fn get_fixture_types(
             }
             all.insert(
                 declared.name.clone(),
-                json!({
-                    "referential": fixture_type.source().is_some(),
+                FixtureTypeEntry {
+                    referential: fixture_type.source().is_some(),
                     // A native type's addresses, for the venue editor's
                     // patch; a GDTF fixture's are its mode's, so null here.
-                    "footprint": fixture_type
-                        .source()
-                        .is_none()
-                        .then(|| fixture_type.footprint()),
-                    "rich": fixture_type.uses_rich_channels(),
-                    "fixture_type": fixture_type,
-                    "file": shown(&declared.file),
-                    "extension": declared
-                        .file
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or_default(),
-                }),
+                    footprint: Some(
+                        fixture_type
+                            .source()
+                            .is_none()
+                            .then(|| fixture_type.footprint()),
+                    ),
+                    rich: fixture_type.uses_rich_channels(),
+                    fixture_type: fixture_type.clone(),
+                    file: Some(shown(&declared.file)),
+                    extension: Some(
+                        declared
+                            .file
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         let library = project.library;
@@ -1102,7 +1120,7 @@ pub(super) async fn get_fixture_types(
         // collision is already resolved (the second fixture is renamed).
         for finding in &library.findings {
             if finding.kind == "gdtf-unreadable" {
-                errors.push(FileError {
+                errors.push(LightingFileError {
                     file: finding.file.clone(),
                     error: finding.message.clone(),
                 });
@@ -1122,14 +1140,16 @@ pub(super) async fn get_fixture_types(
             ));
             all.insert(
                 library_type.name.clone(),
-                json!({
-                    "referential": true,
-                    "footprint": null,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "file": null,
-                    "extension": null,
-                }),
+                FixtureTypeEntry {
+                    referential: true,
+                    footprint: Some(None),
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    gdtf: None,
+                    dsl: None,
+                },
             );
         }
         // What each referential type's archive says, for its card. One bad
@@ -1148,8 +1168,8 @@ pub(super) async fn get_fixture_types(
             let summary = parsed.map(|(bytes, description)| {
                 gdtf_list_summary(&cache, bytes, description, &name, &fixtures)
             });
-            if let Some(entry) = all.get_mut(&name).and_then(|e| e.as_object_mut()) {
-                entry.insert("gdtf".into(), summary.unwrap_or(serde_json::Value::Null));
+            if let Some(entry) = all.get_mut(&name) {
+                entry.gdtf = Some(summary);
             }
         }
         Ok::<_, String>((all, errors))
@@ -1159,7 +1179,10 @@ pub(super) async fn get_fixture_types(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"fixture_types": all, "errors": errors})),
+            Json(FixtureTypeList {
+                fixture_types: all,
+                errors,
+            }),
         )
             .into_response(),
     )
@@ -1192,14 +1215,16 @@ pub(super) async fn get_fixture_type(
         return match found {
             Some(declared) => Ok((
                 StatusCode::OK,
-                Json(json!({
-                    "referential": true,
-                    "rich": false,
-                    "fixture_type": declared,
-                    "dsl": null,
-                    "file": null,
-                    "extension": null,
-                })),
+                Json(FixtureTypeEntry {
+                    referential: true,
+                    footprint: None,
+                    rich: false,
+                    fixture_type: declared,
+                    file: None,
+                    extension: None,
+                    gdtf: None,
+                    dsl: Some(None),
+                }),
             )
                 .into_response()),
             None => Err((
@@ -1224,14 +1249,22 @@ pub(super) async fn get_fixture_type(
     match types.get(&name) {
         Some(ft) => Ok((
             StatusCode::OK,
-            Json(json!({
-                "referential": ft.source().is_some(),
-                "rich": ft.uses_rich_channels(),
-                "fixture_type": ft,
-                "dsl": content,
-                "file": crate::util::filename_display(&file_path),
-                "extension": file_path.extension().and_then(|e| e.to_str()).unwrap_or_default(),
-            })),
+            Json(FixtureTypeEntry {
+                referential: ft.source().is_some(),
+                footprint: None,
+                rich: ft.uses_rich_channels(),
+                fixture_type: ft.clone(),
+                file: Some(crate::util::filename_display(&file_path).to_string()),
+                extension: Some(
+                    file_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                gdtf: None,
+                dsl: Some(Some(content)),
+            }),
         )
             .into_response()),
         None => Err((
@@ -1351,44 +1384,40 @@ pub(super) async fn get_fixture_type_gdtf(
             let (dir, _) = rel.rsplit_once('/')?;
             Some(format!("{dir}/{file}"))
         });
-        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| {
-            json!({
-                "type": b.beam_type,
-                "beam_angle": b.beam_angle,
-                "field_angle": b.field_angle,
-                "luminous_flux": b.luminous_flux,
-                "color_temperature": b.color_temperature,
-                "power": b.power_consumption,
-            })
+        let beam = pinned_beam(&description, rig_mode.as_deref()).map(|b| GdtfBeam {
+            beam_type: b.beam_type.clone(),
+            beam_angle: b.beam_angle,
+            field_angle: b.field_angle,
+            luminous_flux: b.luminous_flux,
+            color_temperature: b.color_temperature,
+            power: b.power_consumption,
         });
         // Each fixture in its own mode, spelled as the archive spells it
         // (null when it names none, or none of the archive's).
-        let venues: Vec<serde_json::Value> = fixtures_by_type(&venues_dir)
+        let venues = fixtures_by_type(&venues_dir)
             .remove(&name)
             .unwrap_or_default()
             .into_iter()
-            .map(|(venue, fixtures)| {
-                let fixtures: Vec<serde_json::Value> = fixtures
+            .map(|(venue, fixtures)| TypeVenue {
+                name: venue,
+                fixtures: fixtures
                     .into_iter()
-                    .map(|(fixture, mode)| {
-                        json!({
-                            "name": fixture,
-                            "mode": mode.as_deref().and_then(|m| resolve_mode(&description, m)),
-                        })
+                    .map(|(fixture, mode)| TypeVenueFixture {
+                        name: fixture,
+                        mode: mode.as_deref().and_then(|m| resolve_mode(&description, m)),
                     })
-                    .collect();
-                json!({"name": venue, "fixtures": fixtures})
+                    .collect(),
             })
             .collect();
-        Ok(Ok(json!({
-            "archive": source.path,
-            "rig": rig,
-            "thumbnail": thumbnail,
-            "beam": beam,
-            "about": description.about,
-            "venues": venues,
-            "inspection": inspect_description(&description),
-        })))
+        Ok(Ok(FixtureTypeGdtf {
+            archive: source.path,
+            rig,
+            thumbnail,
+            beam,
+            about: description.about.clone(),
+            venues,
+            inspection: inspect_description(&description),
+        }))
     })
     .await?;
     match outcome {
@@ -1538,12 +1567,14 @@ fn gdtf_list_summary(
     description: &lighting::gdtf::Description,
     type_name: &str,
     fixtures: &[Option<&str>],
-) -> serde_json::Value {
+) -> GdtfSummary {
     // The fixture is drawn, and its beam quoted, in the first mode it can
     // drive: a GDTF fixture has no mode of its own.
     let drawn = drawn_mode(description, type_name);
-    let beam = pinned_beam(description, drawn.as_deref())
-        .map(|b| json!({"type": b.beam_type, "angle": b.beam_angle}));
+    let beam = pinned_beam(description, drawn.as_deref()).map(|b| BeamBrief {
+        beam_type: b.beam_type.clone(),
+        angle: b.beam_angle,
+    });
     // The thumbnail of the rig the details view draws, if it was drawn.
     let thumbnail = drawn.and_then(|mode| {
         let rel = lighting::distill::DistillCache::rig_path(bytes, &mode);
@@ -1561,18 +1592,18 @@ fn gdtf_list_summary(
     }
     let mut in_use: Vec<(String, usize)> = counts.into_iter().collect();
     in_use.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    json!({
-        "fixture": description.name,
-        "manufacturer": description.manufacturer,
-        "modes": description.modes.len(),
-        "beam": beam,
-        "thumbnail": thumbnail,
-        "used_by": fixtures.len(),
-        "in_use": in_use
+    GdtfSummary {
+        fixture: description.name.clone(),
+        manufacturer: description.manufacturer.clone(),
+        modes: description.modes.len(),
+        beam,
+        thumbnail,
+        used_by: fixtures.len(),
+        in_use: in_use
             .into_iter()
-            .map(|(mode, count)| json!({"mode": mode, "count": count}))
-            .collect::<Vec<_>>(),
-    })
+            .map(|(mode, count)| ModeUse { mode, count })
+            .collect(),
+    }
 }
 
 /// PUT /api/lighting/fixture-types/:name — creates or updates a fixture type.
@@ -1801,12 +1832,12 @@ pub(super) async fn delete_fixture_type(
         return match removed {
             Some(archive) => Ok((
                 StatusCode::OK,
-                Json(json!({
-                    "status": "deleted",
-                    "name": name,
-                    "archive_removed": archive,
-                    "archive_kept": false,
-                })),
+                Json(FixtureTypeDeleted {
+                    status: "deleted".to_string(),
+                    name,
+                    archive_removed: Some(archive),
+                    archive_kept: false,
+                }),
             )
                 .into_response()),
             None => Err((
@@ -1844,12 +1875,12 @@ pub(super) async fn delete_fixture_type(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "deleted",
-                "name": name,
-                "archive_removed": archive_removed,
-                "archive_kept": archive_kept,
-            })),
+            Json(FixtureTypeDeleted {
+                status: "deleted".to_string(),
+                name,
+                archive_removed,
+                archive_kept,
+            }),
         )
             .into_response(),
     )
@@ -1939,20 +1970,24 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
             .logical_groups_iter()
             .map(|(n, _)| n.clone())
             .collect();
-        let mut out: Vec<serde_json::Value> = names
+        let mut out: Vec<LightingGroup> = names
             .into_iter()
-            .map(|name| {
-                let fixtures = guard.resolve_logical_group_graceful(&name);
-                json!({"name": name, "fixtures": fixtures})
+            .map(|name| LightingGroup {
+                fixtures: guard.resolve_logical_group_graceful(&name),
+                name,
             })
             .collect();
-        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     })
     .await;
 
     match groups {
-        Ok(groups) => Json(json!({"groups": groups})).into_response(),
+        Ok(groups) => Json(LightingGroups {
+            groups,
+            resolved: None,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to resolve groups: {e}")})),
@@ -1990,10 +2025,8 @@ pub(super) async fn get_readiness(State(state): State<WebUiState>) -> impl IntoR
 /// off the async worker.
 pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoResponse {
     let player = state.player.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::lighting::fit::FitReport::gather(&player).to_json()
-    })
-    .await
+    match tokio::task::spawn_blocking(move || crate::lighting::fit::FitReport::gather(&player))
+        .await
     {
         Ok(report) => Json(report).into_response(),
         Err(e) => (
@@ -2113,55 +2146,47 @@ pub(super) async fn evaluate_lighting(
         }
     };
 
-    let untouched: Vec<&String> = evaluated
+    use crate::webui::wire::preview::{Preview, PreviewEffect, PreviewEvaluation};
+    let untouched = evaluated
         .venue_fixtures
         .iter()
         .filter(|name| !evaluated.targeted.contains(*name))
+        .cloned()
         .collect();
-    let evaluations: Vec<serde_json::Value> = evaluated
+    let evaluations = evaluated
         .evaluations
         .iter()
-        .map(|evaluation| {
-            let maps = super::super::state::state_maps(&evaluation.fixtures, &evaluation.poses);
-            let active: Vec<serde_json::Value> = evaluation
+        .map(|evaluation| PreviewEvaluation {
+            time: evaluation.time.as_secs_f64(),
+            frame: super::super::state::stage_frame(&evaluation.fixtures, &evaluation.poses),
+            active_effects: evaluation
                 .active_effects
                 .iter()
-                .map(|effect| {
-                    json!({
-                        "id": effect.id,
-                        "groups": evaluated.effect_groups.get(&effect.id),
-                        "kind": effect.effect_type,
-                        "layer": effect.layer.keyword(),
-                        "elapsed": effect.elapsed.as_secs_f64(),
-                        "duration": effect.duration.as_secs_f64(),
-                        "fixtures": effect.fixtures,
-                    })
+                .map(|effect| PreviewEffect {
+                    id: effect.id.clone(),
+                    groups: evaluated.effect_groups.get(&effect.id).cloned(),
+                    kind: effect.effect_type.to_string(),
+                    layer: effect.layer.keyword().to_string(),
+                    elapsed: effect.elapsed.as_secs_f64(),
+                    duration: effect.duration.as_secs_f64(),
+                    fixtures: effect.fixtures.clone(),
                 })
-                .collect();
-            json!({
-                "time": evaluation.time.as_secs_f64(),
-                "fixtures": maps.fixtures,
-                "poses": maps.poses,
-                "cells": maps.cells,
-                "strobe_rates": maps.strobe_rates,
-                "active_effects": active,
-            })
+                .collect(),
         })
         .collect();
-    Json(json!({
-        "song": request.song,
-        "evaluations": evaluations,
-        "untouched": untouched,
-        // The current venue does not load: what is evaluated is an empty
-        // rig, and this says why rather than letting it look like one.
-        "venue_error": evaluated.venue_error,
-    }))
+    Json(Preview {
+        song: request.song,
+        evaluations,
+        untouched,
+        venue_error: evaluated.venue_error,
+    })
     .into_response()
 }
 
 /// The readiness facts for the player's running profile.
-fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
+fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readiness::Readiness {
     use crate::lighting::readiness::{group_names, VenueFacts};
+    use crate::webui::wire::readiness::*;
     use std::collections::BTreeSet;
 
     // Shows are reported with or without DMX: a laptop with no DMX output is
@@ -2185,7 +2210,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // The lighting system, under its lock for as short a time as it takes to
     // read what the sections below need.
     let mut facts = VenueFacts::default();
-    let mut venue = serde_json::Value::Null;
+    let mut venue = None;
     let mut in_use: BTreeSet<String> = BTreeSet::new();
     let mut unresolved = Vec::new();
     let mut library = Vec::new();
@@ -2198,11 +2223,7 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
         facts = VenueFacts::collect(&mut guard, &names, Some(&configured));
         // The library's own findings: two archives that would share a name,
         // an archive that cannot be read. Neither stops a load.
-        library = guard
-            .library_findings()
-            .iter()
-            .map(|f| json!({"kind": f.kind, "file": f.file, "message": f.message}))
-            .collect();
+        library = guard.library_findings().to_vec();
         if let Some(current) = guard.get_current_venue() {
             let mut fixtures: Vec<&lighting::types::Fixture> =
                 current.fixtures().values().collect();
@@ -2213,43 +2234,40 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                     None => {
                         in_use.insert(fixture.fixture_type().to_string());
                     }
-                    Some(reason) => unresolved.push(json!({
-                        "fixture": fixture.name(),
-                        "type": fixture.fixture_type(),
-                        "reason": reason,
-                    })),
+                    Some(reason) => unresolved.push(UnresolvedFixture {
+                        fixture: fixture.name().to_string(),
+                        fixture_type: fixture.fixture_type().to_string(),
+                        reason,
+                    }),
                 }
             }
-            venue = json!({
-                "name": current.name(),
-                "fixtures": fixtures.len(),
-                "placed": fixtures.iter().filter(|f| f.position().is_some()).count(),
-                "focus_points": current.focus_points().keys().collect::<Vec<_>>(),
+            venue = Some(ReadinessVenue {
+                name: current.name().to_string(),
+                fixtures: fixtures.len(),
+                placed: fixtures.iter().filter(|f| f.position().is_some()).count(),
+                focus_points: current.focus_points().keys().cloned().collect(),
             });
         }
     }
 
-    let groups: Vec<serde_json::Value> = names
+    let groups: Vec<ReadinessGroup> = names
         .iter()
         .filter(|_| dmx.is_some())
-        .map(|name| {
-            let songs_using: Vec<&str> = with_lighting
+        .map(|name| ReadinessGroup {
+            name: name.clone(),
+            fixtures: facts.group_fixture_counts.get(name).copied().unwrap_or(0),
+            songs: with_lighting
                 .iter()
                 .filter(|(_, shows)| group_names(shows).contains(name))
-                .map(|(song, _)| song.name())
-                .collect();
-            json!({
-                "name": name,
-                "fixtures": facts.group_fixture_counts.get(name).copied().unwrap_or(0),
-                "songs": songs_using,
-            })
+                .map(|(song, _)| song.name().to_string())
+                .collect(),
         })
         .collect();
 
-    let mut shows: Vec<serde_json::Value> = with_lighting
+    let mut shows: Vec<ReadinessShow> = with_lighting
         .iter()
         .map(|(song, shows)| {
-            let warnings: Vec<serde_json::Value> = facts
+            let warnings: Vec<_> = facts
                 .lint(shows, Some(song))
                 .into_iter()
                 // Venue-level: the Output and Venue sections already carry
@@ -2261,7 +2279,6 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         "unconfigured-universe" | "patch-overlap" | "patch-overrun"
                     )
                 })
-                .map(|w| json!({"kind": w.kind, "message": w.message}))
                 .collect();
             let files: Vec<String> = song
                 .dsl_lighting_shows()
@@ -2274,7 +2291,12 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
                         .to_string()
                 })
                 .collect();
-            json!({"song": song.name(), "files": files, "warnings": warnings})
+            ReadinessShow {
+                song: song.name().to_string(),
+                files,
+                error: None,
+                warnings,
+            }
         })
         .collect();
     // A song whose show does not parse never loads (`Song::new` fails as a
@@ -2282,15 +2304,15 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     // with the parser's own message, and that is the error.
     for failure in songs.failures() {
         if failure.concerns_lighting() {
-            shows.push(json!({
-                "song": failure.name(),
-                "files": [],
-                "error": failure.error(),
-                "warnings": [],
-            }));
+            shows.push(ReadinessShow {
+                song: failure.name().to_string(),
+                files: Vec::new(),
+                error: Some(failure.error().to_string()),
+                warnings: Vec::new(),
+            });
         }
     }
-    shows.sort_by(|a, b| a["song"].as_str().cmp(&b["song"].as_str()));
+    shows.sort_by(|a, b| a.song.cmp(&b.song));
 
     let unconfigured: Vec<u16> = used_universes
         .iter()
@@ -2315,34 +2337,35 @@ fn readiness_report(player: &crate::player::Player) -> serde_json::Value {
     let olad = match &dmx {
         Some(dmx) if !to_probe.is_empty() => {
             let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
-            json!({"reachable": report.reachable, "unpatched": report.unpatched})
+            Some(OladPatch {
+                reachable: report.reachable,
+                unpatched: report.unpatched,
+            })
         }
-        _ => serde_json::Value::Null,
+        _ => None,
     };
 
     // The venue's own findings: whether it loads at all (one fixture that
     // cannot be driven fails the whole venue, and nothing lights), and
     // fixtures patched over each other or past the universe's end.
-    let patch_warnings: Vec<serde_json::Value> = facts
-        .patch_warnings
-        .iter()
-        .map(|w| json!({"kind": w.kind, "message": w.message}))
-        .collect();
-
-    json!({
-        "dmx": dmx.is_some(),
-        "venue": venue,
-        "venue_error": facts.venue_error,
-        "patch_warnings": patch_warnings,
-        "fixture_types": {"in_use": in_use, "unresolved": unresolved, "library": library},
-        "groups": groups,
-        "shows": shows,
-        "output": {
-            "universes": used_universes,
-            "unconfigured": unconfigured,
-            "olad": olad,
+    Readiness {
+        dmx: dmx.is_some(),
+        venue,
+        venue_error: facts.venue_error,
+        patch_warnings: facts.patch_warnings,
+        fixture_types: ReadinessTypes {
+            in_use: in_use.into_iter().collect(),
+            unresolved,
+            library,
         },
-    })
+        groups,
+        shows,
+        output: ReadinessOutput {
+            universes: used_universes.into_iter().collect(),
+            unconfigured,
+            olad,
+        },
+    }
 }
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
@@ -2394,11 +2417,18 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         }
     };
 
-    let groups: Vec<serde_json::Value> = names
+    let groups = names
         .into_iter()
-        .map(|name| json!({"name": name, "fixtures": []}))
+        .map(|name| LightingGroup {
+            name,
+            fixtures: vec![],
+        })
         .collect();
-    Json(json!({"groups": groups, "resolved": false})).into_response()
+    Json(LightingGroups {
+        groups,
+        resolved: Some(false),
+    })
+    .into_response()
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
@@ -2410,7 +2440,15 @@ pub(super) async fn get_venues(
         .map_err(|e| e.into_response())?;
     if !dir.is_dir() {
         return Ok::<_, axum::response::Response>(
-            (StatusCode::OK, Json(json!({"venues": {}}))).into_response(),
+            (
+                StatusCode::OK,
+                Json(VenueList {
+                    venues: Default::default(),
+                    errors: None,
+                    versions: None,
+                }),
+            )
+                .into_response(),
         );
     }
     let all = super::helpers::spawn_blocking_io("load venues", move || {
@@ -2425,10 +2463,10 @@ pub(super) async fn get_venues(
             }
             all.insert(declared.name, declared.item);
         }
-        let errors: Vec<FileError> = read
+        let errors: Vec<LightingFileError> = read
             .problems
             .iter()
-            .map(|p| FileError {
+            .map(|p| LightingFileError {
                 file: lighting::project_files::display_in(&dir, &p.file),
                 error: p.error.clone(),
             })
@@ -2439,7 +2477,11 @@ pub(super) async fn get_venues(
     let (all, errors, versions) = all;
     Ok((
         StatusCode::OK,
-        Json(json!({"venues": all, "errors": errors, "versions": versions})),
+        Json(VenueList {
+            venues: all,
+            errors: Some(errors),
+            versions: Some(versions),
+        }),
     )
         .into_response())
 }
@@ -2485,7 +2527,11 @@ pub(super) async fn get_venue(
     match venues.get(&name) {
         Some(v) => Ok((
             StatusCode::OK,
-            Json(json!({"venue": v, "dsl": content, "version": version})),
+            Json(VenueDetail {
+                venue: v.clone(),
+                dsl: content,
+                version,
+            }),
         )
             .into_response()),
         None => Err((
@@ -2642,13 +2688,13 @@ pub(super) async fn put_venue(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "saved",
-                "name": name,
-                "reloaded": reloaded,
-                "version": version,
-                "venue_error": venue_error,
-            })),
+            Json(crate::webui::wire::venue::VenueSaved {
+                status: "saved".to_string(),
+                name,
+                reloaded,
+                version,
+                venue_error,
+            }),
         )
             .into_response(),
     )
@@ -2665,7 +2711,7 @@ pub(super) async fn venue_error_after_save(
     state: &WebUiState,
     name: &str,
     venues_dir: &std::path::Path,
-) -> serde_json::Value {
+) -> Option<crate::lighting::findings::VenueError> {
     let player = state.player.clone();
     let config_path = state.config_path.clone();
     let venue = name.to_string();
@@ -2692,10 +2738,11 @@ pub(super) async fn venue_error_after_save(
     .await
     .ok()
     .flatten();
-    match found {
-        Some((fixture, reason)) => json!({"venue": name, "fixture": fixture, "reason": reason}),
-        None => serde_json::Value::Null,
-    }
+    found.map(|(fixture, reason)| crate::lighting::findings::VenueError {
+        venue: name.to_string(),
+        fixture,
+        reason,
+    })
 }
 
 /// After a venue file changed on disk: if it is the venue the running engine
@@ -2801,14 +2848,6 @@ pub(super) async fn delete_venue(
 // Lighting helpers
 // ---------------------------------------------------------------------------
 
-/// A file in a lighting directory that could not be parsed, reported alongside
-/// the ones that could.
-#[derive(serde::Serialize)]
-struct FileError {
-    file: String,
-    error: String,
-}
-
 /// Converts a name to a safe filename (lowercase, spaces to underscores).
 fn sanitize_filename(name: &str) -> String {
     name.chars()
@@ -2889,7 +2928,7 @@ pub(super) async fn get_venue_patch(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_patch_json(&system, venue)))
+        Ok(Some(venue_patch(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2933,7 +2972,7 @@ pub(super) async fn get_venue_scene(
         else {
             return Ok::<_, String>(None);
         };
-        Ok(Some(venue_scene_json(&system, venue)))
+        Ok(Some(venue_scene(&system, venue)))
     })
     .await?;
     match outcome {
@@ -2947,11 +2986,11 @@ pub(super) async fn get_venue_scene(
 }
 
 /// The scene answer for one venue of a loaded system.
-fn venue_scene_json(
+fn venue_scene(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures: serde_json::Map<String, serde_json::Value> = venue
+) -> VenueScene {
+    let fixtures = venue
         .fixtures()
         .iter()
         .map(|(name, fixture)| {
@@ -2959,29 +2998,24 @@ fn venue_scene_json(
                 .resolve_fixture_type(fixture)
                 .ok()
                 .and_then(|t| t.rig().map(str::to_string));
-            (
-                name.clone(),
-                json!({
-                    "tags": fixture.tags(),
-                    "type": fixture.fixture_type(),
-                    "mode": fixture.mode(),
-                    "position": fixture.position(),
-                    "rotation": fixture.rotation(),
-                    "beam_angle": fixture.beam_angle(),
-                    "rig": rig,
-                }),
-            )
+            let scene = SceneFixture {
+                placement: FixturePlacement {
+                    tags: fixture.tags().to_vec(),
+                    fixture_type: fixture.fixture_type().to_string(),
+                    position: fixture.position(),
+                    rotation: fixture.rotation(),
+                    beam_angle: fixture.beam_angle(),
+                    rig,
+                },
+                mode: fixture.mode().map(String::from),
+            };
+            (name.clone(), scene)
         })
         .collect();
-    json!({
-        "fixtures": fixtures,
-        "venue": {
-            "name": venue.name(),
-            "focus_points": venue.focus_points(),
-            "scenery": system.scenery(venue.name()),
-            "scenery_error": system.scenery_error(venue.name()),
-        },
-    })
+    VenueScene {
+        fixtures,
+        venue: super::super::state::stage_venue(system, venue),
+    }
 }
 
 /// A lighting system loaded from a project's type and venue files alone, as
@@ -3007,45 +3041,32 @@ pub(super) fn system_from_files(
 }
 
 /// The patch answer for one venue of a loaded system.
-fn venue_patch_json(
+fn venue_patch(
     system: &lighting::system::LightingSystem,
     venue: &lighting::types::Venue,
-) -> serde_json::Value {
-    let fixtures = venue.fixtures_by_patch();
-    let spans: Vec<serde_json::Value> = fixtures
-        .iter()
-        .map(|fixture| {
-            let footprint = system
+) -> crate::webui::wire::venue::VenuePatch {
+    use crate::webui::wire::venue::{PatchedFixture, VenuePatch};
+    let spans = venue
+        .fixtures_by_patch()
+        .into_iter()
+        .map(|fixture| PatchedFixture {
+            fixture: fixture.name().to_string(),
+            universe: fixture.universe(),
+            address: fixture.start_channel(),
+            footprint: system
                 .resolve_fixture_type(fixture)
                 .ok()
-                .map(|t| t.footprint());
-            json!({
-                "fixture": fixture.name(),
-                "universe": fixture.universe(),
-                "address": fixture.start_channel(),
-                "footprint": footprint,
-                "type": fixture.fixture_type(),
-                "mode": fixture.mode(),
-            })
+                .map(|t| t.footprint()),
+            fixture_type: fixture.fixture_type().to_string(),
+            mode: fixture.mode().map(String::from),
         })
         .collect();
     let known = system.patch_spans(venue);
-    let overlaps: Vec<serde_json::Value> = lighting::patch::venue_overlaps(&known)
-        .into_iter()
-        .map(|o| {
-            json!({
-                "a": o.first,
-                "b": o.second,
-                "a_gang": o.first_gang,
-                "b_gang": o.second_gang,
-                "universe": o.universe,
-                "from": o.from,
-                "to": o.to,
-            })
-        })
-        .collect();
-    let overruns = lighting::patch::venue_overruns(&known);
-    json!({"spans": spans, "overlaps": overlaps, "overruns": overruns})
+    VenuePatch {
+        spans,
+        overlaps: lighting::patch::venue_overlaps(&known),
+        overruns: lighting::patch::venue_overruns(&known),
+    }
 }
 
 /// Converts a JSON venue definition to DSL format.
@@ -3693,10 +3714,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 2);
-        let paths: Vec<&str> = results
-            .iter()
-            .map(|r| r["path"].as_str().unwrap())
-            .collect();
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
         assert!(paths.contains(&"song1/show.light"));
         assert!(paths.contains(&"top.light"));
     }
@@ -3718,7 +3736,7 @@ show "test" {
         find_light_files(dir.path(), dir.path(), &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "my_show");
+        assert_eq!(results[0].name, "my_show");
     }
 
     #[test]
@@ -3734,7 +3752,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["path"].as_str().unwrap(), "a/b/c/deep.light");
+        assert_eq!(results[0].path, "a/b/c/deep.light");
     }
 
     #[test]
@@ -3763,7 +3781,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "show");
+        assert_eq!(results[0].name, "show");
     }
 
     #[tokio::test]
@@ -6235,8 +6253,8 @@ show "test" {
         // The gang is quiet; the partial overlap names the gang once.
         let overlaps = parsed["overlaps"].as_array().unwrap();
         assert_eq!(overlaps.len(), 1, "{parsed}");
-        assert_eq!(overlaps[0]["a_gang"], serde_json::json!(["G1", "G2"]));
-        assert_eq!(overlaps[0]["b"], "Part");
+        assert_eq!(overlaps[0]["first_gang"], serde_json::json!(["G1", "G2"]));
+        assert_eq!(overlaps[0]["second"], "Part");
         let overruns = parsed["overruns"].as_array().unwrap();
         assert_eq!(overruns.len(), 1, "{parsed}");
         assert_eq!(overruns[0]["fixture"], "End");
@@ -8164,14 +8182,14 @@ show "test" {
             },
         );
         for (got, want) in evaluations.iter().zip(&direct) {
-            let maps = crate::webui::state::state_maps(&want.fixtures, &want.poses);
-            let (poses, cells) = (maps.poses, maps.cells);
+            let maps = crate::webui::state::stage_frame(&want.fixtures, &want.poses);
+            let (poses, cells) = (json!(maps.poses), json!(maps.cells));
             assert_eq!(got["fixtures"], json!(maps.fixtures));
             assert_eq!(got["strobe_rates"], json!(maps.strobe_rates));
             // Pan and tilt are exact; the beam's direction and footprint are
             // trigonometry, which two evaluations agree on to the last bit or
             // two, not always the last.
-            for (name, want_pose) in &poses {
+            for (name, want_pose) in poses.as_object().unwrap() {
                 let got_pose = &got["poses"][name];
                 assert_eq!(got_pose["pan"], want_pose["pan"]);
                 assert_eq!(got_pose["tilt"], want_pose["tilt"]);
@@ -8183,7 +8201,10 @@ show "test" {
                     }
                 }
             }
-            assert_eq!(got["poses"].as_object().unwrap().len(), poses.len());
+            assert_eq!(
+                got["poses"].as_object().unwrap().len(),
+                poses.as_object().unwrap().len()
+            );
             assert_eq!(got["cells"], json!(cells));
             assert_eq!(got["time"], json!(want.time.as_secs_f64()));
         }
@@ -8294,7 +8315,9 @@ show "test" {
     // -----------------------------------------------------------------------
 
     async fn inspect(bytes: &[u8]) -> serde_json::Value {
-        inspect_description(&lighting::gdtf::parse_archive(bytes).unwrap())
+        json!(inspect_description(
+            &lighting::gdtf::parse_archive(bytes).unwrap()
+        ))
     }
 
     #[tokio::test]

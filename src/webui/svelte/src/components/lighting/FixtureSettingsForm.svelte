@@ -23,6 +23,12 @@
    * anything is written. mtrack keeps these in a record of its own; the user never sees
    * or edits it as a file.
    */
+  import type {
+    FixtureSettingsData,
+    GdtfMode,
+    SettingsSaved,
+    StrobeCurve,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -31,10 +37,6 @@
     ConflictError,
     fetchFixtureSettings,
     postFixtureSettings,
-    type FixtureSettingsData,
-    type FixtureSettingsResult,
-    type GdtfMode,
-    type StrobeCurve,
   } from "../../lib/api/config";
 
   interface Props {
@@ -136,7 +138,7 @@
 
   /** What the save will do, in words, for the confirm; null when there is
    *  nothing to ask about. */
-  function consequences(plan: FixtureSettingsResult): string | null {
+  function consequences(plan: SettingsSaved): string | null {
     const tr = get(t);
     const lines: string[] = [];
     if (plan.rename && plan.rename.lines > 0) {

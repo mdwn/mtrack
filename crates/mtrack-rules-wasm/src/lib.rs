@@ -28,7 +28,9 @@
 //! reports (the bar's, by its time, and the one the changes have set), and
 //! the beats-in-measure of a count-in. The TypeScript types of the
 //! arguments and results are generated from the Rust structs (`tsify`), so
-//! the UI has no copy of them to drift.
+//! the UI has no copy of them to drift; so are the types of what the UI
+//! reads from the player's HTTP API and websocket (`src/webui/wire`), which
+//! are compiled here for their types alone.
 //!
 //! Every export is stateless and synchronous: the UI hands over the grid or
 //! config it holds and gets an answer, with nothing kept on this side. An
@@ -70,6 +72,125 @@ pub mod patch;
 /// so each compiles as it is. See `lighting.rs`.
 #[allow(dead_code)]
 pub mod lighting;
+
+/// The player's config as written (`src/config/*`): the parts the web UI
+/// edits and is sent, under the paths they have in the player
+/// (`crate::config::…`). See `config.rs`.
+#[allow(dead_code)]
+pub mod config;
+
+/// An audio sample format (`src/audio/format.rs`).
+#[path = "../../../src/audio/format.rs"]
+#[allow(dead_code)]
+pub mod audio_format;
+
+/// The range a track's gain may be set in (`src/audio/track_gains.rs`).
+#[path = "../../../src/audio/track_gains.rs"]
+#[allow(dead_code)]
+pub mod track_gains;
+
+/// What the audio output is doing (`src/audio/output_status.rs`).
+#[path = "../../../src/audio/output_status.rs"]
+pub mod output_status;
+
+/// The hardware and controllers as status reports them
+/// (`src/player/hardware_status.rs`).
+#[path = "../../../src/player/hardware_status.rs"]
+mod hardware_status;
+
+/// The audio and MIDI devices and the trigger calibration as the web UI is
+/// told of them (`src/device_info.rs`).
+#[path = "../../../src/device_info.rs"]
+pub mod device_info;
+
+/// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
+#[path = "../../../src/audio/guessed_tempo.rs"]
+pub mod guessed_tempo;
+
+/// Ambient light's mode (`src/dmx/engine/ambient_mode.rs`).
+#[path = "../../../src/dmx/engine/ambient_mode.rs"]
+mod ambient_mode;
+
+/// Whose ambient settings are up (`src/playlist/ambient_source.rs`).
+#[path = "../../../src/playlist/ambient_source.rs"]
+mod ambient_source;
+
+/// Where a mover points (`src/state/pose.rs`).
+#[path = "../../../src/state/pose.rs"]
+mod pose;
+
+// What the web UI reads from the player (`src/webui/wire`), whose
+// TypeScript types are generated here and nowhere else.
+
+/// The config API's payloads.
+#[path = "../../../src/webui/wire/config.rs"]
+pub mod wire_config;
+/// The devices API's payloads.
+#[path = "../../../src/webui/wire/devices.rs"]
+pub mod wire_devices;
+/// The fixture test's payloads.
+#[path = "../../../src/webui/wire/fixture_test.rs"]
+pub mod wire_fixture_test;
+/// The fixture type, GDTF and venue listing payloads.
+#[path = "../../../src/webui/wire/fixture_types.rs"]
+pub mod wire_fixture_types;
+/// The websocket's messages.
+#[path = "../../../src/webui/wire/messages.rs"]
+pub mod wire_messages;
+/// The MVR import and export payloads.
+#[path = "../../../src/webui/wire/mvr.rs"]
+pub mod wire_mvr;
+/// The playlist API's payloads.
+#[path = "../../../src/webui/wire/playlists.rs"]
+pub mod wire_playlists;
+/// A song's shows evaluated offline (the 3D view's Preview mode).
+#[path = "../../../src/webui/wire/preview.rs"]
+pub mod wire_preview;
+/// The lighting readiness facts.
+#[path = "../../../src/webui/wire/readiness.rs"]
+pub mod wire_readiness;
+/// The songs API's payloads.
+#[path = "../../../src/webui/wire/songs.rs"]
+pub mod wire_songs;
+/// The status API's payloads.
+#[path = "../../../src/webui/wire/status.rs"]
+pub mod wire_status;
+/// The venue API's payloads.
+#[path = "../../../src/webui/wire/venue.rs"]
+pub mod wire_venue;
+
+// The player's module paths the included sources name each other by
+// (`crate::audio::beat_grid`, `crate::config::Section`, …), so each
+// compiles as it is.
+pub mod audio {
+    pub use crate::audio_format as format;
+    pub use crate::{beat_grid, guessed_tempo, output_status, track_gains};
+    pub use format::SampleFormat;
+}
+
+pub mod dmx {
+    pub mod engine {
+        pub use crate::ambient_mode::AmbientMode;
+    }
+}
+
+pub mod player {
+    pub use crate::hardware_status::*;
+}
+
+pub mod playlist {
+    pub use crate::ambient_source::AmbientSource;
+}
+
+pub mod state {
+    pub use crate::pose::PoseSnapshot;
+}
+
+pub mod webui {
+    pub mod wire {
+        pub use crate::wire_messages as messages;
+    }
+}
 
 /// What the included modules' own unit tests reach for in the player
 /// (`crate::util::to_yaml_string`). Those tests are never run here (`[lib]
@@ -848,21 +969,20 @@ pub fn passes_by(pass_ends: PassEndsJs, until_ms: f64) -> Option<u32> {
 /// player's default tempo and metre (`DEFAULT_BPM`,
 /// `DEFAULT_TIME_SIGNATURE`): what the editor's new tempo block starts
 /// at.
-#[derive(Serialize, Tsify, Clone, Copy, Debug, PartialEq)]
-#[tsify(into_wasm_abi)]
-pub struct TempoDefaults {
-    pub bpm: f64,
-    pub time_signature: (u32, u32),
-}
-
-/// [`TempoDefaults`], for the web UI.
 #[wasm_bindgen]
-pub fn tempo_defaults() -> TempoDefaults {
+pub fn tempo_defaults() -> wire_messages::PlaybackTempo {
     let sig = tempo::DEFAULT_TIME_SIGNATURE;
-    TempoDefaults {
+    wire_messages::PlaybackTempo {
         bpm: tempo::DEFAULT_BPM,
         time_signature: (sig.numerator, sig.denominator),
     }
+}
+
+/// The MIDI events a config can name, and each field's range: what the
+/// trigger editor offers and bounds its inputs by.
+#[wasm_bindgen]
+pub fn midi_event_shapes() -> config::MidiEventShapes {
+    config::MidiEventShapes::new()
 }
 
 // ── Metronome ───────────────────────────────────────────────────────────────

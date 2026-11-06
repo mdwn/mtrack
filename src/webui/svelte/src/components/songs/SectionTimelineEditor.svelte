@@ -13,13 +13,16 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    PilotConfig,
+    PilotHint,
+    Section,
+    SongInfo,
+    TrackPeaks,
+  } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type {
-    SongSummary,
-    WaveformTrack,
     TempoConfig,
-    PilotConfig,
-    PilotHintConfig,
     MetronomeConfig,
     SongFile,
   } from "../../lib/api/songs";
@@ -33,24 +36,16 @@
   import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
-  import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
+  import TempoMarkerDialog, {
+    type MarkerPosition,
+  } from "./TempoMarkerDialog.svelte";
   import PilotHintDialog from "./PilotHintDialog.svelte";
   import SectionEditDialog from "./SectionEditDialog.svelte";
 
-  interface SectionEntry {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-    /** 1-based beat within the measure, fractional allowed; absent = 1. */
-    start_beat?: number;
-    end_beat?: number;
-    color?: string;
-  }
-
   interface Props {
-    song: SongSummary;
-    waveformTracks: WaveformTrack[];
-    sections: SectionEntry[];
+    song: SongInfo;
+    waveformTracks: TrackPeaks[];
+    sections: Section[];
     dirty?: boolean;
     /** The song's `tempo:` block; edited via the tempo layer. */
     tempo?: TempoConfig | null;
@@ -177,7 +172,7 @@
     applyZoom(pixelsPerMs * factor, mouseMs, mouseXInViewport);
   }
 
-  function handleSectionsChange(updated: SectionEntry[]) {
+  function handleSectionsChange(updated: Section[]) {
     sections = updated;
     dirty = true;
   }
@@ -391,7 +386,7 @@
     return msToMeasureBeat(ms, 1);
   }
 
-  function patchSection(index: number, patch: Partial<SectionEntry>) {
+  function patchSection(index: number, patch: Partial<Section>) {
     const updated = [...sections];
     const merged = { ...updated[index], ...patch };
     // An empty name keeps the previous one; "auto" color drops the key.
@@ -410,11 +405,6 @@
   }
 
   // --- Tempo / pilot marker layers ---
-
-  interface MarkerPosition {
-    measure: number;
-    beat: number;
-  }
 
   let tempoDialogTarget = $state<"start" | MarkerPosition | null>(null);
   let pilotDialogIndex = $state<number | null>(null);
@@ -639,7 +629,7 @@
     pilotDialogIndex = hints.length - 1;
   }
 
-  function patchPilotHint(index: number, patch: Partial<PilotHintConfig>) {
+  function patchPilotHint(index: number, patch: Partial<PilotHint>) {
     const hints = [...(pilot?.hints ?? [])];
     const merged = { ...hints[index], ...patch };
     if (merged.align === "end") delete merged.align;

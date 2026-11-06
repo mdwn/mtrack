@@ -24,6 +24,10 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::super::state as ws_state;
+use crate::webui::wire::messages::Waveform;
+use crate::webui::wire::songs::{
+    FileKind, SongFailure, SongFile, SongFiles, SongInfo, SongList, TempoGuess, TempoGuessSource,
+};
 use crate::{config, songs};
 
 /// GET /api/songs — returns a list of all songs with metadata.
@@ -32,7 +36,7 @@ use crate::{config, songs};
 /// is always consistent with what the player knows about.
 pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
     let all_songs = state.player.songs();
-    let song_list: Vec<serde_json::Value> = all_songs
+    let songs: Vec<SongInfo> = all_songs
         .sorted_list()
         .iter()
         .map(|song| {
@@ -70,32 +74,30 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .collect();
 
             let summary = song.summary();
-            json!({
-                "name": summary.name,
-                "duration_ms": summary.duration.as_millis() as u64,
-                "duration_display": crate::util::duration_minutes_seconds(summary.duration),
-                "num_channels": song.num_channels(),
-                "sample_format": format!("{}", song.sample_format()),
-                "track_count": song.tracks().len(),
-                "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
-                "has_midi": song.midi_playback().is_some(),
-                "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
-                "base_dir": base_dir,
-                "lighting_files": lighting_files,
-                "midi_dmx_files": midi_dmx_files,
-                "beat_grid": song.beat_grid().map(|g| json!({
-                    "beats": g.beats,
-                    "measure_starts": g.measure_starts,
-                })),
-                "has_tempo_map": song.tempo_map().is_some(),
-                "loop_playback": song.loop_playback(),
-                "loop_crossfade_ms": song.loop_crossfade().map(|d| d.as_millis() as u64),
-                "loop_crossfade_cut": song.loop_crossfade_cut(),
-                "sections": summary.sections,
-            })
+            SongInfo {
+                name: summary.name,
+                duration_ms: summary.duration.as_millis() as u64,
+                duration_display: crate::util::duration_minutes_seconds(summary.duration),
+                num_channels: song.num_channels(),
+                sample_format: format!("{}", song.sample_format()),
+                track_count: song.tracks().len(),
+                tracks: song.tracks().iter().map(|t| t.name().to_string()).collect(),
+                has_midi: song.midi_playback().is_some(),
+                has_lighting: !song.light_shows().is_empty()
+                    || !song.dsl_lighting_shows().is_empty(),
+                base_dir,
+                lighting_files,
+                midi_dmx_files,
+                beat_grid: song.beat_grid().cloned(),
+                has_tempo_map: song.tempo_map().is_some(),
+                loop_playback: song.loop_playback(),
+                loop_crossfade_ms: song.loop_crossfade().map(|d| d.as_millis() as u64),
+                loop_crossfade_cut: song.loop_crossfade_cut().to_vec(),
+                sections: summary.sections,
+            }
         })
         .collect();
-    let failure_list: Vec<serde_json::Value> = all_songs
+    let failures: Vec<SongFailure> = all_songs
         .failures()
         .iter()
         .map(|f| {
@@ -105,20 +107,16 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 .unwrap_or(std::path::Path::new(""))
                 .to_string_lossy()
                 .to_string();
-            json!({
-                "name": f.name(),
-                "error": f.error(),
-                "base_dir": base_dir,
-                "failed": true,
-            })
+            SongFailure {
+                name: f.name().to_string(),
+                error: f.error().to_string(),
+                base_dir,
+                failed: true,
+            }
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        Json(json!({"songs": song_list, "failures": failure_list})),
-    )
-        .into_response()
+    (StatusCode::OK, Json(SongList { songs, failures })).into_response()
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
@@ -409,15 +407,9 @@ pub(super) async fn get_song_waveform(
         })
         .await
         .unwrap_or_default();
-        let tracks: Vec<serde_json::Value> = cached
-            .iter()
-            .cloned()
-            .chain(virtual_peaks)
-            .map(|(track_name, peaks)| json!({ "name": track_name, "peaks": peaks }))
-            .collect();
         return (
             StatusCode::OK,
-            Json(json!({ "song_name": name, "tracks": tracks })),
+            Json(Waveform::new(name, cached.into_iter().chain(virtual_peaks))),
         )
             .into_response();
     }
@@ -448,17 +440,7 @@ pub(super) async fn get_song_waveform(
     .await;
 
     match peaks_result {
-        Ok(peaks) => {
-            let tracks: Vec<serde_json::Value> = peaks
-                .iter()
-                .map(|(track_name, p)| json!({ "name": track_name, "peaks": p }))
-                .collect();
-            (
-                StatusCode::OK,
-                Json(json!({ "song_name": name, "tracks": tracks })),
-            )
-                .into_response()
-        }
+        Ok(peaks) => (StatusCode::OK, Json(Waveform::new(name, peaks))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to compute waveform: {}", e)})),
@@ -498,10 +480,10 @@ pub(super) async fn get_song_tempo_guess(
         ) {
             return (
                 StatusCode::OK,
-                Json(json!({
-                    "source": "midi",
-                    "tempo": guessed,
-                })),
+                Json(TempoGuess {
+                    source: TempoGuessSource::Midi,
+                    tempo: guessed,
+                }),
             )
                 .into_response();
         }
@@ -526,10 +508,10 @@ pub(super) async fn get_song_tempo_guess(
     {
         Some(guessed) => (
             StatusCode::OK,
-            Json(json!({
-                "source": "beat_grid",
-                "tempo": guessed,
-            })),
+            Json(TempoGuess {
+                source: TempoGuessSource::BeatGrid,
+                tempo: guessed,
+            }),
         )
             .into_response(),
         None => (
@@ -564,7 +546,7 @@ pub(super) async fn get_song_files(
     let song_dir = song.base_path().to_path_buf();
 
     let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
-        let mut files: Vec<serde_json::Value> = Vec::new();
+        let mut files: Vec<SongFile> = Vec::new();
         for entry in std::fs::read_dir(&song_dir)?.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -578,24 +560,10 @@ pub(super) async fn get_song_files(
             if filename == "song.yaml" || filename == "song.yml" {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let file_type = if songs::is_supported_audio_extension(&ext) {
-                "audio"
-            } else if ext == "mid" {
-                "midi"
-            } else if ext == "light" {
-                "lighting"
-            } else {
-                "other"
-            };
-            files.push(json!({
-                "name": filename,
-                "type": file_type,
-            }));
+            files.push(SongFile {
+                kind: file_kind(&path),
+                name: filename,
+            });
         }
         Ok::<_, std::io::Error>(files)
     })
@@ -605,14 +573,27 @@ pub(super) async fn get_song_files(
         Err(e) => return e,
     };
 
-    files.sort_by(|a, b| {
-        a.get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
-    });
+    files.sort_by(|a, b| a.name.cmp(&b.name));
 
-    (StatusCode::OK, Json(json!({"files": files}))).into_response()
+    (StatusCode::OK, Json(SongFiles { files })).into_response()
+}
+
+/// What a file is to the player, by its extension.
+pub(super) fn file_kind(path: &std::path::Path) -> FileKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if songs::is_supported_audio_extension(&ext) {
+        FileKind::Audio
+    } else if ext == "mid" {
+        FileKind::Midi
+    } else if ext == "light" {
+        FileKind::Lighting
+    } else {
+        FileKind::Other
+    }
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,

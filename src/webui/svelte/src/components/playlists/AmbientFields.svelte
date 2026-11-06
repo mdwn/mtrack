@@ -19,7 +19,7 @@
     ambientModeOf,
     ambientTimings,
     withAmbientField,
-    type AmbientMode,
+    type AmbientChoice,
   } from "../../lib/playlistEntry";
   import { t } from "svelte-i18n";
 
@@ -55,7 +55,7 @@
   let mode = $derived(ambientModeOf(value));
 
   function pick(selected: string) {
-    const next: AmbientMode =
+    const next: AmbientChoice =
       selected === inheritValue
         ? "inherit"
         : selected === "off"

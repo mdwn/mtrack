@@ -22,6 +22,7 @@
 //! These are warnings, never errors. A show that parses is still valid; these
 //! only say what looks suspicious.
 
+pub use crate::lighting::findings::{Want, Warning};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
@@ -31,14 +32,6 @@ use crate::lighting::effects::{
 };
 use crate::lighting::parser::{effect_keyword, Cue, Effect, LightShow};
 use crate::lighting::timeline::EffectEnd;
-
-/// A non-fatal finding.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Warning {
-    /// Stable identifier, so callers can filter without matching prose.
-    pub kind: &'static str,
-    pub message: String,
-}
 
 impl Warning {
     fn new(kind: &'static str, message: String) -> Self {
@@ -66,24 +59,6 @@ pub struct LintContext<'a> {
     /// The current venue's focus points. `None` when no venue is loaded —
     /// an empty set is a venue with none, which is a finding.
     pub focus_points: Option<HashSet<String>>,
-}
-
-/// Something a show asks of a group: what an effect needs its fixtures to
-/// have ([`Want::of`]), or a pixel fixture for `per: cell`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Want {
-    /// A `move`: pan or tilt channels.
-    Move,
-    /// A colour cue (static colour, cycle, rainbow): colour channels.
-    Color,
-    /// A `strobe`: a strobe channel, or a dimmer or colour channels, which
-    /// the engine strobes in software.
-    Strobe,
-    /// `per: cell`: a pixel fixture.
-    Cells,
-    /// A `dimmer` or `pulse`: a dimmer channel or colour channels.
-    Dimmer,
 }
 
 impl Want {

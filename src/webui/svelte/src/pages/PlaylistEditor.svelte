@@ -14,17 +14,19 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    EntryFades,
+    FadeConfig,
+    PlaylistDetail,
+    PlaylistInfo,
+  } from "../gen/rules/mtrack_rules";
   import {
     fetchPlaylists,
     fetchPlaylist,
     savePlaylist,
     deletePlaylist,
     activatePlaylist,
-    type PlaylistInfo,
-    type PlaylistData,
     type AutoPlay,
-    type EntryFades,
-    type FadeConfig,
     type PlaylistAmbient,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
@@ -52,7 +54,7 @@
 
   let playlists = $state<PlaylistInfo[]>([]);
   let selected = $state<string | null>(null);
-  let detail = $state<PlaylistData | null>(null);
+  let detail = $state<PlaylistDetail | null>(null);
   let editSongs = $state<string[]>([]);
   /** Each song's auto play, kept in step with `editSongs`. */
   let editAutoPlay = $state<AutoPlay[]>([]);
@@ -317,7 +319,7 @@
         autoPlay: editAutoPlay[i],
         ambient: editEntryAmbient[i],
       },
-      (key, values) => tr(key, values ? { values } : undefined),
+      tr,
     );
   }
 

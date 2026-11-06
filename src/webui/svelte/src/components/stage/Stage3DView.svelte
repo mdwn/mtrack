@@ -13,6 +13,12 @@
      *
      * -->
 <script module lang="ts">
+  import type {
+    FixtureMetadata,
+    StageValues,
+    VenueMetadata,
+    VenueScene,
+  } from "../../gen/rules/mtrack_rules";
   import type { SceneStats, SceneryStats } from "../../lib/stage/scene3d";
 
   /** What the view is showing, for its host's header. */
@@ -57,26 +63,14 @@
     underTestStore,
     venueStore,
   } from "../../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    VenueMetadata,
-  } from "../../lib/ws/stores";
-  import {
-    fetchVenueScene,
-    VenueNotFoundError,
-    type VenueScene,
-  } from "../../lib/api/config";
+  import { fetchVenueScene, VenueNotFoundError } from "../../lib/api/config";
   import {
     concerns,
     fixtureTypeChanges,
     venueChanges,
   } from "../../lib/lighting/changes";
   import { lightingHref } from "../../lib/lightingRoute";
-  import {
-    wheelFixtureCount,
-    type PreviewFrame,
-  } from "../../lib/lighting/preview";
+  import { wheelFixtureCount } from "../../lib/lighting/preview";
   import type { StageScene } from "../../lib/stage/scene3d";
 
   interface Props {
@@ -87,7 +81,7 @@
     venuesDir?: string;
     /** A previewed moment to draw instead of the live state (live venue
      *  only); null draws the engine's state. */
-    previewFrame?: PreviewFrame | null;
+    previewFrame?: StageValues | null;
     /** Fixture labels; left unset, on for a small rig and off for a big one. */
     labels?: boolean;
     /** Selected fixtures, marked in the scene. */
@@ -169,7 +163,14 @@
 
   /** The fixtures and venue the scene is built from. */
   const shownMeta = $derived<Record<string, FixtureMetadata>>(
-    fromFile ? (fileScene?.fixtures ?? {}) : $metadataStore,
+    fromFile
+      ? Object.fromEntries(
+          Object.entries(fileScene?.fixtures ?? {}).map(([name, f]) => [
+            name,
+            { ...f, capabilities: [], cells: [] },
+          ]),
+        )
+      : $metadataStore,
   );
   const shownVenue = $derived<VenueMetadata | null>(
     fromFile
@@ -180,7 +181,7 @@
   );
   /** A file view's fixtures are lit a neutral white, so lenses and beam
    *  directions read without pretending to be a show. */
-  const fileLight = $derived<Record<string, FixtureChannels>>(
+  const fileLight = $derived<StageValues["fixtures"]>(
     Object.fromEntries(
       Object.keys(fromFile ? shownMeta : {}).map((name) => [
         name,

@@ -13,6 +13,14 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    Cluster,
+    Depth,
+    FitGroup,
+    FitReport,
+    Height,
+    Want,
+  } from "../../gen/rules/mtrack_rules";
   import { untrack } from "svelte";
   import { t, locale } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -29,12 +37,6 @@
     sameSet,
     tagsFor,
     withTags,
-    type Cluster,
-    type Depth,
-    type Fit,
-    type FitGroup,
-    type Height,
-    type Want,
   } from "../../lib/lighting/fit";
   import { addUniverseToRunningProfile } from "../../lib/profileStore";
   import { metadataStore, reloadStore, venueStore } from "../../lib/ws/stores";
@@ -49,7 +51,7 @@
 
   let { groupParam, profileName }: Props = $props();
 
-  let fit = $state<Fit | null>(null);
+  let fit = $state<FitReport | null>(null);
   let error = $state<string | null>(null);
   let selectedName = $state<string | null>(null);
   /** The fixtures a click on Apply (or Tag N fixtures) would tag. */

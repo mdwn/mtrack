@@ -13,18 +13,12 @@
      *
      * -->
 <script lang="ts">
+  import type { Section, SongInfo } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import type { SongSummary } from "../../lib/api/songs";
-
-  interface SectionEntry {
-    name: string;
-    start_measure: number;
-    end_measure: number;
-  }
 
   interface Props {
-    song: SongSummary;
-    sections: SectionEntry[];
+    song: SongInfo;
+    sections: Section[];
     dirty?: boolean;
   }
 

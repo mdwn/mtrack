@@ -19,6 +19,7 @@
 //! both build their [`LintContext`] here rather than each resolving groups and
 //! universes on its own.
 
+pub use crate::lighting::findings::VenueError;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -84,14 +85,6 @@ pub struct VenueFacts {
     /// cannot be driven. The whole venue fails then (no fixture lights), so
     /// the group counts above, read from what did resolve, are empty.
     pub venue_error: Option<VenueError>,
-}
-
-/// A venue that does not register: the fixture that fails it and why.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct VenueError {
-    pub venue: String,
-    pub fixture: String,
-    pub reason: String,
 }
 
 impl VenueFacts {

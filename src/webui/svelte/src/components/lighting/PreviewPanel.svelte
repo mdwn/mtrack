@@ -20,18 +20,21 @@
    * three maps the live state message carries and never touches the
    * engine, so a playing song plays on.
    */
+  import type {
+    PreviewEvaluation,
+    SongInfo,
+    StageValues,
+  } from "../../gen/rules/mtrack_rules";
   import { onDestroy, onMount } from "svelte";
   import { t } from "svelte-i18n";
   import { BadAnswerError } from "../../lib/lighting/answer";
-  import { fetchSongs, type SongSummary } from "../../lib/api/songs";
+  import { fetchSongs } from "../../lib/api/songs";
   import {
     clock,
     evaluatePreview,
     groupActivity,
     sectionSegments,
     timelineLink,
-    type PreviewEvaluation,
-    type PreviewFrame,
   } from "../../lib/lighting/preview";
   import { playbackStore } from "../../lib/ws/stores";
 
@@ -41,7 +44,7 @@
     /** Time to open at, seconds, from the address. */
     initialTime?: number | null;
     /** Called with what the scene should draw; null when there is nothing. */
-    onfeed: (frame: PreviewFrame | null) => void;
+    onfeed: (frame: StageValues | null) => void;
     /** Called with each moment evaluated, so the host can keep it in the
      *  address. */
     onmoment?: (song: string, time: number) => void;
@@ -57,7 +60,7 @@
   /** How long scrubbing rests before the show is evaluated. */
   const DEBOUNCE_MS = 120;
 
-  let songs = $state<SongSummary[]>([]);
+  let songs = $state<SongInfo[]>([]);
   let loaded = $state(false);
   let songName = $state("");
   let time = $state(0);

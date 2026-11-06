@@ -21,6 +21,11 @@
    * a show would be, held a few seconds and kept alive from here, and
    * released when Send goes off, the place changes, or the page goes.
    */
+  import type {
+    TestAnswer,
+    TestOptions,
+    TestUnavailable,
+  } from "../../gen/rules/mtrack_rules";
   import { onDestroy, onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -38,10 +43,7 @@
     testBody,
     TestRefused,
     Throttle,
-    type TestAnswer,
     type TestControls,
-    type TestOptions,
-    type TestUnavailable,
   } from "../../lib/lighting/fixtureTest";
 
   interface Props {
@@ -293,7 +295,7 @@
     onframe?.({
       channels: frameChannels(frame),
       pose:
-        m?.controls.pan || m?.controls.tilt
+        m?.controls?.pan || m?.controls?.tilt
           ? { pan: c.pan, tilt: c.tilt }
           : null,
     });
@@ -509,7 +511,7 @@
         </p>
       {/if}
 
-      {#if mode}
+      {#if mode?.controls}
         <!-- 3. Is it alive: swatches, then sliders. -->
         <div class="ftest__controls" data-testid="ftest-controls">
           <div
@@ -529,7 +531,7 @@
                 onclick={() => {
                   if (key === "off") blackout();
                   else {
-                    if (!mode?.controls.color) setValue("dimmer", 1);
+                    if (!mode?.controls?.color) setValue("dimmer", 1);
                     else setColor(hex);
                   }
                 }}>{$t(`lighting.test.swatch.${key}`)}</button
@@ -699,7 +701,7 @@
                 },
               })}
             </p>
-            {#each otherWarnings as w (w.kind + (w.control ?? ""))}
+            {#each otherWarnings as w (w.kind + ("control" in w ? w.control : ""))}
               <p class="ftest__note" data-testid="ftest-warning-{w.kind}">
                 {w.message}
               </p>

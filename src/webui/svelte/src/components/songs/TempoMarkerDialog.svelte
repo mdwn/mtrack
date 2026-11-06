@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import type { GuessedTempo } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type {
     BeatGrid,
@@ -22,7 +23,7 @@
     MetronomeChangeConfig,
     SubdivisionValue,
   } from "../../lib/api/songs";
-  import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
+  import { fetchTempoGuess } from "../../lib/api/songs";
   import { rules } from "../../lib/rules";
   import { subdivisionIcon } from "../../lib/meter";
   import { sectionToConfigSnapped } from "../../lib/tempoConvert";

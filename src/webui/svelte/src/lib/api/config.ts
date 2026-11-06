@@ -12,12 +12,61 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { ConfigReload } from "../configReload";
-import { BadAnswerError, readJson } from "../lighting/answer";
+import type {
+  AimPoints,
+  AudioDeviceInfo,
+  AudioProbe,
+  ChannelCalibration,
+  ConfigReload,
+  ConfigSaved,
+  Controller,
+  FileSaved,
+  FitReport,
+  Fixture,
+  FixtureSettingsData,
+  FixtureType,
+  FixtureTypeDeleted,
+  FixtureTypeEntry,
+  FixtureTypeGdtf,
+  FixtureTypeList,
+  GdtfImport,
+  LightFileInfo,
+  LightFiles,
+  LightingGroup,
+  LightingGroups,
+  LightingValidation,
+  MetronomeSounds,
+  MidiDeviceInfo,
+  MovementLimits,
+  MvrExportSummary,
+  MvrImportAnswer,
+  MvrInspection,
+  MvrKeep,
+  MvrKept,
+  NoiseFloor,
+  PlaylistBody,
+  PlaylistDetail,
+  PlaylistInfo,
+  ProbeAudioRequest,
+  Profile,
+  ProfileFile,
+  ProfileFileInfo,
+  Readiness,
+  SampleDefinition,
+  SampleUploaded,
+  SettingsSaved,
+  StoreSnapshot,
+  Vec3,
+  Venue,
+  VenueDetail,
+  VenueError,
+  VenueList,
+  VenuePatch,
+  VenueSaved,
+  VenueScene,
+} from "../../gen/rules/mtrack_rules";
+import { readAnswer } from "../lighting/answer";
 import { fixtureTypesChanged, venueChanged } from "../lighting/changes";
-import { parseFit, type Fit } from "../lighting/fit";
-import type { FixtureMetadata, VenueMetadata } from "../ws/stores";
-import { parseReadiness, type Readiness } from "../lighting/readiness";
 import {
   get,
   post,
@@ -32,63 +81,10 @@ import {
 } from "./rest";
 export { ConflictError } from "./rest";
 
-// Calibration types
-export interface NoiseFloorResult {
-  peak: number;
-  rms: number;
-  low_freq_energy: number;
-  channel: number;
-  sample_rate: number;
-  device_channels: number;
-}
-
-export interface ChannelCalibration {
-  channel: number;
-  threshold: number;
-  gain: number;
-  scan_time_ms: number;
-  retrigger_time_ms: number;
-  highpass_freq?: number;
-  dynamic_threshold_decay_ms?: number;
-  num_hits_detected: number;
-  noise_floor_peak: number;
-  max_hit_amplitude: number;
-}
-
-export interface SupportedFormat {
-  sample_format: string;
-  bits_per_sample: number;
-}
-
-export interface AudioDeviceInfo {
-  name: string;
-  max_channels: number;
-  host_name: string;
-  supported_sample_rates: number[];
-  supported_formats: SupportedFormat[];
-  /** An ALSA plug/virtual node. Still selectable — some rigs need one. */
-  virtual_node: boolean;
-  /** False when max_channels is a floor rather than the real maximum. */
-  channels_known: boolean;
-}
-
 /** Describes a device's channel count without overstating what is known. */
 export function channelsLabel(device: AudioDeviceInfo): string {
   if (device.channels_known) return `${device.max_channels}ch`;
   return device.virtual_node ? "virtual" : `${device.max_channels}ch+`;
-}
-
-export interface MidiDeviceInfo {
-  name: string;
-  has_input: boolean;
-  has_output: boolean;
-}
-
-/** The config after a change, with what became of its hardware reload
- *  (`ConfigReload`) when the change was a save. */
-export interface ConfigSnapshot extends ConfigReload {
-  yaml: string;
-  checksum: string;
 }
 
 export async function setLocked(locked: boolean): Promise<void> {
@@ -100,7 +96,7 @@ export async function setLocked(locked: boolean): Promise<void> {
   if (!res.ok) throw new Error(`Failed to set lock state: ${res.status}`);
 }
 
-export async function fetchConfigStore(): Promise<ConfigSnapshot> {
+export async function fetchConfigStore(): Promise<StoreSnapshot> {
   const res = await get("/config/store");
   if (!res.ok) throw new Error(`Failed to fetch config store: ${res.status}`);
   return res.json();
@@ -112,34 +108,6 @@ export async function fetchAudioDevices(): Promise<AudioDeviceInfo[]> {
   return res.json();
 }
 
-/** What a device did when asked to actually stream. */
-export type ProbeOutcome =
-  | "streaming"
-  | "opened_but_silent"
-  | "could_not_open"
-  | "opened_cannot_report"
-  /** Already open by this player, so it was reported rather than probed. */
-  | "in_use";
-
-export interface AudioProbeResult {
-  outcome: ProbeOutcome;
-  /** Whether the device proved it can stream. */
-  ok: boolean;
-  /** Why it could not be opened. Only ever set for `could_not_open`. */
-  reason?: string | null;
-  callbacks?: number | null;
-}
-
-/** The audio settings a probe honours, mirroring the profile's audio block. */
-export interface AudioProbeRequest {
-  device: string;
-  sample_rate?: number;
-  sample_format?: string;
-  bits_per_sample?: number;
-  buffer_size?: number;
-  stream_buffer_size?: string | number;
-}
-
 /**
  * Opens a device, confirms its output callback runs, and closes it again.
  *
@@ -147,8 +115,8 @@ export interface AudioProbeRequest {
  * to a couple of seconds, since it waits for a callback before giving up.
  */
 export async function probeAudioDevice(
-  req: AudioProbeRequest,
-): Promise<AudioProbeResult> {
+  req: ProbeAudioRequest,
+): Promise<AudioProbe> {
   const res = await post("/devices/audio/probe", JSON.stringify(req));
   if (!res.ok) throw await apiError(res, "Device test failed");
   return res.json();
@@ -160,10 +128,17 @@ export async function fetchMidiDevices(): Promise<MidiDeviceInfo[]> {
   return res.json();
 }
 
+/** A profile as the editor holds it: the generated `Profile`, a section
+ *  set to `null` to remove it on save (the server drops a section sent as
+ *  null, and keeps one left out). */
+export type ProfileDraft = Omit<Profile, "controllers"> & {
+  controllers?: Controller[] | null;
+};
+
 export async function addProfile(
-  profile: object,
+  profile: ProfileDraft,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await post(
     "/config/profiles",
     JSON.stringify({ expected_checksum: checksum, profile }),
@@ -174,9 +149,9 @@ export async function addProfile(
 
 export async function updateProfile(
   index: number,
-  profile: object,
+  profile: ProfileDraft,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await put(
     `/config/profiles/${index}`,
     JSON.stringify({ expected_checksum: checksum, profile }),
@@ -188,7 +163,7 @@ export async function updateProfile(
 export async function deleteProfile(
   index: number,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const res = await del(
     `/config/profiles/${index}?expected_checksum=${encodeURIComponent(checksum)}`,
   );
@@ -198,25 +173,13 @@ export async function deleteProfile(
 
 // ---- File-based Profiles API (profiles_dir) ----
 
-export interface ProfileFileInfo {
-  filename: string;
-  hostname: string | null;
-  has_audio: boolean;
-  has_midi: boolean;
-  has_dmx: boolean;
-  has_trigger: boolean;
-  has_controllers: boolean;
-}
-
 export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
   const res = await get("/profiles");
   if (!res.ok) throw new Error(`Failed to fetch profiles: ${res.status}`);
   return res.json();
 }
 
-export async function fetchProfileFile(
-  filename: string,
-): Promise<{ profile: object; yaml: string; version?: string }> {
+export async function fetchProfileFile(filename: string): Promise<ProfileFile> {
   const res = await get(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch profile");
   return res.json();
@@ -227,23 +190,23 @@ export async function fetchProfileFile(
  *  file's new version, and what became of the hardware reload. */
 export async function saveProfileFile(
   filename: string,
-  profile: object,
+  profile: ProfileDraft,
   version?: string,
-): Promise<{ version: string | null; reload: ConfigReload }> {
+): Promise<{ version: string | null; reload: Partial<ConfigReload> }> {
   const res = await put(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save profile");
-  const body = await res.json().catch(() => ({}));
-  return { version: body?.version ?? null, reload: body ?? {} };
+  const body: Partial<FileSaved> = await res.json().catch(() => ({}));
+  return { version: body.version ?? null, reload: body };
 }
 
 /** Deletes a profile file. Returns what became of the hardware reload. */
 export async function deleteProfileFile(
   filename: string,
-): Promise<ConfigReload> {
+): Promise<Partial<FileSaved>> {
   const res = await del(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to delete profile");
   return res.json().catch(() => ({}));
@@ -252,28 +215,28 @@ export async function deleteProfileFile(
 // Samples API
 
 export async function updateSamples(
-  samples: Record<string, unknown>,
+  samples: Record<string, SampleDefinition>,
   checksum: string,
   maxSampleVoices?: number,
-): Promise<ConfigSnapshot> {
-  const body: Record<string, unknown> = {
+): Promise<ConfigSaved> {
+  const body = {
     expected_checksum: checksum,
     samples,
+    ...(maxSampleVoices !== undefined
+      ? { max_sample_voices: maxSampleVoices }
+      : {}),
   };
-  if (maxSampleVoices !== undefined) {
-    body.max_sample_voices = maxSampleVoices;
-  }
   const res = await put("/config/samples", JSON.stringify(body));
   if (!res.ok) throw await apiError(res, "Failed to update samples");
   return res.json();
 }
 
 export async function updateMetronomeDefaults(
-  sounds: Record<string, unknown> | null,
+  sounds: MetronomeSounds | null,
   enabled: boolean,
   volume: number | null,
   checksum: string,
-): Promise<ConfigSnapshot> {
+): Promise<ConfigSaved> {
   const hasSounds = sounds && Object.keys(sounds).length > 0;
   const hasVolume = volume !== null && volume !== 1;
   const body = {
@@ -292,15 +255,7 @@ export async function updateMetronomeDefaults(
   return res.json();
 }
 
-export interface SampleUploadResult {
-  status: string;
-  file: string;
-  path: string;
-}
-
-export async function uploadSampleFile(
-  file: File,
-): Promise<SampleUploadResult> {
+export async function uploadSampleFile(file: File): Promise<SampleUploaded> {
   const res = await uploadFile(
     `/samples/upload/${encodeURIComponent(file.name)}`,
     file,
@@ -315,7 +270,7 @@ export async function startCalibration(
   device: string,
   channel: number,
   duration?: number,
-): Promise<NoiseFloorResult> {
+): Promise<NoiseFloor> {
   const body: Record<string, unknown> = { device, channel };
   if (duration !== undefined) body.duration = duration;
   const res = await post("/calibrate/start", JSON.stringify(body));
@@ -340,84 +295,6 @@ export async function cancelCalibration(): Promise<void> {
 
 // Lighting fixture type & venue API
 
-export interface FixtureTypeData {
-  name: string;
-  channels: Record<string, number>;
-  max_strobe_frequency: number | null;
-  min_strobe_frequency: number | null;
-  strobe_dmx_offset: number | null;
-}
-
-/** A stage triple: meters (or degrees, for a rotation). */
-export type Vec3 = [number, number, number];
-
-export interface FixtureData {
-  name: string;
-  fixture_type: string;
-  universe: number;
-  start_channel: number;
-  tags: string[];
-  /** Stage position, when the venue places the fixture. */
-  position?: Vec3 | null;
-  /** Mounting rotation in degrees about X, Y, Z. */
-  rotation?: Vec3 | null;
-  /** Beam angle in degrees when a diffuser or filter makes the fixture wider
-   *  than its type says; absent or null is the type's own. Drawing only, and
-   *  must survive every save untouched. */
-  beam_angle?: number | null;
-  /** The fixture's own GDTF mode (`mode "…"` on its line); absent or null
-   *  is its type's default. Must survive every save untouched. */
-  mode?: string | null;
-}
-
-/** Where a venue was seeded from (an MVR import). */
-export interface VenueSource {
-  mvr: string;
-  origin: Vec3;
-}
-
-export interface VenueData {
-  name: string;
-  fixtures: Record<string, FixtureData>;
-  /** Named stage points, the positional analog of tags. */
-  focus_points?: Record<string, Vec3>;
-  source?: VenueSource | null;
-}
-
-/** A fixture type as the directory listing carries it: the parsed type plus
- *  the file it came from. The form decides how it may be edited — a
- *  `.fixture` type is text-only, and a referential one has no channels of
- *  its own until the lighting system expands its GDTF archive. */
-export interface FixtureTypeEntry {
-  fixture_type: FixtureTypeData;
-  file: string;
-  extension: string;
-  referential: boolean;
-  /** The addresses a fixture of a hand-written type occupies; null for a
-   *  fixture from a GDTF, whose footprint is its mode's. */
-  footprint?: number | null;
-  rich: boolean;
-  /** A referential type's archive in brief, for its card; null when the
-   *  archive is missing or does not parse. Absent on a native type. */
-  gdtf?: GdtfSummary | null;
-}
-
-/** What a referential type's card says about its archive. */
-export interface GdtfSummary {
-  fixture: string;
-  manufacturer: string;
-  /** How many modes the archive has. */
-  modes: number;
-  /** The modes venue fixtures use, most-used first. */
-  in_use: { mode: string; count: number }[];
-  /** The pinned mode's first beam, as far as the archive states it. */
-  beam: { type: string | null; angle: number | null } | null;
-  /** In the asset store, once a rig has been made for the type. */
-  thumbnail: string | null;
-  /** Venue fixtures of this type. */
-  used_by: number;
-}
-
 /** `?dir=…&venues_dir=…`, each only when given. */
 function dirParams(dir?: string, venuesDir?: string): string {
   const params = new URLSearchParams();
@@ -430,58 +307,11 @@ function dirParams(dir?: string, venuesDir?: string): string {
 export async function fetchFixtureTypes(
   dir?: string,
   venuesDir?: string,
-): Promise<{
-  fixtureTypes: Record<string, FixtureTypeEntry>;
-  errors: LightingFileError[];
-}> {
+): Promise<FixtureTypeList> {
   const params = dirParams(dir, venuesDir);
   const res = await get(`/lighting/fixture-types${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
-  const data = await res.json();
-  return {
-    fixtureTypes: data.fixture_types ?? {},
-    errors: data.errors ?? [],
-  };
-}
-
-/** One DMX mode of a GDTF archive, as its fixture page describes it. */
-export interface GdtfMode {
-  name: string;
-  /** DMX addresses the mode occupies. */
-  footprint: number;
-  /** What a show can do in the mode, named as the fit endpoint names
-   *  capabilities: `color`, `dimmer`, `strobe`, `pan_tilt`, `white`, `zoom`,
-   *  `focus`, `gobo`, `color_wheel`. Absent on a refused mode. */
-  capabilities?: string[];
-  /** Cells of a pixel mode (0 for a one-colour fixture). */
-  cells?: number;
-  /** The strobe channel's rate, when it carries one. */
-  strobe_range?: { min_hz: number | null; max_hz: number };
-  /** The channel map: [address offset, name], as the type would have it. */
-  channels?: [number, string][];
-  /** Why the mode cannot be imported; present only when it cannot. */
-  refused?: string;
-}
-
-export interface GdtfInspection {
-  modes: GdtfMode[];
-}
-
-/** What importing a GDTF did, in the user's terms: the fixture it is now
- *  known as, what the archive says it is, and how many modes it has. */
-export interface GdtfImportReport {
-  type_name: string;
-  fixture: string;
-  manufacturer: string;
-  /** How many modes the archive has; every one is usable in a venue. */
-  modes: number;
-  archive: string;
-  /** The same archive was already imported: nothing changed. */
-  already_imported: boolean;
-  /** The name it would have had, when another fixture already had it. */
-  renamed_from: string | null;
-  /** Modes mtrack cannot drive, and why. */
-  refused_modes: { mode: string; reason: string }[];
+  return res.json();
 }
 
 /** Imports a GDTF in one step: the fixture is usable in a venue in any of
@@ -489,7 +319,7 @@ export interface GdtfImportReport {
 export async function importGdtf(
   file: File,
   name?: string,
-): Promise<GdtfImportReport> {
+): Promise<GdtfImport> {
   const params = new URLSearchParams();
   if (name) params.set("name", name);
   const res = await uploadFiles(`/lighting/gdtf/import?${params}`, [file]);
@@ -499,107 +329,6 @@ export async function importGdtf(
 }
 
 // --- MVR import and export (lighting UI design section 11) ---
-
-export type Vec3Mm = [number, number, number];
-
-export interface MvrBoundsMm {
-  min: Vec3Mm;
-  max: Vec3Mm;
-}
-
-/** The file seen from above, in the file's own millimeters. */
-export interface MvrSceneView {
-  fixtures: {
-    name: string;
-    layer: string;
-    position_mm: Vec3Mm | null;
-  }[];
-  focus_points: { name: string; position_mm: Vec3Mm | null }[];
-  scenery: {
-    name: string;
-    kind: string;
-    deck: boolean;
-    bounds_mm: MvrBoundsMm | null;
-  }[];
-  /** The stage floor's bounds, when the scenery carries one. */
-  deck_mm: MvrBoundsMm | null;
-}
-
-export interface MvrPlannedType {
-  name: string;
-  archive: string;
-  /** Every mode the file patches the type's fixtures in, sorted. */
-  modes: string[];
-  existing: boolean;
-}
-
-/** A hand-edited field a merge would overwrite with the MVR's value. */
-export interface MvrHandEdit {
-  /** "position", "rotation", "patch", "mode" or "type". */
-  field: string;
-  mine: string;
-  mvr: string;
-}
-
-/** The hand edits a merge keeps instead of overwriting. */
-export interface MvrKeep {
-  fixtures: Record<string, string[]>;
-  focus_points: string[];
-}
-
-export interface MvrPlannedFixture {
-  name: string;
-  layer: string;
-  fixture_type: string | null;
-  /** The mode the venue line names (null for a TODO). */
-  mode?: string | null;
-  patch: [number, number] | null;
-  position: Vec3 | null;
-  rotation: Vec3 | null;
-  tags: string[];
-  todo: string | null;
-  change: string | null;
-  /** On a merge: hand-edited fields the import would overwrite. */
-  overwrites?: MvrHandEdit[];
-  /** Hand-edited fields the request keeps. */
-  kept_edits?: string[];
-}
-
-/** What an import would do (and, after a write, did): the MCP plan. */
-export interface MvrPlan {
-  venue_name: string;
-  venue_file: string;
-  archive: string;
-  merge: boolean;
-  origin: Vec3;
-  fixture_types: MvrPlannedType[];
-  fixtures: MvrPlannedFixture[];
-  removed_fixtures: { name: string; tags: string[] }[];
-  kept_fixtures: string[];
-  focus_points: {
-    name: string;
-    point: Vec3;
-    change: string | null;
-    overwrites?: MvrHandEdit[];
-    kept_edit?: boolean;
-  }[];
-  removed_focus_points: string[];
-  kept_focus_points: string[];
-  scenery_objects: number;
-  scenery_meshes_undrawn: number;
-  warnings: string[];
-}
-
-export interface MvrImportReport extends MvrPlan {
-  written: string[];
-  distillation_warnings: Record<string, string[]>;
-}
-
-export interface MvrInspection {
-  file_name: string;
-  report: MvrPlan;
-  scene: MvrSceneView;
-}
 
 /** Where the lighting directories are, when a profile moves them. */
 export interface MvrDirs {
@@ -638,27 +367,12 @@ export async function inspectMvr(
   return res.json();
 }
 
-/** A venue that will not load: the fixture that fails it, and why. While it
- *  stands, no fixture of the venue lights. */
-export interface MvrVenueError {
-  venue: string;
-  fixture: string;
-  reason: string;
-}
-
 /** The import's plan (`write` false) or its report (`write` true). */
 export async function importMvr(
   file: File,
-  options: { name: string; origin: Vec3Mm; write: boolean; keep?: MvrKeep },
+  options: { name: string; origin: Vec3; write: boolean; keep?: MvrKeep },
   dirs: MvrDirs = {},
-): Promise<{
-  write: boolean;
-  plan?: MvrPlan;
-  report?: MvrImportReport;
-  reloaded?: boolean;
-  /** After a write: the current venue no longer loads, and why. */
-  venue_error?: MvrVenueError | null;
-}> {
+): Promise<MvrImportAnswer> {
   const res = await fetch("/api/lighting/mvr/import", {
     method: "POST",
     body: mvrForm(
@@ -679,20 +393,6 @@ export async function importMvr(
     venueChanged(null);
   }
   return res.json();
-}
-
-export interface MvrExportSummary {
-  venue: string;
-  /** The name a download would carry. */
-  file_name: string;
-  fixtures: number;
-  positioned_fixtures: number;
-  focus_points: number;
-  embedded_gdtfs: string[];
-  generated_gdtfs: Record<string, string>;
-  /** Positioned fixed fixtures, each with the focus point it links to. */
-  fixed_fixtures: { name: string; focus: string | null }[];
-  warnings: string[];
 }
 
 function exportParams(
@@ -774,17 +474,8 @@ export async function keepMvrExport(
     };
   }
   if (!res.ok) throw await apiError(res, "Failed to keep a copy of the export");
-  const body = await res.json();
-  return { status: "kept", path: String(body.kept) };
-}
-
-export interface AimPointsResult {
-  created: { name: string; fixture: string; point: Vec3 }[];
-  reloaded: boolean;
-  /** The venue file's version after the change. */
-  version?: string;
-  /** The current venue no longer loads after the change. */
-  venue_error?: VenueError | null;
+  const body: MvrKept = await res.json();
+  return { status: "kept", path: body.kept };
 }
 
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam
@@ -793,7 +484,7 @@ export async function addAimPoints(
   venue: string,
   dirs: MvrDirs = {},
   version?: string,
-): Promise<AimPointsResult> {
+): Promise<AimPoints> {
   const params = new URLSearchParams();
   if (dirs.venuesDir) params.set("venues_dir", dirs.venuesDir);
   if (dirs.fixtureTypesDir)
@@ -812,41 +503,13 @@ export async function addAimPoints(
 export async function fetchFixtureType(
   name: string,
   dir?: string,
-): Promise<FixtureTypeEntry & { dsl: string }> {
+): Promise<FixtureTypeEntry> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture type");
   return res.json();
-}
-
-/** What a referential fixture type's GDTF archive holds, for the type's
- *  details view. Paths are in the asset store (`/api/lighting/assets/`). */
-export interface FixtureTypeGdtf {
-  /** The fixture's GDTF, project-relative. */
-  archive: string;
-  /** The rig model for the 3D view; null when none could be made. */
-  rig: string | null;
-  thumbnail: string | null;
-  /** The pinned mode's first beam; each figure null when the archive does
-   *  not state it. */
-  beam: {
-    type: string | null;
-    beam_angle: number | null;
-    field_angle: number | null;
-    luminous_flux: number | null;
-    color_temperature: number | null;
-    /** Watts. */
-    power: number | null;
-  } | null;
-  /** The archive's own description of the fixture: a stranger's text. */
-  about: string | null;
-  /** The venues with fixtures of this type, each fixture in patch order
-   *  with the mode it is driven in (its own, else the default), spelled as
-   *  the archive spells it; null when that names no mode of the archive. */
-  venues: { name: string; fixtures: { name: string; mode: string | null }[] }[];
-  inspection: GdtfInspection;
 }
 
 export async function fetchFixtureTypeGdtf(
@@ -860,48 +523,6 @@ export async function fetchFixtureTypeGdtf(
   );
   if (!res.ok) throw await apiError(res, "Failed to read the GDTF archive");
   return res.json();
-}
-
-/** Movement limits in degrees per second; null where none is set. */
-export interface MovementLimits {
-  max_pan_speed: number | null;
-  max_tilt_speed: number | null;
-}
-
-/** What is the user's about a fixture from a GDTF: the fixture page's
- *  settings form. */
-/** How a strobe rate maps onto the strobe channel (see the configuration
- *  reference): linear in the flash period, linear in hertz, or the GDTF's
- *  own step table. */
-export type StrobeCurve = "period" | "linear" | "declared";
-
-export interface FixtureSettingsData {
-  name: string;
-  movement: MovementLimits;
-  /** The curve the record states; null is automatic. */
-  strobe_curve: StrobeCurve | null;
-  /** The GDTF's strobe function: null when no mode has a strobe rate in
-   *  hertz (the curve means nothing then), else the size of its own table
-   *  (0: endpoints only) and the curve used when none is stated. */
-  strobe: { steps: number; automatic: StrobeCurve } | null;
-  /** The settings' version, sent back as `If-Match` (also when mtrack has
-   *  no record of them yet). */
-  version: string;
-}
-
-/** What a settings save does (or, planned, would do). */
-export interface FixtureSettingsResult {
-  version: string;
-  /** A rename: every venue line that names the type, by venue. */
-  rename: {
-    from: string;
-    to: string;
-    lines: number;
-    venues: { venue: string; file: string; lines: number }[];
-  } | null;
-  /** The venue files read, by name, with their versions. */
-  venue_versions: Record<string, string>;
-  venue_error: VenueError | null;
 }
 
 export async function fetchFixtureSettings(
@@ -930,7 +551,7 @@ export async function postFixtureSettings(
   },
   dirs: { dir?: string; venuesDir?: string },
   version?: string,
-): Promise<FixtureSettingsResult> {
+): Promise<SettingsSaved> {
   const res = await post(
     `/lighting/fixture-types/${encodeURIComponent(name)}/settings${dirParams(dirs.dir, dirs.venuesDir)}`,
     JSON.stringify(body),
@@ -948,12 +569,13 @@ export async function postFixtureSettings(
 
 export async function saveFixtureType(
   name: string,
-  data: {
-    channels: Record<string, number>;
-    max_strobe_frequency?: number | null;
-    min_strobe_frequency?: number | null;
-    strobe_dmx_offset?: number | null;
-  },
+  data: Pick<FixtureType, "channels"> &
+    Partial<
+      Pick<
+        FixtureType,
+        "max_strobe_frequency" | "min_strobe_frequency" | "strobe_dmx_offset"
+      >
+    >,
   dir?: string,
 ): Promise<void> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
@@ -988,54 +610,50 @@ export async function saveFixtureTypeText(
 export async function deleteFixtureType(
   name: string,
   dir?: string,
-): Promise<{ archiveRemoved: string | null; archiveKept: boolean }> {
+): Promise<FixtureTypeDeleted> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await del(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
   fixtureTypesChanged();
-  const body = await res.json().catch(() => ({}));
-  return {
-    archiveRemoved: body?.archive_removed ?? null,
-    archiveKept: body?.archive_kept === true,
-  };
+  return res.json();
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.
 /// These are the logical groups from `dmx.lighting.groups`; venues no longer
 /// define groups of their own.
-export async function fetchLightingGroups(): Promise<
-  { name: string; fixtures: string[] }[]
-> {
+export async function fetchLightingGroups(): Promise<LightingGroup[]> {
   const res = await get("/lighting/groups");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting groups");
-  const data = await res.json();
-  return data.groups ?? [];
+  const data: LightingGroups = await res.json();
+  return data.groups;
 }
 
 /** The facts behind the Lighting overview's five checks. */
 export async function fetchLightingReadiness(): Promise<Readiness> {
   const res = await get("/lighting/readiness");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
-  const readiness = parseReadiness(await readJson(res, "the readiness checks"));
-  if (!readiness) throw new BadAnswerError("the readiness checks");
-  return readiness;
+  return readAnswer<Readiness>(res, "the readiness checks", [
+    "dmx",
+    "venue",
+    "fixture_types",
+    "groups",
+    "shows",
+    "output",
+  ]);
 }
 
 /** The facts and suggestions behind the Fit shows page. */
-export async function fetchLightingFit(): Promise<Fit> {
+export async function fetchLightingFit(): Promise<FitReport> {
   const res = await get("/lighting/fit");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting fit");
-  const fit = parseFit(await readJson(res, "the fit"));
-  if (!fit) throw new BadAnswerError("the fit");
-  return fit;
-}
-
-/** A `.light` file in a lighting directory that could not be parsed. */
-export interface LightingFileError {
-  file: string;
-  error: string;
+  return readAnswer<FitReport>(res, "the fit", [
+    "venue",
+    "groups",
+    "focus_points_wanted",
+    "output",
+  ]);
 }
 
 /** Venues that parsed, plus the files that did not.
@@ -1043,27 +661,17 @@ export interface LightingFileError {
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
-export async function fetchVenues(dir?: string): Promise<{
-  venues: Record<string, VenueData>;
-  errors: LightingFileError[];
-  /** Each venue file's version, to save against. */
-  versions: Record<string, string>;
-}> {
+export async function fetchVenues(dir?: string): Promise<VenueList> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/venues${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
-  const data = await res.json();
-  return {
-    venues: data.venues ?? {},
-    errors: data.errors ?? [],
-    versions: data.versions ?? {},
-  };
+  return res.json();
 }
 
 export async function fetchVenue(
   name: string,
   dir?: string,
-): Promise<{ venue: VenueData; dsl: string; version?: string }> {
+): Promise<VenueDetail> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
@@ -1075,19 +683,14 @@ export async function fetchVenue(
 export async function saveVenue(
   name: string,
   data: {
-    fixtures: {
-      name: string;
-      fixture_type: string;
-      universe: number;
-      start_channel: number;
-      tags: string[];
-      position?: Vec3 | null;
-      rotation?: Vec3 | null;
-      beam_angle?: number | null;
+    /** Each as the venue serves it, a `null` mode or beam angle for none
+     *  (the server reads null and absent alike). */
+    fixtures: (Omit<Fixture, "mode" | "beam_angle"> & {
       mode?: string | null;
-    }[];
-    focus_points?: Record<string, Vec3>;
-    source?: VenueSource | null;
+      beam_angle?: number | null;
+    })[];
+    focus_points?: Venue["focus_points"];
+    source?: Venue["source"];
   },
   dir?: string,
   version?: string,
@@ -1100,19 +703,11 @@ export async function saveVenue(
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
   venueChanged(name);
-  const body = await res.json().catch(() => ({}));
+  const body: Partial<VenueSaved> = await res.json().catch(() => ({}));
   return {
-    version: body?.version ?? null,
-    venueError: body?.venue_error ?? null,
+    version: body.version ?? null,
+    venueError: body.venue_error ?? null,
   };
-}
-
-/** Why the current venue does not load after a save: the first fixture
- *  that cannot be driven. A venue that does not load lights nothing. */
-export interface VenueError {
-  venue: string;
-  fixture: string;
-  reason: string;
 }
 
 /** What a venue save answers: the file's new version, and the venue's
@@ -1120,40 +715,6 @@ export interface VenueError {
 export interface SavedVenue {
   version: string | null;
   venueError: VenueError | null;
-}
-
-/** One fixture's addresses, as `GET /api/lighting/venues/{name}/patch`
- *  reports them; `footprint` is null when its type or mode does not load. */
-export interface PatchSpan {
-  fixture: string;
-  universe: number;
-  address: number;
-  footprint: number | null;
-  type: string;
-  /** The mode the fixture line names; null is its type's default. */
-  mode: string | null;
-}
-
-export interface PatchOverlapInfo {
-  a: string;
-  b: string;
-  a_gang: string[];
-  b_gang: string[];
-  universe: number;
-  from: number;
-  to: number;
-}
-
-export interface VenuePatch {
-  spans: PatchSpan[];
-  overlaps: PatchOverlapInfo[];
-  overruns: {
-    fixture: string;
-    universe: number;
-    address: number;
-    footprint: number;
-    last: number;
-  }[];
 }
 
 /** The addresses a venue's fixtures occupy, from the files (no engine). */
@@ -1175,11 +736,6 @@ export async function fetchVenuePatch(
 
 /** What the 3D view draws for a venue, from its files: the websocket's
  *  metadata shape, for a venue that is not the current one. */
-export interface VenueScene {
-  fixtures: Record<string, FixtureMetadata & { mode?: string | null }>;
-  venue: Omit<VenueMetadata, "dir">;
-}
-
 /** A venue the server does not have (404), told apart from a failed read. */
 export class VenueNotFoundError extends Error {}
 
@@ -1212,71 +768,15 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
 
 // ---- Playlist CRUD ----
 
-export interface PlaylistInfo {
-  name: string;
-  song_count: number;
-  is_active: boolean;
-}
-
-/** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null` for
- *  none. */
-export type AutoPlay = true | string | null;
-
-/** A fade as written: a length alone (`"3s"`, `"1measure"`), or with its
- *  settings. */
-export type FadeConfig =
-  | string
-  | {
-      length: string;
-      curve?: "equal_power" | "linear";
-      exclude?: string[];
-      /** fade_out only. */
-      lights?: string;
-    };
-
-/** An entry's fades: `null` for none. */
-export interface EntryFades {
-  fade_out: FadeConfig | null;
-  fade_in: FadeConfig | null;
-}
-
-/** A playlist's ambient light settings, each overriding the profile's. */
-export interface AmbientSettings {
-  show?: string;
-  delay?: string;
-  fade_in?: string;
-  fade_out?: string;
-}
-
 /** A playlist's (or an entry's) ambient light: `null` for the profile's (an
  *  entry: the playlist's), `false` for none, or settings of its own. */
-export type PlaylistAmbient = null | false | AmbientSettings;
+export type PlaylistAmbient = PlaylistDetail["ambient"];
 
-export interface PlaylistData {
-  name: string;
-  songs: string[];
-  /** Each song's auto play, in the order of `songs`. */
-  auto_play?: AutoPlay[];
-  /** Each song's fades, in the order of `songs`. */
-  fades?: EntryFades[];
-  /** Each song's ambient light before it, in the order of `songs`: `null`
-   *  for the playlist's, `false` for none, or settings of its own (each
-   *  field left out inherits the playlist's, then the profile's). */
-  entry_ambient?: PlaylistAmbient[];
-  ambient?: PlaylistAmbient;
-  available_songs: string[];
-  /** Each song's track names, for the tracks a fade leaves out. */
-  song_tracks?: Record<string, string[]>;
-}
+/** An entry's auto play: `true` for at once, a gap (`"2s"`), or `null`. */
+export type AutoPlay = PlaylistDetail["auto_play"][number];
 
 /** What a save sets beyond the songs; each left out is kept as it is. */
-export interface PlaylistSettings {
-  auto_play?: AutoPlay[];
-  fades?: EntryFades[];
-  /** One per song, as in `PlaylistData.entry_ambient`. */
-  entry_ambient?: PlaylistAmbient[];
-  ambient?: PlaylistAmbient;
-}
+export type PlaylistSettings = Omit<PlaylistBody, "songs">;
 
 export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
   const res = await get("/playlists");
@@ -1284,7 +784,7 @@ export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
   return res.json();
 }
 
-export async function fetchPlaylist(name: string): Promise<PlaylistData> {
+export async function fetchPlaylist(name: string): Promise<PlaylistDetail> {
   const res = await get(`/playlists/${encodeURIComponent(name)}`);
   if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
   return res.json();
@@ -1314,15 +814,10 @@ export async function activatePlaylist(name: string): Promise<void> {
 
 // ---- Lighting Show Files ----
 
-export interface LightFileInfo {
-  path: string;
-  name: string;
-}
-
 export async function fetchLightingFiles(): Promise<LightFileInfo[]> {
   const res = await get("/lighting");
   if (!res.ok) throw new Error(`Failed to fetch lighting files: ${res.status}`);
-  const data = await res.json();
+  const data: LightFiles = await res.json();
   return data.files;
 }
 
@@ -1355,7 +850,7 @@ export async function validateLighting(
   content: string,
   song?: string,
   file?: string,
-): Promise<{ valid: boolean; errors?: string[] }> {
+): Promise<LightingValidation> {
   const query = new URLSearchParams();
   if (song) query.set("song", song);
   if (file) query.set("file", file);

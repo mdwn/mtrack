@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import type { Vec3 } from "../../gen/rules/mtrack_rules";
+
 /**
  * The light the beams put on the deck, as plain numbers (no three.js): the
  * 3D view's cones show a beam in the air, and this is what the same beam
@@ -30,8 +32,6 @@
  * twice, here ({@link deckLight}) and in {@link DECK_SHADER} for the GPU,
  * from the same constants.
  */
-
-type Vec3 = [number, number, number];
 
 /** The field angle taken for a beam whose type states none, as a multiple
  *  of its beam angle; also the most a stated ratio is trusted for. */

@@ -1,3 +1,4 @@
+import type { GdtfMode } from "../../gen/rules/mtrack_rules";
 // Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -16,8 +17,6 @@
  * What a GDTF mode lets a show do, in the words the fixture's page shows,
  * worked out from the capability names the archive's inspection reports.
  */
-
-import type { GdtfMode } from "../api/config";
 
 /** A thing a show can do with a fixture, keyed to its i18n words. */
 export interface Ability {

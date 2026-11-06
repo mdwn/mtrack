@@ -19,10 +19,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
 /// round-trips — important for the web UI config editor.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Serialize, Clone)]
 pub struct TrackMappings {
     // The individual track mappings.
     #[serde(flatten)]
+    #[cfg_attr(feature = "tsify", tsify(type = "Record<string, number[]>"))]
     pub track_mappings: IndexMap<String, Vec<u16>>,
 }
 

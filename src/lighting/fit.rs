@@ -22,10 +22,9 @@
 //! and the MCP `suggest_group_tags` tool, which both go through
 //! [`FitReport::gather`], cannot disagree.
 
-use std::collections::{BTreeMap, BTreeSet};
+mod types;
 
-use serde::Serialize;
-use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
 use crate::lighting::effects::{FixtureCapabilities, FixtureInfo};
@@ -33,6 +32,7 @@ use crate::lighting::lint::{focus_targets, GroupCapabilities};
 use crate::lighting::parser::LightShow;
 
 pub use crate::lighting::lint::Want;
+pub use types::*;
 
 /// What the shows ask of each group they target, by lint's rules.
 pub fn wants_by_group(shows: &[LightShow]) -> BTreeMap<String, BTreeSet<Want>> {
@@ -68,17 +68,6 @@ pub fn focus_names(shows: &[LightShow]) -> BTreeSet<String> {
     out
 }
 
-/// The tags a group's constraints ask of a fixture.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Needs {
-    /// Every one must be present.
-    pub all_of: Vec<String>,
-    /// At least one must be present.
-    pub any_of: Vec<String>,
-    /// Preferred, never required.
-    pub prefer: Vec<String>,
-}
-
 impl Needs {
     pub fn of(group: &LogicalGroup) -> Needs {
         let mut needs = Needs::default();
@@ -110,27 +99,6 @@ impl Needs {
     pub fn is_empty(&self) -> bool {
         self.all_of.is_empty() && self.any_of.is_empty()
     }
-}
-
-/// How high a fixture hangs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Height {
-    /// z < 0.5 m.
-    Deck,
-    /// z < 2.5 m.
-    Low,
-    /// Above.
-    Truss,
-}
-
-/// How far upstage a fixture hangs, by thirds of the venue's y-extent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Depth {
-    Downstage,
-    Mid,
-    Upstage,
 }
 
 impl Height {
@@ -259,53 +227,6 @@ impl Place {
     }
 }
 
-/// One cluster of like fixtures: the same type, hanging in the same place.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Cluster {
-    pub fixtures: Vec<String>,
-    #[serde(rename = "type")]
-    pub fixture_type: String,
-    /// The place in words ("upstage truss"); absent when unplaced.
-    #[serde(rename = "where")]
-    pub place: Option<String>,
-    pub height: Option<Height>,
-    pub depth: Option<Depth>,
-}
-
-/// Why a cluster is the suggestion.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Reason {
-    pub count: usize,
-    #[serde(rename = "type")]
-    pub fixture_type: String,
-    #[serde(rename = "where")]
-    pub place: Option<String>,
-    pub height: Option<Height>,
-    pub depth: Option<Depth>,
-    /// What the shows ask of the group, which the cluster can do.
-    pub can: Vec<Want>,
-}
-
-/// Fixtures and the tags that would put them in a group.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Suggestion {
-    pub fixtures: Vec<String>,
-    pub tags: Vec<String>,
-    pub reason: Reason,
-}
-
-/// The answer for one group.
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
-pub struct Fit {
-    pub suggestion: Option<Suggestion>,
-    pub others: Vec<Cluster>,
-    /// With no suggestion: the wants no fixture in the venue meets.
-    pub unmet: Vec<Want>,
-    /// With no suggestion and every want met by *some* fixture: none meets them
-    /// all at once.
-    pub unmet_together: bool,
-}
-
 /// Bands the depth of `y` in thirds of `[min, max]`; `None` when the venue's
 /// extent is nil, since one depth is no information.
 fn depth_of(y: f64, range: Option<(f64, f64)>) -> Option<Depth> {
@@ -419,17 +340,6 @@ pub fn suggest(needs: &Needs, wants: &BTreeSet<Want>, fixtures: &[FitFixture]) -
     }
 }
 
-/// Everything the fit page and `suggest_group_tags` say, gathered from the
-/// running player.
-pub struct FitReport {
-    /// `None` when the player has no DMX engine or no current venue.
-    pub venue: Option<Value>,
-    /// One entry per group any show targets, in name order.
-    pub groups: Vec<Value>,
-    pub focus_points_wanted: Vec<Value>,
-    pub output: Value,
-}
-
 impl FitReport {
     /// Blocking: takes the lighting-system mutex and asks olad. Async callers
     /// belong on the blocking pool.
@@ -455,12 +365,12 @@ impl FitReport {
             venue: None,
             groups: Vec::new(),
             focus_points_wanted: Vec::new(),
-            output: json!({
-                "unconfigured": [],
-                "unpatched": [],
-                "reachable": null,
-                "ola_http_port": dmx.as_ref().map(|d| d.ola_http_port()),
-            }),
+            output: FitOutput {
+                unconfigured: Vec::new(),
+                unpatched: Vec::new(),
+                reachable: None,
+                ola_http_port: dmx.as_ref().map(|d| d.ola_http_port()),
+            },
         };
         let Some(system) = dmx
             .as_ref()
@@ -483,7 +393,10 @@ impl FitReport {
                 Ok(infos) => (infos, None),
                 Err(fault) => (
                     Vec::new(),
-                    Some(json!({"fixture": fault.fixture, "reason": fault.reason})),
+                    Some(FitVenueError {
+                        fixture: fault.fixture,
+                        reason: fault.reason,
+                    }),
                 ),
             };
             let mut fit_fixtures: Vec<FitFixture> = infos
@@ -498,18 +411,21 @@ impl FitReport {
                 used_universes.insert(fixture.universe());
             }
 
-            report.venue = Some(json!({
-                "name": venue_name,
-                "fixtures": fit_fixtures.iter().map(|f| json!({
-                    "name": f.name,
-                    "type": f.fixture_type,
-                    "tags": f.tags,
-                    "position": f.position,
-                    "capabilities": f.capability_names(),
-                })).collect::<Vec<_>>(),
-                "focus_points": focus_points,
-                "error": venue_error,
-            }));
+            report.venue = Some(FitVenue {
+                name: venue_name,
+                fixtures: fit_fixtures
+                    .iter()
+                    .map(|f| FitFixtureView {
+                        name: f.name.clone(),
+                        fixture_type: f.fixture_type.clone(),
+                        tags: f.tags.clone(),
+                        position: f.position,
+                        capabilities: f.capability_names().into_iter().map(String::from).collect(),
+                    })
+                    .collect(),
+                focus_points: focus_points.clone(),
+                error: venue_error,
+            });
 
             for name in &names {
                 let members = guard.resolve_logical_group_graceful(name);
@@ -518,38 +434,36 @@ impl FitReport {
                     .find(|(n, _)| n.as_str() == name)
                     .map(|(_, g)| Needs::of(g));
                 let group_wants = wants.get(name).cloned().unwrap_or_default();
-                let songs_using: Vec<&str> = with_lighting
+                let songs_using: Vec<String> = with_lighting
                     .iter()
                     .filter(|(_, shows)| group_names(shows).contains(name))
-                    .map(|(song, _)| song.name())
+                    .map(|(song, _)| song.name().to_string())
                     .collect();
                 let fit = match (&defined, members.is_empty()) {
                     (Some(needs), true) => suggest(needs, &group_wants, &fit_fixtures),
                     _ => Fit::default(),
                 };
-                report.groups.push(json!({
-                    "name": name,
-                    "defined": defined.is_some(),
-                    "needs": defined.clone().unwrap_or_default(),
-                    "fixtures": members,
-                    "songs": songs_using,
-                    "wants": group_wants.iter().map(|w| w.name()).collect::<Vec<_>>(),
-                    "suggestion": fit.suggestion,
-                    "others": fit.others,
-                    "unmet": fit.unmet,
-                    "unmet_together": fit.unmet_together,
-                }));
+                report.groups.push(FitGroup {
+                    name: name.clone(),
+                    defined: defined.is_some(),
+                    needs: defined.unwrap_or_default(),
+                    fixtures: members,
+                    songs: songs_using,
+                    wants: group_wants.iter().copied().collect(),
+                    fit,
+                });
             }
 
             for focus in wanted_focus.iter().filter(|f| !focus_points.contains(f)) {
-                let songs_aiming: Vec<&str> = with_lighting
+                let songs_aiming: Vec<String> = with_lighting
                     .iter()
                     .filter(|(_, shows)| focus_names(shows).contains(focus))
-                    .map(|(song, _)| song.name())
+                    .map(|(song, _)| song.name().to_string())
                     .collect();
-                report
-                    .focus_points_wanted
-                    .push(json!({"name": focus, "songs": songs_aiming}));
+                report.focus_points_wanted.push(FocusWanted {
+                    name: focus.clone(),
+                    songs: songs_aiming,
+                });
             }
         }
 
@@ -565,31 +479,13 @@ impl FitReport {
             .copied()
             .filter(|u| configured.contains(u))
             .collect();
-        let (unpatched, reachable) = match &dmx {
-            Some(dmx) if !to_probe.is_empty() => {
-                let probe =
-                    crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
-                (probe.unpatched, json!(probe.reachable))
-            }
-            _ => (Vec::new(), Value::Null),
-        };
-        report.output = json!({
-            "unconfigured": unconfigured,
-            "unpatched": unpatched,
-            "reachable": reachable,
-            "ola_http_port": dmx.as_ref().map(|d| d.ola_http_port()),
-        });
+        if let Some(dmx) = dmx.as_ref().filter(|_| !to_probe.is_empty()) {
+            let probe = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
+            report.output.unpatched = probe.unpatched;
+            report.output.reachable = Some(probe.reachable);
+        }
+        report.output.unconfigured = unconfigured;
         report
-    }
-
-    /// The JSON the endpoint serves.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "venue": self.venue,
-            "groups": self.groups,
-            "focus_points_wanted": self.focus_points_wanted,
-            "output": self.output,
-        })
     }
 }
 

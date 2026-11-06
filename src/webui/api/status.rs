@@ -17,23 +17,23 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use crate::build_info;
+use crate::webui::wire::status::{BuildInfo, Status};
 
 /// GET /api/status — returns build info, hardware status, and controller status.
 pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResponse {
     let hardware = state.player.hardware_status();
     let controllers = state.player.controller_statuses();
-    Json(json!({
-        "build": {
-            "version": build_info::VERSION,
-            "git_hash": build_info::GIT_HASH,
-            "build_time": build_info::BUILD_TIME,
-            // The web UI this server serves (null when its build had none).
-            "ui_build": super::super::server::ui_build(),
+    Json(Status {
+        build: BuildInfo {
+            version: build_info::VERSION.to_string(),
+            git_hash: build_info::GIT_HASH.to_string(),
+            build_time: build_info::BUILD_TIME.to_string(),
+            ui_build: super::super::server::ui_build(),
         },
-        "hardware": hardware,
-        "controllers": controllers,
-        "locked": state.player.is_locked(),
-    }))
+        hardware,
+        controllers,
+        locked: state.player.is_locked(),
+    })
 }
 
 /// POST /api/controllers/restart — restarts all controllers from current config.

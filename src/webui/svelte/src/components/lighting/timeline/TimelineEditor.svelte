@@ -21,11 +21,11 @@
     SubLaneType,
     TempoSection,
   } from "../../../lib/lighting/types";
-  import type { WaveformTrack } from "../../../lib/api/songs";
   import type {
     Layout,
     ShowLayout,
     TempoSource,
+    TrackPeaks,
   } from "../../../gen/rules/mtrack_rules";
   import {
     timestampToMs,
@@ -58,7 +58,7 @@
     groups: string[];
     sequenceNames: string[];
     songDurationMs: number;
-    waveformTracks: WaveformTrack[];
+    waveformTracks: TrackPeaks[];
     songName?: string;
     hasBeatGrid?: boolean;
     hasMidi?: boolean;
@@ -218,7 +218,7 @@
 
   // Merge waveform peaks — cached
   let cachedPeaks: number[] = [];
-  let cachedPeaksTracks: WaveformTrack[] = [];
+  let cachedPeaksTracks: TrackPeaks[] = [];
   function getMergedPeaks(): number[] {
     if (waveformTracks === cachedPeaksTracks) return cachedPeaks;
     cachedPeaksTracks = waveformTracks;

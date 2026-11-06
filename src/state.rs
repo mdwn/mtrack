@@ -12,6 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+mod pose;
+
+pub use pose::PoseSnapshot;
+
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,19 +71,6 @@ pub enum StrobeRates {
     /// rate and a software strobe's, since the bytes of one instant show
     /// only the phase.
     Instant,
-}
-
-/// Where a mover is pointing, for the stage plot's beam.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PoseSnapshot {
-    pub name: String,
-    pub pan: f64,
-    pub tilt: f64,
-    /// The beam direction in stage space, unit length.
-    pub aim: [f64; 3],
-    /// Where the beam meets the deck (stage x, y), when it points down and
-    /// the venue places the fixture; a beam pointing up has no footprint.
-    pub floor: Option<[f64; 2]>,
 }
 
 /// State snapshot broadcast to all display consumers.

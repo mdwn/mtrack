@@ -14,6 +14,14 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import type {
+    FixtureTypeEntry,
+    FixtureTypeGdtf,
+    LightingFileError,
+    Vec3,
+    Venue,
+    VenueSource,
+  } from "../../gen/rules/mtrack_rules";
   import { fixtureTypeChanges, venueChanges } from "../../lib/lighting/changes";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -41,12 +49,6 @@
     fetchVenues,
     saveVenue,
     deleteVenue,
-    type FixtureTypeEntry,
-    type FixtureTypeGdtf,
-    type VenueData,
-    type VenueSource,
-    type Vec3,
-    type LightingFileError,
   } from "../../lib/api/config";
 
   interface Props {
@@ -106,7 +108,7 @@
   // Fixture types, for the type dropdown on a venue's fixtures.
   let fixtureTypes = $state<Record<string, FixtureTypeEntry>>({});
   // --- Venues state ---
-  let venues = $state<Record<string, VenueData>>({});
+  let venues = $state<Record<string, Venue>>({});
   /** Each venue file's version as listed; the editor saves against the one
    *  it was opened at, so a file changed elsewhere is not overwritten. */
   let venueVersions = $state<Record<string, string>>({});
@@ -156,7 +158,8 @@
 
   async function loadFixtureTypes() {
     try {
-      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined)).fixtureTypes;
+      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined))
+        .fixture_types;
     } catch {
       // The dropdown falls back to a text input when no types are listed.
     }
@@ -169,8 +172,8 @@
     try {
       const result = await fetchVenues(venueDir || undefined);
       venues = result.venues;
-      venueVersions = result.versions;
-      venueFileErrors = result.errors;
+      venueVersions = result.versions ?? {};
+      venueFileErrors = result.errors ?? [];
     } catch (e: any) {
       venueError = e.message;
     } finally {

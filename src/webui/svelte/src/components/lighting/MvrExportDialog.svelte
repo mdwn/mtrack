@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import type { MvrExportSummary } from "../../gen/rules/mtrack_rules";
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -23,7 +24,6 @@
     keepMvrExport,
     fetchMvrExportSummary,
     fetchVenue,
-    type MvrExportSummary,
   } from "../../lib/api/config";
   import { fileStem, validExportName } from "../../lib/lighting/mvrPlan";
 

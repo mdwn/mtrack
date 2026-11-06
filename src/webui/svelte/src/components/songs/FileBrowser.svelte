@@ -17,7 +17,8 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
-  import { browseDirectory, type BrowseEntry } from "../../lib/api/songs";
+  import { browseDirectory } from "../../lib/api/songs";
+  import type { BrowseEntry } from "../../gen/rules/mtrack_rules";
 
   interface Props {
     /** File types to show (in addition to directories). Empty = show all. */

@@ -12,7 +12,27 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-export const SONGS = {
+import type {
+  AudioDeviceInfo,
+  AudioProbe,
+  FitReport,
+  MidiDeviceInfo,
+  MvrExportSummary,
+  MvrInspection,
+  PlaylistDetail,
+  PlaylistInfo,
+  Profile,
+  FixtureMetadata,
+  Readiness,
+  RigModel,
+  SceneryModel,
+  SocketMessage,
+  SongList,
+  Status,
+  StoreSnapshot,
+} from "../../src/gen/rules/mtrack_rules";
+
+export const SONGS: SongList = {
   songs: [
     {
       name: "Test Song Alpha",
@@ -30,6 +50,8 @@ export const SONGS = {
       beat_grid: null,
       has_tempo_map: false,
       loop_playback: false,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [],
     },
     {
@@ -61,6 +83,8 @@ export const SONGS = {
       },
       has_tempo_map: false,
       loop_playback: true,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },
         { name: "chorus", start_measure: 5, end_measure: 8 },
@@ -94,6 +118,8 @@ export const SONGS = {
       },
       has_tempo_map: false,
       loop_playback: false,
+      loop_crossfade_ms: null,
+      loop_crossfade_cut: [],
       sections: [
         {
           name: "stab",
@@ -115,7 +141,7 @@ export const SONGS = {
   ],
 };
 
-export const PLAYLISTS = [
+export const PLAYLISTS: PlaylistInfo[] = [
   { name: "all_songs", song_count: 2, is_active: false },
   { name: "setlist", song_count: 1, is_active: true },
   { name: "rehearsal", song_count: 2, is_active: false },
@@ -126,31 +152,42 @@ const SONG_TRACKS: Record<string, string[]> = {
   "Test Song Beta": ["guitar", "vocals"],
 };
 
-export const PLAYLIST_DETAILS: Record<
-  string,
-  {
-    name: string;
-    songs: string[];
-    available_songs: string[];
-    song_tracks?: Record<string, string[]>;
-  }
-> = {
-  all_songs: {
-    name: "all_songs",
-    songs: ["Test Song Alpha", "Test Song Beta"],
-    available_songs: [],
-  },
-  setlist: {
-    name: "setlist",
-    songs: ["Test Song Alpha"],
-    available_songs: ["Test Song Beta"],
-    song_tracks: SONG_TRACKS,
-  },
-  rehearsal: {
-    name: "rehearsal",
-    songs: ["Test Song Alpha", "Test Song Beta"],
-    available_songs: [],
-  },
+/** A playlist as the server answers it, its entries with no settings. */
+function playlistDetail(
+  name: string,
+  songs: string[],
+  available_songs: string[],
+  song_tracks: Record<string, string[]> = {},
+): PlaylistDetail {
+  return {
+    name,
+    songs,
+    auto_play: songs.map(() => null),
+    fades: songs.map(() => ({ fade_out: null, fade_in: null })),
+    ambient: null,
+    entry_ambient: songs.map(() => null),
+    available_songs,
+    song_tracks,
+  };
+}
+
+export const PLAYLIST_DETAILS: Record<string, PlaylistDetail> = {
+  all_songs: playlistDetail(
+    "all_songs",
+    ["Test Song Alpha", "Test Song Beta"],
+    [],
+  ),
+  setlist: playlistDetail(
+    "setlist",
+    ["Test Song Alpha"],
+    ["Test Song Beta"],
+    SONG_TRACKS,
+  ),
+  rehearsal: playlistDetail(
+    "rehearsal",
+    ["Test Song Alpha", "Test Song Beta"],
+    [],
+  ),
 };
 
 export const CONFIG_YAML = `songs: songs
@@ -161,16 +198,17 @@ profiles:
 samples: {}
 `;
 
-export const CONFIG_STORE = {
+export const CONFIG_STORE: StoreSnapshot = {
   yaml: CONFIG_YAML,
   checksum: "abc123def456",
 };
 
-export const STATUS = {
+export const STATUS: Status = {
   build: {
     version: "0.1.0-test",
     git_hash: "deadbeef",
     build_time: "2026-01-01T00:00:00Z",
+    ui_build: null,
   },
   hardware: {
     init_done: true,
@@ -192,13 +230,15 @@ export const STATUS = {
     dmx: { status: "not_connected", name: null },
     trigger: { status: "not_connected", name: null },
     lighting_venue: { name: null, status: "none", error: null },
+    test_output: null,
   },
   controllers: [
     { kind: "osc", status: "running", detail: "0.0.0.0:9000", error: null },
   ],
+  locked: false,
 };
 
-export const AUDIO_DEVICES = [
+export const AUDIO_DEVICES: AudioDeviceInfo[] = [
   {
     name: "Default Audio Device",
     max_channels: 8,
@@ -237,15 +277,7 @@ export const AUDIO_DEVICES = [
 
 // One canned probe result per device, so the result panel's branches can be
 // driven without audio hardware. Keyed by the name the editor sends.
-export const AUDIO_PROBE_RESULTS: Record<
-  string,
-  {
-    outcome: string;
-    ok: boolean;
-    reason?: string | null;
-    callbacks?: number | null;
-  }
-> = {
+export const AUDIO_PROBE_RESULTS: Record<string, AudioProbe> = {
   default: { outcome: "streaming", ok: true, reason: null, callbacks: 3 },
   "USB Interface": {
     outcome: "streaming",
@@ -265,10 +297,11 @@ export const AUDIO_PROBE_RESULTS: Record<
     outcome: "in_use",
     ok: true,
     callbacks: 4821,
+    health: null,
   },
 };
 
-export const MIDI_DEVICES = [
+export const MIDI_DEVICES: MidiDeviceInfo[] = [
   { name: "MIDI Through Port-0", has_input: true, has_output: true },
   { name: "USB MIDI Controller", has_input: true, has_output: false },
 ];
@@ -290,7 +323,7 @@ export const PROFILE_FILE_DETAIL = {
     hostname: "test-host",
     audio: { device: "Default Audio Device" },
     controllers: [{ kind: "osc", address: "0.0.0.0:9000" }],
-  },
+  } satisfies Profile,
   yaml: 'hostname: test-host\naudio:\n  device: "Default Audio Device"\ncontrollers:\n  - kind: osc\n    address: "0.0.0.0:9000"\n',
 };
 
@@ -302,24 +335,36 @@ export const PLAYBACK_STATE = {
   song_duration_ms: 180000,
   playlist_name: "setlist",
   playlist_position: 0,
+  playlist_off_list: false,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
-    { name: "kick", output_channels: [0, 1], gain_db: 0 },
-    { name: "snare", output_channels: [2, 3], gain_db: -6 },
-    { name: "bass", output_channels: [4, 5], gain_db: -60 },
+    { name: "kick", output_channels: [0, 1], gain_db: 0, muted: false },
+    { name: "snare", output_channels: [2, 3], gain_db: -6, muted: false },
+    { name: "bass", output_channels: [4, 5], gain_db: -60, muted: false },
   ],
   available_playlists: ["all_songs", "setlist"],
   persisted_playlist_name: "setlist",
   locked: false,
+  hardware_reload_started: 0,
+  hardware_reload_refused: [],
+  process_id: "process-a",
   beat_grid: null,
   looping: false,
   available_sections: [],
   active_section: null,
-};
+  reactive_loop_state: { state: "idle" },
+  pending_start_ms: null,
+  pilot_hints: [],
+  tempo: null,
+  auto_play: null,
+  ending: null,
+  ambient: null,
+  next: null,
+} satisfies SocketMessage;
 
 /** The readiness facts of a rig where everything lines up. Specs that need a
  *  problem route their own copy of this with `page.route`; nothing mutates it. */
-export const READINESS = {
+export const READINESS: Readiness = {
   dmx: true,
   venue: {
     name: "test-venue",
@@ -327,13 +372,9 @@ export const READINESS = {
     placed: 8,
     focus_points: ["center"],
   },
-  venue_error: null as null | {
-    venue: string;
-    fixture: string;
-    reason: string;
-  },
-  patch_warnings: [] as { kind: string; message: string }[],
-  fixture_types: { in_use: ["par", "mover"], unresolved: [] },
+  venue_error: null,
+  patch_warnings: [],
+  fixture_types: { in_use: ["par", "mover"], unresolved: [], library: [] },
   groups: [{ name: "front_wash", fixtures: 4, songs: ["Test Song Alpha"] }],
   shows: [
     {
@@ -353,7 +394,7 @@ export const READINESS = {
  *  (one with a suggestion and an alternative, one nothing fits, one that
  *  already finds a fixture), a focus point the venue lacks and a universe
  *  with no output. Tests serve their own copy with `page.route`. */
-export const FIT = {
+export const FIT: FitReport = {
   venue: {
     name: "fit-venue",
     fixtures: [
@@ -394,6 +435,7 @@ export const FIT = {
       },
     ],
     focus_points: ["center"],
+    error: null,
   },
   groups: [
     {
@@ -473,39 +515,54 @@ export const FIT = {
   },
 };
 
+/** A fixture as the metadata message carries it, unplaced. */
+function metadataFixture(
+  type: string,
+  tags: string[],
+  more: Partial<FixtureMetadata> = {},
+): FixtureMetadata {
+  return {
+    tags,
+    type,
+    position: null,
+    rotation: null,
+    beam_angle: null,
+    rig: null,
+    capabilities: [],
+    cells: [],
+    ...more,
+  };
+}
+
 export const METADATA_STATE = {
   type: "metadata",
   fixtures: {
-    "front-left": {
-      tags: ["front", "left"],
-      type: "par",
+    "front-left": metadataFixture("par", ["front", "left"], {
       capabilities: ["color"],
-    },
-    "front-right": {
-      tags: ["front", "right"],
-      type: "par",
+    }),
+    "front-right": metadataFixture("par", ["front", "right"], {
       capabilities: ["color"],
-    },
+    }),
   },
-};
+  venue: null,
+} satisfies SocketMessage;
 
 /** The same venue with a three-cell pixel bar beside the pars. */
 export const PIXEL_METADATA_STATE = {
   type: "metadata",
   fixtures: {
-    "front-left": { tags: ["front", "left"], type: "par" },
-    "front-right": { tags: ["front", "right"], type: "par" },
-    bar: {
-      tags: ["bar"],
-      type: "PixelBar",
+    "front-left": metadataFixture("par", ["front", "left"]),
+    "front-right": metadataFixture("par", ["front", "right"]),
+    bar: metadataFixture("PixelBar", ["bar"], {
       cells: [
         { name: "1", offset: [-0.3, 0, 0] },
         { name: "2", offset: [0, 0, 0] },
         { name: "3", offset: [0.3, 0, 0] },
       ],
-    },
+    }),
   },
-};
+  venue: null,
+} satisfies SocketMessage;
 
 /** A state frame in which a per-cell effect drives the bar: red, green,
  *  blue along its cells over a white bed. */
@@ -517,6 +574,7 @@ export const PIXEL_STATE = {
     bar: { red: 255, green: 255, blue: 255, dimmer: 255, strobe: 0 },
   },
   active_effects: ["rainbow"],
+  poses: {},
   cells: {
     bar: {
       "1": { red: 255, green: 0, blue: 0 },
@@ -524,11 +582,13 @@ export const PIXEL_STATE = {
       "3": { red: 0, green: 0, blue: 255 },
     },
   },
-};
+  strobe_rates: {},
+  under_test: [],
+} satisfies SocketMessage;
 
 /** A mover's rig as the asset store writes it: base, yoke (pan), head
  *  (tilt), one beam. */
-export const TEST_RIG = {
+export const TEST_RIG: RigModel = {
   version: 1,
   fixture_type: "Test Mover",
   mode: "Mode 1",
@@ -601,7 +661,7 @@ export const TEST_RIG = {
 
 /** A venue's scenery as the store writes it: a 7.5 × 4 × 0.8 m deck
  *  (a unit box scaled by its transform) and a truss whose mesh is .3ds. */
-export const TEST_SCENERY = {
+export const TEST_SCENERY: SceneryModel = {
   version: 1,
   objects: [
     {
@@ -652,7 +712,11 @@ export const FIXTURE_STATE = {
     "front-right": { red: 0, green: 255, blue: 64, dimmer: 180, strobe: 0 },
   },
   active_effects: ["color_wash", "strobe_pulse"],
-};
+  poses: {},
+  cells: {},
+  strobe_rates: {},
+  under_test: [],
+} satisfies SocketMessage;
 
 export const WAVEFORM_DATA = {
   type: "waveform",
@@ -662,7 +726,7 @@ export const WAVEFORM_DATA = {
     { name: "snare", peaks: [0.1, 0.4, 0.7, 0.2, 0.6] },
     { name: "bass", peaks: [0.6, 0.5, 0.4, 0.7, 0.3] },
   ],
-};
+} satisfies SocketMessage;
 
 export const LOG_LINES = {
   type: "logs",
@@ -676,12 +740,12 @@ export const LOG_LINES = {
       message: "Web UI listening on 0.0.0.0:8080",
     },
   ],
-};
+} satisfies SocketMessage;
 
 /** An MVR as the inspect endpoint reports it (lighting UI design section 11):
  *  a three-fixture rig over a deck 6 m wide and 4 m deep, whose front edge is
  *  at y = 1000 mm and whose top is 500 mm up. One fixture has no usable GDTF. */
-export const MVR_INSPECTION = {
+export const MVR_INSPECTION: MvrInspection = {
   file_name: "Kellys.mvr",
   report: {
     venue_name: "Kellys",
@@ -696,6 +760,7 @@ export const MVR_INSPECTION = {
         // One type per GDTF; every fixture line names its own mode.
         modes: ["8: RGBS", "9: RGBWS"],
         existing: false,
+        fixture_file: null,
       },
     ],
     fixtures: [
@@ -710,6 +775,8 @@ export const MVR_INSPECTION = {
         tags: [],
         todo: null,
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
       {
         name: "Brick 2",
@@ -722,22 +789,35 @@ export const MVR_INSPECTION = {
         tags: [],
         todo: null,
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
       {
         name: "Lost",
         layer: "Front",
         fixture_type: null,
+        mode: null,
         patch: [2, 1],
         position: null,
         rotation: null,
         tags: [],
         todo: 'GDTF "Missing.gdtf" is not embedded in the MVR',
         change: null,
+        overwrites: [],
+        kept_edits: [],
       },
     ],
     removed_fixtures: [],
     kept_fixtures: [],
-    focus_points: [{ name: "Drummer", point: [0, 5.3, 1.4], change: null }],
+    focus_points: [
+      {
+        name: "Drummer",
+        point: [0, 5.3, 1.4],
+        change: null,
+        overwrites: [],
+        kept_edit: false,
+      },
+    ],
     removed_focus_points: [],
     kept_focus_points: [],
     scenery_objects: 2,
@@ -765,7 +845,7 @@ export const MVR_INSPECTION = {
 };
 
 /** The export summary of a venue with two fixed fixtures, one unlinked. */
-export const MVR_EXPORT_SUMMARY = {
+export const MVR_EXPORT_SUMMARY: MvrExportSummary = {
   venue: "kellys",
   file_name: "kellys.mvr",
   output: "kellys.mvr",

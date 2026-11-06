@@ -13,6 +13,16 @@
      *
      * -->
 <script lang="ts">
+  import type {
+    FixtureMetadata,
+    FixtureTypeEntry,
+    PoseSnapshot,
+    StageValues,
+    Vec3,
+    Venue,
+    VenueError,
+    VenueMetadata,
+  } from "../gen/rules/mtrack_rules";
   import {
     concerns,
     fixtureTypeChanges,
@@ -28,22 +38,12 @@
     poseStore,
     underTestStore,
   } from "../lib/ws/stores";
-  import type {
-    FixtureChannels,
-    FixtureMetadata,
-    Vec3,
-    VenueMetadata,
-  } from "../lib/ws/stores";
   import {
     ConflictError,
     fetchFixtureTypes,
     fetchVenue,
     saveVenue,
-    type FixtureTypeEntry,
-    type VenueData,
-    type VenueError,
   } from "../lib/api/config";
-  import type { FixturePose } from "../lib/ws/stores";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
   import { deckFootprint, restAim } from "../lib/stage/aim";
@@ -70,7 +70,6 @@
   // Types only: the 3D view and the preview panel load the first time 3D
   // is pressed, and three.js with them.
   import type { Stage3DInfo } from "./stage/Stage3DView.svelte";
-  import type { PreviewFrame } from "../lib/lighting/preview";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { untrack } from "svelte";
@@ -172,8 +171,8 @@
       (!!info3d.stats?.generic || !!info3d.scenery || !!info3d.sceneryError),
   );
   /** The previewed moment; null until the first evaluation. */
-  let feed = $state<PreviewFrame | null>(null);
-  const EMPTY_FRAME: PreviewFrame = {
+  let feed = $state<StageValues | null>(null);
+  const EMPTY_FRAME: StageValues = {
     fixtures: {},
     poses: {},
     cells: {},
@@ -271,7 +270,7 @@
   let underTest = $derived(viewingFile ? [] : $underTestStore);
   let fileView = $state<{
     name: string;
-    venue: VenueData;
+    venue: Venue;
     version: string | null;
   } | null>(null);
   let fileError = $state("");
@@ -329,7 +328,7 @@
     if (!viewingFile) return;
     void $fixtureTypeChanges;
     fetchFixtureTypes(fixtureTypesDir || undefined)
-      .then((r) => (fileTypes = r.fixtureTypes))
+      .then((r) => (fileTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });
@@ -351,14 +350,16 @@
           position: f.position ?? null,
           rotation: f.rotation ?? null,
           beam_angle: f.beam_angle ?? null,
+          rig: null,
           capabilities: isMoverType(f.fixture_type) ? ["pan_tilt"] : [],
+          cells: [],
         } satisfies FixtureMetadata,
       ]),
     );
   });
   /** A fixed fixture's beam, from its mounting alone. */
-  let filePoses = $derived.by<Record<string, FixturePose>>(() => {
-    const out: Record<string, FixturePose> = {};
+  let filePoses = $derived.by<Record<string, PoseSnapshot>>(() => {
+    const out: Record<string, PoseSnapshot> = {};
     for (const [name, f] of Object.entries(fileFixtures)) {
       if (!f.position || !f.rotation) continue;
       if (f.capabilities?.includes("pan_tilt")) continue;
@@ -382,6 +383,8 @@
             name: fileView.name,
             dir: venuesDir || null,
             focus_points: fileView.venue.focus_points ?? {},
+            scenery: null,
+            scenery_error: null,
           }
         : null
       : $venueStore,
@@ -392,7 +395,7 @@
   let previewing = $derived(
     is3d && editable && !viewingFile && previewMode === "preview",
   );
-  let shownPoses = $derived<Record<string, FixturePose>>(
+  let shownPoses = $derived<Record<string, PoseSnapshot>>(
     viewingFile ? filePoses : $poseStore,
   );
 
@@ -573,7 +576,7 @@
     }
   }
 
-  function draw(fixtureStates: Record<string, FixtureChannels>) {
+  function draw(fixtureStates: StageValues["fixtures"]) {
     // Per-cell values and strobe rates ride the same state message as
     // the channels; read here so a redraw for any shows all.
     const cellStates = get(cellStore);
@@ -1008,7 +1011,7 @@
   // reloads for the user to reapply. The live plot re-reads just before it
   // writes, so it only guards the gap between that read and the write, and
   // retries once.
-  async function persist(update: (venue: VenueData) => void): Promise<boolean> {
+  async function persist(update: (venue: Venue) => void): Promise<boolean> {
     const meta = shownVenue;
     if (!meta) return false;
     if (saving) {
