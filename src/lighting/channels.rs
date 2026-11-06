@@ -161,11 +161,13 @@ impl Light {
 /// is lit: the light it emits is above 0. Each part of it -- the fixture
 /// itself, a section of a GDTF profile's (`red:2`), a cell or a ganged
 /// mirror (`red#2`, `red:2#3`) -- emits its brightest emitter (red, green,
-/// blue, white, amber, UV, …, or, on a fixture mixing subtractively, the
-/// white its cyan, magenta and yellow flags pass) times its dimmer. A part
-/// takes the dimmer, and a flag, it lacks from the part above it: its
-/// section's, else the fixture's. Whether the fixture mixes subtractively
-/// is decided once, from all its channels, as the engine decides it. A
+/// blue, white, amber, UV, …, or, mixing subtractively, the white its
+/// cyan, magenta and yellow flags pass) times its dimmer. A part takes the
+/// dimmer, and a flag, it lacks from the part above it: its section's,
+/// else the fixture's. Whether it mixes subtractively is its section's
+/// (by the section's own channels) where the section has a colour of its
+/// own, else the fixture's (by its own channels, as the engine's
+/// `has_cmy` decides it). A
 /// part with a dimmer and no emitter that no other part takes its dimmer
 /// from is a light of its own (a ring of white on a dimmer), lit by that
 /// dimmer; the fixture's own dimmer is one only when nothing in the
@@ -191,7 +193,21 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
     }
     // A part, then the parts above it it takes what it lacks from.
     let above = |key: (&'a str, &'a str)| [key, (key.0, ""), ("", "")];
-    let subtractive = mixes_subtractively(|c| parts.values().any(|l| l.levels.contains_key(c)));
+    // Whether a scope (the fixture, a section) mixes subtractively, by its
+    // own channels; `None` for one with no colour of its own.
+    let own_subtractive = |scope| {
+        let levels = &parts.get(&scope)?.levels;
+        let colour = CMY_OF_RGB
+            .iter()
+            .any(|(rgb, cmy)| levels.contains_key(*rgb) || levels.contains_key(*cmy));
+        colour.then(|| mixes_subtractively(|c| levels.contains_key(c)))
+    };
+    // A part follows its section's decision, else the fixture's.
+    let subtractive = |key: (&'a str, &'a str)| {
+        own_subtractive((key.0, ""))
+            .or_else(|| own_subtractive(("", "")))
+            .unwrap_or(false)
+    };
     let emitted: BTreeMap<(&str, &str), Option<f64>> = parts
         .iter()
         .map(|(&key, light)| {
@@ -202,7 +218,7 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
                     // A flag the fixture lacks is open.
                     .unwrap_or(0.0)
             };
-            (key, light.emitted(subtractive, flag))
+            (key, light.emitted(subtractive(key), flag))
         })
         .collect();
     // The part a part takes its dimmer from.
@@ -372,6 +388,40 @@ mod tests {
             ("magenta:2", 255.0),
             ("yellow:2", 255.0),
             ("dimmer:2", 255.0),
+        ]));
+    }
+
+    /// A section's red, green and blue are the section's: they do not turn
+    /// the fixture's own CMY into emitters, as the engine's `has_cmy`,
+    /// which reads the fixture's own channels, does not.
+    #[test]
+    fn a_sections_colour_decides_the_section_alone() {
+        let rgb1 = [("red:1", 0.0), ("green:1", 0.0), ("blue:1", 0.0)];
+        let with = |own: &[(&'static str, f64)], more: &[(&'static str, f64)]| {
+            let mut all = own.to_vec();
+            all.extend_from_slice(more);
+            lit(&all)
+        };
+        let closed = [("cyan", 255.0), ("magenta", 255.0), ("yellow", 255.0)];
+        let open = [("cyan", 0.0), ("magenta", 0.0), ("yellow", 0.0)];
+        assert!(!with(
+            &closed,
+            &[rgb1[0], rgb1[1], rgb1[2], ("dimmer", 255.0)]
+        ));
+        assert!(with(&open, &rgb1));
+        assert!(with(&open, &[("dimmer", 255.0), ("red:1", 0.0)]));
+        // A section with a full CMY set of its own is subtractive alone.
+        assert!(lit(&[
+            ("cyan:1", 0.0),
+            ("magenta:1", 255.0),
+            ("yellow:1", 255.0),
+            ("dimmer", 255.0),
+        ]));
+        assert!(!lit(&[
+            ("cyan:1", 255.0),
+            ("magenta:1", 255.0),
+            ("yellow:1", 255.0),
+            ("dimmer", 255.0),
         ]));
     }
 
