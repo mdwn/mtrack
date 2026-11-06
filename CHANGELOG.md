@@ -160,17 +160,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a fraction of a millisecond where there is one), where it was truncated to whole milliseconds.
 - **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
   `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one parser:
-  decimal numbers with `ms`, `s`, `m` (minutes) or `h`, summed (`1m30s`); fades take `beats` and
-  `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere the `duration_string`
-  crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a fade of none, and
-  fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which was "longer than any
-  song"; the bound is now 1,000,000 seconds in every unit). No longer accepted: the crate's `ns`,
-  `us`, `d`, `w` and `y` units (`playback_delay: 100us`), and a fade of `0mm` or `0ss`, which read
-  as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as `1.5s`, not `1500ms`; a
-  `playback_delay` the clock refuses now says `playback_delay '<text>' is not a valid duration`. The
-  `duration-string` dependency is gone. The clock reads a number as Rust reads a decimal, so `1e2s`,
-  `+2s`, `-0s` (none), `5.s` and `.5s` are now taken in every clock field. A fade of `00s` or `-0s`
-  is now none (a cut) and `1 000ms` (a space in the number) is one second; both were refused.
+  decimal numbers with `ms`, `s`, `m` (minutes), `h`, `ns`, `us`, `d`, `w` or `y`, summed (`1m30s`);
+  fades take `beats` and `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere
+  the `duration_string` crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a
+  fade of none, and fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which was
+  "longer than any song"; the bound is now 1,000,000 seconds in every unit). The crate's other units
+  read as they did: `ns`, `us`, `d`, `w` and `y` (a year being 31,556,926 seconds), now with
+  decimals too, and a fade takes them as well. No longer accepted: a fade of `0mm`, `0ss` or `0sm`,
+  which read as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as `1.5s`, not
+  `1500ms`; a `playback_delay` the clock refuses now says `playback_delay '<text>' is not a valid
+  duration`. The `duration-string` dependency is gone. The clock reads a number as Rust reads a
+  decimal, so `1e2s`, `+2s`, `-0s` (none), `5.s` and `.5s` are now taken in every clock field. A
+  fade of `00s` or `-0s` is now none (a cut) and `1 000ms` (a space in the number) is one second;
+  both were refused.
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes

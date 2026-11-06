@@ -71,10 +71,20 @@ pub(crate) fn split_unit(value: &str) -> (&str, &str) {
     (number, &value[number.len()..])
 }
 
-/// The clock's units beyond the table's milliseconds and seconds: minutes
-/// and hours, as seconds. Not in [`UNITS`], which the light show DSL reads
+/// The clock's units beyond the table's milliseconds and seconds, each as
+/// seconds over a divisor: nanoseconds, microseconds, minutes, hours, days,
+/// weeks and years, as the config has always read them (a year is
+/// 31,556,926 seconds). Not in [`UNITS`], which the light show DSL reads
 /// too: there `m` is measures (a tempo transition's `2m`).
-const CLOCK_UNITS: [(&str, f64); 2] = [("m", 60.0), ("h", 3600.0)];
+const CLOCK_UNITS: [(&str, f64, f64); 7] = [
+    ("ns", 1.0, 1e9),
+    ("us", 1.0, 1e6),
+    ("m", 60.0, 1.0),
+    ("h", 3_600.0, 1.0),
+    ("d", 86_400.0, 1.0),
+    ("w", 604_800.0, 1.0),
+    ("y", 31_556_926.0, 1.0),
+];
 
 /// `number` of the clock unit `unit`, in seconds; `None` for no clock unit.
 fn clock_unit_secs(number: f64, unit: &str) -> Option<f64> {
@@ -84,8 +94,8 @@ fn clock_unit_secs(number: f64, unit: &str) -> Option<f64> {
         Some(DurationUnit::Beats | DurationUnit::Measures) => None,
         None => CLOCK_UNITS
             .iter()
-            .find(|(keyword, _)| *keyword == unit)
-            .map(|(_, secs)| number * secs),
+            .find(|(keyword, ..)| *keyword == unit)
+            .map(|(_, secs, per)| number * secs / per),
     }
 }
 
@@ -109,7 +119,8 @@ fn number_end(text: &str) -> usize {
 }
 
 /// A length of time as written on the clock, in seconds: decimal numbers,
-/// each with its unit -- `ms`, `s`, `m` (minutes) or `h` -- summed
+/// each with its unit -- `ms`, `s`, `m` (minutes), `h`, or `ns`, `us`,
+/// `d`, `w` or `y` ([`CLOCK_UNITS`]) -- summed
 /// (`500ms`, `1.5s`, `2m`, `1m30s`; whitespace anywhere is ignored). The
 /// seconds may be negative or not finite; `None` for text that is no
 /// length of time.
@@ -141,7 +152,7 @@ fn lone_clock_term_secs(value: &str) -> Option<f64> {
     let mut keywords: Vec<&str> = [DurationUnit::Ms, DurationUnit::S]
         .iter()
         .map(|unit| unit.keyword(2.0))
-        .chain(CLOCK_UNITS.iter().map(|(keyword, _)| *keyword))
+        .chain(CLOCK_UNITS.iter().map(|(keyword, ..)| *keyword))
         .collect();
     // The longest first: `ms` before `s`.
     keywords.sort_by_key(|keyword| std::cmp::Reverse(keyword.len()));
@@ -306,13 +317,37 @@ mod tests {
             "2measures",
             "-1s",
             "1s-1s",
-            "1d",
-            "100us",
             "infs",
             "1x",
             "s",
+            "1mm",
+            "0ss",
         ] {
             assert_eq!(at(refused), None, "{refused:?}");
+        }
+    }
+
+    /// Every unit the config read before the clock (the `duration-string`
+    /// crate: integers, summed) gives the same length.
+    #[test]
+    fn every_unit_the_config_took_reads_the_same() {
+        for (text, length) in [
+            ("7ns", Duration::from_nanos(7)),
+            ("123456789ns", Duration::from_nanos(123_456_789)),
+            ("250us", Duration::from_micros(250)),
+            ("500ms", Duration::from_millis(500)),
+            ("2s", Duration::from_secs(2)),
+            ("3m", Duration::from_secs(180)),
+            ("2h", Duration::from_secs(7_200)),
+            ("1d", Duration::from_secs(86_400)),
+            ("2w", Duration::from_secs(1_209_600)),
+            ("1y", Duration::from_secs(31_556_926)),
+            ("1h30m", Duration::from_secs(5_400)),
+            ("1d2h3m4s5ms", Duration::new(93_784, 5_000_000)),
+            ("1 m 30 s", Duration::from_secs(90)),
+            ("0s", Duration::ZERO),
+        ] {
+            assert_eq!(parse_clock(text), Some(length), "{text:?}");
         }
     }
 
