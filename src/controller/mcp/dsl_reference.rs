@@ -204,6 +204,19 @@ mod tests {
     }
 
     #[test]
+    fn the_word_lists_are_the_parsers() {
+        let text = dsl_reference();
+        let v = vocabulary();
+        let units = UNITS.iter().flat_map(|(_, plural, one)| [*plural, *one]);
+        let colors = NAMED_COLORS.iter().map(|(name, _)| *name);
+        let commands = v.layer_commands.iter().map(|c| c.keyword());
+        let params = LayerCommandParam::ALL.iter().map(|(_, w)| *w);
+        for word in units.chain(colors).chain(commands).chain(params) {
+            assert!(text.contains(&format!("`{word}`")), "{word} missing");
+        }
+    }
+
+    #[test]
     fn the_dimmer_states_its_defaults() {
         let text = dsl_reference();
         let row = text
