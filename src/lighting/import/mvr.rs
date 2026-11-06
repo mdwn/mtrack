@@ -117,6 +117,9 @@ struct Planned {
     /// The venue file's text.
     venue_text: String,
     venue_path: PathBuf,
+    /// Whether the existing venue file is regenerated rather than patched:
+    /// it is set aside first (`project_files::set_aside_all`), kept.
+    set_aside_original: bool,
 }
 
 struct GdtfWrite {
@@ -189,11 +192,31 @@ pub fn import_mvr_bytes(
     let distillation_warnings = planned.distillation_warnings;
 
     create_dir(planned.venue_path.parent().unwrap_or(project))?;
-    write(&planned.venue_path, planned.venue_text.as_bytes())?;
-    written.push(planned.plan.venue_file.clone());
+    let mut plan = planned.plan;
+    // A file the import regenerates rather than patches is set aside first,
+    // kept, and put back if the write fails.
+    let set_aside = if planned.set_aside_original {
+        crate::lighting::project_files::set_aside_all(std::slice::from_ref(&planned.venue_path))?
+    } else {
+        Vec::new()
+    };
+    if let Err(e) = write(&planned.venue_path, planned.venue_text.as_bytes()) {
+        return Err(format!(
+            "{e}{}",
+            crate::lighting::project_files::put_back(&set_aside)
+        )
+        .into());
+    }
+    for (_, backup) in &set_aside {
+        plan.warnings.push(format!(
+            "the old venue file is kept as {}",
+            relative_display(project, backup)
+        ));
+    }
+    written.push(plan.venue_file.clone());
 
     Ok(MvrImport {
-        plan: planned.plan,
+        plan,
         written,
         distillation_warnings,
     })
@@ -839,16 +862,42 @@ fn plan(
         warnings,
     };
     let mut venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);
+    let mut set_aside_original = false;
     if let Some((path, _)) = &existing {
         // A merge patches the file in place, so comments, TODO lines and
         // the header survive. A file the patcher cannot handle safely is
-        // regenerated, and the plan says so.
+        // regenerated with this venue alone: refused when the file holds
+        // other venues, which that would lose; otherwise the old file is set
+        // aside first, kept, and the plan says where.
         match patch_existing(path, &plan, &kept, &kept_focus) {
             Ok(text) => venue_text = text,
-            Err(reason) => plan.warnings.push(format!(
-                "could not patch the venue file in place ({reason}); it was regenerated, so \
-                 its comments are not kept"
-            )),
+            Err(reason) => {
+                let others: Vec<String> = crate::lighting::project_files::venues_declared(path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|n| *n != plan.venue_name)
+                    .collect();
+                if !others.is_empty() {
+                    return Err(format!(
+                        "{} also holds {}, and the import cannot patch it in place ({reason}); \
+                         regenerating it would lose them, so nothing was imported: move this \
+                         venue to a file of its own, or import under another --name",
+                        path.display(),
+                        others
+                            .iter()
+                            .map(|n| format!("venue \"{n}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                    .into());
+                }
+                set_aside_original = true;
+                plan.warnings.push(format!(
+                    "could not patch the venue file in place ({reason}); it was regenerated, and \
+                     the old file is kept beside it as {}.replaced-<time>",
+                    plan.venue_file
+                ));
+            }
         }
     }
     // Prove the venue parses back, and to the same shape, before anything
@@ -874,6 +923,7 @@ fn plan(
         write_archive,
         venue_text,
         venue_path,
+        set_aside_original,
     })
 }
 
@@ -2061,6 +2111,60 @@ mod tests {
         );
         assert_eq!(text.matches("# TODO fixture \"Lost\"").count(), 1, "{text}");
         assert!(parse_venues(&text).is_ok());
+    }
+
+    /// A re-import that cannot patch the venue file in place never loses
+    /// what else it holds: a file holding another venue is refused, naming
+    /// it, and nothing is written; one holding only this venue (with a
+    /// fixture line wrapped round a comment, which the patcher does not
+    /// understand) is regenerated, and the old file is set aside, kept, and
+    /// named in the plan. A venue with a `group` line does not read at all,
+    /// and is refused as any broken file is.
+    #[test]
+    fn a_reimport_that_cannot_patch_keeps_what_the_file_holds() {
+        let dir = project();
+        import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let seeded = std::fs::read_to_string(&path).unwrap();
+        let wrapped = seeded.replace(
+            "@ 1:5 position (2, 7, 4.2)",
+            "@ 1:5\n  # hung late\n  position (2, 7, 4.2)",
+        );
+        assert_ne!(wrapped, seeded);
+        let one_line = format!("{wrapped}\nvenue \"Backstage\" {{ }}\n");
+        std::fs::write(&path, &one_line).unwrap();
+        assert!(parse_venues(&one_line).is_ok(), "{one_line}");
+        let error = import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("venue \"Backstage\""), "{error}");
+        assert!(error.contains("kellys.venue"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), one_line);
+
+        let alone = wrapped.clone();
+        std::fs::write(&path, &alone).unwrap();
+        let report =
+            import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).unwrap();
+        let kept = report
+            .plan
+            .warnings
+            .iter()
+            .find_map(|w| w.strip_prefix("the old venue file is kept as "))
+            .expect("the plan names the kept file")
+            .to_string();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(&kept)).unwrap(),
+            alone
+        );
+        assert!(parse_venues(&std::fs::read_to_string(&path).unwrap()).is_ok());
+
+        let grouped = seeded.replace(
+            "venue \"kellys\" {",
+            "venue \"kellys\" {\n  group \"Front\" = Brick_1",
+        );
+        std::fs::write(&path, &grouped).unwrap();
+        assert!(import_mvr_bytes(&unchanged_mvr(), "kellys.mvr", &options(), dir.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), grouped);
     }
 
     #[test]

@@ -329,8 +329,27 @@ pub fn place_in_library(
         }
     };
     let archive = rel(&file_name);
+    // A fixture type file that does not read and may hold a name
+    // (`project_files::may_hold`) takes it, as one that reads does.
+    let broken_types: Vec<(PathBuf, String)> = super::project_files::broken_type_files(fixture_dir)
+        .into_iter()
+        .map(|path| {
+            let text = String::from_utf8_lossy(&crate::util::read_file(&path).unwrap_or_default())
+                .into_owned();
+            (path, text)
+        })
+        .collect();
+    let broken_holder = |candidate: &str| {
+        broken_types
+            .iter()
+            .find(|(_, text)| {
+                super::project_files::may_hold(text, Some(("fixture_type", candidate)), None)
+            })
+            .map(|(path, _)| super::project_files::display_in(fixture_dir, path))
+    };
     let taken = |candidate: &str, claimed: &Claimed| {
         records.contains_key(candidate)
+            || broken_holder(candidate).is_some()
             || claimed.names.contains(candidate)
             || library
                 .types
@@ -339,6 +358,13 @@ pub fn place_in_library(
     };
     let (type_name, renamed_from, pinned) = match name {
         Some(name) => {
+            if let Some(file) = broken_holder(name) {
+                return Err(format!(
+                    "{file} does not read and may hold a fixture called \"{name}\"; fix or \
+                     move it, or import under another name"
+                )
+                .into());
+            }
             if taken(name, claimed) {
                 return Err(format!(
                     "a fixture called \"{name}\" already exists; import it under another name"
@@ -596,6 +622,24 @@ mod tests {
         let report = import_gdtf(&copy, None, &project, TYPES).unwrap();
         assert!(report.already_imported);
         assert_eq!(report.type_name, "Brick");
+    }
+
+    /// A fixture type file that does not read but may hold a name takes
+    /// it, as one that reads does: an unpinned import picks the next name.
+    #[test]
+    fn a_broken_file_takes_the_name_it_may_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        std::fs::create_dir_all(project.join(TYPES)).unwrap();
+        std::fs::write(
+            project.join(TYPES).join("brick.fixture"),
+            "fixture_type \"Synth Brick\" {\n",
+        )
+        .unwrap();
+        let first = write_synthetic_gdtf(dir.path());
+        let report = import_gdtf(&first, None, &project, TYPES).unwrap();
+        assert_ne!(report.type_name, "Synth Brick");
+        assert_eq!(report.renamed_from.as_deref(), Some("Synth Brick"));
     }
 
     #[test]

@@ -349,6 +349,113 @@ pub fn may_act_on(
     })
 }
 
+/// Sets a file aside before a save replaces it or a delete removes it (a
+/// broken file a person chose to replace, a venue file the MVR import must
+/// regenerate): renamed beside itself to `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC),
+/// an extension no loader reads, so whatever it held is kept however the
+/// block scan read it. The one way every "Replace it" and "Remove it", and
+/// every regenerated file, is kept. Returns where it went.
+pub fn set_aside_broken(path: &Path) -> std::io::Result<PathBuf> {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stamp = crate::util::utc_stamp(std::time::SystemTime::now());
+    let mut backup = path.with_file_name(format!("{file}.replaced-{stamp}"));
+    let mut n = 2;
+    while backup.symlink_metadata().is_ok() {
+        backup = path.with_file_name(format!("{file}.replaced-{stamp}-{n}"));
+        n += 1;
+    }
+    std::fs::rename(path, &backup)?;
+    Ok(backup)
+}
+
+/// Sets each of `paths` aside ([`set_aside_broken`]), returning each file
+/// and where it went. If one cannot be, those already set aside are put
+/// back ([`put_back`]) and nothing is left half done.
+pub fn set_aside_all(paths: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut done = Vec::new();
+    for path in paths {
+        match set_aside_broken(path) {
+            Ok(backup) => done.push((path.clone(), backup)),
+            Err(e) => return Err(format!("{e}{}", put_back(&done))),
+        }
+    }
+    Ok(done)
+}
+
+/// Puts files [`set_aside_all`] set aside back where they were, after the
+/// write they made way for failed. Any that cannot be is named, with where
+/// it is kept, for the error the caller reports.
+pub fn put_back(set_aside: &[(PathBuf, PathBuf)]) -> String {
+    let stuck: Vec<String> = set_aside
+        .iter()
+        .filter(|(original, backup)| std::fs::rename(backup, original).is_err())
+        .map(|(original, backup)| format!("{} is kept as {}", original.display(), backup.display()))
+        .collect();
+    if stuck.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", stuck.join("; "))
+    }
+}
+
+/// The one rule for whether a file's text may hold a name or an archive's
+/// record, read as far as it reads: the header scan ([`block_headers`])
+/// finds the `keyword "name"` block, or the name appears after a quote
+/// (`"Club"`, `"Club` with its quote left open), or the archive's path
+/// appears (`lighting/library/par.gdtf`, for a fixture type's record). It
+/// errs toward yes: a yes only offers a file for replacing (kept aside if
+/// replaced) or keeps a name or an archive from being taken, where a wrong
+/// no can leave a broken file to declare the name again, or delete an
+/// archive its record still names. `locate`, the GDTF library's fallback
+/// and its deletes, and the imports' choice of a free name all ask it.
+pub fn may_hold(text: &str, name: Option<(&str, &str)>, archive: Option<&str>) -> bool {
+    let named = name.is_some_and(|(keyword, name)| {
+        text.contains(&format!("\"{name}"))
+            || block_headers(text)
+                .iter()
+                .any(|(k, n)| k == keyword && n == name)
+    });
+    named || archive.is_some_and(|archive| text.contains(archive))
+}
+
+/// A file's text as far as it reads (`from_utf8_lossy`); none if it cannot
+/// be read at all.
+fn lossy_text(path: &Path) -> String {
+    let bytes = crate::util::read_file(path).unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Whether the file at `path` [`may_hold`] the name or the archive.
+pub fn file_may_hold(path: &Path, name: Option<(&str, &str)>, archive: Option<&str>) -> bool {
+    may_hold(&lossy_text(path), name, archive)
+}
+
+/// The fixture type files under `dir` that do not read and [`may_hold`]
+/// the type `name` or the archive `archive`: each may be a record a
+/// decision about that name or archive must not pass over.
+pub fn broken_type_files_holding(
+    dir: &Path,
+    name: Option<&str>,
+    archive: Option<&str>,
+) -> Vec<PathBuf> {
+    broken_type_files(dir)
+        .into_iter()
+        .filter(|path| file_may_hold(path, name.map(|n| ("fixture_type", n)), archive))
+        .collect()
+}
+
+/// The fixture type files under `dir` that do not read.
+pub fn broken_type_files(dir: &Path) -> Vec<PathBuf> {
+    files_under(dir, FIXTURE_TYPE_EXTENSIONS)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| fixture_types_declared(path).is_err())
+        .collect()
+}
+
 /// A file found for a name ([`locate_venue`], [`locate_fixture_type`]),
 /// and what it declares.
 #[derive(Clone, Debug)]
@@ -389,7 +496,7 @@ fn locate(
                     other_broken: Vec::new(),
                 }))
             }
-            Err(unread) if unread.blocks.iter().any(|(k, n)| k == keyword && n == name) => {
+            Err(_) if file_may_hold(&path, Some((keyword, name)), None) => {
                 mentions.push((path, declares));
             }
             _ => {}
@@ -727,6 +834,35 @@ mod tests {
         ] {
             assert!(names(nothing).is_empty(), "{nothing:?}");
         }
+    }
+
+    /// The one "may hold" rule over-reports: a quote left open mid-file,
+    /// which hides later headers from the scan, or one left open inside a
+    /// name, still lets the name be found, and an archive's path names its
+    /// record.
+    #[test]
+    fn may_hold_finds_a_name_the_scan_cannot() {
+        let hidden = "venue \"Other\" {\n  color: \"#FF0000\n}\nvenue \"Club\" {\n";
+        assert!(!block_headers(hidden).iter().any(|(_, n)| n == "Club"));
+        assert!(may_hold(hidden, Some(("venue", "Club")), None));
+        assert!(may_hold("venue \"Club {\n", Some(("venue", "Club")), None));
+        assert!(may_hold(
+            "{{{ lighting/library/par.gdtf\n",
+            Some(("fixture_type", "Spot")),
+            Some("lighting/library/par.gdtf")
+        ));
+        assert!(!may_hold(
+            "venue \"Arena\" {\n",
+            Some(("venue", "Club")),
+            None
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "tour/old.light", hidden);
+        assert_eq!(
+            locate_venue(dir.path(), "Club").unwrap().unwrap().path,
+            dir.path().join("tour/old.light")
+        );
     }
 
     /// Venues and fixture types read alike: a file with a Latin-1 byte

@@ -245,6 +245,11 @@ pub struct FixtureTypeDeleted {
     pub archive_removed: Option<String>,
     /// Another fixture uses the archive, so it stays.
     pub archive_kept: bool,
+    /// Why the archive stays, when it is not that another fixture uses it:
+    /// a file that does not read may be its record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub archive_kept_because: Option<String>,
     /// A broken file removed at the person's word, kept aside: where it
     /// went, by its path in the directory.
     #[serde(skip_serializing_if = "Vec::is_empty")]

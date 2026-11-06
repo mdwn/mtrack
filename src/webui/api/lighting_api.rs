@@ -621,58 +621,7 @@ fn broken_among(files: &[(&std::path::Path, &Declares)]) -> Vec<std::path::PathB
         .collect()
 }
 
-/// Sets a broken file aside before a save replaces it or a delete removes
-/// it: renamed beside itself to `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC),
-/// an extension no loader reads, so whatever it held is kept however the
-/// block scan read it. The one way every "Replace it" and "Remove it" acts
-/// on a broken file. Returns where it went.
-fn set_aside_broken(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
-    let file = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stamp = crate::util::utc_stamp(std::time::SystemTime::now());
-    let mut backup = path.with_file_name(format!("{file}.replaced-{stamp}"));
-    let mut n = 2;
-    while backup.symlink_metadata().is_ok() {
-        backup = path.with_file_name(format!("{file}.replaced-{stamp}-{n}"));
-        n += 1;
-    }
-    std::fs::rename(path, &backup)?;
-    Ok(backup)
-}
-
-/// Sets each of `paths` aside ([`set_aside_broken`]), returning each file
-/// and where it went. If one cannot be, those already set aside are put
-/// back ([`put_back`]) and nothing is left half done.
-fn set_aside_all(
-    paths: &[std::path::PathBuf],
-) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {
-    let mut done = Vec::new();
-    for path in paths {
-        match set_aside_broken(path) {
-            Ok(backup) => done.push((path.clone(), backup)),
-            Err(e) => return Err(format!("{e}{}", put_back(&done))),
-        }
-    }
-    Ok(done)
-}
-
-/// Puts files [`set_aside_all`] set aside back where they were, after the
-/// write they made way for failed. Any that cannot be is named, with where
-/// it is kept, for the error the caller reports.
-fn put_back(set_aside: &[(std::path::PathBuf, std::path::PathBuf)]) -> String {
-    let stuck: Vec<String> = set_aside
-        .iter()
-        .filter(|(original, backup)| std::fs::rename(backup, original).is_err())
-        .map(|(original, backup)| format!("{} is kept as {}", original.display(), backup.display()))
-        .collect();
-    if stuck.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", stuck.join("; "))
-    }
-}
+use lighting::project_files::{put_back, set_aside_all};
 
 /// The file a fixture type of this name lives in, or would be written to,
 /// by the one locate rule the GDTF import takes too
@@ -680,11 +629,12 @@ fn put_back(set_aside: &[(std::path::PathBuf, std::path::PathBuf)]) -> String {
 /// declares it, as the lighting system loads it (its stem need not match the
 /// name: an import may have written `astera_pixelbrick.fixture` for
 /// "Astera-PixelBrick"); else the broken files that may be its (the one at
-/// its stem, and any that seem to open its block). One that does not declare
-/// it is still the answer, so the caller can say what is wrong with it,
-/// except a broken stem file that does not seem to open its block when the
-/// project's GDTF library has a fixture of that name (`root`): the library
-/// answers for it, and the broken file is left alone.
+/// its stem, and any that may hold it, `project_files::may_hold`). One that
+/// does not declare it is still the answer, so the caller can say what is
+/// wrong with it, except a broken stem file that may hold neither the type
+/// nor its archive when the project's GDTF library has a fixture of that
+/// name (`root`): the library answers for it, and the broken file is left
+/// alone.
 fn existing_fixture_type(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -693,28 +643,21 @@ fn existing_fixture_type(
     let found = lighting::project_files::locate_fixture_type(dir, name)
         .ok()
         .flatten()?;
-    // Only a broken stem file that names neither the type nor its archive
-    // anywhere in its text is unrelated; in any doubt, it is the type's
-    // record, offered for replacing, and the library does not answer.
+    // Only a broken stem file that may hold neither the type nor its
+    // archive is unrelated; in any doubt, it is the type's record, offered
+    // for replacing, and the library does not answer.
     if found.declares.is_err() && found.other_broken.is_empty() {
         if let Some(library) = lighting::library::unrecorded_types(root, Some(dir)).get(name) {
-            if !may_be_record_of(&found.path, name, &library.archive) {
+            if !lighting::project_files::file_may_hold(
+                &found.path,
+                Some(("fixture_type", name)),
+                Some(&library.archive),
+            ) {
                 return None;
             }
         }
     }
     Some(found)
-}
-
-/// Whether the file at `path` may be the record of the GDTF fixture type
-/// `name` whose archive is `archive` (project-relative): its text, as far as
-/// it reads, names the type in quotes (`"Par"`) or the archive's path. Errs
-/// toward yes: a record is never mistaken for an unrelated file, so a
-/// library archive is never deleted with its record left behind.
-fn may_be_record_of(path: &std::path::Path, name: &str, archive: &str) -> bool {
-    let text = crate::util::read_file(path).unwrap_or_default();
-    let text = String::from_utf8_lossy(&text);
-    text.contains(&format!("\"{name}\"")) || text.contains(archive)
 }
 
 /// The path of [`existing_fixture_type`].
@@ -2126,59 +2069,75 @@ pub(super) async fn delete_fixture_type(
     }) = locate_fixture_type_file(&root, &dir, &name).await?
     else {
         // A GDTF in the library with no record is a fixture of its own;
-        // deleting it is deleting the archive.
-        let (types_dir, wanted, root) = (dir.clone(), name.clone(), root.clone());
-        let removed = super::helpers::spawn_blocking_io("delete a GDTF", move || {
-            let library = lighting::library::unrecorded_types(&root, Some(&types_dir));
-            let Some(found) = library.get(&wanted) else {
-                return Ok::<_, String>(Ok(None));
-            };
-            // The archive is never deleted while a file that does not read
-            // may be its record: deleting it would leave that record behind,
-            // naming an archive no longer there.
-            let files = lighting::project_files::files_under(&types_dir, FIXTURE_TYPE_EXTENSIONS)
-                .map_err(|e| e.to_string())?;
-            if let Some(record) = files.iter().find(|path| {
-                fixture_types_declared(path).is_err()
-                    && may_be_record_of(path, &wanted, &found.archive)
-            }) {
-                return Ok(Err(lighting::project_files::display_in(&types_dir, record)));
-            }
-            std::fs::remove_file(root.join(&found.archive)).map_err(|e| e.to_string())?;
-            Ok(Ok(Some(found.archive.clone())))
+        // deleting it is deleting the archive. A file that does not read and
+        // may be its record (`project_files::may_hold`) goes first, set aside
+        // as any broken file is, once the person chose to remove it: left,
+        // it would name an archive no longer there.
+        let (types_dir, wanted, project) = (dir.clone(), name.clone(), root.clone());
+        let found = super::helpers::spawn_blocking_io("read the GDTF library", move || {
+            let library = lighting::library::unrecorded_types(&project, Some(&types_dir));
+            Ok::<_, String>(library.get(&wanted).map(|found| {
+                let holding: Vec<(std::path::PathBuf, Declares)> =
+                    lighting::project_files::broken_type_files_holding(
+                        &types_dir,
+                        Some(&wanted),
+                        Some(&found.archive),
+                    )
+                    .into_iter()
+                    .map(|path| {
+                        let declares = fixture_types_declared(&path);
+                        (path, declares)
+                    })
+                    .collect();
+                (found.archive.clone(), holding)
+            }))
         })
         .await?;
-        let removed = match removed {
-            Ok(removed) => removed,
-            Err(record) => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": format!(
-                        "{record} does not read and may be the record of \"{name}\"; the \
-                         GDTF is not deleted while it is there: fix or move that file first"
-                    )})),
-                )
-                    .into_response())
-            }
-        };
-        return match removed {
-            Some(archive) => Ok((
-                StatusCode::OK,
-                Json(FixtureTypeDeleted {
-                    status: "deleted".to_string(),
-                    name,
-                    archive_removed: Some(archive),
-                    archive_kept: false,
-                    kept: Vec::new(),
-                }),
-            )
-                .into_response()),
-            None => Err((
+        let Some((archive, holding)) = found else {
+            return Err((
                 StatusCode::NOT_FOUND,
                 Json(json!({"error": format!("Fixture type not found: {}", name)})),
             )
-                .into_response()),
+                .into_response());
         };
+        let pairs: Vec<(&std::path::Path, &Declares)> =
+            holding.iter().map(|(p, d)| (p.as_path(), d)).collect();
+        require_declares(
+            "fixture type",
+            &name,
+            &dir,
+            &pairs,
+            &replace_broken_files(&raw_query),
+            Acting::Deleting,
+        )?;
+        let records: Vec<std::path::PathBuf> = holding.into_iter().map(|(p, _)| p).collect();
+        let kept_root = dir.clone();
+        let archive_path = root.join(&archive);
+        let kept = super::helpers::spawn_blocking_io("delete a GDTF", move || {
+            let set_aside = set_aside_all(&records)?;
+            if let Err(e) = std::fs::remove_file(&archive_path) {
+                return Err(format!("{e}{}", put_back(&set_aside)));
+            }
+            Ok::<_, String>(
+                set_aside
+                    .iter()
+                    .map(|(_, backup)| lighting::project_files::display_in(&kept_root, backup))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await?;
+        return Ok((
+            StatusCode::OK,
+            Json(FixtureTypeDeleted {
+                status: "deleted".to_string(),
+                name,
+                archive_removed: Some(archive),
+                archive_kept: false,
+                archive_kept_because: None,
+                kept,
+            }),
+        )
+            .into_response());
     };
     let broken = require_declares_blocking(
         "fixture type",
@@ -2203,7 +2162,7 @@ pub(super) async fn delete_fixture_type(
     let fp = file_path;
     let deleted = name.clone();
     let kept_root = dir.clone();
-    let (archive_removed, archive_kept, kept) =
+    let (archive_removed, archive_kept, archive_kept_because, kept) =
         super::helpers::spawn_blocking_io("delete fixture type", move || {
             // The broken files the person chose to remove are set aside,
             // kept (`set_aside_broken`); they name no archive to free.
@@ -2213,7 +2172,7 @@ pub(super) async fn delete_fixture_type(
                     .iter()
                     .map(|(_, backup)| lighting::project_files::display_in(&kept_root, backup))
                     .collect();
-                return Ok::<_, std::io::Error>((None, false, kept));
+                return Ok::<_, std::io::Error>((None, false, None, kept));
             }
             // A GDTF fixture's archive is mtrack's to keep, not the user's:
             // read which one this type uses before its record goes.
@@ -2222,11 +2181,11 @@ pub(super) async fn delete_fixture_type(
                 .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
                 .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
             std::fs::remove_file(&fp)?;
-            let (removed, archive_kept) = match archive {
+            let (removed, archive_kept, because) = match archive {
                 Some(source) => remove_unused_archive(&root, &dir, &source.path),
-                None => (None, false),
+                None => (None, false, None),
             };
-            Ok((removed, archive_kept, Vec::new()))
+            Ok((removed, archive_kept, because, Vec::new()))
         })
         .await?;
     Ok::<_, axum::response::Response>(
@@ -2237,6 +2196,7 @@ pub(super) async fn delete_fixture_type(
                 name,
                 archive_removed,
                 archive_kept,
+                archive_kept_because,
                 kept,
             }),
         )
@@ -2246,25 +2206,26 @@ pub(super) async fn delete_fixture_type(
 
 /// After a GDTF fixture's record is deleted: its archive in
 /// `lighting/library/`, removed when no other fixture type in `types_dir`
-/// uses it — otherwise archives the user cannot see pile up. Returns the
-/// removed archive (project-relative) and whether it was kept because
-/// another type still uses it. An archive outside the library is never
+/// uses it — otherwise archives the user cannot see pile up — nor any file
+/// that does not read may hold it. Returns the removed archive
+/// (project-relative), whether it was kept, and why when that is a file
+/// that does not read. An archive outside the library is never
 /// touched, and neither is the expansion cache (it is keyed by content and
 /// rebuilt on demand).
 fn remove_unused_archive(
     root: &std::path::Path,
     types_dir: &std::path::Path,
     archive_rel: &str,
-) -> (Option<String>, bool) {
+) -> (Option<String>, bool, Option<String>) {
     let library = root.join("lighting").join("library");
     let Ok(target) = root.join(archive_rel).canonicalize() else {
-        return (None, false);
+        return (None, false, None);
     };
     let in_library = library
         .canonicalize()
         .is_ok_and(|library| target.starts_with(library));
     if !in_library {
-        return (None, false);
+        return (None, false, None);
     }
     let still_used = lighting::import::existing_types(types_dir)
         .values()
@@ -2275,13 +2236,28 @@ fn remove_unused_archive(
                 .is_ok_and(|other| other == target)
         });
     if still_used {
-        return (None, true);
+        return (None, true, None);
+    }
+    // Nor while a file that does not read may be a record of it
+    // (`project_files::may_hold`): it would name an archive no longer there.
+    if let Some(record) =
+        lighting::project_files::broken_type_files_holding(types_dir, None, Some(archive_rel))
+            .first()
+    {
+        let record = lighting::project_files::display_in(types_dir, record);
+        return (
+            None,
+            true,
+            Some(format!(
+                "{record} does not read and may be a record of {archive_rel}; the archive is kept"
+            )),
+        );
     }
     match std::fs::remove_file(&target) {
-        Ok(()) => (Some(archive_rel.to_string()), false),
+        Ok(()) => (Some(archive_rel.to_string()), false, None),
         Err(e) => {
             tracing::warn!(error = %e, "could not remove a deleted fixture's GDTF archive");
-            (None, false)
+            (None, false, None)
         }
     }
 }
@@ -5589,11 +5565,66 @@ show "test" {
         .unwrap();
         let (status, parsed) = delete().await;
         assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert!(
-            parsed["error"].as_str().unwrap().contains("other.fixture"),
+        assert_eq!(
+            parsed["broken_files"][0]["file"], "other.fixture",
             "{parsed}"
         );
         assert!(archive.exists());
+        // Offered for removing as any broken file is: the retry sets it
+        // aside, kept, and deletes the library's fixture.
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "DELETE",
+            "/lighting/fixture-types/Synth%20Brick?replace_broken=other.fixture".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(!archive.exists());
+        let kept = parsed["kept"][0].as_str().unwrap();
+        assert!(types.join(kept).is_file());
+    }
+
+    /// A recorded GDTF fixture's archive is not removed with its record
+    /// while a file that does not read may be another record of it; the
+    /// reply says why it stays.
+    #[tokio::test]
+    async fn an_archive_a_broken_file_names_is_kept() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state.clone());
+        let (status, _) = import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(
+            types.join("par.fixture"),
+            "fixture_type \"Par\"\n  from gdtf(\"lighting/library/synth.gdtf\")\n{\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            types.join("stage_par.fixture"),
+            "fixture_type \"Stage Par\"\n  from gdtf(\"lighting/library/synth.gdtf\")\n{\n",
+        )
+        .unwrap();
+        let (status, parsed) = fixture_type_request(
+            state,
+            "DELETE",
+            "/lighting/fixture-types/Par".to_string(),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["archive_kept"], true, "{parsed}");
+        assert!(
+            parsed["archive_kept_because"]
+                .as_str()
+                .unwrap()
+                .contains("stage_par.fixture"),
+            "{parsed}"
+        );
+        assert!(dir.path().join("lighting/library/synth.gdtf").exists());
     }
 
     /// A delete that cannot set every broken file aside puts back those it
