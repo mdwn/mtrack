@@ -338,6 +338,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A quiet trigger hit plays**: with the `linear` velocity curve, a hit just over a low threshold
+  (`threshold: 0.005`, peak 0.006) had velocity 0, which played nothing ("No sample file for
+  velocity" for a layered sample). Every curve's velocity is now held to 1–127, as `logarithmic`'s
+  was; a `fixed_velocity` of 0 now plays at 1, and one over 127 at 127.
 - **A fixture type's `strobe_curve` survives the web UI's form save**: saving a `.light` fixture
   type from the Fixtures page's channel form rewrote its file without its `strobe_curve:` line, so
   a type set to `strobe_curve: linear` went back to automatic. The listing now carries the curve,

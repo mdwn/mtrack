@@ -144,9 +144,12 @@ inputs:
 
 ## Velocity Curves
 
-- **`linear`**: `velocity = peak * 127` (clamped to 0–127)
+- **`linear`**: `velocity = peak * 127`
 - **`logarithmic`**: Maps the threshold–1.0 range logarithmically to 1–127, giving more sensitivity at lower amplitudes
 - **`fixed`**: Always uses the configured `fixed_velocity` value regardless of amplitude
+
+Whatever the curve, the velocity is held to 1–127: a hit above the threshold always plays, however
+quiet.
 
 ## Release Groups and Choke
 
