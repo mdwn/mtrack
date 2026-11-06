@@ -400,8 +400,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
   time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
   now refuses more than 64 times (`at most 64 times per request`) and a time past a week
-  (`time out of range`). The web UI's preview now checks the song before these bounds, so 65
-  times for an unknown song answers 404 `unknown song` rather than 400.
+  (`time out of range`). The web UI's preview now checks the song, and that it has lighting,
+  before these bounds: 65 times for an unknown song answers 404 `unable to find song <name>`
+  rather than 400, and for a song with no lighting `song `<name>` has no lighting loaded` rather
+  than `at most 64 times per request`.
+- **A per-section notification sound that does not load is logged like the others**: a section
+  override (`notifications.sections.<name>`, global or per song) that failed to load was logged
+  as `Failed to load section notification override` (or `Failed to load song section
+  notification override`) with a `section` field; it is now logged as `Failed to load
+  notification audio override` with `key=section:<name>`, as the event overrides are.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.
