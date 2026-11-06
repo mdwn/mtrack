@@ -102,8 +102,10 @@ A project's fixture types are read from `lighting/fixture_types/` and its venues
 `lighting/library/` is a fixture type too. These are the defaults: a new project needs no
 `directories` setting, and the web UI's Lighting area saves to the same places. `directories`
 moves them — `fixture_types`, `venues`, or both; one you do not name stays at its default. A
-default directory that does not exist is simply empty. The engine, the web UI, MCP and the
-`import-gdtf`, `import-mvr` and `export-mvr` commands all read and write the same directories.
+default directory that does not exist is simply empty. The engine, the web UI and MCP all read
+and write the same directories. The `import-gdtf`, `import-mvr` and `export-mvr` commands do not
+read `directories`: they use the defaults unless given `--fixture-types-dir` (and, for the MVR
+commands, `--venues-dir`).
 Every file in those directories is loaded, so keep unrelated files out of them.
 
 ## Fixture Type Definitions (`lighting/fixture_types/`)

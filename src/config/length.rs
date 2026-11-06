@@ -34,7 +34,7 @@ pub enum DurationUnit {
 /// Each unit as a length spells it after a number, and after a count of
 /// one: the one table, read both ways, by the config's lengths and the
 /// light show DSL's (`lighting::parser::utils`).
-const UNITS: [(DurationUnit, &str, &str); 4] = [
+pub(crate) const UNITS: [(DurationUnit, &str, &str); 4] = [
     (DurationUnit::Ms, "ms", "ms"),
     (DurationUnit::S, "s", "s"),
     (DurationUnit::Beats, "beats", "beat"),

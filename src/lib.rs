@@ -21,6 +21,8 @@ pub mod config;
 pub mod controller;
 pub mod device_info;
 pub mod dmx;
+#[cfg(test)]
+mod docs_tests;
 pub mod lighting;
 pub mod midi;
 pub mod notification;

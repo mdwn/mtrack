@@ -564,11 +564,14 @@ fn parse_fixture_content(
                     .find(|p| p.as_rule() == Rule::strobe_curve_value)
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
-                *strobe_curve = Some(match value.as_str() {
-                    "linear" => StrobeCurve::Linear,
-                    "declared" => StrobeCurve::Declared,
-                    _ => StrobeCurve::Period,
-                });
+                // The grammar admits each curve's keyword alone.
+                *strobe_curve = Some(
+                    <StrobeCurve as strum::VariantArray>::VARIANTS
+                        .iter()
+                        .copied()
+                        .find(|curve| curve.keyword() == value)
+                        .unwrap_or_default(),
+                );
             }
             Rule::max_strobe_frequency => {
                 for inner in content_pair.into_inner() {

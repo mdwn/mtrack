@@ -489,7 +489,8 @@ output fixes](../images/lighting-fit.png)
   out.
 - **Fixes** starts with a **suggestion** for the selected group: the fixtures that can do what
   the shows ask of it (a `move` needs pan or tilt, a colour cue colour channels, a `strobe` a
-  strobe channel, `per: cell` cells), grouped by fixture type and, when the venue places them,
+  strobe channel or a dimmer or colour channels to flash, a `dimmer` or `pulse` a dimmer or
+  colour channels, `per: cell` cells), grouped by fixture type and, when the venue places them,
   by where they hang (deck, low rig or truss; downstage, midstage or upstage). The largest set is
   the suggestion, with the reason in words; if nothing fits it says which need nothing meets.
   **Apply** adds the group's tags to those fixtures in the venue file, keeping positions,
