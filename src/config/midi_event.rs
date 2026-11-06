@@ -114,3 +114,81 @@ pub struct PitchBend {
     /// The pitchbend event.
     pub(super) bend: u16,
 }
+
+/// What a config's MIDI events may hold: one of each kind, every field at
+/// its lowest. The web UI's event editor offers what this says, so a new
+/// kind reaches it.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(into_wasm_abi))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct MidiEventShapes {
+    pub kinds: Vec<MidiEvent>,
+}
+
+impl MidiEventShapes {
+    pub fn new() -> Self {
+        let kinds: Vec<MidiEvent> = (0..).map_while(MidiEvent::kind_at).collect();
+        MidiEventShapes { kinds }
+    }
+}
+
+impl Default for MidiEventShapes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MidiEvent {
+    /// The kind at `index` in declaration order, its fields at their
+    /// lowest; `None` past the last. The match below names every kind, so
+    /// adding one does not compile until it is listed here too.
+    fn kind_at(index: usize) -> Option<MidiEvent> {
+        let kind = match index {
+            0 => MidiEvent::NoteOff(NoteOff {
+                channel: 1,
+                key: 0,
+                velocity: 0,
+            }),
+            1 => MidiEvent::NoteOn(NoteOn {
+                channel: 1,
+                key: 0,
+                velocity: 0,
+            }),
+            2 => MidiEvent::Aftertouch(Aftertouch {
+                channel: 1,
+                key: 0,
+                velocity: 0,
+            }),
+            3 => MidiEvent::ControlChange(ControlChange {
+                channel: 1,
+                controller: 0,
+                value: 0,
+            }),
+            4 => MidiEvent::ProgramChange(ProgramChange {
+                channel: 1,
+                program: 0,
+            }),
+            5 => MidiEvent::ChannelAftertouch(ChannelAftertouch {
+                channel: 1,
+                velocity: 0,
+            }),
+            6 => MidiEvent::PitchBend(PitchBend {
+                channel: 1,
+                bend: 0,
+            }),
+            _ => return None,
+        };
+        // Exhaustive: a kind missing above fails to compile here.
+        let listed = match &kind {
+            MidiEvent::NoteOff(_) => 0,
+            MidiEvent::NoteOn(_) => 1,
+            MidiEvent::Aftertouch(_) => 2,
+            MidiEvent::ControlChange(_) => 3,
+            MidiEvent::ProgramChange(_) => 4,
+            MidiEvent::ChannelAftertouch(_) => 5,
+            MidiEvent::PitchBend(_) => 6,
+        };
+        debug_assert_eq!(listed, index);
+        Some(kind)
+    }
+}

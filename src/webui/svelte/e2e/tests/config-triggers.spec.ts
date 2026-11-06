@@ -43,7 +43,7 @@ test.describe("Profile Editor - Triggers Section", () => {
     await expect(page.locator(".input-card.midi")).toBeVisible();
     // Should show MIDI-specific fields
     await expect(page.locator('[id^="trigger-midi-type-"]')).toBeVisible();
-    await expect(page.locator('[id^="trigger-midi-ch-"]')).toBeVisible();
+    await expect(page.locator('[id^="trigger-midi-channel-"]')).toBeVisible();
   });
 
   test("a control change trigger saves its controller and value, not a key", async ({
@@ -53,8 +53,8 @@ test.describe("Profile Editor - Triggers Section", () => {
     await page
       .locator('[id^="trigger-midi-type-"]')
       .selectOption("control_change");
-    await page.locator('[id^="trigger-midi-key-"]').fill("5");
-    await page.locator('[id^="trigger-midi-key-"]').blur();
+    await page.locator('[id^="trigger-midi-controller-"]').fill("5");
+    await page.locator('[id^="trigger-midi-controller-"]').blur();
     await page.locator('[id^="trigger-midi-value-"]').fill("64");
     await page.locator('[id^="trigger-midi-value-"]').blur();
 
@@ -140,5 +140,45 @@ test.describe("Profile Editor - Triggers Section", () => {
 
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator(".cal-wizard")).not.toBeVisible();
+  });
+});
+
+test("a program change trigger keeps its kind when its channel is edited", async ({
+  page,
+}) => {
+  await page.route("**/api/config/store", (route) =>
+    route.fulfill({
+      json: {
+        yaml: `profiles:
+  - hostname: test-host
+    trigger:
+      inputs:
+        - kind: midi
+          event: { type: program_change, channel: 3, program: 7 }
+          sample: kick
+samples: {}
+`,
+        checksum: "abc123def456",
+      },
+    }),
+  );
+  await page.goto("/#/config");
+  await page.locator(".profile-row", { hasText: "test-host" }).click();
+  await page.locator(".tab", { hasText: "Triggers" }).click();
+
+  await expect(page.locator('[id^="trigger-midi-type-"]')).toHaveValue(
+    "program_change",
+  );
+  await page.locator('[id^="trigger-midi-channel-"]').fill("4");
+  await page.locator('[id^="trigger-midi-channel-"]').blur();
+
+  const saved = page.waitForRequest(
+    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+    type: "program_change",
+    channel: 4,
+    program: 7,
   });
 });

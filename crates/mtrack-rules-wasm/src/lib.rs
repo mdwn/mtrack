@@ -978,6 +978,13 @@ pub fn tempo_defaults() -> wire_messages::PlaybackTempo {
     }
 }
 
+/// The MIDI events a config can name, and each field's range: what the
+/// trigger editor offers and bounds its inputs by.
+#[wasm_bindgen]
+pub fn midi_event_shapes() -> config::MidiEventShapes {
+    config::MidiEventShapes::new()
+}
+
 // ── Metronome ───────────────────────────────────────────────────────────────
 
 /// Per-beat accent levels: 0 silent, 1 normal, 2 half, 3 accent.

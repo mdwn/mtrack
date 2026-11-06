@@ -60,6 +60,7 @@ pub use audio::StreamBufferSize;
 pub use controller::MidiController;
 use duration::{parse_duration_string, parse_playback_delay};
 pub use fade::{FadeCurve, FadeStatus};
+pub use midi_event::MidiEventShapes;
 pub use playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
 pub use section::Section;
 
