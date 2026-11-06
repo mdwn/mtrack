@@ -338,6 +338,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A status that could not read ambient light says so on every surface**: when the status's
+  read of the DMX engine timed out or failed, MCP `status` gave the ambient light as
+  `{"available": false, "reason": ...}`, but gRPC `Status` and the web UI's playback message left
+  it out, as though there were no DMX engine. gRPC's `AmbientStatus` now carries
+  `available: false` and `reason` (new fields 5 and 6; mode and state are then empty), and the
+  web UI's playback message carries `{"available": false, "reason": ...}`, shown on the
+  dashboard as "Ambient light: no reading".
 - **`mtrack verify --check` refuses a category it does not know**: `mtrack verify mtrack.yaml
   --check track_mappings` (a typo) ran no checks and exited 0. It now fails with clap's error
   listing the categories (`track-mappings`).

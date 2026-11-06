@@ -3660,19 +3660,7 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
 /// engine, as the player's status read it (bounded on the blocking pool:
 /// the effects loop holds the ambient lock while it starts the show).
 fn ambient_json(ambient: Option<&crate::player::DmxRead<crate::player::AmbientStatus>>) -> Value {
-    match ambient {
-        None => Value::Null,
-        Some(crate::player::DmxRead::Read(ambient)) => json!({
-            "mode": ambient.report.mode.as_str(),
-            "source": ambient.source.map(|s| s.as_str()),
-            "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
-            "state": ambient.report.state,
-        }),
-        Some(_) => json!({
-            "available": false,
-            "reason": "could not read the ambient light's state",
-        }),
-    }
+    json!(ambient.map(crate::player::DmxRead::view))
 }
 
 /// What breaking the current song's loop would do, by the playlist's

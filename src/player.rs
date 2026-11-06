@@ -25,7 +25,9 @@ pub use hardware_status::{
     SubsystemStatus, TestOutputStatus,
 };
 pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
-pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
+pub use status::{
+    AmbientStatus, DmxRead, LightingStatus, PlayerStatus, AMBIENT_UNREAD, STATUS_DMX_READ_TIMEOUT,
+};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;

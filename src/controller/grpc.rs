@@ -215,19 +215,29 @@ fn position_arg(position: Option<prost_types::Duration>) -> Result<std::time::Du
 }
 
 /// Ambient light's mode and state, as the player's status read it: absent
-/// without a DMX engine, or with a read that did not answer in time.
+/// without a DMX engine; `available: false` with a read that did not answer.
 fn ambient_to_proto(
     ambient: Option<crate::player::DmxRead<crate::player::AmbientStatus>>,
 ) -> Option<AmbientStatus> {
-    match ambient? {
-        crate::player::DmxRead::Read(ambient) => Some(AmbientStatus {
-            mode: ambient.report.mode.as_str().to_string(),
-            state: ambient.report.state.to_string(),
-            show: ambient.report.show.map(|show| show.display().to_string()),
+    use crate::webui::wire::messages::AmbientState;
+    Some(match ambient?.view() {
+        AmbientState::Read(ambient) => AmbientStatus {
+            mode: ambient.mode.as_str().to_string(),
+            state: ambient.state,
+            show: ambient.show,
             source: ambient.source.map(|source| source.as_str().to_string()),
-        }),
-        _ => None,
-    }
+            available: None,
+            reason: None,
+        },
+        AmbientState::Unread(unread) => AmbientStatus {
+            mode: String::new(),
+            state: String::new(),
+            show: None,
+            source: None,
+            available: Some(unread.available),
+            reason: Some(unread.reason),
+        },
+    })
 }
 
 /// A fault as a gRPC status: the one table from [`FaultKind`] to a code.
