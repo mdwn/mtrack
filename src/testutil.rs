@@ -14,6 +14,7 @@
 
 mod audio;
 mod examples;
+pub mod markdown;
 mod polling;
 
 pub use audio::{audio_test_utils, write_wav, write_wav_with_bits};

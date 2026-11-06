@@ -533,7 +533,7 @@ controllers:
 | `dmx.ola_port` | integer | `9010` | no |
 | `dmx.ola_http_port` | integer | `9090` | no |
 | `dmx.null_client` | bool | `false` | no |
-| `dmx.universes` | list of `{ universe, name }` | `[]` | no |
+| `dmx.universes` | list of `{ universe, name }` | — | yes, when `dmx` is present (may be `[]`) |
 | `dmx.lighting` | lighting system | — | no; see [Lighting Configuration](../lighting/configuration.md) |
 | `trigger` | trigger inputs | — | no; see [Trigger Configuration](triggers.md) |
 | `controllers` | list | `[]` | no |
