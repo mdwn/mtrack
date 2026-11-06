@@ -82,32 +82,73 @@ pub fn is_level_channel(name: &str) -> bool {
     fades_to_dark(base)
 }
 
-/// Whether a fixture whose channels hold `values` is lit: the light it
-/// emits is above 0 -- its brightest emitter (red, green, blue, white,
-/// amber, UV, …) times its dimmer, where it has each. A fixture with a
-/// dimmer and no emitter of its own follows its dimmer; one with emitters
-/// and no dimmer follows them. Nothing else lights it: a strobe, a colour
-/// wheel, where it points, an optic or a colour temperature. A ganged
-/// fixture's mirrors and a pixel fixture's cells (`#n`) count as its own
-/// channels. The rig is dark when no fixture is lit.
-pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
-    let (mut dimmer, mut emitted) = (None::<f64>, None::<f64>);
-    for (name, value) in values {
-        if !is_level_channel(name) {
-            continue;
+/// A channel's full value: what a DMX channel reaches.
+const FULL: f64 = 255.0;
+
+/// What one fixture emits, read off its level channels: its dimmer, its
+/// brightest additive emitter, and its subtractive flags (cyan, magenta,
+/// yellow), which filter its white.
+#[derive(Default)]
+struct Light {
+    dimmer: Option<f64>,
+    emitted: Option<f64>,
+    /// Each flag's value; one the fixture lacks stays open.
+    flags: Option<[f64; 3]>,
+}
+
+impl Light {
+    /// Takes in a level channel's value, by its base name.
+    fn add(&mut self, base: &str, value: f64) {
+        let max = |level: &mut Option<f64>| *level = Some(level.map_or(value, |l| l.max(value)));
+        let flag =
+            |i: usize, flags: &mut Option<[f64; 3]>| flags.get_or_insert([0.0; 3])[i] = value;
+        match base {
+            "dimmer" => max(&mut self.dimmer),
+            "cyan" => flag(0, &mut self.flags),
+            "magenta" => flag(1, &mut self.flags),
+            "yellow" => flag(2, &mut self.flags),
+            // A colour temperature is a setting, not light.
+            "ct" | "cto" | "ctb" | "color_temp" => {}
+            _ => max(&mut self.emitted),
         }
-        let base = base_channel(name.split('#').next().unwrap_or(name));
-        let level = match base {
-            "dimmer" => &mut dimmer,
-            "ct" | "cto" | "ctb" | "color_temp" => continue,
-            _ => &mut emitted,
+    }
+
+    /// The light it emits above 0: its brightest emitter -- the white its
+    /// flags pass counting as one, all of it while any flag is open and
+    /// none with all three closed -- times its dimmer, where it has each;
+    /// with neither emitter nor dimmer, none.
+    fn is_lit(&self) -> bool {
+        let passed = self
+            .flags
+            .map(|f| FULL - f.into_iter().fold(FULL, f64::min));
+        let emitted = match (self.emitted, passed) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
         };
-        *level = Some(level.map_or(value, |l: f64| l.max(value)));
+        match (self.dimmer, emitted) {
+            (None, None) => false,
+            (dimmer, emitted) => dimmer.unwrap_or(FULL) * emitted.unwrap_or(FULL) > 0.0,
+        }
     }
-    match (dimmer, emitted) {
-        (None, None) => false,
-        (dimmer, emitted) => dimmer.unwrap_or(1.0) * emitted.unwrap_or(1.0) > 0.0,
+}
+
+/// Whether a fixture whose channels hold `values` (DMX values, 0 to 255)
+/// is lit: the light it emits is above 0 -- its brightest emitter (red,
+/// green, blue, white, amber, UV, …, or the white its cyan, magenta and
+/// yellow flags pass) times its dimmer, where it has each. A fixture with
+/// a dimmer and no emitter of its own follows its dimmer; one with
+/// emitters and no dimmer follows them. Nothing else lights it: a strobe,
+/// a colour wheel, where it points, an optic or a colour temperature. A
+/// ganged fixture's mirrors and a pixel fixture's cells (`#n`) count as its
+/// own channels. The rig is dark when no fixture is lit.
+pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
+    let mut light = Light::default();
+    for (name, value) in values {
+        if is_level_channel(name) {
+            light.add(base_channel(name.split('#').next().unwrap_or(name)), value);
+        }
     }
+    light.is_lit()
 }
 
 #[cfg(test)]
@@ -138,6 +179,32 @@ mod tests {
         assert!(lit(&[("white", 3.0)]));
         // A ganged mirror's or a cell's level is the fixture's.
         assert!(lit(&[("red#2", 9.0), ("dimmer", 255.0)]));
+    }
+
+    /// Cyan, magenta and yellow are flags filtering white: open passes it,
+    /// all three closed pass none.
+    #[test]
+    fn subtractive_flags_filter_white() {
+        let cmy = |c, m, y| {
+            [
+                ("cyan", c),
+                ("magenta", m),
+                ("yellow", y),
+                ("dimmer", 255.0),
+            ]
+        };
+        assert!(lit(&cmy(0.0, 0.0, 0.0)));
+        assert!(lit(&cmy(255.0, 0.0, 0.0)));
+        assert!(!lit(&cmy(255.0, 255.0, 255.0)));
+        // Under a closed dimmer, nothing passes.
+        assert!(!lit(&[("cyan", 0.0), ("dimmer", 0.0)]));
+        // With emitters of its own too, the brighter of the two.
+        let mut closed_with_red = cmy(255.0, 255.0, 255.0).to_vec();
+        closed_with_red.push(("red", 10.0));
+        assert!(lit(&closed_with_red));
+        let mut closed_dark_red = cmy(255.0, 255.0, 255.0).to_vec();
+        closed_dark_red.push(("red", 0.0));
+        assert!(!lit(&closed_dark_red));
     }
 
     #[test]
