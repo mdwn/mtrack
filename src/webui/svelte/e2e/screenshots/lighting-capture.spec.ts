@@ -28,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { FIT, STATUS } from "../mock-server/test-data";
+import type { Readiness } from "../../src/gen/rules/mtrack_rules";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_IMAGES = path.resolve(
@@ -448,9 +449,10 @@ const READINESS = {
       kind: "overlap",
       message:
         "Brick 5 (universe 1, addresses 16–20) overlaps Brick 4 (13–16) at address 16.",
+      severity: "attention",
     },
   ],
-  fixture_types: { in_use: [BRICK, PAR], unresolved: [] },
+  fixture_types: { in_use: [BRICK, PAR], unresolved: [], library: [] },
   groups: [
     { name: "front_wash", fixtures: 5, songs: ["Test Song Alpha"] },
     { name: "back_wash", fixtures: 2, songs: ["Test Song Alpha"] },
@@ -528,7 +530,7 @@ const READINESS = {
       ],
     },
   ],
-};
+} satisfies Readiness;
 
 const CONFIG_YAML = `songs: songs
 profiles:

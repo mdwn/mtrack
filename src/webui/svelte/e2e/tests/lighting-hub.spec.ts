@@ -655,6 +655,25 @@ test.describe("Lighting hub", () => {
   test("it works at phone width with the checks stacked", async ({ page }) => {
     await routeReadiness(page, (r) => {
       r.groups[0].fixtures = 0;
+      verdict(
+        r,
+        "groups",
+        "attention",
+        [
+          {
+            severity: "attention",
+            what: {
+              kind: "groupEmpty",
+              group: r.groups[0].name,
+              venue: "test-venue",
+              songs: r.groups[0].songs.join(", "),
+            },
+            fix: { kind: "fit", group: r.groups[0].name },
+            song: null,
+          },
+        ],
+        [{ kind: "attention", count: 1 }],
+      );
     });
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/#/lighting");

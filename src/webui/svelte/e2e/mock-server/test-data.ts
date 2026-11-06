@@ -365,7 +365,7 @@ export const PLAYBACK_STATE = {
 /** The readiness of a rig where everything lines up, its facts and the
  *  player's verdicts on them. Specs that need a problem route their own copy
  *  of this with `page.route`; nothing mutates it. */
-export const READINESS: Readiness = {
+export const READINESS = {
   dmx: true,
   venue: {
     name: "test-venue",
@@ -428,7 +428,7 @@ export const READINESS: Readiness = {
       findings: [],
     },
   ],
-};
+} satisfies Readiness;
 
 /** The Fit shows page's facts: an imported venue with no tags, three groups
  *  (one with a suggestion and an alternative, one nothing fits, one that
