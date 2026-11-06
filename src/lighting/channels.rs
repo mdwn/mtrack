@@ -82,11 +82,70 @@ pub fn is_level_channel(name: &str) -> bool {
     fades_to_dark(base)
 }
 
-/// Whether a fixture whose channels hold `values` is lit: some level
-/// channel is above 0 (`is_level_channel`). The rig is dark when no
-/// fixture is.
+/// Whether a fixture whose channels hold `values` is lit: the light it
+/// emits is above 0 -- its brightest emitter (red, green, blue, white,
+/// amber, UV, …) times its dimmer, where it has each. A fixture with a
+/// dimmer and no emitter of its own follows its dimmer; one with emitters
+/// and no dimmer follows them. Nothing else lights it: a strobe, a colour
+/// wheel, where it points, an optic or a colour temperature. A ganged
+/// fixture's mirrors and a pixel fixture's cells (`#n`) count as its own
+/// channels. The rig is dark when no fixture is lit.
 pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
-    values
-        .into_iter()
-        .any(|(name, value)| value > 0.0 && is_level_channel(name))
+    let (mut dimmer, mut emitted) = (None::<f64>, None::<f64>);
+    for (name, value) in values {
+        if !is_level_channel(name) {
+            continue;
+        }
+        let base = base_channel(name.split('#').next().unwrap_or(name));
+        let level = match base {
+            "dimmer" => &mut dimmer,
+            "ct" | "cto" | "ctb" | "color_temp" => continue,
+            _ => &mut emitted,
+        };
+        *level = Some(level.map_or(value, |l: f64| l.max(value)));
+    }
+    match (dimmer, emitted) {
+        (None, None) => false,
+        (dimmer, emitted) => dimmer.unwrap_or(1.0) * emitted.unwrap_or(1.0) > 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_lit;
+
+    fn lit(channels: &[(&str, f64)]) -> bool {
+        is_lit(channels.iter().copied())
+    }
+
+    #[test]
+    fn a_fixture_is_lit_by_its_light_its_dimmer_times_its_brightest_emitter() {
+        assert!(!lit(&[
+            ("red", 0.0),
+            ("green", 0.0),
+            ("blue", 0.0),
+            ("dimmer", 255.0)
+        ]));
+        assert!(!lit(&[("red", 255.0), ("dimmer", 0.0)]));
+        assert!(lit(&[
+            ("red", 255.0),
+            ("green", 255.0),
+            ("blue", 255.0),
+            ("dimmer", 255.0)
+        ]));
+        assert!(lit(&[("dimmer", 5.0)]));
+        assert!(lit(&[("red", 5.0), ("dimmer", 255.0)]));
+        assert!(lit(&[("white", 3.0)]));
+        // A ganged mirror's or a cell's level is the fixture's.
+        assert!(lit(&[("red#2", 9.0), ("dimmer", 255.0)]));
+    }
+
+    #[test]
+    fn nothing_but_light_makes_a_fixture_lit() {
+        assert!(!lit(&[("strobe", 200.0)]));
+        assert!(!lit(&[("color_wheel", 30.0)]));
+        assert!(!lit(&[("pan", 128.0), ("tilt", 90.0)]));
+        assert!(!lit(&[("zoom", 128.0), ("cto", 255.0), ("dimmer", 0.0)]));
+        assert!(!lit(&[]));
+    }
 }

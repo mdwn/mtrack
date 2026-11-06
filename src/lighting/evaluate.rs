@@ -66,14 +66,15 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
-    /// `Some(true)` when every level of every fixture is at zero — the rig
-    /// is dark. `None` when there were no fixtures to evaluate, which is not
-    /// darkness but an absence of evidence: no venue is loaded, so nothing can
-    /// be said either way. `all()` over an empty set would answer `true`.
+    /// `Some(true)` when no fixture emits light (`channels::is_lit`: its
+    /// dimmer times its brightest emitter) — the rig is dark. `None` when
+    /// there were no fixtures to evaluate, which is not darkness but an
+    /// absence of evidence: no venue is loaded, so nothing can be said
+    /// either way. `all()` over an empty set would answer `true`.
     ///
-    /// Only the channels going dark takes to 0 count (`is_level_channel`):
-    /// a mover parked at centre reads 128 on pan and tilt, a zoom or focus
-    /// holds its setting, and none of that says whether it is lit.
+    /// A mover parked at centre reads 128 on pan and tilt, a zoom or focus
+    /// holds its setting, and a colour under a closed dimmer emits nothing:
+    /// none of that says the rig is lit.
     pub fn is_dark(&self) -> Option<bool> {
         if self.fixtures.is_empty() {
             return None;
@@ -1027,6 +1028,27 @@ show "T" {
             ..evaluation
         };
         assert_eq!(lit.is_dark(), Some(false));
+    }
+
+    /// A colour under a closed dimmer emits no light: the rig is dark.
+    #[test]
+    fn a_colour_under_a_closed_dimmer_is_dark() {
+        let channels: HashMap<String, u8> = [("red", 255u8), ("dimmer", 0)]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        let evaluation = Evaluation {
+            time: Duration::ZERO,
+            fixtures: vec![FixtureSnapshot {
+                strobe_hz: None,
+                name: "m".to_string(),
+                channels,
+                cells: Default::default(),
+            }],
+            active_effects: Vec::new(),
+            poses: Vec::new(),
+        };
+        assert_eq!(evaluation.is_dark(), Some(true));
     }
 
     /// An optic (zoom, focus) or a setting (a gobo) holds its value in the

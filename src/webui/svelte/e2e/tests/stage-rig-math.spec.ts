@@ -163,11 +163,17 @@ test.describe("stage rig math", () => {
     expect(dark.lit).toBe(false);
   });
 
-  test("a fixture is lit as the engine has it: any level above 0", async () => {
-    // `channels::is_lit`. The views drew a faint fixture (red 5 under a
-    // full dimmer, a 0.007 mean) as dark, by thresholds of their own.
+  test("a fixture is lit as the engine has it: by the light it emits", async () => {
+    // `channels::is_lit`: its dimmer times its brightest emitter. The views
+    // drew a faint fixture (red 5 under a full dimmer, a 0.007 mean) as
+    // dark, by thresholds of their own.
     await loadRules();
     expect(beamLook({ red: 5, green: 0, blue: 0, dimmer: 255 }).lit).toBe(true);
+    expect(beamLook({ red: 255, dimmer: 0 }).lit).toBe(false);
+    expect(beamLook({ red: 0, green: 0, blue: 0, dimmer: 255 }).lit).toBe(
+      false,
+    );
+    expect(beamLook({ dimmer: 5 }).lit).toBe(true);
     // Where a head points says nothing of whether it is lit.
     expect(beamLook({ red: 0, dimmer: 0, pan: 128 } as never).lit).toBe(false);
     // Nor is it lit in a strobe's dark half.
