@@ -1095,6 +1095,7 @@ pub(super) async fn get_fixture_types(
                             .then(|| fixture_type.footprint()),
                     ),
                     rich: fixture_type.uses_rich_channels(),
+                    strobe_curve: fixture_type.strobe_curve(),
                     fixture_type: fixture_type.clone(),
                     file: Some(shown(&declared.file)),
                     extension: Some(
@@ -1139,6 +1140,7 @@ pub(super) async fn get_fixture_types(
                     referential: true,
                     footprint: Some(None),
                     rich: false,
+                    strobe_curve: declared.strobe_curve(),
                     fixture_type: declared,
                     file: None,
                     extension: None,
@@ -1214,6 +1216,7 @@ pub(super) async fn get_fixture_type(
                     referential: true,
                     footprint: None,
                     rich: false,
+                    strobe_curve: declared.strobe_curve(),
                     fixture_type: declared,
                     file: None,
                     extension: None,
@@ -1248,6 +1251,7 @@ pub(super) async fn get_fixture_type(
                 referential: ft.source().is_some(),
                 footprint: None,
                 rich: ft.uses_rich_channels(),
+                strobe_curve: ft.strobe_curve(),
                 fixture_type: ft.clone(),
                 file: Some(crate::util::filename_display(&file_path).to_string()),
                 extension: Some(
@@ -2860,21 +2864,26 @@ fn sanitize_filename(name: &str) -> String {
 
 /// Converts a JSON fixture type definition to DSL format.
 fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
+    fixture_type_from_json(name, json).map(|fixture_type| format!("{fixture_type}\n"))
+}
+
+/// Builds the v1 fixture type a JSON save describes: its channel map, the
+/// three strobe fields and its `strobe_curve`.
+fn fixture_type_from_json(
+    name: &str,
+    json: &serde_json::Value,
+) -> Result<lighting::types::FixtureType, String> {
     let channels = json
         .get("channels")
         .and_then(|v| v.as_object())
         .ok_or("Missing 'channels' object")?;
-
-    let mut dsl = format!("fixture_type \"{name}\" {{\n");
-    dsl.push_str(&format!("  channels: {}\n", channels.len()));
-    dsl.push_str("  channel_map: {\n");
 
     let mut entries: Vec<(&String, &serde_json::Value)> = channels.iter().collect();
     entries.sort_by_key(|(_, v)| v.as_u64().unwrap_or(0));
     // The editor's own check of its rows (`venue_rows`), its first finding
     // the refusal.
     let mut rows = Vec::new();
-    for (ch_name, ch_offset) in &entries {
+    for (ch_name, ch_offset) in entries {
         let offset = ch_offset
             .as_u64()
             .ok_or(format!("Channel '{}' offset must be a number", ch_name))?;
@@ -2894,25 +2903,34 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
             }
         });
     }
-    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
-        let offset = ch_offset.as_u64().unwrap_or_default();
-        let comma = if i + 1 < entries.len() { "," } else { "" };
-        dsl.push_str(&format!("    \"{ch_name}\": {offset}{comma}\n"));
-    }
-    dsl.push_str("  }\n");
 
-    if let Some(v) = json.get("max_strobe_frequency").and_then(|v| v.as_f64()) {
-        dsl.push_str(&format!("  max_strobe_frequency: {v}\n"));
+    let strobe_dmx_offset = match json.get("strobe_dmx_offset").and_then(|v| v.as_u64()) {
+        None => None,
+        Some(v) => Some(
+            u8::try_from(v).map_err(|_| "strobe_dmx_offset must be from 0 to 255".to_string())?,
+        ),
+    };
+    let strobe_curve = match json.get("strobe_curve") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<lighting::types::StrobeCurve>(value.clone())
+                .map_err(|_| format!("Unknown strobe_curve: {value}"))?,
+        ),
+    };
+    let mut fixture_type: lighting::types::FixtureType = lighting::types::FixtureTypeV1 {
+        name: name.to_string(),
+        // Each offset in 1..=65535, by the check above.
+        channels: rows
+            .into_iter()
+            .map(|row| (row.name, row.offset.unwrap_or_default() as u16))
+            .collect(),
+        max_strobe_frequency: json.get("max_strobe_frequency").and_then(|v| v.as_f64()),
+        min_strobe_frequency: json.get("min_strobe_frequency").and_then(|v| v.as_f64()),
+        strobe_dmx_offset,
     }
-    if let Some(v) = json.get("min_strobe_frequency").and_then(|v| v.as_f64()) {
-        dsl.push_str(&format!("  min_strobe_frequency: {v}\n"));
-    }
-    if let Some(v) = json.get("strobe_dmx_offset").and_then(|v| v.as_u64()) {
-        dsl.push_str(&format!("  strobe_dmx_offset: {v}\n"));
-    }
-
-    dsl.push_str("}\n");
-    Ok(dsl)
+    .into();
+    fixture_type.set_strobe_curve(strobe_curve);
+    Ok(fixture_type)
 }
 
 /// GET /api/lighting/venues/:name/patch — the addresses each fixture of a
@@ -4121,6 +4139,50 @@ show "test" {
         let types = lighting::parser::parse_fixture_types(&dsl).unwrap();
         let ft = types.get("StrobeLight").unwrap();
         assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+    }
+
+    /// A type's `strobe_curve` survives a form save: it is written, and
+    /// reads back as it was sent.
+    #[test]
+    fn fixture_type_json_to_dsl_keeps_strobe_curve() {
+        let json = serde_json::json!({
+            "channels": {"dimmer": 1, "strobe": 2},
+            "strobe_curve": "linear"
+        });
+        let dsl = fixture_type_json_to_dsl("Flash", &json).unwrap();
+        assert!(dsl.contains("strobe_curve: linear"), "{dsl}");
+        let types = lighting::parser::parse_fixture_types(&dsl).unwrap();
+        assert_eq!(
+            types["Flash"].strobe_curve(),
+            Some(lighting::types::StrobeCurve::Linear)
+        );
+
+        let json = serde_json::json!({"channels": {"dimmer": 1}, "strobe_curve": null});
+        let dsl = fixture_type_json_to_dsl("Plain", &json).unwrap();
+        assert!(!dsl.contains("strobe_curve"), "{dsl}");
+
+        let json = serde_json::json!({"channels": {"dimmer": 1}, "strobe_curve": "wobbly"});
+        assert!(fixture_type_json_to_dsl("Bad", &json).is_err());
+    }
+
+    /// The editor's row check refuses what it did before, with its words.
+    #[test]
+    fn fixture_type_json_to_dsl_refuses_bad_rows() {
+        let json = serde_json::json!({"channels": {"red": 0}});
+        assert_eq!(
+            fixture_type_json_to_dsl("Bad", &json).unwrap_err(),
+            "Channel 'red' offset must be from 1 to 65535"
+        );
+        let json = serde_json::json!({"channels": {"": 1}});
+        assert_eq!(
+            fixture_type_json_to_dsl("Bad", &json).unwrap_err(),
+            "A channel has no name"
+        );
+        let json = serde_json::json!({"channels": {"red": "one"}});
+        assert_eq!(
+            fixture_type_json_to_dsl("Bad", &json).unwrap_err(),
+            "Channel 'red' offset must be a number"
+        );
     }
 
     #[test]

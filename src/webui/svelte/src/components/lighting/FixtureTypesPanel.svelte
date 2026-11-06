@@ -86,6 +86,8 @@
   let editFtMaxStrobe = $state<string>("");
   let editFtMinStrobe = $state<string>("");
   let editFtStrobeDmxOffset = $state<string>("");
+  // The type's `strobe_curve:`, which the form does not edit but saves back.
+  let editFtStrobeCurve = $state<FixtureTypeEntry["strobe_curve"]>(undefined);
   let isNewFt = $state(false);
   /** The channel-map form can only say what a `.light` file holds; a
    *  `.fixture` type — rich channels, or a GDTF reference — is edited as
@@ -271,6 +273,7 @@ fixture_type "Name" {
       ft.min_strobe_frequency != null ? String(ft.min_strobe_frequency) : "";
     editFtStrobeDmxOffset =
       ft.strobe_dmx_offset != null ? String(ft.strobe_dmx_offset) : "";
+    editFtStrobeCurve = entry.strobe_curve;
     markClean();
   }
 
@@ -326,6 +329,7 @@ fixture_type "Name" {
     editFtMaxStrobe = "";
     editFtMinStrobe = "";
     editFtStrobeDmxOffset = "";
+    editFtStrobeCurve = undefined;
     markClean();
   }
 
@@ -498,6 +502,7 @@ fixture_type "Name" {
           strobe_dmx_offset: editFtStrobeDmxOffset
             ? parseInt(editFtStrobeDmxOffset)
             : null,
+          strobe_curve: editFtStrobeCurve,
         },
         ftDir || undefined,
       );

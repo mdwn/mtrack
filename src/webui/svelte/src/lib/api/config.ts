@@ -586,7 +586,8 @@ export async function saveFixtureType(
         FixtureType,
         "max_strobe_frequency" | "min_strobe_frequency" | "strobe_dmx_offset"
       >
-    >,
+    > &
+    Pick<FixtureTypeEntry, "strobe_curve">,
   dir?: string,
 ): Promise<void> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";

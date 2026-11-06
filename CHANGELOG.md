@@ -338,6 +338,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A fixture type's `strobe_curve` survives the web UI's form save**: saving a `.light` fixture
+  type from the Fixtures page's channel form rewrote its file without its `strobe_curve:` line, so
+  a type set to `strobe_curve: linear` went back to automatic. The listing now carries the curve,
+  the form sends it back, and the save writes the type through the same writer as the rest of the
+  player. A `strobe_dmx_offset` past 255 is refused with "strobe_dmx_offset must be from 0 to 255"
+  (it was refused as DSL that does not parse).
 - **MCP sees venue and fixture type files in subdirectories**: the player and the web UI load
   `lighting/venues/club/main.venue`, but MCP `list_venue_files` and `list_fixture_type_files` listed
   only the directory's top level, and `read_venue` and the other venue and fixture type tools took

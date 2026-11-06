@@ -385,6 +385,23 @@ test.describe("Fixture Types Management", () => {
     expect(saveCalled).toBe(true);
   });
 
+  test("a form save sends the type's strobe curve back", async ({ page }) => {
+    // The form does not edit `strobe_curve:`; a save that left it out would
+    // drop the line from the file.
+    const requestPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/lighting/fixture-types/par") &&
+        req.method() === "PUT",
+    );
+    await card(page, "par").click();
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toMatchObject({ strobe_curve: "linear" });
+  });
+
   test("deleting a fixture from a GDTF names the venues that use it, then DELETEs", async ({
     page,
   }) => {

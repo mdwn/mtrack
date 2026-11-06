@@ -56,6 +56,10 @@ pub struct FixtureTypeEntry {
     pub footprint: Option<Option<u16>>,
     pub rich: bool,
     pub fixture_type: FixtureType,
+    /// The curve the type states (`strobe_curve:`), which the form editor
+    /// sends back with a save; absent is automatic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strobe_curve: Option<StrobeCurve>,
     /// The type's file; `null` for a GDTF in the library with no record.
     pub file: Option<String>,
     pub extension: Option<String>,

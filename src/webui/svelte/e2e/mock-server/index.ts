@@ -333,6 +333,7 @@ const FIXTURE_TYPES: Record<string, FixtureTypeEntry> = {
     extension: "light",
     referential: false,
     rich: false,
+    strobe_curve: "linear",
     dsl: 'fixture_type "par" { red: 1, green: 2, blue: 3, dimmer: 4 }',
   },
   mover: {
