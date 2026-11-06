@@ -227,11 +227,22 @@ mod tests {
         let units = UNITS.iter().flat_map(|(_, plural, one)| [*plural, *one]);
         let colors = NAMED_COLORS.iter().map(|(name, _)| *name);
         let commands = v.layer_commands.iter().map(|c| c.keyword());
-        let params = LayerCommandParam::ALL.iter().map(|(_, w)| *w);
         let per = PER_KEYWORDS.iter().map(|(_, w)| *w);
-        for word in units.chain(colors).chain(commands).chain(params).chain(per) {
+        for word in units.chain(colors).chain(commands).chain(per) {
             assert!(text.contains(&format!("`{word}`")), "{word} missing");
         }
+        // The layer commands' parameters, read off their own sentence: the
+        // words are common enough to appear elsewhere in the reference.
+        let params = text
+            .split_once("parenthesised parameters (")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(params, _)| params)
+            .expect("the layer commands' parameters");
+        let mut listed: Vec<&str> = params.split('`').skip(1).step_by(2).collect();
+        let mut want: Vec<&str> = LayerCommandParam::ALL.iter().map(|(_, w)| *w).collect();
+        listed.sort();
+        want.sort();
+        assert_eq!(listed, want, "{params}");
         // The effects that read `color`, and no other, are named as its readers.
         let readers = text
             .lines()
