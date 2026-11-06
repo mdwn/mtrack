@@ -49,7 +49,7 @@ fn test_dimmer_effect() {
 
     // Check dimmer command
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    assert_eq!(dimmer_cmd.value, 127);
+    assert_eq!(dimmer_cmd.value, 128);
 }
 
 #[test]
@@ -82,12 +82,12 @@ fn test_dimmer_effect_dim_down() {
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 255, "At start, dimmer should be at 100%");
 
-    // At midpoint (500ms), dimmer should be at 50% (127)
+    // At midpoint (500ms), dimmer should be at 50% (128)
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
     assert_eq!(commands.len(), 1);
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(
-        dimmer_cmd.value, 127,
+        dimmer_cmd.value, 128,
         "At midpoint, dimmer should be at 50%"
     );
 

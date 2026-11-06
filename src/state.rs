@@ -24,7 +24,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::effects::{coarse_byte, is_multiplier_channel, FixtureState};
+use crate::lighting::channels::dmx_byte;
+use crate::lighting::effects::{is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all non-multiplier channels at 0-255.
@@ -458,7 +459,7 @@ pub(crate) fn compute_fixture_snapshots(
                     channel_state,
                     has_dedicated_dimmer,
                 );
-                channels.insert(channel_name.clone(), coarse_byte(value));
+                channels.insert(channel_name.clone(), dmx_byte(value * 255.0));
             }
 
             FixtureSnapshot {
@@ -645,7 +646,7 @@ pub(crate) fn attach_cell_snapshots(
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
-                .map(|(name, value)| (name, coarse_byte(value)))
+                .map(|(name, value)| (name, dmx_byte(value * 255.0)))
                 .collect();
             cells.insert(cell.name.clone(), values);
         }
@@ -736,7 +737,7 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].name, "test_fixture");
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 255);
-        assert_eq!(*snapshots[0].channels.get("green").unwrap(), 127);
+        assert_eq!(*snapshots[0].channels.get("green").unwrap(), 128);
         assert_eq!(*snapshots[0].channels.get("blue").unwrap(), 0);
     }
 
@@ -764,7 +765,7 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         // Red should remain 255 (not reduced by multiplier when fixture has dedicated dimmer)
         assert_eq!(*snapshots[0].channels.get("red").unwrap(), 255);
-        assert_eq!(*snapshots[0].channels.get("dimmer").unwrap(), 127);
+        assert_eq!(*snapshots[0].channels.get("dimmer").unwrap(), 128);
     }
 
     #[test]
@@ -840,7 +841,7 @@ mod tests {
         let has_dimmer = HashMap::from([("other_fixture".to_string(), true)]);
         let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(*snapshots[0].channels.get("red").unwrap(), 127);
+        assert_eq!(*snapshots[0].channels.get("red").unwrap(), 128);
     }
 
     #[test]

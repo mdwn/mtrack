@@ -270,7 +270,7 @@ fn byte_at_physical_zero(def: &ChannelDef, parameter: PhysicalParameter) -> u8 {
     } else {
         0.5
     };
-    (f64::from(dmx_lo) + fraction * f64::from(dmx_hi - dmx_lo)).round() as u8
+    crate::lighting::channels::dmx_byte(f64::from(dmx_lo) + fraction * f64::from(dmx_hi - dmx_lo))
 }
 
 /// Emits one channel on `geometry`.

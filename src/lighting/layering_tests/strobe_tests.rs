@@ -65,12 +65,12 @@ fn test_effect_layering_with_strobe() {
     // At strobe peak (should be on)
     let commands = engine.update(Duration::from_millis(250), None).unwrap(); // 1/4 cycle
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
-    assert_eq!(strobe_cmd.value, 12); // Should be 1.0Hz / 20.0Hz * 255 = 12.75, rounded to 12
+    assert_eq!(strobe_cmd.value, 13); // Should be 1.0Hz / 20.0Hz * 255 = 12.75, rounded to 13
 
     // At strobe trough (should be off)
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 1/2 cycle
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
-    assert_eq!(strobe_cmd.value, 12); // Strobe channel value should remain at the speed, not turn off
+    assert_eq!(strobe_cmd.value, 13); // Strobe channel value should remain at the speed, not turn off
 }
 #[test]
 fn test_strobe_effect_crossfade() {

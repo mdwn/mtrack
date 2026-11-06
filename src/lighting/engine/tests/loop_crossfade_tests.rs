@@ -318,3 +318,224 @@ fn the_view_of_a_crossfade_is_what_goes_out() {
         view_matches_dmx(&mut outgoing, &mut incoming, t);
     }
 }
+
+/// A head at universe 1, address 1, with a 16-bit dimmer (1, fine 2), red
+/// 3, a 16-bit pan (4, fine 5) and a gobo 6.
+fn sixteen_bit_engine() -> EffectEngine {
+    use crate::lighting::types::ChannelDef;
+    let sixteen = |offset: u16| ChannelDef {
+        fine: Some(offset + 1),
+        ..ChannelDef::at(offset)
+    };
+    let defs = HashMap::from([
+        ("dimmer".to_string(), sixteen(1)),
+        ("red".to_string(), ChannelDef::at(3)),
+        ("pan".to_string(), sixteen(4)),
+        ("gobo".to_string(), ChannelDef::at(6)),
+    ]);
+    let channels = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    let info = FixtureInfo::new(
+        "mover".to_string(),
+        1,
+        1,
+        "Head".to_string(),
+        channels,
+        None,
+    )
+    .with_channel_defs(defs);
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(info);
+    engine
+}
+
+/// The 16-bit value at `coarse` and the channel after it.
+fn value16(commands: &[DmxCommand], coarse: u16) -> Option<u16> {
+    Some(u16::from_be_bytes([
+        value(commands, coarse)?,
+        value(commands, coarse + 1)?,
+    ]))
+}
+
+#[test]
+fn a_sixteen_bit_channel_crosses_as_one_value() {
+    let engine = sixteen_bit_engine();
+    // Pan 0x00FF to 0x0100, one count, across the fine byte's rollover.
+    let old = frame(&[(4, 0x00), (5, 0xFF), (6, 10)]);
+    let new = frame(&[(4, 0x01), (5, 0x00), (6, 90)]);
+    let mut last = 0x00FF;
+    for step in 0..=1000 {
+        let t = f64::from(step) / 1000.0;
+        let pan = value16(&engine.crossfade_commands(&old, &new, t), 4).unwrap();
+        assert!(
+            (last..=0x0100).contains(&pan),
+            "pan steps back or overshoots at t {t}: {pan:#06x} after {last:#06x}"
+        );
+        last = pan;
+    }
+    let at = |t| engine.crossfade_commands(&old, &new, t);
+    assert_eq!(value16(&at(0.25), 4), Some(0x00FF));
+    assert_eq!(value16(&at(0.5), 4), Some(0x0100));
+    // A setting still switches at the midpoint.
+    assert_eq!(value(&at(0.49), 6), Some(10));
+    assert_eq!(value(&at(0.5), 6), Some(90));
+
+    // A head only one side points holds there, both bytes of it; a 16-bit
+    // dimmer only one side drives fades from full as one value.
+    let lit = frame(&[(1, 0xFF), (2, 0xFF), (4, 0x12), (5, 0x34)]);
+    let quarter = engine.crossfade_commands(&lit, &[], 0.25);
+    assert_eq!(value16(&quarter, 4), Some(0x1234));
+    assert_eq!(value16(&quarter, 1), Some(49151));
+    let quarter = engine.crossfade_commands(&[], &lit, 0.25);
+    assert_eq!(value16(&quarter, 4), Some(0x1234));
+    assert_eq!(value16(&quarter, 1), Some(16384));
+}
+
+#[test]
+fn the_dmx_of_a_crossfade_is_the_states_blend() {
+    let mut outgoing = sixteen_bit_engine();
+    // Levels exactly on the 16-bit scale, so each side's bytes are its
+    // state's.
+    let full = f64::from(u16::MAX);
+    lit(
+        &mut outgoing,
+        &[("dimmer", 1.0), ("pan", 255.0 / full), ("gobo", 0.2)],
+    );
+    let mut incoming = outgoing.sibling();
+    lit(
+        &mut incoming,
+        &[
+            ("dimmer", 25535.0 / full),
+            ("pan", 256.0 / full),
+            ("gobo", 0.6),
+        ],
+    );
+    let info = incoming.get_fixture_registry()["mover"].clone();
+    let sorted = |mut commands: Vec<DmxCommand>| {
+        commands.sort_by_key(|c| c.channel);
+        commands
+            .into_iter()
+            .map(|c| (c.channel, c.value))
+            .collect::<Vec<_>>()
+    };
+    for t in [0.0, 0.1, 0.25, 0.3, 0.6, 0.75, 0.9, 1.0] {
+        let sent =
+            incoming.crossfade_commands(outgoing.last_commands(), incoming.last_commands(), t);
+        let (states, _) = incoming.crossfade_states(&outgoing, t);
+        assert_eq!(
+            sorted(sent),
+            sorted(states["mover"].to_dmx_commands(&info)),
+            "at t {t}"
+        );
+    }
+}
+
+/// A fixture `name` at universe 1, `address`, with these channels, each
+/// 16-bit where it names a fine offset.
+fn patched(name: &str, address: u16, channels: &[(&str, u16, Option<u16>)]) -> FixtureInfo {
+    use crate::lighting::types::ChannelDef;
+    let defs: HashMap<String, ChannelDef> = channels
+        .iter()
+        .map(|&(channel, offset, fine)| {
+            (
+                channel.to_string(),
+                ChannelDef {
+                    fine,
+                    ..ChannelDef::at(offset)
+                },
+            )
+        })
+        .collect();
+    let offsets = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    FixtureInfo::new(
+        name.to_string(),
+        1,
+        address,
+        "Head".to_string(),
+        offsets,
+        None,
+    )
+    .with_channel_defs(defs)
+}
+
+/// Where patches overlap, every channel either side drives still goes
+/// out, and the frame is the same whatever order the rig's maps hold the
+/// fixtures and channels in.
+#[test]
+fn overlapping_patches_cross_the_same_every_time_and_drop_nothing() {
+    let pan16 = [("pan", 1, Some(2))];
+    let rigs: [Vec<FixtureInfo>; 3] = [
+        // An 8-bit dimmer over the pan's coarse byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("par", 1, &[("dimmer", 1, None)]),
+        ],
+        // ...and over its fine byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("par", 2, &[("dimmer", 1, None)]),
+        ],
+        // A second head's 16-bit tilt over the pan's fine byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("other", 2, &[("tilt", 1, Some(2))]),
+        ],
+    ];
+    let old = frame(&[(1, 0x00), (2, 0xFF), (3, 0x40)]);
+    let new = frame(&[(1, 0x01), (2, 0x00), (3, 0x80)]);
+    for rig in rigs {
+        let mut first: Option<Vec<Vec<(u16, u8)>>> = None;
+        for _ in 0..32 {
+            let mut engine = EffectEngine::new();
+            for fixture in &rig {
+                engine.register_fixture(fixture.clone());
+            }
+            let frames: Vec<Vec<(u16, u8)>> = [0.0, 0.25, 0.5, 0.75, 1.0]
+                .iter()
+                .map(|&t| {
+                    let mut out: Vec<(u16, u8)> = engine
+                        .crossfade_commands(&old, &new, t)
+                        .into_iter()
+                        .map(|c| (c.channel, c.value))
+                        .collect();
+                    out.sort();
+                    out
+                })
+                .collect();
+            for out in &frames {
+                let channels: Vec<u16> = out.iter().map(|&(c, _)| c).collect();
+                assert_eq!(channels, [1, 2, 3], "every channel goes out");
+            }
+            assert_eq!(frames[0], [(1, 0x00), (2, 0xFF), (3, 0x40)]);
+            assert_eq!(frames[4], [(1, 0x01), (2, 0x00), (3, 0x80)]);
+            match &first {
+                Some(first) => assert_eq!(&frames, first, "the same every time"),
+                None => first = Some(frames),
+            }
+        }
+    }
+}
+
+/// Two channels of one fixture patched over one offset (a v1 `channels:
+/// { dimmer: 1, strobe: 1 }`, which nothing refuses) cross by one rule,
+/// whatever order the fixture's maps hold them in: the fade.
+#[test]
+fn an_overlap_inside_one_fixture_crosses_the_same_every_time() {
+    let channels = HashMap::from([("dimmer".to_string(), 1), ("strobe".to_string(), 1)]);
+    let old = frame(&[(1, 0)]);
+    let new = frame(&[(1, 200)]);
+    for _ in 0..32 {
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(FixtureInfo::new(
+            "par".to_string(),
+            1,
+            1,
+            "Par".to_string(),
+            channels.clone(),
+            None,
+        ));
+        assert_eq!(
+            value(&engine.crossfade_commands(&old, &new, 0.25), 1),
+            Some(50)
+        );
+    }
+}

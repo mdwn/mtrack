@@ -1085,8 +1085,8 @@ fn test_custom_rgb_dimming() {
     let blue_cmd = final_commands.iter().find(|cmd| cmd.channel == 3).unwrap();
 
     assert_eq!(red_cmd.value, 255); // Static red returns to full
-    assert_eq!(green_cmd.value, 127); // Static green returns to 50%
-    assert_eq!(blue_cmd.value, 63); // Static blue returns to 25%
+    assert_eq!(green_cmd.value, 128); // Static green returns to 50%
+    assert_eq!(blue_cmd.value, 64); // Static blue returns to 25% (63.75, rounded)
 
     println!("✅ Custom RGB dimming test passed!");
     println!("✅ Dimmer maintains relative brightness ratios between colors");

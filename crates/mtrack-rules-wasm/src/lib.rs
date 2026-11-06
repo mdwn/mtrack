@@ -1147,6 +1147,24 @@ pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
     })
 }
 
+/// The colour a fixture with these channel values shows, red, green and
+/// blue each 0 to 1 (`channels::shown_color`: each part that lights it,
+/// by `fixture_lit`'s rule, in its emitters' colours at their levels,
+/// added, times its dimmer; black exactly where it is dark):
+/// what every stage view draws a fixture in. Black for a value that is
+/// not channels.
+#[wasm_bindgen]
+pub fn fixture_color(channels: ChannelValuesJs) -> Triple {
+    let values = read::<ChannelValues>(JsValue::from(channels))
+        .map(|ChannelValues(values)| values)
+        .unwrap_or_default();
+    Triple(lighting::channels::shown_color(
+        values
+            .iter()
+            .filter_map(|(name, value)| Some((name.as_str(), (*value)?))),
+    ))
+}
+
 /// The file name an MVR export of `venue` writes (`export_file_name`):
 /// `output` when it is one the export takes, or the venue's own when
 /// `output` is `None`; `None` for a name the export refuses.

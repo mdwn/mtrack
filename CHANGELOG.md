@@ -152,6 +152,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The TUI and the web UI show a fixture in the same colour**: the TUI drew a fixture in its raw
+  red, green and blue, so `red 255` under `dimmer 0` showed full red, a dimmer-only fixture black,
+  and a CMY fixture, a GDTF profile's sections and an amber-only fixture no colour, where the web
+  UI's stage views drew their own reading. Both now draw the player's one reading, beside its test
+  of a lit fixture: each emitter of each part that lights the fixture -- red, green, blue, white,
+  amber, lime, UV, warm and cool white, ... -- in its own colour at its level, added, times the
+  part's dimmer; a fixture mixing subtractively in the white its cyan, magenta and yellow flags
+  pass; a dimmer alone a warm white; and black exactly where nothing lights it. In the TUI, `red
+  255` under `dimmer 0` is black, a dimmer alone a warm white, white adds to the mix, a CMY fixture
+  shows the white its flags pass, a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`)
+  show their colours under their own dimmers, and amber alone shows amber. In the stage views: `cyan
+  255` under a full dimmer on a CMY fixture is cyan (was a warm white); sections and mirrors show
+  their colours under their own dimmers (they showed as a warm white at the fixture's dimmer, or
+  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black (was
+  a warm white); and an RGBA, RGBW+UV or RGB+WW fixture lit by its amber, UV or warm white shows
+  that colour (`red 0, green 0, blue 0, amber 255` is amber, was black; amber or UV alone was a warm
+  white at the dimmer).
+
+- **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to its
+  byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI DMX.
+  Both now round to the nearest by one rule, so a show's 8-bit channel may go out one count higher
+  than before: `dimmer: 50%` is 128 (was 127), `0.999` is 255 (was 254), and a colour byte or a
+  crossfade's level likewise. A `rainbow`'s colours, and a `cycle`'s hue fade, round too: hue 30 at
+  full is 255, 128, 0 (was 255, 127, 0). 16-bit channels are as they were. The fixture snapshot (the
+  web UI's stage views, the TUI, MCP `get_fixture_state`) shows the same rounded byte. A strobe rate
+  on a fixture without a step table may go out one count higher too, and the rate the player reports
+  for a strobe byte is read at the byte rather than half a byte above it; 10 Hz on a PixelBrick's
+  period curve is 249 (was 248), and 0.04 Hz on a 20 Hz unit with no strobe function is byte 1, its
+  slowest rate (was 0, off). A step table's 8-bit bytes are as they were; on a 16-bit strobe channel
+  a step table's coarse byte is now exactly the step's (a step at DMX 127 to 254 went out one
+  higher, 128 to 255). A MIDI DMX value that is not a number goes out as 0 (was 255).
+
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes
@@ -338,6 +370,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a loop
+  break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes each on
+  its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through and
+  overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same blend
+  the web UI's view of the crossfade uses. A fixture's fine bytes and mirrored sections now cross by
+  their channel's rule too -- any channel with a `fine` byte, from a GDTF profile or a fixture
+  type's own `channel "pan" @ 1 fine 2` -- rather than fading each byte: a mirrored strobe or gobo
+  switches at the midpoint (it faded); a mirrored pan or tilt holds where only one side points it
+  (it faded from or to 0); and a mover's fine byte holds where one side does not point it (it faded
+  to 0). Where two channels are patched over one DMX channel -- two fixtures', or one fixture's own
+  (`channels: { dimmer: 1, strobe: 1 }`) -- the crossfade crosses it the same way every time and
+  drops neither's byte: a 16-bit value's fine byte could go out on neither side, and the dimmer and
+  strobe above crossed 0 to 200 as 50 or as 0 a quarter of the way, by run; it fades.
+- **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
+  other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
+  mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
+  the way. Each byte now rounds to the nearest, by the engine's one interpolation, so a shared
+  byte stays put and the rest may come out one higher (black to white halfway is 128, was 127).
 - **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
   not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
   song came from; it now writes the file the song was read from, as the web UI's song editor
