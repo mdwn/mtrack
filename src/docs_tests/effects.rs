@@ -20,7 +20,7 @@ use crate::lighting::effects::{CycleTransition, NAMED_COLORS};
 use crate::lighting::parser::document::EffectKind;
 use crate::lighting::parser::edit::vocabulary;
 use crate::lighting::parser::words::{
-    effect_defaults, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS,
+    effect_defaults, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS, PER_KEYWORDS,
 };
 
 const EFFECTS_MD: &str = include_str!("../../docs/src/lighting/effects.md");
@@ -338,4 +338,23 @@ fn sorted_owned(words: &[&str]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// The `per` bullet names each keyword the parser takes, and only those:
+/// one per target, with its alias.
+#[test]
+fn the_per_values_are_the_parsers() {
+    let text = section(EFFECTS_MD, "## Common Effect Parameters");
+    let bullet = bullets(text)
+        .into_iter()
+        .find(|(names, _)| has(names, "per"))
+        .map(|(_, b)| b)
+        .expect("the per bullet");
+    // The values, up to the sentence that goes on to say what they do.
+    let listed = &bullet[..bullet.find(". ").expect("a sentence")];
+    assert_eq!(
+        values(listed),
+        sorted(PER_KEYWORDS.iter().map(|(_, w)| *w)),
+        "{listed}"
+    );
 }
