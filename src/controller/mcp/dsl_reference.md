@@ -54,7 +54,7 @@ Every effect also reads {{common_params}}.
   bare number per second or take the same forms (`speed: 1measure`,
   `frequency: 1beat`).
 - `color`: a named color ({{named_colors}}, quoted), a hex string (`#FF8800`
-  or `"#FF8800"`), or `rgb(255, 128, 0)`. Only `static` and `cycle` read it —
+  or `"#FF8800"`), or `rgb(255, 128, 0)`. Only {{color_effects}} read it —
   a `chase` or `strobe` gates whatever is beneath it, so put the color on the
   bed.
 - Levels (`dimmer`, `intensity`, `red`, `green`, `blue`, `white`,
@@ -71,7 +71,7 @@ Every effect also reads {{common_params}}.
 - `easing` (`move`): {{easings}}.
 - `layer`: {{layers}} (grandMA-inspired layers).
 - `blend_mode`: {{blend_modes}}.
-- `per`: `fixture` or `cell` — `cell` runs the effect across a pixel
+- `per`: {{per}} — `cell` (or `cells`) runs the effect across a pixel
   fixture's cells. `spread`: an angle (`360deg`) that phases a `cycle` or a
   `rainbow` across its targets.
 

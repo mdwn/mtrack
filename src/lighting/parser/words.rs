@@ -24,7 +24,9 @@ use super::writer::number;
 use super::effect_parse::{
     CHASE_DIRECTIONS, CHASE_PATTERNS, CYCLE_DIRECTIONS, DIMMER_CURVES, EASINGS,
 };
-pub(crate) use super::effect_parse::{CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS};
+pub(crate) use super::effect_parse::{
+    CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS, PER_KEYWORDS,
+};
 pub(crate) use super::types::LayerCommandParam;
 pub(crate) use super::utils::UNITS;
 

@@ -19,7 +19,8 @@ use crate::lighting::effects::NAMED_COLORS;
 use crate::lighting::parser::document::EffectKind;
 use crate::lighting::parser::edit::vocabulary;
 use crate::lighting::parser::words::{
-    effect_defaults, LayerCommandParam, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS, UNITS,
+    effect_defaults, LayerCommandParam, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS,
+    PER_KEYWORDS, UNITS,
 };
 
 /// The reference's prose, with a `{{name}}` slot for each table.
@@ -142,6 +143,21 @@ fn slot(name: &str) -> Option<String> {
         "blend_modes" => alternatives(v.blend_modes),
         "layer_commands" => listed(v.layer_commands.iter().map(|c| c.keyword())),
         "layer_command_params" => listed(LayerCommandParam::ALL.iter().map(|(_, w)| *w)),
+        "per" => listed(PER_KEYWORDS.iter().map(|(_, w)| *w)),
+        "color_effects" => {
+            let readers: Vec<&str> = v
+                .effects
+                .iter()
+                .filter(|e| e.params.contains(&"color"))
+                .map(|e| e.kind.keyword())
+                .collect();
+            let mut words = listed(readers);
+            // `a`, `b` and `c`.
+            if let Some(last) = words.rfind(", ") {
+                words.replace_range(last..last + 2, " and ");
+            }
+            words
+        }
         _ => return None,
     })
 }
@@ -211,8 +227,23 @@ mod tests {
         let colors = NAMED_COLORS.iter().map(|(name, _)| *name);
         let commands = v.layer_commands.iter().map(|c| c.keyword());
         let params = LayerCommandParam::ALL.iter().map(|(_, w)| *w);
-        for word in units.chain(colors).chain(commands).chain(params) {
+        let per = PER_KEYWORDS.iter().map(|(_, w)| *w);
+        for word in units.chain(colors).chain(commands).chain(params).chain(per) {
             assert!(text.contains(&format!("`{word}`")), "{word} missing");
+        }
+        // The effects that read `color`, and no other, are named as its readers.
+        let readers = text
+            .lines()
+            .find_map(|l| l.split_once("Only ").map(|(_, rest)| rest))
+            .and_then(|rest| rest.split_once(" read it"))
+            .map(|(readers, _)| readers)
+            .expect("the color line");
+        for effect in &v.effects {
+            assert_eq!(
+                readers.contains(&format!("`{}`", effect.kind.keyword())),
+                effect.params.contains(&"color"),
+                "{readers}"
+            );
         }
     }
 

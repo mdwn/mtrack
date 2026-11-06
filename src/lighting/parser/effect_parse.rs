@@ -109,6 +109,14 @@ pub(crate) const DIMMER_CURVES: [(DimmerCurve, &str); 5] = [
 pub(crate) const EASINGS: [(Easing, &str); 2] =
     [(Easing::Linear, "linear"), (Easing::Smooth, "smooth")];
 
+/// Each `per:` keyword, and whether it names cells (else fixtures).
+pub(crate) const PER_KEYWORDS: [(bool, &str); 4] = [
+    (false, "fixture"),
+    (false, "fixtures"),
+    (true, "cell"),
+    (true, "cells"),
+];
+
 /// Each cycle transition and its keyword (`crossfade` is `fade` by
 /// another name).
 pub(crate) const CYCLE_TRANSITIONS: [(CycleTransition, &str); 4] = [
@@ -296,16 +304,15 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                             "up_time" => up_time = Some(ctx.duration(&value)?),
                             "hold_time" => hold_time = Some(ctx.duration(&value)?),
                             "per" => {
-                                per_cell = match value.as_str() {
-                                    "cell" | "cells" => true,
-                                    "fixture" | "fixtures" => false,
-                                    other => {
-                                        return Err(format!(
-                                            "Invalid per: '{other}' (expected: fixture or cell)"
+                                per_cell = PER_KEYWORDS
+                                    .iter()
+                                    .find(|(_, k)| *k == value)
+                                    .map(|(cells, _)| *cells)
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Invalid per: '{value}' (expected: fixture or cell)"
                                         )
-                                        .into())
-                                    }
-                                };
+                                    })?;
                             }
                             "spread" => {
                                 spread = parse_degrees(&value)?;

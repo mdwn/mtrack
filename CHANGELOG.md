@@ -344,9 +344,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not, and `hold_time` stands in for it on the others), listed only the `linear` dimmer curve
   (there are five) and left `white` off `static`. Its effects table -- each effect, the
   parameters it reads and their defaults -- and every keyword list (units, named colours,
-  directions, patterns, transitions, curves, easings, layers, blend modes, layer commands) now
-  come from the parser's own tables, so they cannot drift. Its closing tip faded out with
-  `dimmer end_level: 0%`, which fades from 0% to 0%; it now writes `start_level: 100%`.
+  directions, patterns, transitions, curves, easings, layers, blend modes, layer commands,
+  `per` values, the effects that read `color`) now come from the parser's own tables, so they
+  cannot drift. Its closing tip faded out with `dimmer end_level: 0%`, which fades from 0% to
+  0%; it now writes `start_level: 100%`.
 - **Position help names every form**: the MCP `play_from`, `play_song_from`, `seek` and
   `evaluate_show` argument descriptions and the CLI's `play --from` and `seek` help now say a
   bare number of seconds (`90`) is a position too, as it always was.
