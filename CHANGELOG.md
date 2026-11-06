@@ -338,6 +338,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One error for a config section body that is not the section**: MCP `update_audio`,
+  `update_midi`, `update_dmx` and `update_controllers` and gRPC `UpdateAudio`, `UpdateMidi`,
+  `UpdateDmx` and `UpdateControllers` parse the body in one place. A body that is not the
+  section's shape (MCP `update_audio{body: 5}`) now answers `Validation error: invalid audio
+  JSON: ...` on both, where MCP said `invalid payload: ...` and gRPC said `invalid audio JSON`
+  (`invalid MIDI JSON`, `invalid DMX JSON`). JSON gRPC cannot parse at all still answers
+  `invalid audio JSON: ...` (with the section's config name: `midi`, `dmx`).
 - **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
   back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
   the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's

@@ -73,6 +73,28 @@ pub struct ConfigStore {
 /// `AudioConfig` (device settings plus this machine's routing and gains), the
 /// legacy top level holds a bare `Audio` -- so the update is carried as a value
 /// and applied by the destination rather than by the caller.
+/// A config section a surface updates whole from a JSON body, through
+/// [`ConfigStore::update_section`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigSection {
+    Audio,
+    Midi,
+    Dmx,
+    Controllers,
+}
+
+impl ConfigSection {
+    /// The section's name in the config.
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigSection::Audio => "audio",
+            ConfigSection::Midi => "midi",
+            ConfigSection::Dmx => "dmx",
+            ConfigSection::Controllers => "controllers",
+        }
+    }
+}
+
 enum SubsystemUpdate {
     Audio(Option<Audio>),
     Midi(Option<Midi>),
@@ -483,6 +505,32 @@ impl ConfigStore {
     ) -> Result<ConfigSnapshot, ConfigError> {
         self.update_subsystem(SubsystemUpdate::Dmx(dmx), checksum)
             .await
+    }
+
+    /// Updates `section` from its JSON form, as MCP and gRPC take it: `null`
+    /// removes the audio, MIDI or DMX section; the controllers are a list.
+    /// A body that is not the section's shape is a validation error.
+    pub async fn update_section(
+        &self,
+        section: ConfigSection,
+        body: serde_json::Value,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        fn parse<T: serde::de::DeserializeOwned>(
+            section: ConfigSection,
+            body: serde_json::Value,
+        ) -> Result<T, ConfigError> {
+            serde_json::from_value(body).map_err(|e| {
+                ConfigError::Validation(format!("invalid {} JSON: {e}", section.name()))
+            })
+        }
+        let update = match section {
+            ConfigSection::Audio => SubsystemUpdate::Audio(parse(section, body)?),
+            ConfigSection::Midi => SubsystemUpdate::Midi(parse(section, body)?),
+            ConfigSection::Dmx => SubsystemUpdate::Dmx(parse(section, body)?),
+            ConfigSection::Controllers => SubsystemUpdate::Controllers(parse(section, body)?),
+        };
+        self.update_subsystem(update, checksum).await
     }
 
     /// Applies a subsystem update to wherever the loader will actually read it.

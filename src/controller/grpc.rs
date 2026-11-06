@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use crate::config::store::ConfigSection;
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
@@ -167,6 +168,29 @@ impl PlayerServer {
     /// controller running whose config has not changed -- otherwise this
     /// would tear down the very transport carrying the response.
     #[allow(clippy::result_large_err)]
+    /// Saves `section` from its JSON (empty for `null`), as MCP's tools
+    /// and the store parse it, then applies it.
+    async fn update_section(
+        &self,
+        section: ConfigSection,
+        json: &str,
+        checksum: &str,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let body = if json.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(json).map_err(|e| {
+                Status::invalid_argument(format!("invalid {} JSON: {e}", section.name()))
+            })?
+        };
+        let snapshot = store
+            .update_section(section, body, checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        self.reload_and_respond(snapshot).await
+    }
+
     async fn reload_and_respond(
         &self,
         snapshot: config::store::ConfigSnapshot,
@@ -481,21 +505,13 @@ impl PlayerService for PlayerServer {
         request: Request<UpdateAudioRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         self.check_lock("UpdateAudio")?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let audio: Option<config::Audio> = if req.audio_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.audio_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid audio JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_audio(audio, &req.expected_checksum)
-            .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(
+            ConfigSection::Audio,
+            &req.audio_json,
+            &req.expected_checksum,
+        )
+        .await
     }
 
     async fn update_midi(
@@ -503,21 +519,9 @@ impl PlayerService for PlayerServer {
         request: Request<UpdateMidiRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         self.check_lock("UpdateMidi")?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let midi: Option<config::Midi> = if req.midi_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.midi_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid MIDI JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_midi(midi, &req.expected_checksum)
+        self.update_section(ConfigSection::Midi, &req.midi_json, &req.expected_checksum)
             .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
     }
 
     async fn update_dmx(
@@ -525,21 +529,9 @@ impl PlayerService for PlayerServer {
         request: Request<UpdateDmxRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         self.check_lock("UpdateDmx")?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let dmx: Option<config::Dmx> = if req.dmx_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.dmx_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid DMX JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_dmx(dmx, &req.expected_checksum)
+        self.update_section(ConfigSection::Dmx, &req.dmx_json, &req.expected_checksum)
             .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
     }
 
     async fn update_controllers(
@@ -547,15 +539,13 @@ impl PlayerService for PlayerServer {
         request: Request<UpdateControllersRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         self.check_lock("UpdateControllers")?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let controllers: Vec<config::Controller> = serde_json::from_str(&req.controllers_json)
-            .map_err(|e| Status::invalid_argument(format!("invalid controllers JSON: {}", e)))?;
-        let snapshot = store
-            .update_controllers(controllers, &req.expected_checksum)
-            .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(
+            ConfigSection::Controllers,
+            &req.controllers_json,
+            &req.expected_checksum,
+        )
+        .await
     }
 
     async fn add_profile(

@@ -61,6 +61,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
+use crate::config::store::ConfigSection;
 use crate::lighting::readiness::{group_names, VenueFacts};
 use crate::player::lock_policy::Surface;
 use crate::player::Player;
@@ -944,13 +945,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let audio: Option<crate::config::Audio> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_audio(audio, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Audio, args).await
     }
 
     #[tool(
@@ -961,13 +956,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let midi: Option<crate::config::Midi> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_midi(midi, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Midi, args).await
     }
 
     #[tool(
@@ -978,13 +967,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let dmx: Option<crate::config::Dmx> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_dmx(dmx, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Dmx, args).await
     }
 
     #[tool(
@@ -996,14 +979,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let controllers: Vec<crate::config::Controller> = serde_json::from_value(args.body)
-            .map_err(|e| McpError::invalid_params(format!("invalid controllers: {e}"), None))?;
-        let snapshot = store
-            .update_controllers(controllers, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Controllers, args).await
     }
 
     #[tool(description = "Append a new hardware profile to the `profiles` list.")]
@@ -3929,19 +3905,21 @@ impl McpServer {
     }
 }
 
-/// Parses an `Option<T>` from a JSON value, accepting `null` as `None`.
-pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
-    value: Value,
-) -> Result<Option<T>, McpError> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
-}
-
 impl McpServer {
+    /// Saves `section` from the tool's body, then applies it.
+    async fn update_section(
+        &self,
+        section: ConfigSection,
+        args: UpdateConfigArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let snapshot = self
+            .config_store()?
+            .update_section(section, args.body, &args.expected_checksum)
+            .await
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
+    }
+
     /// Applies a saved config change to the running hardware and answers
     /// with the new snapshot, as every surface's config change does. A
     /// change saved here was otherwise not applied until something else
