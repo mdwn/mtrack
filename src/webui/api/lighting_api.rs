@@ -519,7 +519,7 @@ pub(super) fn existing_fixture_type_file(
         return Some(declared.file.clone());
     }
     let stem = sanitize_filename(name);
-    ["fixture", "light"]
+    FIXTURE_TYPE_EXTENSIONS
         .iter()
         .map(|extension| dir.join(format!("{stem}.{extension}")))
         .find(|path| path.is_file())
@@ -579,7 +579,7 @@ pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTE
 /// then `.light`.
 fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
     let stem = sanitize_filename(name);
-    ["venue", "light"]
+    VENUE_EXTENSIONS
         .iter()
         .map(|extension| dir.join(format!("{stem}.{extension}")))
         .find(|path| path.is_file())

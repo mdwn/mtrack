@@ -338,6 +338,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP sees venue and fixture type files in subdirectories**: the player and the web UI load
+  `lighting/venues/club/main.venue`, but MCP `list_venue_files` and `list_fixture_type_files` listed
+  only the directory's top level, and `read_venue` and the other venue and fixture type tools took
+  only a bare file name. The lists now give every file at any depth by its path in the directory
+  (`club/main.venue`), and the read, write, patch and delete tools take that path; each segment is
+  checked as a file name was, so `..` is still refused.
 - **A `.yml` playlist is edited in place**: saving a playlist kept as `setlist.yml` from the web
   UI, or with MCP `write_playlist` / `read_playlist`, went to `setlist.yaml` (dropping the file's
   transitions and auto play in the web UI's case), and on reload `setlist.yml` won, so the edit had

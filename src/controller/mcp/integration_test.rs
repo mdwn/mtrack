@@ -1175,6 +1175,45 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         .await,
     );
     assert_eq!(read["source"].as_str(), Some(venue_dsl));
+    // A venue in a subdirectory, which the engine loads, is listed and read
+    // by its path in the directory; a path out of it is refused.
+    std::fs::create_dir_all(venues_dir.join("club")).unwrap();
+    let nested_dsl = "venue \"club_stage\" {\n}\n";
+    std::fs::write(venues_dir.join("club/main.venue"), nested_dsl).unwrap();
+    let listed =
+        tool_json(&call_tool(&client, &url, &session, 221, "list_venue_files", json!({})).await);
+    assert!(
+        listed["files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|f| f == "club/main.venue")),
+        "list_venue_files missing the nested venue: {listed}",
+    );
+    let read_nested = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            222,
+            "read_venue",
+            json!({"file": "club/main.venue"}),
+        )
+        .await,
+    );
+    assert_eq!(read_nested["source"].as_str(), Some(nested_dsl));
+    let escaping = call_tool(
+        &client,
+        &url,
+        &session,
+        223,
+        "read_venue",
+        json!({"file": "club/../../venues.venue"}),
+    )
+    .await;
+    assert!(
+        escaping.get("error").is_some() || escaping["result"]["isError"].as_bool() == Some(true),
+        "a path out of the venues directory should be refused: {escaping}",
+    );
+    std::fs::remove_dir_all(venues_dir.join("club")).unwrap();
     let bad_venue = call_tool(
         &client,
         &url,

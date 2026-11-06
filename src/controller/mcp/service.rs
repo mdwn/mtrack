@@ -435,14 +435,16 @@ pub struct WriteSongLightingArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LightingFileArgs {
-    /// Basename of a `.light` file (no path separators).
+    /// The file's path in its directory, as the list tool gives it
+    /// (`main.venue`, `club/main.venue`).
     pub file: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteLightingFileArgs {
-    /// Basename of the `.light` file to write (no path separators).
+    /// The file's path in its directory (`main.venue`, `club/main.venue`);
+    /// a subdirectory must exist already.
     pub file: String,
     /// Full `.light` DSL source. Validated before being written.
     pub source: String,
@@ -520,7 +522,8 @@ pub struct PatchSongLightingArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchLightingFileArgs {
-    /// Basename of the `.light` file under the configured directory.
+    /// The file's path in the configured directory (`main.venue`,
+    /// `club/main.venue`).
     pub file: String,
     /// Exact text to replace. Must occur in the file.
     pub old_string: String,
@@ -2250,8 +2253,8 @@ impl McpServer {
     }
 
     #[tool(description = "List the venue files (`.light` and `.venue`) in the \
-        configured venues directory. Returns the resolved directory and a list \
-        of basenames.")]
+        configured venues directory, at any depth. Returns the resolved \
+        directory and each file's path in it (`club/main.venue`).")]
     async fn list_venue_files(&self) -> Result<CallToolResult, McpError> {
         let dir = self.resolve_lighting_dir(LightingDirKind::Venues).await?;
         let entries = list_light_files(&dir, LightingDirKind::Venues).await?;
@@ -2261,7 +2264,8 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Read a venue file (`.light` or `.venue`) by basename.")]
+    #[tool(description = "Read a venue file (`.light` or `.venue`) by its path \
+        in the venues directory, as `list_venue_files` gives it.")]
     async fn read_venue(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
@@ -2296,7 +2300,7 @@ impl McpServer {
         // version before writing. Held from the check on the file's name,
         // which goes by whether the file is there.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        validate_name_to_write(&path, &args.file)?;
+        validate_lighting_name_to_write(&path)?;
         staged_write_string(&path, &args.source).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
@@ -2450,7 +2454,8 @@ impl McpServer {
     }
 
     #[tool(description = "List the fixture-type `.light` or `.fixture` files \
-        in the configured fixture types directory.")]
+        in the configured fixture types directory, at any depth, by each \
+        file's path in it (`vendor/par.fixture`).")]
     async fn list_fixture_type_files(&self) -> Result<CallToolResult, McpError> {
         let dir = self
             .resolve_lighting_dir(LightingDirKind::FixtureTypes)
@@ -2463,7 +2468,8 @@ impl McpServer {
     }
 
     #[tool(description = "Read a fixture-type `.light` or `.fixture` file by \
-        basename.")]
+        its path in the fixture types directory, as `list_fixture_type_files` \
+        gives it.")]
     async fn read_fixture_type(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
@@ -2493,7 +2499,7 @@ impl McpServer {
             .await?;
         // Held from the check on the file's name, as write_venue holds it.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        validate_name_to_write(&path, &args.file)?;
+        validate_lighting_name_to_write(&path)?;
         staged_write_string(&path, &args.source).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -3970,9 +3976,10 @@ impl McpServer {
         Ok(created.into_path_buf())
     }
 
-    /// Resolves a single `.light` filename inside a lighting subdirectory,
-    /// after validating the basename for path-traversal safety and the
-    /// `.light` extension.
+    /// Resolves a venue or fixture-type file inside its lighting directory,
+    /// named by its path relative to it (`main.venue`, `club/main.venue`),
+    /// after validating each segment for path-traversal safety and the
+    /// extension.
     pub(crate) async fn resolve_lighting_file(
         &self,
         kind: LightingDirKind,
@@ -4133,6 +4140,13 @@ pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpEr
 /// Validates `name`, already checked safe, for a write to `path`: a file not
 /// there yet is being created, and its name must also pass the rules for new
 /// names. One already there is written under its own name.
+/// [`validate_name_to_write`] for a venue or fixture-type file, named by its
+/// path in its directory: the rules for a new name hold its file name.
+fn validate_lighting_name_to_write(path: &std::path::Path) -> Result<(), McpError> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    validate_name_to_write(path, &name)
+}
+
 fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
         .map_err(safepath_err)
@@ -4214,20 +4228,31 @@ fn is_directory_layout(song: &crate::songs::Song) -> bool {
         .unwrap_or(false)
 }
 
-/// Validates that `name` is a single path segment ending in `.light`.
-/// A fixture-type or venue file name: `.light`, or the directory's typed
-/// peer extension (`.fixture` / `.venue`).
+/// Validates a fixture-type or venue file named by its path relative to its
+/// directory (`club/main.venue`, as [`list_light_files`] gives it): each
+/// segment a safe name, and one of the directory's extensions
+/// ([`LightingDirKind::extensions`]).
 pub(crate) fn validate_lighting_dir_filename(
     kind: LightingDirKind,
     name: &str,
 ) -> Result<(), McpError> {
-    crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    let typed = kind.typed_extension();
-    if !name.ends_with(".light") && !name.ends_with(&format!(".{typed}")) {
+    for segment in name.split('/') {
+        crate::webui::safe_path::SafePath::validate_name(segment).map_err(safepath_err)?;
+    }
+    let extensions = kind.extensions();
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str());
+    if !extension.is_some_and(|e| extensions.contains(&e)) {
         return Err(McpError::invalid_params(
             format!(
-                "{} filename must end with .light or .{typed}",
-                kind.field_name()
+                "{} filename must end with {}",
+                kind.field_name(),
+                extensions
+                    .iter()
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             ),
             None,
         ));
@@ -4288,11 +4313,14 @@ pub(crate) enum LightingDirKind {
 }
 
 impl LightingDirKind {
-    /// The extension of the directory's typed files, a peer of `.light`.
-    pub(crate) fn typed_extension(self) -> &'static str {
+    /// The extensions of the directory's files, as the lighting system
+    /// reads them (`project_files`).
+    pub(crate) fn extensions(self) -> &'static [&'static str] {
         match self {
-            LightingDirKind::Venues => "venue",
-            LightingDirKind::FixtureTypes => "fixture",
+            LightingDirKind::Venues => crate::lighting::project_files::VENUE_EXTENSIONS,
+            LightingDirKind::FixtureTypes => {
+                crate::lighting::project_files::FIXTURE_TYPE_EXTENSIONS
+            }
         }
     }
 
@@ -4381,32 +4409,29 @@ pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError
         })
 }
 
-/// Lists `.light` files directly under `dir` (no recursion). Subdirectories
-/// and other extensions are skipped silently.
+/// Lists the directory's files at any depth, as the lighting system reads
+/// them (`project_files::files_under`), by their paths relative to `dir`
+/// (`club/main.venue`), in path order.
 pub(crate) async fn list_light_files(
     dir: &std::path::Path,
     kind: LightingDirKind,
 ) -> Result<Vec<String>, McpError> {
-    let typed = kind.typed_extension();
-    let mut out = Vec::new();
-    let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
-        McpError::internal_error(format!("failed to list {}: {e}", dir.display()), None)
-    })?;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| McpError::internal_error(format!("read_dir entry: {e}"), None))?
-    {
-        let path = entry.path();
-        let extension = path.extension().and_then(|e| e.to_str());
-        if path.is_file() && (extension == Some("light") || extension == Some(typed)) {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                out.push(name.to_string());
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::lighting::project_files::files_under(&dir, kind.extensions())
+            .iter()
+            .filter_map(|path| path.strip_prefix(&dir).ok())
+            .map(|relative| {
+                relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))
 }
 
 /// Writes a string to `path` the same way the config store does, preserving the

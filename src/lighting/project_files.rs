@@ -29,11 +29,13 @@ use super::library::Library;
 use super::types::{FixtureType, Venue};
 
 /// Fixture type files: `.fixture` (rich channels, GDTF records) and the v1
-/// `.light`, read as peers.
-pub const FIXTURE_TYPE_EXTENSIONS: &[&str] = &["light", "fixture"];
+/// `.light`, read as peers. Where both forms of one stem could be meant, the
+/// first is preferred.
+pub const FIXTURE_TYPE_EXTENSIONS: &[&str] = &["fixture", "light"];
 
-/// Venue files: `.venue` and the v1 `.light`, read as peers.
-pub const VENUE_EXTENSIONS: &[&str] = &["light", "venue"];
+/// Venue files: `.venue` and the v1 `.light`, read as peers. Where both
+/// forms of one stem could be meant, the first is preferred.
+pub const VENUE_EXTENSIONS: &[&str] = &["venue", "light"];
 
 /// Every file under `dir`, at any depth, with one of `extensions`, in path
 /// order. A missing directory has none.

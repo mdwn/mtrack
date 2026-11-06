@@ -895,7 +895,7 @@ fn find_existing_venue(
     // venues, or text that does not parse (a file that parsed declares its
     // names, whichever rule set them aside).
     let stem = fixture_filename_stem(venue_name);
-    for extension in ["venue", "light"] {
+    for extension in crate::lighting::project_files::VENUE_EXTENSIONS {
         let path = project.join(venues_dir).join(format!("{stem}.{extension}"));
         if !path.exists() {
             continue;
