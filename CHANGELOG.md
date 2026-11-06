@@ -341,13 +341,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
   answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
   the song's `lighting:` block for the exact filename it references".
-- **One error for a config section body that is not the section**: MCP `update_audio`,
-  `update_midi`, `update_dmx` and `update_controllers` and gRPC `UpdateAudio`, `UpdateMidi`,
-  `UpdateDmx` and `UpdateControllers` parse the body in one place. A body that is not the
-  section's shape (MCP `update_audio{body: 5}`) now answers `Validation error: invalid audio
-  JSON: ...` on both, where MCP said `invalid payload: ...` and gRPC said `invalid audio JSON`
-  (`invalid MIDI JSON`, `invalid DMX JSON`). JSON gRPC cannot parse at all still answers
-  `invalid audio JSON: ...` (with the section's config name: `midi`, `dmx`).
+- **One parse and validation for a config section update, on every surface**: MCP
+  `update_audio`, `update_midi`, `update_dmx` and `update_controllers`, gRPC `UpdateAudio`,
+  `UpdateMidi`, `UpdateDmx` and `UpdateControllers`, and the web API's `PUT /api/config/audio`,
+  `/midi`, `/dmx` and `/controllers` all save through one parse and validation. What changes:
+  - A body that is not the section's shape (MCP `update_audio{body: 5}`) answers `Validation
+    error: invalid audio JSON: ...` everywhere. MCP said `invalid payload: ...`; gRPC said
+    `invalid audio JSON: ...` (`invalid MIDI JSON`, `invalid DMX JSON`, `invalid controllers
+    JSON`); the web API said `{"error": "invalid audio: ..."}`.
+  - A section that parses but does not validate (an audio block with a bad sample format, say)
+    is now refused by MCP and gRPC too, where only the web API checked; the web API now answers
+    `{"error": "Validation error: <errors joined by "; ">"}` where it answered
+    `{"errors": [...]}`.
+  - gRPC `UpdateAudio`, `UpdateMidi` and `UpdateDmx` with `*_json: "null"` now remove the
+    section, as an empty string always did; they were refused.
+  - gRPC `UpdateControllers{controllers_json: ""}` answers `Validation error: invalid
+    controllers JSON: invalid type: null, expected a sequence`, where it answered `invalid
+    controllers JSON: EOF while parsing a value`.
+  - `PUT /api/config/controllers` without a `controllers` field answers that same validation
+    error, where it answered `missing controllers field`.
+  - JSON gRPC cannot parse at all still answers `invalid <section> JSON: ...`, with the config's
+    section name (`audio`, `midi`, `dmx`, `controllers`).
 - **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
   back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
   the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's

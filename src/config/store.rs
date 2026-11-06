@@ -507,9 +507,10 @@ impl ConfigStore {
             .await
     }
 
-    /// Updates `section` from its JSON form, as MCP and gRPC take it: `null`
-    /// removes the audio, MIDI or DMX section; the controllers are a list.
-    /// A body that is not the section's shape is a validation error.
+    /// Updates `section` from its JSON form, as MCP, gRPC and the web API
+    /// take it: `null` removes the audio, MIDI or DMX section; the
+    /// controllers are a list. A body that is not the section's shape, or a
+    /// section that does not validate, is a validation error.
     pub async fn update_section(
         &self,
         section: ConfigSection,
@@ -524,10 +525,25 @@ impl ConfigStore {
                 ConfigError::Validation(format!("invalid {} JSON: {e}", section.name()))
             })
         }
+        fn valid<T>(
+            section: Option<T>,
+            validate: impl Fn(&T) -> Result<(), Vec<String>>,
+        ) -> Result<Option<T>, ConfigError> {
+            if let Some(section) = &section {
+                validate(section).map_err(|errors| ConfigError::Validation(errors.join("; ")))?;
+            }
+            Ok(section)
+        }
         let update = match section {
-            ConfigSection::Audio => SubsystemUpdate::Audio(parse(section, body)?),
-            ConfigSection::Midi => SubsystemUpdate::Midi(parse(section, body)?),
-            ConfigSection::Dmx => SubsystemUpdate::Dmx(parse(section, body)?),
+            ConfigSection::Audio => {
+                SubsystemUpdate::Audio(valid(parse(section, body)?, Audio::validate)?)
+            }
+            ConfigSection::Midi => {
+                SubsystemUpdate::Midi(valid(parse(section, body)?, Midi::validate)?)
+            }
+            ConfigSection::Dmx => {
+                SubsystemUpdate::Dmx(valid(parse(section, body)?, Dmx::validate)?)
+            }
             ConfigSection::Controllers => SubsystemUpdate::Controllers(parse(section, body)?),
         };
         self.update_subsystem(update, checksum).await
