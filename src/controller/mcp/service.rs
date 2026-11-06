@@ -3979,7 +3979,8 @@ impl McpServer {
     /// Resolves a venue or fixture-type file inside its lighting directory,
     /// named by its path relative to it (`main.venue`, `club/main.venue`),
     /// after validating each segment for path-traversal safety and the
-    /// extension.
+    /// extension, and holding the path inside the directory
+    /// (`SafePath::validate_relative`).
     pub(crate) async fn resolve_lighting_file(
         &self,
         kind: LightingDirKind,
@@ -3987,7 +3988,10 @@ impl McpServer {
     ) -> Result<std::path::PathBuf, McpError> {
         validate_lighting_dir_filename(kind, name)?;
         let dir = self.resolve_lighting_dir(kind).await?;
-        Ok(dir.join(name))
+        // Held inside the directory as the web UI holds its paths, so a
+        // linked subdirectory is no way out of it.
+        let root = crate::webui::safe_path::VerifiedRoot::new(&dir).map_err(safepath_err)?;
+        crate::webui::safe_path::SafePath::validate_relative(name, &root).map_err(safepath_err)
     }
 
     /// Rescans songs from disk and rebuilds the player's playlists. Used after

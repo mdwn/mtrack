@@ -1213,6 +1213,31 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         escaping.get("error").is_some() || escaping["result"]["isError"].as_bool() == Some(true),
         "a path out of the venues directory should be refused: {escaping}",
     );
+    // Nor is a subdirectory linked out of it, to read or to write.
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.venue"), nested_dsl).unwrap();
+        std::os::unix::fs::symlink(outside.path(), venues_dir.join("linked")).unwrap();
+        for (id, tool, args) in [
+            (224, "read_venue", json!({"file": "linked/secret.venue"})),
+            (
+                225,
+                "write_venue",
+                json!({"file": "linked/new.venue", "source": nested_dsl}),
+            ),
+            (226, "delete_venue", json!({"file": "linked/secret.venue"})),
+        ] {
+            let reply = call_tool(&client, &url, &session, id, tool, args).await;
+            assert!(
+                reply.get("error").is_some() || reply["result"]["isError"].as_bool() == Some(true),
+                "{tool} through a linked directory should be refused: {reply}",
+            );
+        }
+        assert!(outside.path().join("secret.venue").exists());
+        assert!(!outside.path().join("new.venue").exists());
+        std::fs::remove_file(venues_dir.join("linked")).unwrap();
+    }
     std::fs::remove_dir_all(venues_dir.join("club")).unwrap();
     let bad_venue = call_tool(
         &client,

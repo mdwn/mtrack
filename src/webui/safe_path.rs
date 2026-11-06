@@ -138,7 +138,8 @@ impl SafePath {
 
     /// Validates a relative path under the root without creating anything.
     /// If the full path exists, it's resolved and verified. If it doesn't exist,
-    /// each segment is checked for traversal (no "..", "\", null) and the
+    /// each segment is checked for traversal (no "..", "\", null), the nearest
+    /// existing directory above it is resolved and verified, and the
     /// constructed path is returned without filesystem modification.
     /// Use this for read-only operations where the directory may not exist.
     pub fn validate_relative(
@@ -147,10 +148,18 @@ impl SafePath {
     ) -> Result<PathBuf, SafePathError> {
         Self::validate_relative_segments(relative)?;
         let resolved = root.as_path().join(relative);
-        if resolved.exists() {
+        // A link counts as there even when what it points at is not, so a
+        // dangling one is resolved, and refused, rather than written through.
+        let is_there = |path: &Path| path.symlink_metadata().is_ok();
+        if is_there(&resolved) {
             let safe = SafePath::resolve(&resolved, root)?;
             Ok(safe.path)
         } else {
+            // The nearest directory above it that is there must resolve
+            // inside the root too: a linked subdirectory leads out of it.
+            if let Some(ancestor) = resolved.ancestors().skip(1).find(|a| is_there(a)) {
+                SafePath::resolve(ancestor, root)?;
+            }
             Ok(resolved)
         }
     }
@@ -445,6 +454,28 @@ mod tests {
         // Returns the path without creating it
         assert!(!path.exists());
         assert!(path.ends_with("does_not_exist"));
+    }
+
+    /// A subdirectory linked out of the root is no way out, for a file
+    /// there or one not there yet; nor is a dangling link.
+    #[cfg(unix)]
+    #[test]
+    fn validate_relative_refuses_a_linked_way_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("there.venue"), "").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("gone"), dir.path().join("dangling"))
+            .unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+        for relative in ["out/there.venue", "out/new.venue", "dangling"] {
+            assert!(
+                SafePath::validate_relative(relative, &root).is_err(),
+                "{relative}"
+            );
+        }
+        std::fs::create_dir(dir.path().join("in")).unwrap();
+        assert!(SafePath::validate_relative("in/new.venue", &root).is_ok());
     }
 
     #[test]
