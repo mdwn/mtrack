@@ -85,45 +85,62 @@ pub fn is_level_channel(name: &str) -> bool {
 /// A channel's full value: what a DMX channel reaches.
 const FULL: f64 = 255.0;
 
-/// What one fixture emits, read off its level channels: its dimmer, its
-/// brightest additive emitter, and its subtractive flags (cyan, magenta,
-/// yellow), which filter its white.
+/// Each additive primary and the subtractive channel that removes it.
+pub const CMY_OF_RGB: [(&str, &str); 3] =
+    [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
+
+/// Whether a fixture mixes colour subtractively: cyan, magenta and yellow
+/// channels and no red, green and blue of its own (`has` says which
+/// channels it has). Its cyan, magenta and yellow are then flags filtering
+/// its white; otherwise they are emitters like any other colour.
+pub fn mixes_subtractively(has: impl Fn(&str) -> bool) -> bool {
+    CMY_OF_RGB.iter().all(|(_, cmy)| has(cmy)) && !CMY_OF_RGB.iter().any(|(rgb, _)| has(rgb))
+}
+
+/// What one part of a fixture emits, read off its level channels: each
+/// level by its attribute (`red`, `dimmer`), the brightest of the coarse
+/// and fine bytes and of any mirrors.
 #[derive(Default)]
 struct Light {
-    dimmer: Option<f64>,
-    emitted: Option<f64>,
-    /// Each flag's value; one the fixture lacks stays open.
-    flags: Option<[f64; 3]>,
+    levels: std::collections::BTreeMap<String, f64>,
 }
 
 impl Light {
-    /// Takes in a level channel's value, by its base name.
+    /// Takes in a level channel's value, by its attribute.
     fn add(&mut self, base: &str, value: f64) {
-        let max = |level: &mut Option<f64>| *level = Some(level.map_or(value, |l| l.max(value)));
-        let flag =
-            |i: usize, flags: &mut Option<[f64; 3]>| flags.get_or_insert([0.0; 3])[i] = value;
-        match base {
-            "dimmer" => max(&mut self.dimmer),
-            "cyan" => flag(0, &mut self.flags),
-            "magenta" => flag(1, &mut self.flags),
-            "yellow" => flag(2, &mut self.flags),
-            // A colour temperature is a setting, not light.
-            "ct" | "cto" | "ctb" | "color_temp" => {}
-            _ => max(&mut self.emitted),
-        }
+        let level = self.levels.entry(base.to_string()).or_insert(value);
+        *level = level.max(value);
     }
 
-    /// Its brightest emitter -- the white its flags pass counting as one,
-    /// all of it while any flag is open and none with all three closed --
-    /// or `None` when it has no emitter.
+    fn dimmer(&self) -> Option<f64> {
+        self.levels.get("dimmer").copied()
+    }
+
+    /// Its brightest emitter -- for a fixture mixing subtractively, the
+    /// white its flags pass counting as one: all of it while any flag is
+    /// open, none with all three closed -- or `None` when it has no
+    /// emitter. A colour temperature is a setting, not light.
     fn emitted(&self) -> Option<f64> {
-        let passed = self
-            .flags
-            .map(|f| FULL - f.into_iter().fold(FULL, f64::min));
-        match (self.emitted, passed) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        }
+        let subtractive = mixes_subtractively(|c| self.levels.contains_key(c));
+        let flag = |name: &str| subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| *cmy == name);
+        let passed = subtractive.then(|| {
+            FULL - CMY_OF_RGB
+                .iter()
+                .map(|(_, cmy)| self.levels[*cmy])
+                .fold(FULL, f64::min)
+        });
+        self.levels
+            .iter()
+            .filter(|(name, _)| {
+                !flag(name)
+                    && !matches!(
+                        name.as_str(),
+                        "dimmer" | "ct" | "cto" | "ctb" | "color_temp"
+                    )
+            })
+            .map(|(_, &level)| level)
+            .chain(passed)
+            .reduce(f64::max)
     }
 }
 
@@ -131,8 +148,8 @@ impl Light {
 /// is lit: the light it emits is above 0. A part of it -- the fixture
 /// itself, a section of a GDTF profile's (`red:2`), a cell or a ganged
 /// mirror (`red#2`) -- emits its brightest emitter (red, green, blue,
-/// white, amber, UV, …, or the white its cyan, magenta and yellow flags
-/// pass) times its dimmer, or the fixture's where it has none of its own;
+/// white, amber, UV, …, or, mixing subtractively, the white its cyan,
+/// magenta and yellow flags pass) times its dimmer, or the fixture's where it has none of its own;
 /// the fixture is lit when any part with an emitter is. A fixture with no
 /// emitter at all follows its dimmers. Nothing else lights it: a strobe,
 /// a colour wheel, where it points, an optic or a colour temperature. The
@@ -152,7 +169,7 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             .or_default()
             .add(base_channel(channel), value);
     }
-    let own_dimmer = parts.get("#").and_then(|light| light.dimmer);
+    let own_dimmer = parts.get("#").and_then(Light::dimmer);
     let emitting: Vec<(&Light, f64)> = parts
         .values()
         .filter_map(|light| Some((light, light.emitted()?)))
@@ -160,11 +177,11 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
     if emitting.is_empty() {
         return parts
             .values()
-            .any(|light| light.dimmer.is_some_and(|d| d > 0.0));
+            .any(|light| light.dimmer().is_some_and(|d| d > 0.0));
     }
     emitting
         .iter()
-        .any(|(light, emitted)| light.dimmer.or(own_dimmer).unwrap_or(FULL) * emitted > 0.0)
+        .any(|(light, emitted)| light.dimmer().or(own_dimmer).unwrap_or(FULL) * emitted > 0.0)
 }
 
 #[cfg(test)]
@@ -223,8 +240,9 @@ mod tests {
         assert!(lit(&[("dimmer:1", 0.0), ("dimmer:2", 4.0)]));
     }
 
-    /// Cyan, magenta and yellow are flags filtering white: open passes it,
-    /// all three closed pass none.
+    /// Cyan, magenta and yellow are flags filtering white on a fixture that
+    /// mixes subtractively (all three, no red, green or blue): open passes
+    /// it, all three closed pass none. Elsewhere they are emitters.
     #[test]
     fn subtractive_flags_filter_white() {
         let cmy = |c, m, y| {
@@ -240,13 +258,33 @@ mod tests {
         assert!(!lit(&cmy(255.0, 255.0, 255.0)));
         // Under a closed dimmer, nothing passes.
         assert!(!lit(&[("cyan", 0.0), ("dimmer", 0.0)]));
-        // With emitters of its own too, the brighter of the two.
-        let mut closed_with_red = cmy(255.0, 255.0, 255.0).to_vec();
-        closed_with_red.push(("red", 10.0));
-        assert!(lit(&closed_with_red));
-        let mut closed_dark_red = cmy(255.0, 255.0, 255.0).to_vec();
-        closed_dark_red.push(("red", 0.0));
-        assert!(!lit(&closed_dark_red));
+        // With an emitter of its own beside them (white), the brighter.
+        let mut closed_with_white = cmy(255.0, 255.0, 255.0).to_vec();
+        closed_with_white.push(("white", 10.0));
+        assert!(lit(&closed_with_white));
+        let mut closed_dark_white = cmy(255.0, 255.0, 255.0).to_vec();
+        closed_dark_white.push(("white", 0.0));
+        assert!(!lit(&closed_dark_white));
+    }
+
+    #[test]
+    fn cyan_magenta_and_yellow_are_emitters_unless_the_fixture_mixes_subtractively() {
+        // Cyan alone, or two of three, are emitters: lit by their own level.
+        assert!(lit(&[("cyan", 255.0), ("dimmer", 255.0)]));
+        assert!(!lit(&[("cyan", 0.0), ("dimmer", 255.0)]));
+        assert!(lit(&[
+            ("cyan", 255.0),
+            ("magenta", 255.0),
+            ("dimmer", 255.0)
+        ]));
+        // Beside red, green and blue, cyan is one more emitter.
+        assert!(!lit(&[
+            ("red", 0.0),
+            ("green", 0.0),
+            ("blue", 0.0),
+            ("cyan", 0.0),
+            ("dimmer", 255.0),
+        ]));
     }
 
     #[test]

@@ -485,18 +485,12 @@ impl FixtureProfile {
     }
 }
 
-/// Whether a fixture mixes colour subtractively: cyan, magenta and yellow
-/// channels and no red, green and blue of its own.
+/// Whether a fixture mixes colour subtractively
+/// ([`crate::lighting::channels::mixes_subtractively`]).
 pub fn has_cmy<V>(channels: &HashMap<String, V>) -> bool {
-    CMY_OF_RGB
-        .iter()
-        .all(|(_, cmy)| channels.contains_key(*cmy))
-        && !CMY_OF_RGB
-            .iter()
-            .any(|(rgb, _)| channels.contains_key(*rgb))
+    crate::lighting::channels::mixes_subtractively(|c| channels.contains_key(c))
 }
 
-/// Each additive primary and the subtractive channel that removes it.
 /// Whether a channel map has a dimmer of its own: a fixture's, or a
 /// cell's. Without one, the level is carried on the colour channels.
 pub fn has_dimmer_channel<V>(channels: &HashMap<String, V>) -> bool {
@@ -514,8 +508,7 @@ pub fn cell_name(sub_fixture: &str) -> &str {
     sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
 }
 
-pub const CMY_OF_RGB: [(&str, &str); 3] =
-    [("red", "cyan"), ("green", "magenta"), ("blue", "yellow")];
+pub use crate::lighting::channels::CMY_OF_RGB;
 
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
