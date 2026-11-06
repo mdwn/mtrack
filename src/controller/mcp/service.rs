@@ -4097,16 +4097,15 @@ fn find_song_lighting_write_path(
     Some(path)
 }
 
-/// Returns true if the song was loaded from `<dir>/song.yaml` (the
+/// Returns true if the song was loaded from `<dir>/song.yaml` or
+/// `<dir>/song.yml`, in any case (`songs::is_song_config_name`: the
 /// directory-layout convention) rather than `<dir>/<name>.yaml` (flat
 /// layout). Used by the lighting writer to decide whether
 /// `song.base_path()` names a per-song directory it can safely create
 /// children under.
 fn is_directory_layout(song: &crate::songs::Song) -> bool {
     song.config_path()
-        .and_then(|p| p.file_name())
-        .map(|n| n == "song.yaml")
-        .unwrap_or(false)
+        .is_some_and(crate::songs::is_song_config_name)
 }
 
 /// Validates a fixture-type or venue file named by its path relative to its

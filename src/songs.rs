@@ -2299,9 +2299,15 @@ pub fn is_song_config(path: &Path) -> bool {
 /// song's, to fix, not to replace with a new one or a song below it), or any
 /// other the loader takes as a song's config ([`is_song_config`]).
 pub fn marks_a_song_dir(path: &Path) -> bool {
-    let named_song =
-        path.file_stem().is_some_and(|stem| stem == "song") && song_yaml_extension(path);
-    path.is_file() && (named_song || is_song_config(path))
+    path.is_file() && (is_song_config_name(path) || is_song_config(path))
+}
+
+/// Whether `path` is named as a song directory's config: `song.yaml` or
+/// `song.yml`, the extension in any case (`song.YML`). What the song files
+/// listing hides, what MCP takes for the directory layout, and what marks a
+/// song directory whether or not it reads ([`marks_a_song_dir`]).
+pub fn is_song_config_name(path: &Path) -> bool {
+    path.file_stem().is_some_and(|stem| stem == "song") && song_yaml_extension(path)
 }
 
 /// Whether the directory `dir` holds a file that makes it a song's
@@ -4321,6 +4327,16 @@ sections:
             "name: Foo\ntracks: [\n"
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_song_config_is_named_song_in_any_case() {
+        for name in ["song.yaml", "song.yml", "song.YML", "song.Yaml"] {
+            assert!(super::is_song_config_name(Path::new(name)), "{name}");
+        }
+        for name in ["Song.yaml", "songs.yaml", "song.json", "album.yaml"] {
+            assert!(!super::is_song_config_name(Path::new(name)), "{name}");
+        }
     }
 
     /// Of `song.yaml` and a stale `song.YML` beside it, one song is loaded,

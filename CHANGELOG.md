@@ -346,7 +346,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one read, as when it was the only one, then `.yaml` before `.yml`; a song directory loads
   one config per name. Profiles take the same rule as playlists: `profiles/pi.YAML` is loaded,
   listed, read, saved in place and deleted, where the config and the web UI's profile list passed
-  it over. `mtrack start
+  it over. A song's `song.YML` is hidden from its file list as `song.yml` was, and MCP takes a
+  song loaded from `song.yml` or `song.YAML` as one in its own directory, as it took `song.yaml`:
+  `write_song_lighting` refused it a new lighting file as "in flat layout". `mtrack start
   ./Live.YAML` / `mtrack migrate ./Live.YAML` take it as the config file rather than a directory.
   GDTF archives (`.GDTF`), MVR files (`.MVR`, also as an export name) and their `.GLB` meshes
   were already matched in any case, and still are.

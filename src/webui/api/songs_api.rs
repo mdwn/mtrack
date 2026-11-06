@@ -531,7 +531,7 @@ pub(super) async fn get_song_files(
                 None => continue,
             };
             // Skip song config files
-            if filename == "song.yaml" || filename == "song.yml" {
+            if crate::songs::is_song_config_name(&path) {
                 continue;
             }
             files.push(SongFile {
@@ -2277,6 +2277,13 @@ mod test {
             "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
         )
         .unwrap();
+        // A stale config in other capitals is a song config too, not a file
+        // of the song's (`songs::is_song_config_name`).
+        std::fs::write(
+            song_dir.join("song.YML"),
+            "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
 
         state.player.reload_songs().await.unwrap();
 
@@ -2296,7 +2303,7 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let files = parsed["files"].as_array().unwrap();
 
-        // Should have track1.wav, notes.mid, show.light, readme.txt (song.yaml is skipped)
+        // Should have track1.wav, notes.mid, show.light, readme.txt (the configs are skipped)
         assert_eq!(files.len(), 4);
 
         // Verify type classification
