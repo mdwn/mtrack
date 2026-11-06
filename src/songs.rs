@@ -2192,7 +2192,7 @@ pub fn is_hidden(path: &Path) -> bool {
 
 /// The song directories under `root`, in name order: each directory below
 /// it that holds an audio track, a MIDI file or a song's config, under any
-/// name ([`is_song_config`]). The walk
+/// name, or a `song.yaml` that does not read ([`marks_a_song_dir`]). The walk
 /// leaves out hidden directories and does not descend into a song
 /// directory, so a library laid out as `artist/album/song/` is found at any
 /// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
@@ -2211,7 +2211,7 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
                     subdirs.push(path);
                 }
             } else if matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi)
-                || is_song_config(&path)
+                || marks_a_song_dir(&path)
             {
                 is_song = true;
             }
@@ -2248,13 +2248,18 @@ enum SongYaml {
     Untyped,
 }
 
+/// The extensions of a YAML config file the player reads, lowercase.
+pub const YAML_EXTENSIONS: &[&str] = &["yaml", "yml"];
+
+/// Whether `path` is a YAML file to the song loader, by its extension in
+/// any case ([`YAML_EXTENSIONS`]).
+fn song_yaml_extension(path: &Path) -> bool {
+    has_extension(path, YAML_EXTENSIONS)
+}
+
 /// What the song loader makes of `path` ([`SongYaml`]).
 fn song_yaml(path: &Path) -> SongYaml {
-    let is_yaml = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext == "yaml" || ext == "yml");
-    if !is_yaml {
+    if !song_yaml_extension(path) {
         return SongYaml::NotOne;
     }
     match config::peek_kind(path) {
@@ -2276,13 +2281,24 @@ pub fn is_song_config(path: &Path) -> bool {
     }
 }
 
-/// Whether the directory `dir` holds a song's config ([`is_song_config`]),
-/// whatever the file is called (`song.yaml`, `song.yml`, `album.yaml`).
+/// Whether the file `path` makes its directory a song's: one named
+/// `song.yaml` or `song.yml` whether or not it reads (a broken config is the
+/// song's, to fix, not to replace with a new one or a song below it), or any
+/// other the loader takes as a song's config ([`is_song_config`]).
+pub fn marks_a_song_dir(path: &Path) -> bool {
+    let named_song =
+        path.file_stem().is_some_and(|stem| stem == "song") && song_yaml_extension(path);
+    path.is_file() && (named_song || is_song_config(path))
+}
+
+/// Whether the directory `dir` holds a file that makes it a song's
+/// ([`marks_a_song_dir`]), whatever the file is called (`song.yaml`,
+/// `song.yml`, `album.yaml`).
 pub fn has_song_config(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|entries| {
         entries
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .any(|path| path.is_file() && is_song_config(&path))
+            .any(|path| marks_a_song_dir(&path))
     })
 }
 
@@ -4262,6 +4278,30 @@ sections:
         assert!(!album.join("song.yaml").exists());
         assert!(!foo.join("song.yaml").exists());
         assert!(!foo.join("audio/song.yaml").exists());
+        Ok(())
+    }
+
+    /// A `song.yaml` that does not read is still the song's: init leaves it
+    /// to be fixed, and does not make a song of `Foo/audio/` below it.
+    #[test]
+    fn initialize_songs_keeps_out_of_a_song_with_a_broken_config() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for (song, config) in [("Foo", "name: Foo\ntracks: [\n"), ("Bar", "name: Bar\n")] {
+            let dir = root.join(song);
+            fs::create_dir_all(dir.join("audio"))?;
+            crate::testutil::write_wav(dir.join("audio/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+            fs::write(dir.join("song.yaml"), config)?;
+        }
+
+        let report = initialize_songs(root)?;
+        assert!(report.created.is_empty(), "{report:?}");
+        assert_eq!(report.skipped, vec![root.join("Bar"), root.join("Foo")]);
+        assert!(!root.join("Foo/audio/song.yaml").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Foo/song.yaml"))?,
+            "name: Foo\ntracks: [\n"
+        );
         Ok(())
     }
 

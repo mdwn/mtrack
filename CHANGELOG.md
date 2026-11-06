@@ -394,14 +394,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory directly under the songs path, so `mtrack songs --init .` in a project put a
   `song.yaml` into `.git/`, `lighting/`, `playlists/` and `profiles/`, and the next load listed
   `lighting` and the others as empty songs. It now takes the song directories the web UI's bulk
-  import takes: those holding audio, MIDI or a song.yaml, found at any depth (`artist/album/song/`)
-  below directories that hold none, and never inside a hidden directory. The bulk import now also
-  imports a directory that holds only MIDI files, as `songs --init` does.
+  import takes: those holding audio, MIDI, any config the player loads as a song (`song.yml`,
+  `album.yaml`), or a `song.yaml`/`song.yml` that does not read, found at any depth
+  (`artist/album/song/`) below directories that hold none, and never inside a hidden directory.
+  The bulk import now also imports a directory that holds only MIDI files, as `songs --init`
+  does.
 - **`mtrack songs --init` no longer overwrites a song's `song.yaml`**: re-running it rewrote every
   song's config from its directory's files, losing hand edits (a song with its media in
   `Foo/audio/` came out with no tracks). A directory that holds a song config the player loads,
   under any name (`song.yaml`, `Foo/song.yml`, `Album/a.yaml`), is now left as it is and listed as
-  skipped, and init does not look for songs below it (`Foo/audio/`); re-running init no longer
+  skipped, and init does not look for songs below it (`Foo/audio/`), nor below a `song.yaml` that
+  does not read (a syntax error, no `tracks:`), which is left to be fixed; re-running init no longer
   regenerates existing configs. The web UI's bulk import takes the same rule: it skipped only a
   `song.yaml`, so `Album/{a,b}.yaml` beside audio got a third config. Two song directories of one name (`SongA/stems`, `SongB/stems`)
   are each named by their path below the directory init was run on, by init and the bulk import
