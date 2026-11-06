@@ -32,12 +32,19 @@ pub const MIDI_EXTENSIONS: &[&str] = &["mid"];
 /// directory, lowercase.
 pub const LIGHTING_EXTENSIONS: &[&str] = &["light"];
 
-/// Whether `path`'s extension is one of `extensions` (lowercase), in any
-/// case.
-pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+/// `path`'s extension, lowercased: what kind of file it is, whatever the
+/// case it is written in (`Par.FIXTURE` is a `fixture`). The one answer to
+/// that question; every check of a file's kind by its extension asks it.
+pub fn extension_of(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| extensions.contains(&e.to_lowercase().as_str()))
+        .map(str::to_lowercase)
+}
+
+/// Whether `path`'s extension is one of `extensions` (lowercase), in any
+/// case ([`extension_of`]).
+pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    extension_of(path).is_some_and(|e| extensions.contains(&e.as_str()))
 }
 
 /// What a file is to the player, by its extension.
@@ -56,11 +63,7 @@ impl FileKind {
     /// The kind of the file at `path`, by its extension in any case. Never
     /// [`FileKind::Directory`]: the extension alone cannot say that.
     pub fn of(path: &Path) -> FileKind {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+        let ext = extension_of(path).unwrap_or_default();
         if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             FileKind::Audio
         } else if MIDI_EXTENSIONS.contains(&ext.as_str()) {

@@ -573,7 +573,9 @@ impl LightingSystem {
             self.referential.insert(name, fixture_type);
             return;
         }
-        if fixture_type.uses_rich_channels() && path.extension().is_some_and(|ext| ext == "light") {
+        if fixture_type.uses_rich_channels()
+            && crate::songs::extension_of(path).as_deref() == Some("light")
+        {
             // The extension is the version marker: rich channel syntax is
             // the v2 DSL and lives in .fixture files.
             warn!(
@@ -1501,6 +1503,31 @@ mod tests {
         );
         let mover = &system.fixture_types["Mover"];
         assert_eq!(mover.channel_defs()["pan"].fine, Some(2));
+    }
+
+    /// The version marker is the extension in any case: rich syntax in
+    /// `Stray.LIGHT` is refused as in `stray.light`, and `Mover.FIXTURE`
+    /// loads as a `.fixture`.
+    #[test]
+    fn the_version_marker_is_read_in_any_case() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rich =
+            "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n}\n";
+        std::fs::write(dir.path().join("Mover.FIXTURE"), rich).unwrap();
+        std::fs::write(
+            dir.path().join("Stray.LIGHT"),
+            rich.replace("\"Mover\"", "\"Stray\""),
+        )
+        .unwrap();
+        let mut system = LightingSystem::new();
+        system
+            .load_fixture_types_directory(dir.path())
+            .expect("directory loads");
+        assert!(system.fixture_types.contains_key("Mover"));
+        assert!(!system.fixture_types.contains_key("Stray"));
+        assert!(system
+            .fixture_type_problem("Stray")
+            .is_some_and(|p| p.contains(".fixture file")));
     }
 
     #[test]

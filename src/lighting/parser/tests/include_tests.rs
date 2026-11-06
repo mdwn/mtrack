@@ -271,3 +271,17 @@ fn a_symlinked_file_includes_from_its_links_folder() {
         .collect();
     assert_eq!(names, vec!["one.light", "two.light"]);
 }
+
+/// `include "x.LIGHT"` names a `.light` file, whatever its case.
+#[test]
+fn an_include_reads_the_extension_in_any_case() {
+    let dir = tree(&[
+        ("Looks.LIGHT", "sequence \"strike\" {\n    @0.000\n    front_wash: static, color: \"red\", duration: 1s\n}\n"),
+        (
+            "show.light",
+            "include \"Looks.LIGHT\"\nshow \"Song\" {\n    @0.000\n    sequence \"strike\"\n}\n",
+        ),
+    ]);
+    let shows = parse_at(dir.path(), "show.light").expect("parses");
+    assert_eq!(shows["Song"].cues.len(), 1);
+}

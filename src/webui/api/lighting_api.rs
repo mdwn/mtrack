@@ -510,11 +510,9 @@ pub(super) fn existing_fixture_type_file(
     if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
         return Some(declared.file.clone());
     }
-    let stem = sanitize_filename(name);
-    FIXTURE_TYPE_EXTENSIONS
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+    lighting::project_files::files_at_stem(dir, &sanitize_filename(name), FIXTURE_TYPE_EXTENSIONS)
+        .into_iter()
+        .next()
 }
 
 /// [`existing_fixture_type_file`] with the file it found and the other
@@ -570,11 +568,9 @@ pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTE
 /// The file a venue of this name lives in, if one exists: `.venue` first,
 /// then `.light`.
 fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let stem = sanitize_filename(name);
-    VENUE_EXTENSIONS
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+    lighting::project_files::files_at_stem(dir, &sanitize_filename(name), VENUE_EXTENSIONS)
+        .into_iter()
+        .next()
 }
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
@@ -1090,14 +1086,9 @@ pub(super) async fn get_fixture_types(
                     strobe_curve: fixture_type.strobe_curve(),
                     fixture_type: fixture_type.clone(),
                     file: Some(shown(&declared.file)),
-                    extension: Some(
-                        declared
-                            .file
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                    ),
+                    // The file's kind, as the editor and the loader take it
+                    // (`Par.FIXTURE` is a `fixture`).
+                    extension: Some(crate::songs::extension_of(&declared.file).unwrap_or_default()),
                     gdtf: None,
                     dsl: None,
                 },
@@ -1246,13 +1237,7 @@ pub(super) async fn get_fixture_type(
                 strobe_curve: ft.strobe_curve(),
                 fixture_type: ft.clone(),
                 file: Some(crate::util::filename_display(&file_path).to_string()),
-                extension: Some(
-                    file_path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
+                extension: Some(crate::songs::extension_of(&file_path).unwrap_or_default()),
                 gdtf: None,
                 dsl: Some(Some(content)),
             }),
@@ -1683,11 +1668,9 @@ pub(super) async fn put_fixture_type(
         .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
         .map(str::to_string)
         .unwrap_or_else(|| sanitize_filename(&name));
-    let existing_extension = located.as_ref().and_then(|(path, _)| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_string)
-    });
+    let existing_extension = located
+        .as_ref()
+        .and_then(|(path, _)| crate::songs::extension_of(path));
 
     // The channel-map form writes one type, so it cannot carry the others a
     // shared file declares. Raw text is the whole file and says what it means.
@@ -1762,11 +1745,17 @@ pub(super) async fn put_fixture_type(
         .as_ref()
         .and_then(|(path, _)| path.parent())
         .map_or(dir, std::path::Path::to_path_buf);
-    let file_path = folder.join(format!("{stem}.{extension}"));
-    let stale_twin = FIXTURE_TYPE_EXTENSIONS
-        .iter()
-        .map(|extension| folder.join(format!("{stem}.{extension}")))
-        .find(|path| path != &file_path && path.is_file());
+    // A file already in this form is written in place, in its own case
+    // (`Par.FIXTURE`); a new form is spelled lowercase.
+    let file_path = located
+        .as_ref()
+        .map(|(path, _)| path.clone())
+        .filter(|path| crate::songs::extension_of(path).as_deref() == Some(extension))
+        .unwrap_or_else(|| folder.join(format!("{stem}.{extension}")));
+    let stale_twin =
+        lighting::project_files::files_at_stem(&folder, &stem, FIXTURE_TYPE_EXTENSIONS)
+            .into_iter()
+            .find(|path| path != &file_path);
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
@@ -2642,7 +2631,9 @@ pub(super) async fn put_venue(
         // the `.light` original is retired after the durable write.
         let stem = sanitize_filename(&name);
         let file_path = match &located {
-            Some(l) if !typed || l.path.extension().is_some_and(|e| e == "venue") => l.path.clone(),
+            Some(l) if !typed || crate::songs::extension_of(&l.path).as_deref() == Some("venue") => {
+                l.path.clone()
+            }
             Some(l) => l.path.with_extension("venue"),
             None => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
         };
@@ -4647,6 +4638,63 @@ show "test" {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
         // One type, one file: no second file at this API's own stem.
         assert_eq!(std::fs::read_dir(_dir.path().join(rel)).unwrap().count(), 1);
+    }
+
+    /// `Par.FIXTURE` is a `.fixture` to the form-save guard, as it is to the
+    /// loader: the channel-map form is refused, and no `par.light` is made
+    /// beside it to be shadowed on reload.
+    #[tokio::test]
+    async fn a_fixture_file_in_capitals_is_not_form_saved() {
+        let (state, _dir) = test_state();
+        let rel = "ft_upper";
+        let dir = _dir.path().join(rel);
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("Par.FIXTURE");
+        std::fs::write(&file, sample_rich_fixture_type_dsl("Par")).unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "GET",
+            format!("/lighting/fixture-types/Par?dir={rel}"),
+            "text/plain",
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(parsed["extension"], "fixture");
+
+        let form = serde_json::json!({"channels": {"red": 1}});
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            format!("/lighting/fixture-types/Par?dir={rel}"),
+            "application/json",
+            Body::from(serde_json::to_vec(&form).unwrap()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            sample_rich_fixture_type_dsl("Par")
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    /// A file at a name's stem is found whatever its extension's case, for
+    /// a fixture type that it does not declare and for a venue.
+    #[test]
+    fn existing_files_at_the_stem_are_found_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("par.FIXTURE"), "not a type").unwrap();
+        std::fs::write(dir.path().join("house.VENUE"), "not a venue").unwrap();
+        assert_eq!(
+            existing_fixture_type_file(dir.path(), "par"),
+            Some(dir.path().join("par.FIXTURE"))
+        );
+        assert_eq!(
+            existing_venue_file(dir.path(), "house"),
+            Some(dir.path().join("house.VENUE"))
+        );
     }
 
     #[tokio::test]

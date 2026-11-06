@@ -130,7 +130,7 @@ impl Include {
                  source is not a file; save it first, or validate it with its song"
             ));
         };
-        if Path::new(written).extension().and_then(|e| e.to_str()) != Some("light") {
+        if crate::songs::extension_of(Path::new(written)).as_deref() != Some("light") {
             return Err(format!(
                 "line {line}: include \"{written}\": only .light files can be included"
             ));

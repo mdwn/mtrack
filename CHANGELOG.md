@@ -342,7 +342,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Show.LIGHT` in a song directory was taken by `mtrack songs --init` but missing from the web UI's
   lighting file list, and could not be deleted there ("Can only delete .light files") or edited
   over MCP. The list, the delete and MCP's song lighting tools now read the extension in any case,
-  as do the venue and fixture type directories (`Club.VENUE`) and their MCP tools. The web UI's
+  as do the venue and fixture type directories (`Club.VENUE`) and their MCP tools. The extension
+  is still the version marker in any case: rich channel syntax in `Par.LIGHT` is refused by the
+  loader and MCP as in `par.light`, a `Par.FIXTURE` type is not saved from the channel-map form
+  (and is listed with `extension: "fixture"`), a save writes it back as `Par.FIXTURE` rather than
+  a new `Par.fixture` beside it, and `include "Looks.LIGHT"` is accepted. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`), as the song loader does, and the list passes over a directory it cannot read and
   lists the rest (it answered 500 "Failed to scan for lighting files"). The trigger editor's fixed velocity field takes 1–127, the

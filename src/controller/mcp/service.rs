@@ -4267,7 +4267,8 @@ fn refuse_rich_channels_in_light<'a>(
     file: &str,
     types: impl Iterator<Item = &'a crate::lighting::types::FixtureType>,
 ) -> Result<(), McpError> {
-    if !file.ends_with(".light") {
+    let path = std::path::Path::new(file);
+    if crate::songs::extension_of(path).as_deref() != Some("light") {
         return Ok(());
     }
     for fixture_type in types {
@@ -4277,7 +4278,7 @@ fn refuse_rich_channels_in_light<'a>(
                     "fixture type \"{}\" uses rich channel syntax (fine, range, functions), \
                      which belongs in a .fixture file — write it as {} instead",
                     fixture_type.name(),
-                    file.trim_end_matches(".light").to_string() + ".fixture"
+                    path.with_extension("fixture").display()
                 ),
                 None,
             ));
@@ -5057,5 +5058,23 @@ mod bpm_tests {
         // rather than panicking or emitting noise.
         assert!(compute_tempo_segments(&[]).is_empty());
         assert!(compute_tempo_segments(&[0.0, 0.5]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Rich channel syntax is refused in a `.light` file whatever the
+    /// extension's case, and the answer names the `.fixture` to write.
+    #[test]
+    fn rich_channels_are_refused_in_a_light_file_in_any_case() {
+        let types = crate::lighting::parser::parse_fixture_types(
+            "fixture_type \"Mover\" {\n  channel \"pan\" @ 1 fine 2\n}\n",
+        )
+        .unwrap();
+        for file in ["mover.light", "Mover.LIGHT"] {
+            let err = super::refuse_rich_channels_in_light(file, types.values()).unwrap_err();
+            assert!(err.message.contains(".fixture"), "{file}: {err:?}");
+        }
+        assert!(super::refuse_rich_channels_in_light("Mover.FIXTURE", types.values()).is_ok());
     }
 }
