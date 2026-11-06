@@ -1808,11 +1808,29 @@ pub(super) async fn put_fixture_type(
     };
     // The other forms of this type are retired, or the loader would register
     // the name twice: each file at the stem in another form that declares
-    // this type. A file declaring other types is left alone.
-    let stale_twins: Vec<std::path::PathBuf> = at_stem
-        .into_iter()
-        .filter(|path| !is_form(path) && declared_fixture_types(path).contains(&name))
-        .collect();
+    // this type. One that also declares a type the saved text does not is
+    // not retired, which would lose that type: the save is refused.
+    let mut stale_twins = Vec::new();
+    for path in at_stem.into_iter().filter(|path| !is_form(path)) {
+        let declared = declared_fixture_types(&path);
+        if !declared.contains(&name) {
+            continue;
+        }
+        let mut lost: Vec<String> = declared
+            .into_iter()
+            .filter(|n| !types.contains_key(n))
+            .collect();
+        if !lost.is_empty() {
+            lost.sort();
+            return Err(shared_fixture_type_file_response(
+                &name,
+                &path,
+                &lost,
+                "saving this type in another form",
+            ));
+        }
+        stale_twins.push(path);
+    }
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
@@ -6926,6 +6944,45 @@ show "test" {
         // Saved as a `.fixture`, the type's `.light` form is retired.
         assert!(ft_dir.join("Par.fixture").exists());
         assert!(!ft_dir.join("Par.light").exists());
+    }
+
+    /// A twin holding another type besides this one is not retired by a
+    /// save in the other form, which would lose that type: the save is
+    /// refused, and both files are left as they were.
+    #[tokio::test]
+    async fn put_fixture_type_keeps_a_twin_holding_another_type() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_shared_twin");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let both = format!(
+            "{}\n{}\n",
+            sample_fixture_type_dsl("Par"),
+            sample_fixture_type_dsl("Spot")
+        );
+        std::fs::write(ft_dir.join("Par.light"), &both).unwrap();
+        std::fs::write(
+            ft_dir.join("Par.fixture"),
+            sample_rich_fixture_type_dsl("Par"),
+        )
+        .unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/fixture-types/Par?dir=ft_shared_twin&ext=fixture".to_string(),
+            "text/plain",
+            Body::from(sample_rich_fixture_type_dsl("Par")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert!(
+            parsed["error"].as_str().unwrap().contains("\"Spot\""),
+            "{parsed}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ft_dir.join("Par.light")).unwrap(),
+            both
+        );
     }
 
     /// A form already at the stem in another spelling is written in place,

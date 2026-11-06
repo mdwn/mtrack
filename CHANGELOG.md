@@ -356,7 +356,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retires only the type's own files in its other form: saving `Par` from `Par.light` as a
   `.fixture` removed whatever other file sat at the stem, so a `Par.LIGHT` holding `Spot` was
   deleted; it now stays. A save in a form already at the stem in another spelling (`Par.FIXTURE`)
-  writes that file, and one holding other types is refused with 409 rather than overwritten. The web UI's
+  writes that file, and one holding other types is refused with 409 rather than overwritten. A
+  twin that also declares a type the saved text does not (`Par.light` holding `Par` and `Spot`,
+  saved as a `.fixture`) is not retired: the save is refused with 409 naming `Spot`. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
