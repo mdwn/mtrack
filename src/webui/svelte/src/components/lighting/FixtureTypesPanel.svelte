@@ -31,10 +31,7 @@
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
-  import {
-    channelProblems,
-    type ChannelProblem,
-  } from "../../lib/lighting/venueRows";
+  import { rules } from "../../lib/rules";
   import {
     fetchFixtureTypeGdtf,
     fetchFixtureTypes,
@@ -145,7 +142,7 @@
   /** In text mode the DSL declares the name — the file is keyed on it, and
    *  the server refuses a save where the two disagree. So the Name field
    *  reads it out rather than being a second, conflicting source. */
-  let editFtDslName = $derived(declaredFixtureTypeName(editFtDsl));
+  let editFtDslName = $derived(rules.fixture_type_name(editFtDsl) ?? "");
   /** A rich or referential type cannot go back to `.light`: the loader
    *  skips v2 syntax there. Anything else may be saved in either form. */
   let ftExtChoosable = $derived(
@@ -153,13 +150,6 @@
   );
   /** Whether the "which form?" chooser is open ahead of a new type. */
   let newFtChoice = $state(false);
-
-  /** The name a fixture type DSL declares, quoted or bare. Comment lines
-   *  start with `#`, so anchoring to the start of a line skips them. */
-  function declaredFixtureTypeName(dsl: string): string {
-    const match = dsl.match(/^[ \t]*fixture_type[ \t]+(?:"([^"]*)"|([\w-]+))/m);
-    return (match?.[1] ?? match?.[2] ?? "").trim();
-  }
 
   /** The commented starting point for a hand-written `.fixture`. */
   const NEW_FIXTURE_TEMPLATE = `# The rich channel form, which only a .fixture file may hold:
@@ -445,9 +435,7 @@ fixture_type "Name" {
   /** Set by a refused save: the channel rows are then checked as edited. */
   let checkChannels = $state(false);
   let channelIssues = $derived(
-    checkChannels
-      ? channelProblems(editFtChannels)
-      : new Map<number, ChannelProblem[]>(),
+    checkChannels ? (rules.channel_row_problems(editFtChannels) ?? []) : [],
   );
 
   function removeFtChannel(i: number) {
@@ -466,13 +454,14 @@ fixture_type "Name" {
     // Every channel row is saved or the save is refused: a blank name, a
     // name another row has, or an address below 1 is marked, never dropped
     // or merged into its namesake.
-    const found = channelProblems(editFtChannels);
-    if (found.size > 0) {
+    // The player's own check of the rows (`rules.channel_row_problems`).
+    const found = rules.channel_row_problems(editFtChannels) ?? [];
+    if (found.length > 0) {
       checkChannels = true;
       ftMsg = get(t)("lighting.channelRowsNeedAttention", {
-        values: { count: found.size },
+        values: { count: found.length },
       });
-      const first = Math.min(...found.keys());
+      const first = found[0].row;
       queueMicrotask(() =>
         document
           .querySelector<HTMLElement>(
@@ -743,7 +732,8 @@ fixture_type "Name" {
               >
             </div>
             {#each editFtChannels as ch, i (i)}
-              {@const issues = channelIssues.get(i) ?? []}
+              {@const issues =
+                channelIssues.find((p) => p.row === i)?.problems ?? []}
               <div
                 class="channel-row"
                 data-channel-row={i}

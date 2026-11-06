@@ -43,6 +43,8 @@ const IDLE: PlaybackState = {
   playlist_name: "",
   playlist_position: 0,
   playlist_off_list: false,
+  playlist_at_first: true,
+  playlist_at_last: true,
   playlist_songs: [],
   tracks: [],
   available_playlists: [],

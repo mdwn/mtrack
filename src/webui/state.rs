@@ -269,6 +269,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             playlist_name,
             playlist_position,
             playlist_off_list,
+            playlist_at_first: !playlist.can_move(true),
+            playlist_at_last: !playlist.can_move(false),
             playlist_songs,
             tracks,
             available_playlists,
@@ -338,8 +340,12 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 /// Play.
 fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wire::NextUp> {
     let current = playlist.current()?;
-    let status =
-        |fade: &Option<crate::config::Fade>| fade.as_ref().map(crate::config::Fade::status);
+    // A fade of no length is a cut, and is said as none.
+    let status = |fade: &Option<crate::config::Fade>| {
+        fade.as_ref()
+            .filter(|f| !f.length.is_cut())
+            .map(crate::config::Fade::status)
+    };
     let Some(position) = playlist.next_entry() else {
         // A looping song playing at the end of the list: Next (or Previous
         // on the first entry) ends it over its entry's `fade_out`, which the
@@ -910,11 +916,8 @@ pub fn build_metadata_json(
 
             for fi in &fixture_infos {
                 let tags = venue_fixtures.get(&fi.name).cloned().unwrap_or_default();
-                let capabilities = crate::lighting::fit::FitFixture::from_info(fi, &tags)
-                    .capability_names()
-                    .into_iter()
-                    .map(String::from)
-                    .collect();
+                let capabilities =
+                    crate::lighting::fit::FitFixture::from_info(fi, &tags).capability_names();
                 let fixture = wire::FixtureMetadata {
                     placement: wire::FixturePlacement {
                         tags,

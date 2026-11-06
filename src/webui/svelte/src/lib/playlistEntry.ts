@@ -23,7 +23,8 @@ import type {
   FadeConfig,
 } from "../gen/rules/mtrack_rules";
 import type { AutoPlay, PlaylistAmbient } from "./api/config";
-import { formatFadeLength, isZeroLength } from "./util/format";
+import { formatFadeLength, formatGapMs } from "./util/format";
+import { rules } from "./rules";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
 export type AmbientChoice = "inherit" | "off" | "custom";
@@ -73,17 +74,24 @@ export function entrySummary(
 ): string {
   const out = fadeLength(entry.fades?.fade_out);
   const fadeIn = fadeLength(entry.fades?.fade_in);
+  // The gap as the player reads it (`rules.auto_play_read`); a gap of none
+  // is no gap, and text the player refuses says so.
+  const gapText =
+    typeof entry.autoPlay === "string" ? entry.autoPlay.trim() : "";
+  const read = gapText ? rules.auto_play_read(gapText) : null;
   const gap =
-    typeof entry.autoPlay === "string" &&
-    entry.autoPlay.trim() &&
-    !isZeroLength(entry.autoPlay)
-      ? formatFadeLength(entry.autoPlay)
-      : null;
+    read?.kind === "invalid"
+      ? tr("playlists.autoPlayGapInvalid", { values: { gap: gapText } })
+      : read?.kind === "gap" && read.ms > 0
+        ? tr("playlists.autoPlayGapSummary", {
+            values: { gap: formatGapMs(read.ms) },
+          })
+        : null;
   const ambient = entry.ambient ?? null;
   return [
     out && tr("playlists.fadeOutSummary", { values: { length: out } }),
     fadeIn && tr("playlists.fadeInSummary", { values: { length: fadeIn } }),
-    gap && tr("playlists.autoPlayGapSummary", { values: { gap } }),
+    gap,
     ambient === false && tr("playlists.entryAmbientOffSummary"),
     ambient && tr("playlists.entryAmbientOwnSummary"),
   ]

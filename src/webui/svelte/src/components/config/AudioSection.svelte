@@ -21,7 +21,15 @@
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import { channelsLabel, probeAudioDevice } from "../../lib/api/config";
+  import {
+    COMMON_BIT_DEPTHS,
+    COMMON_SAMPLE_RATES,
+    channelsLabel,
+    probeAudioDevice,
+  } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   interface Props {
     audio: AudioConfig;
@@ -289,9 +297,9 @@
             <option value={String(rate)}>{rate}</option>
           {/each}
         {:else}
-          <option value="44100">44100</option>
-          <option value="48000">48000</option>
-          <option value="96000">96000</option>
+          {#each COMMON_SAMPLE_RATES as rate (rate)}
+            <option value={String(rate)}>{rate}</option>
+          {/each}
         {/if}
         {#if audio.sample_rate && !sampleRateOptions.includes(audio.sample_rate) && sampleRateOptions.length > 0}
           <option value={String(audio.sample_rate)}>{audio.sample_rate}</option>
@@ -320,8 +328,9 @@
             <option value={fmt}>{fmt}</option>
           {/each}
         {:else}
-          <option value="int">int</option>
-          <option value="float">float</option>
+          {#each choices.sample_formats as fmt (fmt)}
+            <option value={fmt}>{fmt}</option>
+          {/each}
         {/if}
         {#if audio.sample_format && !sampleFormatOptions.includes(audio.sample_format) && sampleFormatOptions.length > 0}
           <option value={audio.sample_format}>{audio.sample_format}</option>
@@ -352,9 +361,9 @@
             <option value={String(bits)}>{bits}</option>
           {/each}
         {:else}
-          <option value="16">16</option>
-          <option value="24">24</option>
-          <option value="32">32</option>
+          {#each COMMON_BIT_DEPTHS as bits (bits)}
+            <option value={String(bits)}>{bits}</option>
+          {/each}
         {/if}
         {#if audio.bits_per_sample && !bitsPerSampleOptions.includes(audio.bits_per_sample) && bitsPerSampleOptions.length > 0}
           <option value={String(audio.bits_per_sample)}
@@ -456,8 +465,9 @@
           )}
       >
         <option value="">{$t("audio.resamplerDefault")}</option>
-        <option value="sinc">sinc</option>
-        <option value="fft">fft</option>
+        {#each choices.resamplers as r (r)}
+          <option value={r}>{r}</option>
+        {/each}
       </select>
     </div>
 

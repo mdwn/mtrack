@@ -23,8 +23,8 @@ use tracing::{error, info};
 use crate::{dmx, playsync::CancelHandle, songs::Song};
 
 use super::{
-    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayHandles,
-    PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
+    decide_cleanup_action, resolve_playback_outcome, CleanupAction, LoopExit, PlayDeclined,
+    PlayHandles, PlaybackContext, PlaybackResult, Player, ReactiveLoopState,
 };
 
 /// The entry whose gap the player is in on `playlist`: the one it is on,
@@ -46,16 +46,14 @@ impl Player {
 
     /// Why a play returned no song, read from the player's state rather than
     /// assumed: the one derivation every surface answers with.
-    pub async fn play_declined_reason(&self) -> String {
+    pub async fn play_declined(&self) -> PlayDeclined {
         if self.is_playing().await {
-            return "song already playing".to_string();
+            PlayDeclined::AlreadyPlaying
+        } else if self.get_playlist().songs().is_empty() {
+            PlayDeclined::EmptyPlaylist
+        } else {
+            PlayDeclined::NotStarted
         }
-        if self.get_playlist().songs().is_empty() {
-            return "the playlist is empty — no songs loaded, which usually \
-                    means none passed validation at startup (check the log)"
-                .to_string();
-        }
-        "the player did not start a song".to_string()
     }
 
     /// Plays the song starting from a specific time position.

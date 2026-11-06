@@ -13,15 +13,15 @@
      *
      * -->
 <script lang="ts">
-  import type { Readiness } from "../../gen/rules/mtrack_rules";
+  import type { Finding, Readiness } from "../../gen/rules/mtrack_rules";
   import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { BadAnswerError } from "../../lib/lighting/answer";
   import { fetchLightingReadiness } from "../../lib/api/config";
   import {
-    evaluateReadiness,
-    type Check,
-    type Finding,
+    findingMsg,
+    fixHref,
+    summaryMsg,
   } from "../../lib/lighting/readiness";
   import { metadataStore, reloadStore, venueStore } from "../../lib/ws/stores";
   import StageView from "../StageView.svelte";
@@ -76,9 +76,7 @@
     untrack(refresh);
   });
 
-  let checks = $derived<Check[]>(
-    readiness ? evaluateReadiness(readiness, { profileName }) : [],
-  );
+  let checks = $derived(readiness?.checks ?? []);
   let withFindings = $derived(checks.filter((c) => c.findings.length > 0));
 
   /** A check's findings, grouped under their song where they have one. */
@@ -151,7 +149,8 @@
               {#if i > 0}
                 <span class="check__sep" aria-hidden="true">·</span>
               {/if}
-              <span>{$t(part.key, { values: part.params })}</span>
+              {@const msg = summaryMsg(part)}
+              <span>{$t(msg.key, { values: msg.params })}</span>
             {/each}
           </p>
         </li>
@@ -178,6 +177,7 @@
               {/if}
               <ul class="findings">
                 {#each group.items as finding, n (n)}
+                  {@const msg = findingMsg(finding.what)}
                   <li class="finding finding--{finding.severity}">
                     <span class="finding__text">
                       {#if finding.severity === "note"}
@@ -185,10 +185,12 @@
                           >{$t("lighting.hub.note")}</span
                         >
                       {/if}
-                      {$t(finding.msg.key, { values: finding.msg.params })}
+                      {$t(msg.key, { values: msg.params })}
                     </span>
-                    <a class="finding__fix" href={finding.href}
-                      >{$t(finding.linkKey)}</a
+                    <a
+                      class="finding__fix"
+                      href={fixHref(finding.fix, profileName)}
+                      >{$t(`lighting.hub.fix.${finding.fix.kind}`)}</a
                     >
                   </li>
                 {/each}

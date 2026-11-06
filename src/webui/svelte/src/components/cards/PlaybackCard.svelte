@@ -20,8 +20,8 @@
   import { sectionColor } from "../../lib/sectionColors";
   import { rules } from "../../lib/rules";
   import BeatIndicator from "./BeatIndicator.svelte";
-  import { formatFadeLength, formatMs } from "../../lib/util/format";
-  import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
+  import { formatFadeLength } from "../../lib/util/format";
+  import { describeNext, loopEndFade } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -294,7 +294,11 @@
   let loopEnd = $derived(
     $playbackStore.is_playing ? loopEndFade($playbackStore.next) : null,
   );
-  let ends = $derived(playlistEnds($playbackStore));
+  // Whether Previous and Next have an entry to move to, as the player says.
+  let ends = $derived({
+    atFirst: $playbackStore.playlist_at_first,
+    atLast: $playbackStore.playlist_at_last,
+  });
   let atFirst = $derived(ends.atFirst);
   let atLast = $derived(ends.atLast);
   let canPrev = $derived(
@@ -309,15 +313,6 @@
       ? ($playbackStore.elapsed_ms / $playbackStore.song_duration_ms) * 100
       : 0,
   );
-
-  const SECTION_COLORS = [
-    "94, 202, 234",
-    "239, 96, 163",
-    "242, 181, 68",
-    "77, 192, 138",
-    "139, 92, 246",
-    "249, 115, 22",
-  ];
 
   let sectionRegions = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
@@ -338,12 +333,13 @@
       const startPct = (ms(s.start_measure, s.start_beat ?? 1) / dur) * 100;
       const endPct = (ms(s.end_measure, s.end_beat ?? 1) / dur) * 100;
       const isActive = active?.name === s.name;
-      const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
+      // The editor's colour for it: its own, or the palette's.
+      const color = sectionColor(s.color ?? undefined, i);
       return {
         name: s.name,
         startPct,
         widthPct: endPct - startPct,
-        rgb,
+        color,
         isActive,
       };
     });
@@ -586,7 +582,7 @@
 
     <div class="playback-card__progress">
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.elapsed_ms)}</span
+        >{rules.clock($playbackStore.elapsed_ms / 1000, 0)}</span
       >
       <div
         class="scrub scrub--seekable"
@@ -607,7 +603,7 @@
             class:scrub__region--active={region.isActive}
             style:left="{region.startPct}%"
             style:width="{region.widthPct}%"
-            style:--section-rgb={region.rgb}
+            style:--section-color={region.color}
             title={region.name}
           ></div>
         {/each}
@@ -626,12 +622,15 @@
           <div
             class="scrub__pending"
             style:left="{pendingStartPct}%"
-            title={formatMs($playbackStore.pending_start_ms ?? 0)}
+            title={rules.clock(
+              ($playbackStore.pending_start_ms ?? 0) / 1000,
+              0,
+            )}
           ></div>
         {/if}
       </div>
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.song_duration_ms)}</span
+        >{rules.clock($playbackStore.song_duration_ms / 1000, 0)}</span
       >
     </div>
 
@@ -935,14 +934,24 @@
     top: 0;
     height: 100%;
     z-index: 1;
-    background: rgba(var(--section-rgb), 0.18);
-    border-left: 1px solid rgba(var(--section-rgb), 0.4);
-    border-right: 1px solid rgba(var(--section-rgb), 0.4);
+    background: color-mix(in srgb, var(--section-color) 18%, transparent);
+    border-left: 1px solid
+      color-mix(in srgb, var(--section-color) 40%, transparent);
+    border-right: 1px solid
+      color-mix(in srgb, var(--section-color) 40%, transparent);
   }
   .scrub__region--active {
-    background: rgba(var(--section-rgb), 0.4);
-    border-left-color: rgba(var(--section-rgb), 0.7);
-    border-right-color: rgba(var(--section-rgb), 0.7);
+    background: color-mix(in srgb, var(--section-color) 40%, transparent);
+    border-left-color: color-mix(
+      in srgb,
+      var(--section-color) 70%,
+      transparent
+    );
+    border-right-color: color-mix(
+      in srgb,
+      var(--section-color) 70%,
+      transparent
+    );
   }
   .scrub--seekable {
     cursor: pointer;

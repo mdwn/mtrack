@@ -246,8 +246,9 @@
                 align: (e.target as HTMLSelectElement).value as "end" | "start",
               })}
           >
-            <option value="end">{$t("pilot.alignEnd")}</option>
-            <option value="start">{$t("pilot.alignStart")}</option>
+            {#each rules.config_choices().hint_aligns as a (a)}
+              <option value={a}>{$t(`pilot.aligns.${a}`)}</option>
+            {/each}
           </select>
           <button
             class="btn-icon delete-btn"

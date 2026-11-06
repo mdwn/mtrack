@@ -22,6 +22,47 @@ use serde::{Deserialize, Serialize};
 
 use super::geometry::Vec3;
 
+/// Where exports land, relative to the project.
+pub const EXPORT_DIR: &str = "lighting/export";
+
+/// A fixture-type (or venue) name reduced to a safe filename stem.
+pub fn fixture_filename_stem(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+    }
+    let out = out.trim_end_matches('_').to_string();
+    if out.is_empty() {
+        "fixture".to_string()
+    } else {
+        out
+    }
+}
+
+/// An export's file name: `output` as given (trimmed), or the venue's stem
+/// with `.mvr`; an error unless it is a bare `.mvr` file name, with no
+/// directories and nothing hidden.
+pub fn export_file_name(output: Option<&str>, venue: &str) -> Result<String, String> {
+    let output = match output {
+        Some(output) => output.trim().to_string(),
+        None => format!("{}.mvr", fixture_filename_stem(venue)),
+    };
+    let bare = std::path::Path::new(&output).file_name() == Some(std::ffi::OsStr::new(&output));
+    if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
+        return Err(format!(
+            "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
+        ));
+    }
+    if !output.to_ascii_lowercase().ends_with(".mvr") || output.len() <= 4 {
+        return Err(format!("output \"{output}\" must end in .mvr"));
+    }
+    Ok(output)
+}
+
 /// The hand edits a merge should keep instead of overwriting with the MVR's
 /// values. A field that is not a listed overwrite is ignored.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]

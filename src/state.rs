@@ -613,17 +613,7 @@ fn attach_pointing(
     }
 }
 
-/// Whether a snapshot channel carries a level that lights the rig -- one
-/// going dark takes to 0, as the engine has it (`fades_to_dark`) -- rather
-/// than where a head points, an optic or a setting. The channel's name is
-/// read under the `#n` a snapshot names a ganged channel's mirrors by.
-pub fn is_level_channel(name: &str) -> bool {
-    let base = match name.split_once('#') {
-        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
-        _ => name,
-    };
-    crate::lighting::engine::fades_to_dark(base)
-}
+pub use crate::lighting::channels::is_level_channel;
 
 /// Adds per-cell values to the snapshots of fixtures whose cells carry
 /// state of their own this frame (design §17.4): each cell's channels are

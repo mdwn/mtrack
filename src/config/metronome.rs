@@ -30,6 +30,32 @@ pub const DEFAULT_SUB_FREQ: f64 = 1000.0;
 /// Default volume for subdivision ticks.
 pub const DEFAULT_SUB_VOLUME: f64 = 0.45;
 
+/// Length of a synthesized click in seconds.
+const SYNTH_CLICK_SECS: f64 = 0.05;
+/// Attack ramp of a synthesized click in seconds.
+const SYNTH_ATTACK_SECS: f64 = 0.001;
+/// Exponential decay time constant of a synthesized click in seconds.
+const SYNTH_DECAY_TAU_SECS: f64 = 0.012;
+
+/// Synthesizes a click: a sine burst with a short attack and exponential decay.
+pub fn synthesize_click(freq: f64, volume: f64, sample_rate: u32) -> Vec<f32> {
+    let rate = sample_rate as f64;
+    let total = (rate * SYNTH_CLICK_SECS).max(1.0) as usize;
+    let attack = (rate * SYNTH_ATTACK_SECS).max(1.0) as usize;
+
+    (0..total)
+        .map(|n| {
+            let t = n as f64 / rate;
+            let envelope = if n < attack {
+                n as f64 / attack as f64
+            } else {
+                (-((n - attack) as f64 / rate) / SYNTH_DECAY_TAU_SECS).exp()
+            };
+            ((std::f64::consts::TAU * freq * t).sin() * envelope * volume) as f32
+        })
+        .collect()
+}
+
 /// A YAML representation of a song's metronome: a virtual click track
 /// generated from the song's beat grid, routable like any other track.
 #[cfg_attr(
@@ -108,6 +134,18 @@ pub enum ClaveKind {
     Rumba,
 }
 
+impl ClaveKind {
+    /// The pattern as half-beat offsets (eighths when the beat is a
+    /// quarter) within the first and second measure of its two-measure
+    /// cycle, 3-2 direction.
+    pub fn half_beats(self) -> (&'static [usize], &'static [usize]) {
+        match self {
+            ClaveKind::Son => (&[0, 3, 6], &[2, 4]),
+            ClaveKind::Rumba => (&[0, 3, 7], &[2, 4]),
+        }
+    }
+}
+
 impl Default for Subdivision {
     fn default() -> Self {
         Subdivision::Even(1)
@@ -160,6 +198,26 @@ pub struct ClickSound {
     /// Volume multiplier (0.0 to 2.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
+}
+
+impl MetronomeSounds {
+    /// The built-in synthesized click of each role (the `DEFAULT_*`
+    /// frequencies and volumes): what a sound falls back to.
+    pub fn builtin() -> MetronomeSounds {
+        let synth = |freq, volume| {
+            Some(ClickSound {
+                file: None,
+                freq: Some(freq),
+                volume: Some(volume),
+            })
+        };
+        MetronomeSounds {
+            accent: synth(DEFAULT_ACCENT_FREQ, DEFAULT_ACCENT_VOLUME),
+            normal: synth(DEFAULT_NORMAL_FREQ, DEFAULT_NORMAL_VOLUME),
+            half: synth(DEFAULT_HALF_FREQ, DEFAULT_HALF_VOLUME),
+            sub: synth(DEFAULT_SUB_FREQ, DEFAULT_SUB_VOLUME),
+        }
+    }
 }
 
 fn default_metronome_track() -> String {
@@ -359,6 +417,20 @@ impl MetronomeSounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthesized_click_shape() {
+        let click = synthesize_click(1000.0, 1.0, 48_000);
+        assert_eq!(click.len(), (48_000.0 * SYNTH_CLICK_SECS) as usize);
+        let peak = click.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(
+            peak > 0.5,
+            "click should have audible amplitude, got {peak}"
+        );
+        // Decays towards silence at the end.
+        let tail = click[click.len() - 1].abs();
+        assert!(tail < 0.05, "click should decay, tail was {tail}");
+    }
     use config::{Config, File, FileFormat};
 
     fn deserialize(yaml: &str) -> MetronomeConfig {

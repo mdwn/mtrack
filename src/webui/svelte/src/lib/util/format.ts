@@ -12,27 +12,16 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/** Formats milliseconds as "m:ss". */
-export function formatMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
+import { rules } from "../rules";
 
-/** A fade length as written (`1measure`, `4beats`, `2s`) for reading:
- *  beats and measures spaced from their count. */
+/** A fade length as written (`1measure`, `4beats`, `2s`) for reading, by
+ *  the player's own reading of it (`rules.fade_length_text`): `1 measure`,
+ *  `4 beats`; text that is no length shows as written. */
 export function formatFadeLength(length: string): string {
-  const m = /^\s*([\d.]+)\s*(beats?|measures?)\s*$/.exec(length);
-  return m ? `${m[1]} ${m[2]}` : length.trim();
+  return rules.fade_length_text(length) ?? length.trim();
 }
 
 /** A gap in milliseconds as seconds: `2s`, `1.5s`. */
 export function formatGapMs(ms: number): string {
   return `${Math.round(ms / 100) / 10}s`;
-}
-
-/** Whether a fade length turns the fade off (`0s`, `0ms`, `0`). */
-export function isZeroLength(length: string): boolean {
-  return /^\s*0\s*(s|ms)?\s*$/.test(length);
 }

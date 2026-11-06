@@ -142,7 +142,7 @@ pub(crate) fn split_unit(value: &str) -> (&str, &str) {
 
 /// Each layer and its keyword, as the grammar writes it: the one table
 /// both ways are read off.
-const LAYER_KEYWORDS: [(EffectLayer, &str); 3] = [
+pub(crate) const LAYER_KEYWORDS: [(EffectLayer, &str); 3] = [
     (EffectLayer::Background, "background"),
     (EffectLayer::Midground, "midground"),
     (EffectLayer::Foreground, "foreground"),
@@ -169,7 +169,7 @@ impl EffectLayer {
 
 /// Each blend mode and its keyword, as the grammar writes it: the one
 /// table both ways are read off.
-const BLEND_KEYWORDS: [(BlendMode, &str); 5] = [
+pub(crate) const BLEND_KEYWORDS: [(BlendMode, &str); 5] = [
     (BlendMode::Replace, "replace"),
     (BlendMode::Multiply, "multiply"),
     (BlendMode::Add, "add"),

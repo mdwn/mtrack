@@ -32,29 +32,8 @@ use layers::{LayerState, Now};
 use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
-
-/// Registry of known fixtures and their DMX mappings.
-/// How a channel crosses a crossfade between two engines' frames
-/// ([`EffectEngine::crossfade_commands`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum CrossKind {
-    /// Intensity, colour, zoom, focus: fade.
-    Fade,
-    /// Pan and tilt: fade, holding a side's position where the other side
-    /// drives none.
-    Position,
-    /// Anything whose in-between values are other settings: switch at the
-    /// midpoint.
-    Snap,
-}
-
-/// Whether a channel named `channel` is a level or a colour, which going
-/// dark takes to 0 -- not a position, an optic (zoom, focus, iris, frost)
-/// or a setting, which it leaves as they are.
-pub(crate) fn fades_to_dark(channel: &str) -> bool {
-    matches!(CrossKind::of(channel), CrossKind::Fade)
-        && !matches!(base_channel(channel), "zoom" | "focus" | "iris" | "frost")
-}
+use crate::lighting::channels::CrossKind;
+pub(crate) use crate::lighting::channels::{base_channel, fades_to_dark, is_position_channel};
 
 /// Whether a layer speed master scales its effects' time: 1 does not, and
 /// nor does 0, which freezes the layer instead.
@@ -81,37 +60,7 @@ pub(crate) fn unscale_by_speed(elapsed: Duration, speed: f64) -> Duration {
     }
 }
 
-/// A channel's name without its section (`dimmer:background`, as GDTF
-/// profiles with several emitters name theirs) or its fine byte.
-pub(crate) fn base_channel(channel: &str) -> &str {
-    let base = channel.split(':').next().unwrap_or(channel);
-    base.strip_suffix("_fine").unwrap_or(base)
-}
-
-/// Whether a channel carries where a head points -- pan or tilt, a section
-/// (`pan:1`) or fine byte of either -- rather than what it shows.
-pub(crate) fn is_position_channel(channel: &str) -> bool {
-    matches!(CrossKind::of(channel), CrossKind::Position)
-}
-
-impl CrossKind {
-    fn of(channel: &str) -> CrossKind {
-        match base_channel(channel) {
-            "pan" | "tilt" => CrossKind::Position,
-            "dimmer" | "red" | "green" | "blue" | "white" | "warm_white" | "cool_white" | "uv"
-            | "amber" | "lime" | "cyan" | "magenta" | "yellow" | "indigo" | "zoom" | "focus"
-            | "iris" | "frost" | "ct" | "cto" | "ctb" | "color_temp"
-            // GDTF's amber and lime, as their attributes come through.
-            | "coloradd_ry" | "coloradd_gy" => CrossKind::Fade,
-            // GDTF's other additive and RGB colour attributes, likewise.
-            base if base.starts_with("coloradd_") || base.starts_with("colorrgb_") => {
-                CrossKind::Fade
-            }
-            _ => CrossKind::Snap,
-        }
-    }
-}
-
+/// Registry of known fixtures and their DMX mappings.
 #[derive(Clone)]
 pub(crate) struct FixtureRegistry {
     fixtures: HashMap<String, FixtureInfo>,

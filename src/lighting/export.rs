@@ -39,7 +39,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::effects::out_of_frame;
-use super::import::fixture_filename_stem;
+use super::mvr_types::export_file_name;
 use super::types::{ChannelDef, Fixture, FixtureType, Vec3, Venue};
 
 /// How an export is run.
@@ -142,8 +142,7 @@ pub fn write_export(
     Ok(report)
 }
 
-/// Where exports land, relative to the project.
-pub const EXPORT_DIR: &str = "lighting/export";
+pub use super::mvr_types::EXPORT_DIR;
 
 /// [`export_mvr`] without the write: the archive bytes and the report
 /// (whose `output` names where [`export_mvr`] would put them).
@@ -419,23 +418,9 @@ pub fn export_mvr_bytes(
     ))
 }
 
-/// The output's bare file name: `.mvr`, no directories, nothing hidden.
+/// The output's bare file name ([`export_file_name`]).
 fn output_path(options: &MvrExportOptions) -> Result<String, Box<dyn Error>> {
-    let output = match &options.output {
-        Some(output) => output.trim().to_string(),
-        None => format!("{}.mvr", fixture_filename_stem(&options.venue)),
-    };
-    let bare = Path::new(&output).file_name() == Some(std::ffi::OsStr::new(output.as_str()));
-    if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
-        return Err(format!(
-            "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
-        )
-        .into());
-    }
-    if !output.to_ascii_lowercase().ends_with(".mvr") || output.len() <= 4 {
-        return Err(format!("output \"{output}\" must end in .mvr").into());
-    }
-    Ok(output)
+    Ok(export_file_name(options.output.as_deref(), &options.venue)?)
 }
 
 /// A zip entry name for a source: the wanted name, or the first free
@@ -615,12 +600,12 @@ fn has_pose(channels: &HashMap<String, ChannelDef>) -> bool {
 /// lens a few centimetres off the mounting point, both fit well inside it.
 const FOCUS_TOLERANCE_DEG: f64 = 1.0;
 
-/// The direction a fixture's beam points at rest, a unit vector in stage
-/// space: −(third column of R = Rz·Ry·Rx), the mounting's −Z. Straight down
-/// for an unrotated fixture.
+/// The direction a fixture's beam points at rest ([`effects::rest_beam`]
+/// of its mounting).
+///
+/// [`effects::rest_beam`]: super::effects::rest_beam
 pub fn rest_beam(fixture: &Fixture) -> Vec3 {
-    let rotation = fixture.rotation().unwrap_or([0.0; 3]);
-    out_of_frame(rotation, [0.0, 0.0, 1.0]).map(|c| -c)
+    super::effects::rest_beam(fixture.rotation().unwrap_or([0.0; 3]))
 }
 
 /// How far along the beam an aim point sits when the beam never meets the

@@ -29,6 +29,8 @@ mod duration;
 mod fade;
 #[path = "../../../src/config/kind_data.rs"]
 mod kind_data;
+#[path = "../../../src/config/length.rs"]
+pub mod length;
 #[path = "../../../src/config/lighting.rs"]
 mod lighting;
 #[path = "../../../src/config/midi.rs"]
@@ -56,6 +58,7 @@ mod trackmappings;
 #[path = "../../../src/config/trigger.rs"]
 mod trigger;
 
+pub use crate::tempo_config::TempoConfig;
 pub use audio::StreamBufferSize;
 pub use controller::MidiController;
 use duration::{parse_duration_string, parse_playback_delay};
@@ -70,4 +73,48 @@ mod kind {
 
 pub mod ambient {
     pub use super::playlist_settings::{Ambient, PlaylistAmbient};
+}
+
+/// The values each of a config's choices takes: every variant of the
+/// player's own enums (`VariantArray`), as `serde` writes them: what the
+/// config editor's selects offer.
+#[derive(serde::Serialize, tsify_next::Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct ConfigChoices {
+    pub trigger_actions: Vec<trigger::TriggerInputAction>,
+    pub velocity_curves: Vec<trigger::VelocityCurve>,
+    pub resamplers: Vec<audio::ResamplerType>,
+    pub sample_formats: Vec<&'static str>,
+    pub release_behaviors: Vec<samples::ReleaseBehavior>,
+    pub retrigger_behaviors: Vec<samples::RetriggerBehavior>,
+    pub velocity_modes: Vec<samples::VelocityMode>,
+    pub beat_clock_seams: Vec<midi::BeatClockSeams>,
+    pub fade_curves: Vec<FadeCurve>,
+    pub hint_aligns: Vec<pilot::HintAlign>,
+    pub strobe_curves: Vec<crate::lighting::fixture_data::StrobeCurve>,
+    /// The velocity a `fixed` curve plays when the config names none.
+    pub fixed_velocity: u8,
+}
+
+impl Default for ConfigChoices {
+    fn default() -> Self {
+        use strum::VariantArray;
+        ConfigChoices {
+            trigger_actions: trigger::TriggerInputAction::VARIANTS.to_vec(),
+            velocity_curves: trigger::VelocityCurve::VARIANTS.to_vec(),
+            resamplers: audio::ResamplerType::VARIANTS.to_vec(),
+            sample_formats: crate::audio::SampleFormat::VARIANTS
+                .iter()
+                .map(|f| f.as_str())
+                .collect(),
+            release_behaviors: samples::ReleaseBehavior::VARIANTS.to_vec(),
+            retrigger_behaviors: samples::RetriggerBehavior::VARIANTS.to_vec(),
+            velocity_modes: samples::VelocityMode::VARIANTS.to_vec(),
+            beat_clock_seams: midi::BeatClockSeams::VARIANTS.to_vec(),
+            fade_curves: FadeCurve::VARIANTS.to_vec(),
+            hint_aligns: pilot::HintAlign::VARIANTS.to_vec(),
+            strobe_curves: crate::lighting::fixture_data::StrobeCurve::VARIANTS.to_vec(),
+            fixed_velocity: trigger::default_fixed_velocity(),
+        }
+    }
 }

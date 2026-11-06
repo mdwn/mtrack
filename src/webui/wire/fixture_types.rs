@@ -119,7 +119,7 @@ pub struct GdtfMode {
     /// What a show can do in the mode, named as the fit endpoint names
     /// capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<Vec<String>>,
+    pub capabilities: Option<Vec<crate::lighting::fit::Capability>>,
     /// Cells of a pixel mode (0 for a one-colour fixture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cells: Option<usize>,

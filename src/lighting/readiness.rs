@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::dmx::engine::Engine;
 use crate::lighting::lint::{
-    lint_shows, universe_coverage, GroupCapabilities, LintContext, Warning,
+    lint_shows, universe_coverage, GroupCapabilities, LintContext, Severity, Warning,
 };
 use crate::lighting::parser::LightShow;
 use crate::lighting::system::LightingSystem;
@@ -143,6 +143,7 @@ impl VenueFacts {
             .map(|overlap| Warning {
                 kind: "patch-overlap",
                 message: overlap.to_string(),
+                severity: Severity::Attention,
             })
             .chain(
                 system
@@ -151,6 +152,7 @@ impl VenueFacts {
                     .map(|overrun| Warning {
                         kind: "patch-overrun",
                         message: overrun.to_string(),
+                        severity: Severity::Attention,
                     }),
             )
             .collect();

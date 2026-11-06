@@ -14,7 +14,8 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import { formatMs } from "../../../lib/lighting/timeline-state";
+  import { SNAP_BEATS, snapLabel } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     pixelsPerMs: number;
@@ -152,12 +153,9 @@
                 .value as import("../../../lib/lighting/timeline-state").SnapResolution,
             )}
         >
-          <option value="measure">{$t("timeline.toolbar.measure")}</option>
-          <option value="beat">{$t("timeline.toolbar.beat")}</option>
-          <option value="1/2">1/2</option>
-          <option value="1/4">1/4</option>
-          <option value="1/8">1/8</option>
-          <option value="1/16">1/16</option>
+          {#each Object.keys(SNAP_BEATS) as r (r)}
+            <option value={r}>{snapLabel(r, $t)}</option>
+          {/each}
         </select>
       {/if}
     </div>
@@ -175,11 +173,15 @@
   <div class="toolbar-spacer"></div>
 
   {#if isPlaying && playheadMs !== null}
-    <span class="cursor-time playhead-time">{formatMs(playheadMs)}</span>
+    <span class="cursor-time playhead-time"
+      >{rules.clock(playheadMs / 1000, 3)}</span
+    >
   {:else if cursorMs !== null}
-    <span class="cursor-time">{formatMs(cursorMs)}</span>
+    <span class="cursor-time">{rules.clock(cursorMs / 1000, 3)}</span>
   {:else if playCursorMs !== null && playCursorMs > 0}
-    <span class="cursor-time play-cursor-time">{formatMs(playCursorMs)}</span>
+    <span class="cursor-time play-cursor-time"
+      >{rules.clock(playCursorMs / 1000, 3)}</span
+    >
   {/if}
 </div>
 

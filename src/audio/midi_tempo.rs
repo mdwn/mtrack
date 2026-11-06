@@ -26,12 +26,40 @@ use midly::Smf;
 
 use super::click_analysis::BeatGrid;
 pub use super::guessed_tempo::{GuessedTempo, GuessedTempoChange};
+use crate::config::{TempoChangeConfig, TempoConfig, TransitionConfig};
 use crate::midi::playback::{
     MidiTiming, SignatureEntry, TempoEntry, TempoWalk, DEFAULT_MICROS_PER_BEAT,
 };
 use crate::tempo::{TempoChangePosition, TempoMap, TimeSignature};
 
 impl GuessedTempo {
+    /// The guess as a song's `tempo:` block, its changes in the order a
+    /// save requires (`TempoConfig::normalized`): a start or a beat at
+    /// their defaults (0, the downbeat) left out.
+    pub fn to_config(&self) -> TempoConfig {
+        let signature = |[n, d]: [u32; 2]| format!("{n}/{d}");
+        let config = TempoConfig {
+            bpm: self.bpm,
+            time_signature: signature(self.time_signature),
+            start: (self.start_seconds > 0.0).then_some(self.start_seconds),
+            changes: self
+                .changes
+                .iter()
+                .map(|c| TempoChangeConfig {
+                    measure: c.measure,
+                    beat: (c.beat > 1).then_some(f64::from(c.beat)),
+                    bpm: Some(c.bpm),
+                    time_signature: Some(signature(c.time_signature)),
+                    transition: c
+                        .transition_beats
+                        .filter(|&beats| beats > 0)
+                        .map(|beats| TransitionConfig::Beats(f64::from(beats))),
+                })
+                .collect(),
+        };
+        config.normalized().0
+    }
+
     /// The suggestion a tempo map makes: a beat grid's, derived as lighting
     /// derives it. The grid's measured tempo is rounded to a hundredth of a
     /// BPM, which is what an author would write (a hundredth over a
@@ -571,6 +599,37 @@ fn dedup_changes(changes: &mut Vec<GuessedTempoChange>) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// The guess as a `tempo:` block: defaults left out, changes in bar
+    /// order, a ramp as its beats.
+    #[test]
+    fn a_guess_is_a_tempo_config() {
+        let change = |measure, beat, transition_beats| GuessedTempoChange {
+            measure,
+            beat,
+            bpm: 140.0,
+            time_signature: [3, 4],
+            transition_beats,
+        };
+        let guess = GuessedTempo {
+            start_seconds: 0.0,
+            bpm: 120.0,
+            time_signature: [4, 4],
+            changes: vec![change(9, 1, Some(4)), change(5, 3, None)],
+            alignment_rms_ms: None,
+        };
+        let config = guess.to_config();
+        assert_eq!(config.start, None);
+        assert_eq!(config.time_signature, "4/4");
+        let at: Vec<(u32, Option<f64>)> =
+            config.changes.iter().map(|c| (c.measure, c.beat)).collect();
+        assert_eq!(at, vec![(5, Some(3.0)), (9, None)]);
+        assert_eq!(
+            config.changes[1].transition,
+            Some(TransitionConfig::Beats(4.0))
+        );
+        assert_eq!(config.changes[0].time_signature.as_deref(), Some("3/4"));
+    }
 
     /// Helper: builds a minimal Format 0 MIDI file with given tempo/time-sig events.
     /// Returns the raw bytes. Uses 480 ticks per beat.

@@ -61,6 +61,12 @@ impl TimeSignature {
     }
 }
 
+/// The denominators a song's time signature may have: the powers of two up
+/// to 32.
+pub const SONG_DENOMINATORS: [u32; 6] = [1, 2, 4, 8, 16, 32];
+/// The largest numerator a song's time signature may have.
+pub const SONG_MAX_NUMERATOR: u32 = 64;
+
 /// What a time signature may be: what a song's `tempo:` block takes, or
 /// what a light show's `tempo {}` block takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,10 +97,10 @@ pub fn parse_signature_in(raw: &str, range: SignatureRange) -> Result<TimeSignat
     };
     match range {
         SignatureRange::Song => {
-            if numerator == 0 || numerator > 64 {
+            if numerator == 0 || numerator > SONG_MAX_NUMERATOR {
                 return Err(format!("time signature numerator {numerator} out of range"));
             }
-            if !matches!(denominator, 1 | 2 | 4 | 8 | 16 | 32) {
+            if !SONG_DENOMINATORS.contains(&denominator) {
                 return Err(format!(
                     "time signature denominator {denominator} must be a power of two up to 32"
                 ));

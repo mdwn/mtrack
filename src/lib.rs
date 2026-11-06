@@ -27,6 +27,7 @@ pub mod notification;
 pub mod player;
 pub mod playlist;
 pub mod playsync;
+pub mod position;
 pub mod proto;
 pub mod samples;
 pub mod section_loop;

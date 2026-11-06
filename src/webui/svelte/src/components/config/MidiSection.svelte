@@ -20,6 +20,7 @@
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     midi: Midi;
@@ -153,8 +154,9 @@
         );
       }}
     >
-      <option value="run_through">{$t("midi.beatClockSeamsRunThrough")}</option>
-      <option value="relocate">{$t("midi.beatClockSeamsRelocate")}</option>
+      {#each rules.config_choices().beat_clock_seams as s (s)}
+        <option value={s}>{$t(`midi.seams.${s}`)}</option>
+      {/each}
     </select>
   </div>
 </div>

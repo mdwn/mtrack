@@ -23,6 +23,8 @@
   import {
     timestampToMs,
     msToPixel,
+    SNAP_BEATS,
+    snapLabel,
   } from "../../../lib/lighting/timeline-state";
   import TimeRuler from "./TimeRuler.svelte";
   import ShowGroup from "./ShowGroup.svelte";
@@ -179,12 +181,9 @@
           </label>
           {#if localSnapEnabled}
             <select class="snap-select" bind:value={localSnapResolution}>
-              <option value="measure">Measure</option>
-              <option value="beat">Beat</option>
-              <option value="1/2">1/2</option>
-              <option value="1/4">1/4</option>
-              <option value="1/8">1/8</option>
-              <option value="1/16">1/16</option>
+              {#each Object.keys(SNAP_BEATS) as r (r)}
+                <option value={r}>{snapLabel(r, $t)}</option>
+              {/each}
             </select>
           {/if}
         </div>

@@ -13,9 +13,8 @@
 //
 
 import type { FadeStatus, NextUp } from "../gen/rules/mtrack_rules";
-import type { PlaybackState } from "./ws/stores";
 import type { Translate } from "./i18n";
-import { formatFadeLength, formatGapMs, isZeroLength } from "./util/format";
+import { formatFadeLength, formatGapMs } from "./util/format";
 
 /** The dashboard's "next up" line: what comes after the current song and
  *  how it will arrive. Empty when there is nothing to say. */
@@ -35,14 +34,13 @@ export function describeNext(
   const song = next.song;
   if (next.breaks_loop) {
     const out = next.fade_out;
-    const into =
-      out && !isZeroLength(out.length)
-        ? t("playback.nextBreakFade", {
-            values: { song, length: formatFadeLength(out.length) },
-          })
-        : t("playback.nextBreakCut", { values: { song } });
+    const into = out
+      ? t("playback.nextBreakFade", {
+          values: { song, length: formatFadeLength(out.length) },
+        })
+      : t("playback.nextBreakCut", { values: { song } });
     const fadeIn = next.fade_in;
-    if (!fadeIn || isZeroLength(fadeIn.length)) return into;
+    if (!fadeIn) return into;
     return (
       into +
       t("playback.nextBreakFadeIn", {
@@ -63,31 +61,10 @@ export function describeNext(
 
 /** The fade a looping song playing ends over when Next on the last entry,
  *  or Previous on the first, ends it, or null when such a press would cut
- *  it (no `fade_out`) and so is not offered. */
+ *  it (no `fade_out`, which a fade of no length is) and so is not offered. */
 export function loopEndFade(
   next: NextUp | null | undefined,
 ): FadeStatus | null {
   if (!next || !(next.breaks_loop || next.ends_loop)) return null;
-  const out = next.fade_out;
-  return out && !isZeroLength(out.length) ? out : null;
-}
-
-/** Whether the playlist is at its first entry, with nothing for Previous to
- *  move back to, and at its last, with nothing for Next. Off the list, it
- *  sits before the entry at its position, which Next lands on; Previous
- *  lands on the one before, or on the first entry itself, so off the list
- *  is never the first. */
-export function playlistEnds(
-  state: Pick<
-    PlaybackState,
-    "playlist_position" | "playlist_off_list" | "playlist_songs"
-  >,
-): { atFirst: boolean; atLast: boolean } {
-  const lastEntry = state.playlist_songs.length - 1;
-  return {
-    atFirst: !state.playlist_off_list && state.playlist_position <= 0,
-    atLast: state.playlist_off_list
-      ? state.playlist_position > lastEntry
-      : state.playlist_position >= lastEntry,
-  };
+  return next.fade_out ?? null;
 }

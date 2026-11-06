@@ -57,7 +57,7 @@ export function listed(
 export function room(
   spans: PatchSpan[],
   candidate: PatchSpan,
-  limit = 512,
+  limit = rules.limits().universe_size,
 ): number {
   if (overlaps(spans, candidate).some((h) => h.from === candidate.address))
     return 0;
@@ -71,7 +71,7 @@ export function room(
 }
 
 /** The addresses the strip shows: `size` of them around the fixture, inside
- *  1–512, so a long universe is never drawn whole. */
+ *  the universe, so a long universe is never drawn whole. */
 export function stripWindow(
   address: number,
   footprint: number,
@@ -79,8 +79,9 @@ export function stripWindow(
 ): { from: number; to: number } {
   const span = Math.max(1, footprint);
   let from = address - Math.max(0, Math.floor((size - span) / 2));
-  from = Math.max(1, Math.min(from, 512 - size + 1));
-  return { from, to: Math.min(512, from + size - 1) };
+  const last = rules.limits().universe_size;
+  from = Math.max(1, Math.min(from, last - size + 1));
+  return { from, to: Math.min(last, from + size - 1) };
 }
 
 /** One address cell of the strip. */

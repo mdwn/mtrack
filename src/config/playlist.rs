@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
 pub use super::fade::{FadeCurve, FadeStatus};
+use super::length::{parse_length, LoopCrossfade};
 pub use super::playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
-use super::song::LoopCrossfade;
 
 /// The configuration for a playlist.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -67,19 +67,6 @@ pub struct ConfiguredEntry {
     /// it: `false` for none, or settings overriding the playlist's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<super::ambient::PlaylistAmbient>,
-}
-
-impl AutoPlayConfig {
-    /// The gap before the song starts, `None` for no auto play.
-    pub fn parse(&self) -> Result<Option<std::time::Duration>, String> {
-        match self {
-            AutoPlayConfig::On(false) => Ok(None),
-            AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
-            AutoPlayConfig::Gap(gap) => super::parse_duration_string(gap).map(Some).map_err(|_| {
-                format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
-            }),
-        }
-    }
 }
 
 /// By hand rather than untagged: a song called `1999` reaches us as a
@@ -205,14 +192,6 @@ impl Fade {
             lights: self.lights.map(|l| l.to_string()),
         }
     }
-}
-
-/// A fade's length: as a loop crossfade, or zero for none.
-fn parse_length(field: &str, value: &str) -> Result<LoopCrossfade, String> {
-    if value.trim().trim_end_matches(['m', 's']).trim() == "0" {
-        return Ok(LoopCrossfade::Time(std::time::Duration::ZERO));
-    }
-    LoopCrossfade::parse_field(field, value)
 }
 
 impl Playlist {

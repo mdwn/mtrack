@@ -55,6 +55,7 @@
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
   import NotificationsSection from "../config/NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
+  import { withoutExtension } from "../../lib/util/paths";
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -217,7 +218,7 @@
         const newTracks = paths.map((p) => {
           const filename = p.split("/").pop() ?? p;
           return {
-            name: filename.replace(/\.[^.]+$/, ""),
+            name: withoutExtension(filename),
             file: p,
             file_channel: null,
           };

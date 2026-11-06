@@ -20,10 +20,12 @@ import type { TempoSection, TempoChange } from "./lighting/types";
 import { rules } from "./rules";
 
 /** `[numerator, denominator]` of a `4/4`-style string, by the player's own
- * parser; 4/4 stands in for a string it refuses, since the editor's model
- * has to show something. */
+ * parser; the player's default metre stands in for a string it refuses,
+ * since the editor's model has to show something. */
 function sigOf(raw: string | undefined): [number, number] {
-  return rules.signature_parse(raw ?? "") ?? [4, 4];
+  return (
+    rules.signature_parse(raw ?? "") ?? rules.tempo_defaults().time_signature
+  );
 }
 
 /** song.yaml tempo config -> the lighting TempoEditor's data model. */
@@ -68,19 +70,14 @@ export interface SnappedImport {
   duplicates: number;
 }
 
-/** The lighting TempoEditor's data model -> song.yaml tempo config.
- * Measure-anchored changes convert directly; time-anchored ones snap to
- * the nearest measure/beat on the grid (the song format is measure-based).
- *
- * The result is ordered and free of repeated positions, because a light show
- * is under no obligation to be either: its changes are sorted at playback,
- * and two of them may share a position (or arrive at one by snapping). The
- * song format is stricter — `to_tempo_map` refuses both — so the result goes
- * through the player's `tempo_normalize` before it can reach a save. */
-export function sectionToConfigSnapped(
+/** The lighting TempoEditor's data model -> song.yaml tempo config, as
+ * written. Measure-anchored changes convert directly; time-anchored ones
+ * snap to the nearest measure/beat on the grid (the song format is
+ * measure-based), or are dropped without one. */
+export function sectionToConfig(
   section: TempoSection,
   beatGrid: BeatGrid | null | undefined,
-): SnappedImport {
+): Omit<SnappedImport, "duplicates"> {
   const startSecs =
     section.start.unit === "ms"
       ? section.start.value / 1000
@@ -136,6 +133,20 @@ export function sectionToConfigSnapped(
   if (changes.length > 0) {
     config.changes = changes;
   }
+  return { config, snapped, dropped };
+}
+
+/** {@link sectionToConfig}, ordered and free of repeated positions, because
+ * a light show is under no obligation to be either: its changes are sorted
+ * at playback, and two of them may share a position (or arrive at one by
+ * snapping). The song format is stricter — `to_tempo_map` refuses both — so
+ * the result goes through the player's `tempo_normalize` before it can
+ * reach a save. */
+export function sectionToConfigSnapped(
+  section: TempoSection,
+  beatGrid: BeatGrid | null | undefined,
+): SnappedImport {
+  const { config, snapped, dropped } = sectionToConfig(section, beatGrid);
   const ordered = rules.tempo_normalize(config);
   return {
     config: ordered?.config ?? config,

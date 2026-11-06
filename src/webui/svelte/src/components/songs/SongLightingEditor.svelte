@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { ConnectError } from "@connectrpc/connect";
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     fetchLightingFile,
@@ -34,10 +35,12 @@
     TempoSection,
   } from "../../lib/lighting/types";
   import { tempoSourceOf } from "../../lib/lighting/timeline-state";
+  import { absoluteTimestamp, emptyCue } from "../../lib/lighting/types";
   import { rules } from "../../lib/rules";
   import type {
     IncludeSource,
     Layout,
+    PlayDeclined,
     SongInfo,
     TempoSource,
     TrackPeaks,
@@ -198,11 +201,15 @@
         startTime: create(DurationSchema, { seconds, nanos }),
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("already playing")) {
+      // The player names why a play was declined by key.
+      const declined =
+        e instanceof ConnectError
+          ? e.metadata.get(rules.play_declined_key())
+          : null;
+      if (declined === ("already_playing" satisfies PlayDeclined)) {
         error = "Another song is playing. Stop it first.";
       } else {
-        error = `Playback failed: ${msg}`;
+        error = `Playback failed: ${e instanceof Error ? e.message : e}`;
       }
     }
   }
@@ -665,7 +672,13 @@
     }
     const fileName = name.endsWith(".light") ? name : `${name}.light`;
     const showName = fileName.replace(/\.light$/, "");
-    const defaultContent = `show "${showName}" {\n    @00:00.000\n}\n`;
+    // One show of the file's name, with an empty cue at 0, as the player's
+    // writer writes it.
+    const defaultContent =
+      rules.document_write({
+        sequences: [],
+        shows: [{ name: showName, cues: [emptyCue(absoluteTimestamp(0))] }],
+      }) ?? "";
 
     const fullPath = rootPath(fileName);
     // The song's own name is the placeholder's; naming the first file so

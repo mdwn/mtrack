@@ -293,6 +293,13 @@ pub fn out_of_frame(rotation_deg: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     frame(rotation_deg, false, v)
 }
 
+/// The direction a fixture mounted at `rotation_deg` points at rest, a unit
+/// vector in stage space: −(third column of R = Rz·Ry·Rx), the mounting's
+/// −Z. Straight down for an unrotated fixture.
+pub fn rest_beam(rotation_deg: [f64; 3]) -> [f64; 3] {
+    out_of_frame(rotation_deg, [0.0, 0.0, 1.0]).map(|c| -c)
+}
+
 /// Both poses that aim a fixture at `position` with mounting `rotation`
 /// (degrees about X, Y, Z) at a stage point: first the principal one
 /// (tilt in `0..=180`), then its flip (`pan + 180°`, `−tilt`). Pans are in

@@ -22,7 +22,7 @@
 //! These are warnings, never errors. A show that parses is still valid; these
 //! only say what looks suspicious.
 
-pub use crate::lighting::findings::{Want, Warning};
+pub use crate::lighting::findings::{Severity, Want, Warning};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
@@ -35,7 +35,19 @@ use crate::lighting::timeline::EffectEnd;
 
 impl Warning {
     fn new(kind: &'static str, message: String) -> Self {
-        Warning { kind, message }
+        Warning {
+            kind,
+            message,
+            severity: Severity::Note,
+        }
+    }
+
+    /// A warning that the rig will not do what the show says.
+    fn attention(kind: &'static str, message: String) -> Self {
+        Warning {
+            severity: Severity::Attention,
+            ..Warning::new(kind, message)
+        }
     }
 }
 
@@ -443,7 +455,7 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
                     continue;
                 }
                 if reported.insert((group.clone(), want)) {
-                    out.push(Warning::new(
+                    out.push(Warning::attention(
                         "capability-gap",
                         format!(
                             "`{}` on `{group}` at {:.3}s needs {}, and none of the \
@@ -474,7 +486,7 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
             for name in focus_targets(&effect.effect_type) {
                 if let Some(points) = &ctx.focus_points {
                     if !points.contains(name) && reported.insert(("focus", name.to_string())) {
-                        out.push(Warning::new(
+                        out.push(Warning::attention(
                             "unbound-focus-point",
                             format!(
                                 "`move` on `{}` at {:.3}s aims at focus point \"{name}\", which \
@@ -1801,52 +1813,16 @@ show "T" {
         );
     }
 
-    /// The web UI's own table of per-effect parameters must match the engine.
-    ///
-    /// `EffectForm.svelte` keeps a `USED_PARAMS` map that decides which fields
-    /// survive an effect-type change. It was written by hand from what the
-    /// engine accepts, and nothing tied the two together — so a parameter added
-    /// to an effect, or removed from one, would leave the editor silently
-    /// dropping a real setting or carrying a dead one. Both are the failure this
-    /// branch exists to remove, so the table is read from the source and checked
-    /// rather than trusted.
+    /// The parameters the editor keeps on an effect-type change and offers
+    /// controls for (`EffectKind::params`, the web UI's vocabulary) must
+    /// each be one the engine reads, or the editor would carry a dead
+    /// setting the engine silently drops.
     #[test]
     fn the_editors_parameter_table_matches_what_the_engine_accepts() {
-        let source =
-            std::fs::read_to_string("src/webui/svelte/src/components/lighting/EffectForm.svelte")
-                .expect("the effect form must be readable");
-
-        // From the object literal's opening brace, so the type annotation —
-        // `Record<EffectType, string[]>` — does not leak in with its own
-        // brackets and break the parse below.
-        let table = source
-            .split_once("const USED_PARAMS")
-            .and_then(|(_, rest)| rest.split_once('{'))
-            .and_then(|(_, body)| body.split_once("};"))
-            .map(|(body, _)| body.to_string())
-            .expect("USED_PARAMS must still be a literal this test can read");
-
-        // `kind: ["a", "b"]` across however many lines prettier wrapped it to.
-        let flattened: String = table.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut checked = 0;
-        for entry in flattened.split(']') {
-            let Some((kind, params)) = entry.split_once('[') else {
-                continue;
-            };
-            let kind = kind
-                .trim()
-                .trim_start_matches(',')
-                .trim()
-                .trim_end_matches(':')
-                .trim();
-            if kind.is_empty() {
-                continue;
-            }
-            for param in params.split(',') {
-                let param = param.trim().trim_matches('"');
-                if param.is_empty() {
-                    continue;
-                }
+        for words in crate::lighting::parser::edit::vocabulary().effects {
+            let kind = words.kind.keyword();
+            for param in words.params {
                 let value = sample_value(kind, param);
                 // A `move` needs a target; a parameter that is not one gets
                 // a focus point to ride along with.
@@ -1875,10 +1851,7 @@ show "T" {
                 checked += 1;
             }
         }
-        assert!(
-            checked >= 25,
-            "only {checked} parameters were checked; the table was probably not parsed"
-        );
+        assert!(checked >= 25, "only {checked} parameters were checked");
     }
 
     /// A value the parser accepts for a given parameter.
@@ -1894,6 +1867,8 @@ show "T" {
             "focus" | "to" | "from" => "\"drummer\"",
             "pan" | "tilt" | "from_pan" | "from_tilt" => "45deg",
             "easing" => "smooth",
+            "color" => "\"red\"",
+            "spread" => "30deg",
             _ => "0.5",
         }
     }

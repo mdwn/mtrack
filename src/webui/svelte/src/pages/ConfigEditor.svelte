@@ -57,9 +57,8 @@
   import SamplesSection, {
     type SampleBrowseTarget,
   } from "../components/config/SamplesSection.svelte";
-  import MetronomeSection, {
-    type MetronomeSoundRole,
-  } from "../components/config/MetronomeSection.svelte";
+  import MetronomeSection from "../components/config/MetronomeSection.svelte";
+  import type { SoundRole } from "../lib/metronomePresets";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import Tooltip from "../components/config/Tooltip.svelte";
 
@@ -326,7 +325,7 @@
     selectedIndex = 0;
     selectedFilename = name;
     fileVersion = null;
-    startDraft(name.replace(/\.\w+$/, ""));
+    startDraft(fileProfileName(name));
   }
 
   async function saveFileProfile() {
@@ -598,7 +597,7 @@
   }
 
   // Metronome sound file browser state
-  let metronomeBrowseRole = $state<MetronomeSoundRole | null>(null);
+  let metronomeBrowseRole = $state<SoundRole | null>(null);
   let metronomeRef: MetronomeSection | undefined = $state();
 
   function onMetronomeBrowseSelect(paths: string[]) {
@@ -732,7 +731,7 @@
     if (profilesDir) {
       // File-based: match by filename (without extension)
       const match = profileFiles.find(
-        (f) => f.filename.replace(/\.\w+$/, "") === routeProfile,
+        (f) => fileProfileName(f.filename) === routeProfile,
       );
       if (match && selectedFilename !== match.filename) {
         selectFileProfile(match.filename, routeSection);
@@ -877,7 +876,10 @@
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
-          updateConfigUrl(selectedFilename?.replace(/\.\w+$/, ""), section)}
+          updateConfigUrl(
+            selectedFilename ? fileProfileName(selectedFilename) : undefined,
+            section,
+          )}
         onnotifbrowse={onNotifBrowse}
         onnotifupload={onNotifUpload}
         {notifUploadMsg}

@@ -12,10 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import { rules } from "../rules";
+
 /**
- * The venue editor's rows: a name and an address for a new one, and what
- * stops a save. A row the user added is never dropped without a word — a
- * row that cannot be saved blocks the save and says why.
+ * The venue editor's rows: a name and an address for a new one. What stops
+ * a save is the player's check (`rules.venue_row_problems`).
  */
 
 /** The first `Fixture N` (N from 1) no row is called. */
@@ -30,7 +31,7 @@ export function nextFixtureName(names: string[], base = "Fixture"): string {
 /** Where the editor puts a fixture added after `previous` (the last row,
  *  not the highest address): the same universe, straight after it — its
  *  address plus its footprint, or plus one when that is not known. A
- *  fixture that would run past 512 starts the next universe. The first
+ *  fixture that would run past its universe starts the next one. The first
  *  fixture of a venue goes at 1:1. */
 export function nextPatch(
   previous: {
@@ -45,81 +46,14 @@ export function nextPatch(
     previous.footprint && previous.footprint > 0 ? previous.footprint : 1;
   const own = footprint && footprint > 0 ? footprint : 1;
   const address = previous.address + step;
-  if (address + own - 1 > 512)
+  // Past its universe's end, by the patch's own rule (or past any address).
+  const span = {
+    fixture: "",
+    universe: previous.universe,
+    address,
+    footprint: own,
+  };
+  if ((rules.patch_overruns([span])?.length ?? 1) > 0)
     return { universe: previous.universe + 1, address: 1 };
   return { universe: previous.universe, address };
-}
-
-/** Why a row cannot be saved, as the suffix of a
- *  `lighting.venueRow.*` message. */
-export type RowProblem =
-  | "noName"
-  | "duplicateName"
-  | "noType"
-  | "noMode"
-  | "badUniverse"
-  | "badAddress";
-
-export interface Row {
-  name: string;
-  fixture_type: string;
-  universe: number;
-  start_channel: number;
-  mode?: string | null;
-}
-
-const positiveInteger = (v: unknown) =>
-  typeof v === "number" && Number.isInteger(v) && v >= 1;
-
-/** Each row's problems, by index; a row with none is absent. A fixture from
- *  a GDTF (`fromGdtf`) must name its mode. */
-export function rowProblems(
-  rows: Row[],
-  fromGdtf: (type: string) => boolean = () => false,
-): Map<number, RowProblem[]> {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const name = row.name.trim();
-    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  const out = new Map<number, RowProblem[]>();
-  rows.forEach((row, i) => {
-    const problems: RowProblem[] = [];
-    const name = row.name.trim();
-    if (!name) problems.push("noName");
-    else if ((counts.get(name) ?? 0) > 1) problems.push("duplicateName");
-    if (!row.fixture_type.trim()) problems.push("noType");
-    else if (fromGdtf(row.fixture_type.trim()) && !row.mode)
-      problems.push("noMode");
-    if (!positiveInteger(row.universe)) problems.push("badUniverse");
-    if (!positiveInteger(row.start_channel)) problems.push("badAddress");
-    if (problems.length > 0) out.set(i, problems);
-  });
-  return out;
-}
-
-/** Why a fixture type's channel row cannot be saved, as the suffix of a
- *  `lighting.channelRow.*` message. */
-export type ChannelProblem = "noName" | "duplicateName" | "badOffset";
-
-/** Each channel row's problems, by index; a row with none is absent. Two
- *  rows of one name would otherwise save as one. */
-export function channelProblems(
-  rows: { name: string; offset: number }[],
-): Map<number, ChannelProblem[]> {
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    const name = row.name.trim();
-    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  const out = new Map<number, ChannelProblem[]>();
-  rows.forEach((row, i) => {
-    const problems: ChannelProblem[] = [];
-    const name = row.name.trim();
-    if (!name) problems.push("noName");
-    else if ((counts.get(name) ?? 0) > 1) problems.push("duplicateName");
-    if (!positiveInteger(row.offset)) problems.push("badOffset");
-    if (problems.length > 0) out.set(i, problems);
-  });
-  return out;
 }

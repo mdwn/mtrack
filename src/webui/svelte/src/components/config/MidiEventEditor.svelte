@@ -12,9 +12,19 @@
      * this program. If not, see <https://www.gnu.org/licenses/>.
      *
      * -->
-<script lang="ts">
+<script lang="ts" module>
   import type { MidiEvent } from "../../gen/rules/mtrack_rules";
+
+  /** The event a new MIDI binding starts at: middle C, full velocity, on
+   *  channel 1. */
+  export function newMidiEvent(): MidiEvent {
+    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
+  }
+</script>
+
+<script lang="ts">
   import { t } from "svelte-i18n";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     event: MidiEvent;
@@ -24,26 +34,50 @@
 
   let { event = $bindable(), onchange, idPrefix = "midi" }: Props = $props();
 
-  function setType(type: MidiEvent["type"]) {
-    if (type === "note_on" || type === "note_off") {
-      event = { type, channel: event.channel ?? 1, key: 60, velocity: 100 };
-    } else if (type === "aftertouch") {
-      event = { type, channel: event.channel ?? 1, key: 60, velocity: 100 };
-    } else if (type === "control_change") {
-      event = { type, channel: event.channel ?? 1, controller: 0, value: 0 };
-    } else if (type === "program_change") {
-      event = { type, channel: event.channel ?? 1, program: 0 };
-    } else if (type === "channel_aftertouch") {
-      event = { type, channel: event.channel ?? 1, velocity: 64 };
-    } else if (type === "pitch_bend") {
-      event = { type, channel: event.channel ?? 1, bend: 8192 };
+  /** The MIDI events a config can name, and the range each field takes,
+   *  as the player reads them: the editor offers every kind. */
+  const midi = rules.midi_event_shapes();
+
+  /** An event's fields other than its type, with their values. */
+  function fieldsOf(event: MidiEvent): [string, number][] {
+    return Object.entries(event).filter(([key]) => key !== "type");
+  }
+
+  /** The fields the event's kind has, each with the event's value (or the
+   *  kind's lowest, when the event leaves it out). Keys the kind does not
+   *  have -- a misspelling the player ignores -- are not drawn. */
+  let fields = $derived.by((): [string, number][] => {
+    const kind = midi.kinds.find((k) => k.type === event.type);
+    if (!kind) return [];
+    const values = new Map(fieldsOf(event));
+    return fieldsOf(kind).map(([field, lowest]) => [
+      field,
+      values.get(field) ?? lowest,
+    ]);
+  });
+
+  /** The event as another kind, with that kind's fields: the ones the two
+   *  share keep their values, and keys neither kind has stay as written. */
+  function setType(type: string) {
+    const kind = midi.kinds.find((k) => k.type === type);
+    if (!kind) return;
+    const drawn = new Set(fields.map(([field]) => field));
+    const next = { ...kind };
+    for (const [field, value] of fieldsOf(event)) {
+      if (field in kind || !drawn.has(field))
+        Object.assign(next, { [field]: value });
     }
+    event = next;
     onchange();
   }
 
-  function updateNum(field: string, value: string, fallback: number) {
-    (event as unknown as Record<string, unknown>)[field] =
-      parseInt(value) || fallback;
+  /** A field of the event, held to the range the player reads. */
+  function setField(field: string, raw: string) {
+    const [lowest, highest] = midi.ranges[field];
+    const value = Math.round(Number(raw)) || lowest;
+    Object.assign(event, {
+      [field]: Math.min(highest, Math.max(lowest, value)),
+    });
     onchange();
   }
 </script>
@@ -55,132 +89,29 @@
       id="{idPrefix}-type"
       class="input"
       value={event.type}
-      onchange={(e) =>
-        setType((e.target as HTMLSelectElement).value as MidiEvent["type"])}
+      onchange={(e) => setType((e.target as HTMLSelectElement).value)}
     >
-      <option value="note_on">{$t("midiEvent.noteOn")}</option>
-      <option value="note_off">{$t("midiEvent.noteOff")}</option>
-      <option value="aftertouch">{$t("midiEvent.aftertouch")}</option>
-      <option value="control_change">{$t("midiEvent.controlChange")}</option>
-      <option value="program_change">{$t("midiEvent.programChange")}</option>
-      <option value="channel_aftertouch"
-        >{$t("midiEvent.channelAftertouch")}</option
-      >
-      <option value="pitch_bend">{$t("midiEvent.pitchBend")}</option>
+      {#each midi.kinds as kind (kind.type)}
+        <option value={kind.type}>{$t(`midiEvent.types.${kind.type}`)}</option>
+      {/each}
     </select>
   </div>
 
-  <div class="field field-num">
-    <label for="{idPrefix}-channel">{$t("midiEvent.channel")}</label>
-    <input
-      id="{idPrefix}-channel"
-      class="input"
-      type="number"
-      min="1"
-      max="16"
-      value={event.channel ?? 1}
-      onchange={(e) =>
-        updateNum("channel", (e.target as HTMLInputElement).value, 1)}
-    />
-  </div>
-
-  {#if event.type === "note_on" || event.type === "note_off" || event.type === "aftertouch"}
+  {#each fields as [field, value] (field)}
+    {@const [lowest, highest] = midi.ranges[field]}
     <div class="field field-num">
-      <label for="{idPrefix}-key">{$t("midiEvent.key")}</label>
+      <label for="{idPrefix}-{field}">{$t(`midiEvent.fields.${field}`)}</label>
       <input
-        id="{idPrefix}-key"
+        id="{idPrefix}-{field}"
         class="input"
         type="number"
-        min="0"
-        max="127"
-        value={event.key ?? 60}
-        onchange={(e) =>
-          updateNum("key", (e.target as HTMLInputElement).value, 0)}
+        min={lowest}
+        max={highest}
+        {value}
+        onchange={(e) => setField(field, (e.target as HTMLInputElement).value)}
       />
     </div>
-    <div class="field field-num">
-      <label for="{idPrefix}-velocity">{$t("midiEvent.velocity")}</label>
-      <input
-        id="{idPrefix}-velocity"
-        class="input"
-        type="number"
-        min="0"
-        max="127"
-        value={event.velocity ?? 0}
-        onchange={(e) =>
-          updateNum("velocity", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-  {:else if event.type === "control_change"}
-    <div class="field field-num">
-      <label for="{idPrefix}-controller">{$t("midiEvent.controller")}</label>
-      <input
-        id="{idPrefix}-controller"
-        class="input"
-        type="number"
-        min="0"
-        max="127"
-        value={event.controller ?? 0}
-        onchange={(e) =>
-          updateNum("controller", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-    <div class="field field-num">
-      <label for="{idPrefix}-value">{$t("midiEvent.value")}</label>
-      <input
-        id="{idPrefix}-value"
-        class="input"
-        type="number"
-        min="0"
-        max="127"
-        value={event.value ?? 0}
-        onchange={(e) =>
-          updateNum("value", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-  {:else if event.type === "program_change"}
-    <div class="field field-num">
-      <label for="{idPrefix}-program">{$t("midiEvent.program")}</label>
-      <input
-        id="{idPrefix}-program"
-        class="input"
-        type="number"
-        min="0"
-        max="127"
-        value={event.program ?? 0}
-        onchange={(e) =>
-          updateNum("program", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-  {:else if event.type === "channel_aftertouch"}
-    <div class="field field-num">
-      <label for="{idPrefix}-velocity">{$t("midiEvent.velocity")}</label>
-      <input
-        id="{idPrefix}-velocity"
-        class="input"
-        type="number"
-        min="0"
-        max="127"
-        value={event.velocity ?? 0}
-        onchange={(e) =>
-          updateNum("velocity", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-  {:else if event.type === "pitch_bend"}
-    <div class="field field-num">
-      <label for="{idPrefix}-bend">{$t("midiEvent.bend")}</label>
-      <input
-        id="{idPrefix}-bend"
-        class="input"
-        type="number"
-        min="0"
-        max="16383"
-        value={event.bend ?? 8192}
-        onchange={(e) =>
-          updateNum("bend", (e.target as HTMLInputElement).value, 0)}
-      />
-    </div>
-  {/if}
+  {/each}
 </div>
 
 <style>

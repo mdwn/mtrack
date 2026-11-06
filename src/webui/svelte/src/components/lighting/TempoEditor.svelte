@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import type { GuessedTempo } from "../../gen/rules/mtrack_rules";
+  import { configToSection } from "../../lib/tempoConvert";
   import { t } from "svelte-i18n";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
   import { fetchTempoGuess } from "../../lib/api/songs";
@@ -51,27 +51,6 @@
 
   const ALIGNMENT_WARN_THRESHOLD_MS = 15;
 
-  function convertGuessToTempo(guessed: GuessedTempo): TempoSection {
-    return {
-      start: { value: guessed.start_seconds, unit: "s" },
-      bpm: guessed.bpm,
-      time_signature: guessed.time_signature,
-      changes: guessed.changes.map((c) => {
-        const change: TempoChange = {
-          timestamp: { type: "measure_beat", measure: c.measure, beat: c.beat },
-          bpm: c.bpm,
-          time_signature: c.time_signature,
-        };
-        if (c.transition_beats) {
-          change.transition = rules.transition_text({
-            beats: c.transition_beats,
-          });
-        }
-        return change;
-      }),
-    };
-  }
-
   async function guessTempoMap() {
     if (!songName) return;
     guessing = true;
@@ -80,7 +59,7 @@
       if (result) {
         guessSource = result.source;
         guessAlignmentRms = result.tempo.alignment_rms_ms ?? null;
-        onchange(convertGuessToTempo(result.tempo));
+        onchange(configToSection(result.config));
       }
     } finally {
       guessing = false;

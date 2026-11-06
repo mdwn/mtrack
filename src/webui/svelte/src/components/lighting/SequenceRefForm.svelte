@@ -15,6 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { SequenceRef } from "../../lib/lighting/types";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     ref: SequenceRef;
@@ -68,10 +69,9 @@
         }}
       >
         <option value="">--</option>
-        <option value="once">{$t("effect.once")}</option>
-        <option value="loop">{$t("effect.loopOption")}</option>
-        <option value="pingpong">{$t("effect.pingpong")}</option>
-        <option value="random">{$t("effect.random")}</option>
+        {#each rules.vocabulary().loops as l (l)}
+          <option value={l}>{l}</option>
+        {/each}
       </select>
     </label>
     <div class="field checkbox-field">

@@ -72,7 +72,7 @@ pub enum HintPosition {
 
 /// Alignment of a hint's audio relative to its anchor position.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 #[serde(rename_all = "lowercase")]
 pub enum HintAlign {
     /// The sample ends at the anchor (default).

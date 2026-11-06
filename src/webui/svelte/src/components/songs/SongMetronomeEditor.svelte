@@ -23,8 +23,10 @@
   import { previewClick } from "../../lib/clickPreview";
   import SongFileField from "./SongFileField.svelte";
   import {
-    METRONOME_PRESETS,
-    SOUND_DEFAULTS,
+    builtinSounds,
+    metronomePresets,
+    SOUND_ROLES,
+    type SoundRole,
   } from "../../lib/metronomePresets";
 
   interface Props {
@@ -37,7 +39,7 @@
     /** The song directory listing, for the sound-file pickers. */
     songFiles?: SongFile[];
     /** Opens the filesystem browser for a sound's file. */
-    onbrowsesound?: (role: "accent" | "half" | "normal" | "sub") => void;
+    onbrowsesound?: (role: SoundRole) => void;
   }
 
   let {
@@ -51,11 +53,7 @@
 
   let expanded = $state(true);
 
-  const ROLES = ["accent", "half", "normal", "sub"] as const;
-  type Role = (typeof ROLES)[number];
-
-  const DEFAULTS = SOUND_DEFAULTS;
-  const PRESETS = METRONOME_PRESETS;
+  const DEFAULTS = builtinSounds();
 
   type MetronomeState = "default" | "on" | "off";
 
@@ -101,7 +99,7 @@
       delete updated.enabled;
     }
     if (updated.sounds) {
-      for (const key of ROLES) {
+      for (const key of SOUND_ROLES) {
         const sound = updated.sounds[key];
         if (sound && Object.keys(sound).length === 0) {
           delete updated.sounds[key];
@@ -114,7 +112,7 @@
     onchange(updated);
   }
 
-  function updateSound(role: Role, patch: Partial<ClickSoundConfig>) {
+  function updateSound(role: SoundRole, patch: Partial<ClickSoundConfig>) {
     if (!metronome) return;
     const sounds = { ...(metronome.sounds ?? {}) };
     const merged: ClickSoundConfig = { ...(sounds[role] ?? {}), ...patch };
@@ -128,7 +126,7 @@
   }
 
   /** On = the song overrides this sound; off = player defaults apply. */
-  function toggleSound(role: Role, on: boolean) {
+  function toggleSound(role: SoundRole, on: boolean) {
     if (!metronome) return;
     if (on) {
       updateSound(role, DEFAULTS[role]);
@@ -223,7 +221,7 @@
 
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
-        {#each PRESETS as preset (preset.key)}
+        {#each metronomePresets() as preset (preset.key)}
           <button
             class="btn btn-sm"
             onclick={() => applyPreset(preset.sounds)}
@@ -235,7 +233,7 @@
       </div>
 
       <div class="sounds">
-        {#each ROLES as role (role)}
+        {#each SOUND_ROLES as role (role)}
           {@const sound = metronome.sounds?.[role]}
           <div class="sound-row" class:sound-row--off={!sound}>
             <label class="toggle-row">

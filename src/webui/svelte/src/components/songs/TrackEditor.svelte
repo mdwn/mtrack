@@ -17,6 +17,7 @@
   import { t } from "svelte-i18n";
   import type { SongFile } from "../../lib/api/songs";
   import Waveform from "./Waveform.svelte";
+  import { withoutExtension } from "../../lib/util/paths";
 
   interface Props {
     tracks: Track[];
@@ -50,7 +51,7 @@
     const file = audioFiles.length > 0 ? audioFiles[0].name : "";
     onchange([
       ...tracks,
-      { name: file.replace(/\.[^.]+$/, ""), file, file_channel: null },
+      { name: withoutExtension(file), file, file_channel: null },
     ]);
   }
 

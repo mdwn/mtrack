@@ -13,7 +13,6 @@
 //
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::Serialize;
 use yaml_rust2::{Yaml, YamlEmitter};
@@ -37,62 +36,7 @@ pub fn filename_display(path: &Path) -> &str {
         .unwrap_or("unreadable file name")
 }
 
-/// Outputs the given duration in a minutes:seconds format.
-pub fn duration_minutes_seconds(duration: Duration) -> String {
-    let minutes = duration.as_secs() / 60;
-    let secs = duration.as_secs() - minutes * 60;
-    format!("{}:{:02}", minutes, secs)
-}
-
-/// A duration of `secs` seconds, or `None` for one no duration holds: a
-/// negative or non-finite number, or one too large. For seconds a client
-/// sends: `Duration::from_secs_f64` panics on these, and a panic there takes
-/// down the task serving the client.
-pub fn duration_from_secs(secs: f64) -> Option<Duration> {
-    Duration::try_from_secs_f64(secs).ok()
-}
-
-/// A playback position a client sent as text: seconds (`90`, `90s`,
-/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`), with or without the
-/// `@` a cue position is written with (`@1:30`). The one parser for a
-/// position as text; a position sent as a number of seconds goes through
-/// [`duration_from_secs`], as this does. Errors are the reason, for the
-/// surface to answer with.
-pub fn parse_position(value: &str) -> Result<Duration, String> {
-    let trimmed = value.trim();
-    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim();
-    let seconds = if let Some(stripped) = trimmed
-        .strip_suffix('s')
-        .or_else(|| trimmed.strip_suffix('S'))
-    {
-        if stripped.contains(':') {
-            parse_mm_ss(stripped)?
-        } else {
-            stripped
-                .parse::<f64>()
-                .map_err(|e| format!("invalid seconds: {e}"))?
-        }
-    } else if trimmed.contains(':') {
-        parse_mm_ss(trimmed)?
-    } else {
-        trimmed
-            .parse::<f64>()
-            .map_err(|e| format!("invalid duration: {e}"))?
-    };
-    // Too large a number is turned down with the rest: converting it
-    // panicked, failing the request with no answer.
-    duration_from_secs(seconds)
-        .ok_or_else(|| "duration must be a finite, non-negative number of seconds in range".into())
-}
-
-/// The seconds in an `mm:ss.mmm` time, to the bit: a position is not
-/// rounded to the millisecond, as a cue's time is.
-fn parse_mm_ss(s: &str) -> Result<f64, String> {
-    let (minutes, ss) = crate::lighting::parser::utils::split_minutes(s)
-        .map_err(|e| format!("invalid minutes: {e}"))?;
-    let seconds: f64 = ss.parse().map_err(|e| format!("invalid seconds: {e}"))?;
-    Ok((minutes as f64) * 60.0 + seconds)
-}
+pub use crate::position::{duration_from_secs, duration_minutes_seconds, parse_position};
 
 /// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
 /// and PascalCase by inserting hyphens at word boundaries and lowercasing.

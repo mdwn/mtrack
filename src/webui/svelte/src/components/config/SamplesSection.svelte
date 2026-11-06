@@ -26,6 +26,9 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   export type SampleBrowseTarget = {
     sampleName: string;
@@ -112,9 +115,13 @@
     onchange();
   }
 
+  /** The range a MIDI velocity takes, as the player reads it. */
+  const [VELOCITY_MIN, VELOCITY_MAX] =
+    rules.midi_event_shapes().ranges.velocity;
+
   function addLayer(name: string) {
     const velocity = (samples[name].velocity ??= {});
-    (velocity.layers ??= []).push({ range: [1, 127], file: "" });
+    (velocity.layers ??= []).push({ range: [1, VELOCITY_MAX], file: "" });
     onchange();
   }
 
@@ -351,11 +358,9 @@
                       );
                     }}
                   >
-                    <option value="play_to_completion"
-                      >{$t("samples.playToCompletion")}</option
-                    >
-                    <option value="stop">{$t("samples.releaseStop")}</option>
-                    <option value="fade">{$t("samples.releaseFade")}</option>
+                    {#each choices.release_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.releases.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
 
@@ -379,10 +384,9 @@
                       );
                     }}
                   >
-                    <option value="cut">{$t("samples.retriggerCut")}</option>
-                    <option value="polyphonic"
-                      >{$t("samples.retriggerPolyphonic")}</option
-                    >
+                    {#each choices.retrigger_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.retriggers.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
               </div>
@@ -463,15 +467,11 @@
                         onchange();
                       }}
                     >
-                      <option value="ignore"
-                        >{$t("samples.velocityIgnore")}</option
-                      >
-                      <option value="scale"
-                        >{$t("samples.velocityScale")}</option
-                      >
-                      <option value="layers"
-                        >{$t("samples.velocityLayers")}</option
-                      >
+                      {#each choices.velocity_modes as m (m)}
+                        <option value={m}
+                          >{$t(`samples.velocityModes.${m}`)}</option
+                        >
+                      {/each}
                     </select>
                   </div>
 
@@ -486,8 +486,8 @@
                         id="sample-vel-default-{name}"
                         class="input"
                         type="number"
-                        min="0"
-                        max="127"
+                        min={VELOCITY_MIN}
+                        max={VELOCITY_MAX}
                         placeholder="100"
                         value={def.velocity?.default ?? ""}
                         onchange={(e) => {
@@ -541,20 +541,20 @@
                         <div class="layer-row">
                           <span class="layer-label"
                             >Velocity {layer.range?.[0] ?? 0}-{layer
-                              .range?.[1] ?? 127}</span
+                              .range?.[1] ?? VELOCITY_MAX}</span
                           >
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Min"
                             value={layer.range?.[0] ?? ""}
                             onchange={(e) => {
                               layer.range[0] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 0;
+                                ) || VELOCITY_MIN;
                               onchange();
                             }}
                           />
@@ -562,15 +562,15 @@
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Max"
                             value={layer.range?.[1] ?? ""}
                             onchange={(e) => {
                               layer.range[1] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 127;
+                                ) || VELOCITY_MAX;
                               onchange();
                             }}
                           />

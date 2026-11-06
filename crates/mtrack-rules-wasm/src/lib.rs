@@ -103,6 +103,14 @@ mod hardware_status;
 #[path = "../../../src/device_info.rs"]
 pub mod device_info;
 
+/// A playback position as text (`src/position.rs`).
+#[path = "../../../src/position.rs"]
+pub mod position;
+
+/// Why a play started no song (`src/player/play_declined.rs`).
+#[path = "../../../src/player/play_declined.rs"]
+mod play_declined;
+
 /// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
 #[path = "../../../src/audio/guessed_tempo.rs"]
 pub mod guessed_tempo;
@@ -176,6 +184,7 @@ pub mod dmx {
 
 pub mod player {
     pub use crate::hardware_status::*;
+    pub use crate::play_declined::*;
 }
 
 pub mod playlist {
@@ -323,6 +332,11 @@ type EffectParamsJs = <EffectParams as Tsify>::JsType;
 type EffectEditJs = <EffectEdit as Tsify>::JsType;
 type SequenceRefJs = <SequenceRef as Tsify>::JsType;
 type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
+type ChannelValuesJs = <ChannelValues as Tsify>::JsType;
+type TripleJs = <Triple as Tsify>::JsType;
+type VenueRowsJs = <VenueRows as Tsify>::JsType;
+type ChannelRowsJs = <ChannelRows as Tsify>::JsType;
+type ClaveKindJs = <metronome_config::ClaveKind as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -846,6 +860,27 @@ pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
     Some(effect.view())
 }
 
+/// The words an effect line's form offers (`edit::vocabulary`).
+#[wasm_bindgen]
+pub fn vocabulary() -> lighting::parser::edit::Vocabulary {
+    lighting::parser::edit::vocabulary()
+}
+
+/// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)` or a name,
+/// quoted or not), as `#rrggbb`; `None` for text that is no colour.
+#[wasm_bindgen]
+pub fn color_hex(text: &str) -> Option<String> {
+    let c = lighting::parser::utils::parse_color_string(text)?;
+    Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+}
+
+/// The name a fixture type's DSL declares (`edit::declared_fixture_type`):
+/// what the file is keyed on.
+#[wasm_bindgen]
+pub fn fixture_type_name(source: &str) -> Option<String> {
+    lighting::parser::edit::declared_fixture_type(source)
+}
+
 /// The effect a click on a timeline lane adds (`edit::new_effect`).
 #[wasm_bindgen]
 pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
@@ -985,6 +1020,13 @@ pub fn midi_event_shapes() -> config::MidiEventShapes {
     config::MidiEventShapes::new()
 }
 
+/// The values each of a config's choices takes: what the config editor's
+/// selects offer.
+#[wasm_bindgen]
+pub fn config_choices() -> config::ConfigChoices {
+    config::ConfigChoices::default()
+}
+
 // ── Metronome ───────────────────────────────────────────────────────────────
 
 /// Per-beat accent levels: 0 silent, 1 normal, 2 half, 3 accent.
@@ -1023,6 +1065,249 @@ pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Subd
     }
     let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
     Some(metronome.subdivision_at(measure).0.clone())
+}
+
+/// The built-in synthesized click of each role
+/// (`MetronomeSounds::builtin`): what a fresh sound override starts at.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct BuiltinSounds(pub metronome_config::MetronomeSounds);
+
+/// [`BuiltinSounds`], for the web UI.
+#[wasm_bindgen]
+pub fn metronome_sounds() -> BuiltinSounds {
+    BuiltinSounds(metronome_config::MetronomeSounds::builtin())
+}
+
+/// The samples of a synthesized click at `freq` Hz and `volume`, at
+/// `sample_rate` (`synthesize_click`, the click the player renders): what
+/// a click's preview plays. `None` for a rate past 384 kHz or a value that
+/// is no number.
+#[wasm_bindgen]
+pub fn click_samples(freq: f64, volume: f64, sample_rate: u32) -> Option<Vec<f32>> {
+    (freq.is_finite() && volume.is_finite() && (1..=384_000).contains(&sample_rate))
+        .then(|| metronome_config::synthesize_click(freq, volume, sample_rate))
+}
+
+/// A clave's half-beat offsets in the first and second measure of its
+/// cycle (`ClaveKind::half_beats`).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct ClaveHalfBeats {
+    pub first: Vec<u32>,
+    pub second: Vec<u32>,
+}
+
+/// [`ClaveHalfBeats`] of a clave, for the web UI; `None` for a value that
+/// is not a clave.
+#[wasm_bindgen]
+pub fn clave_half_beats(kind: ClaveKindJs) -> Option<ClaveHalfBeats> {
+    let (first, second) = read::<metronome_config::ClaveKind>(JsValue::from(kind))?.half_beats();
+    let offsets = |hits: &[usize]| hits.iter().map(|&h| h as u32).collect();
+    Some(ClaveHalfBeats {
+        first: offsets(first),
+        second: offsets(second),
+    })
+}
+
+// ── Stage views ─────────────────────────────────────────────────────────────
+
+/// A fixture's channel values as a stage view holds them; a channel left
+/// `undefined` is not reported.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+#[tsify(hashmap_as_object)]
+pub struct ChannelValues(pub std::collections::HashMap<String, Option<f64>>);
+
+/// Whether a fixture with these channel values is lit, as the engine has
+/// it (`channels::is_lit`: the light it emits, any part's brightest emitter
+/// times its dimmer, is above 0): what every stage view draws a lit fixture
+/// by. `false` for a value that is not channels.
+#[wasm_bindgen]
+pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
+    read::<ChannelValues>(JsValue::from(channels)).is_some_and(|ChannelValues(values)| {
+        lighting::channels::is_lit(
+            values
+                .iter()
+                .filter_map(|(name, value)| Some((name.as_str(), (*value)?))),
+        )
+    })
+}
+
+/// The file name an MVR export of `venue` writes (`export_file_name`):
+/// `output` when it is one the export takes, or the venue's own when
+/// `output` is `None`; `None` for a name the export refuses.
+#[wasm_bindgen]
+pub fn mvr_export_name(output: Option<String>, venue: &str) -> Option<String> {
+    lighting::mvr_types::export_file_name(output.as_deref(), venue).ok()
+}
+
+/// A direction or a rotation in stage space: `[x, y, z]`.
+#[derive(Serialize, Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct Triple(pub [f64; 3]);
+
+/// The direction a fixture mounted at `rotation` (degrees about X, Y, Z)
+/// points at rest (`pointing::rest_beam`): what the plan draws its beam
+/// along. `None` for a value that is not a rotation.
+#[wasm_bindgen]
+pub fn rest_beam(rotation: TripleJs) -> Option<Triple> {
+    let Triple(rotation) = read(JsValue::from(rotation))?;
+    Some(Triple(lighting::effects::rest_beam(rotation)))
+}
+
+/// The gRPC metadata a declined play names its reason under
+/// (`PLAY_DECLINED_KEY`), the reason a `PlayDeclined`.
+#[wasm_bindgen]
+pub fn play_declined_key() -> String {
+    play_declined::PLAY_DECLINED_KEY.to_string()
+}
+
+/// The levels the player's log lines carry, from the most detailed
+/// (`tracing::Level`, as a line names its own).
+#[wasm_bindgen]
+pub fn log_levels() -> Vec<String> {
+    use tracing::Level;
+    [
+        Level::TRACE,
+        Level::DEBUG,
+        Level::INFO,
+        Level::WARN,
+        Level::ERROR,
+    ]
+    .map(|level| level.as_str().to_string())
+    .to_vec()
+}
+
+/// A fade length as written, as a reader is shown it
+/// (`LoopCrossfade::text`: `2 measures`, `4s`); `None` for text that is no
+/// length.
+#[wasm_bindgen]
+pub fn fade_length_text(text: &str) -> Option<String> {
+    config::length::parse_length("length", text)
+        .ok()
+        .map(|length| length.text())
+}
+
+/// An entry's `auto_play` written as text, as the player reads it: off,
+/// a gap before its song (`2s`, `500ms`, `2m`; `true` is none), or text it
+/// refuses (`2`, a number with no unit).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AutoPlayReading {
+    Off,
+    Gap { ms: f64 },
+    Invalid,
+}
+
+/// [`AutoPlayReading`] of `text`, read through the config's own
+/// deserializer and `AutoPlayConfig::parse`.
+#[wasm_bindgen]
+pub fn auto_play_read(text: &str) -> AutoPlayReading {
+    let value = serde_json::Value::String(text.to_string());
+    match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
+        Ok(Ok(None)) => AutoPlayReading::Off,
+        Ok(Ok(Some(gap))) => AutoPlayReading::Gap {
+            ms: gap.as_secs_f64() * 1000.0,
+        },
+        _ => AutoPlayReading::Invalid,
+    }
+}
+
+// ── Positions ───────────────────────────────────────────────────────────────
+
+/// `secs` as minutes and seconds, `1:15`, to `decimals` places of a
+/// second (`position::minutes_seconds`): the one way a time is shown.
+#[wasm_bindgen]
+pub fn clock(secs: f64, decimals: u32) -> String {
+    position::minutes_seconds(secs, decimals)
+}
+
+/// A position typed as text, in seconds, as the player reads one
+/// (`position::parse_position`: `90`, `90s`, `1:30.5`, `@1:30`); `None`
+/// for text that is no position.
+#[wasm_bindgen]
+pub fn position_parse(text: &str) -> Option<f64> {
+    position::parse_position(text).ok().map(|d| d.as_secs_f64())
+}
+
+// ── Editor rows ─────────────────────────────────────────────────────────────
+
+/// A venue editor's fixture rows.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct VenueRows(pub Vec<lighting::venue_rows::VenueRow>);
+
+/// The rows that cannot be saved, and why.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct RowProblemList(pub Vec<lighting::venue_rows::RowProblems>);
+
+/// A fixture type editor's channel rows.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct ChannelRows(pub Vec<lighting::venue_rows::ChannelRow>);
+
+/// The channel rows that cannot be saved, and why.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct ChannelProblemList(pub Vec<lighting::venue_rows::ChannelProblems>);
+
+/// What stops each of a venue's fixture rows from saving
+/// (`venue_rows::venue_row_problems`, the save's own check); a fixture of
+/// a type in `gdtf_types` must name its mode. `None` for a value that is
+/// not rows.
+#[wasm_bindgen]
+pub fn venue_row_problems(rows: VenueRowsJs, gdtf_types: Vec<String>) -> Option<RowProblemList> {
+    let VenueRows(rows) = read(JsValue::from(rows))?;
+    let from_gdtf = |t: &str| gdtf_types.iter().any(|g| g == t);
+    Some(RowProblemList(lighting::venue_rows::venue_row_problems(
+        &rows, from_gdtf,
+    )))
+}
+
+/// What stops each of a fixture type's channel rows from saving
+/// (`venue_rows::channel_row_problems`). `None` for a value that is not
+/// rows.
+#[wasm_bindgen]
+pub fn channel_row_problems(rows: ChannelRowsJs) -> Option<ChannelProblemList> {
+    let ChannelRows(rows) = read(JsValue::from(rows))?;
+    Some(ChannelProblemList(
+        lighting::venue_rows::channel_row_problems(&rows),
+    ))
+}
+
+// ── Limits ──────────────────────────────────────────────────────────────────
+
+/// The player's fixed limits the UI bounds its inputs by.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct Limits {
+    /// The channels of a DMX universe (`patch::UNIVERSE_SIZE`).
+    pub universe_size: u32,
+    /// The lowest and highest gain a track is set to, in dB
+    /// (`track_gains`); the lowest is silence.
+    pub gain_db: (f32, f32),
+    /// The largest numerator a song's time signature takes, and its
+    /// denominators (`tempo::SONG_MAX_NUMERATOR`, `SONG_DENOMINATORS`).
+    pub signature_numerator_max: u32,
+    pub signature_denominators: Vec<u32>,
+}
+
+/// [`Limits`], for the web UI.
+#[wasm_bindgen]
+pub fn limits() -> Limits {
+    Limits {
+        universe_size: patch::UNIVERSE_SIZE,
+        gain_db: (track_gains::MIN_GAIN_DB, track_gains::MAX_GAIN_DB),
+        signature_numerator_max: tempo::SONG_MAX_NUMERATOR,
+        signature_denominators: tempo::SONG_DENOMINATORS.to_vec(),
+    }
 }
 
 // ── DMX patch ───────────────────────────────────────────────────────────────

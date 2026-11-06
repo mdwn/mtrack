@@ -13,9 +13,8 @@
 //
 
 import { playerClient } from "./grpc/client";
+import { rules } from "./rules";
 
-export const GAIN_MIN = -60;
-export const GAIN_MAX = 12;
 export const GAIN_STEP = 0.5;
 
 /** Throttle interval for slider drags. */
@@ -24,9 +23,10 @@ const THROTTLE_MS = 75;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const pending = new Map<string, number>();
 
-/** Formats a dB value for display; GAIN_MIN and below shows as -inf. */
+/** Formats a dB value for display; the player's lowest gain and below
+ *  shows as -inf. */
 export function formatDb(db: number): string {
-  if (db <= GAIN_MIN) return "-∞";
+  if (db <= rules.limits().gain_db[0]) return "-∞";
   return `${db > 0 ? "+" : ""}${db.toFixed(1)} dB`;
 }
 

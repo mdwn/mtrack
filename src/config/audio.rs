@@ -23,7 +23,9 @@ const DEFAULT_BUFFER_THREADS: usize = 2;
 
 /// Which resampling algorithm to use when source and output sample rates differ.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResamplerType {
     /// High-quality sinc interpolation (lower latency, higher CPU). This is the default.

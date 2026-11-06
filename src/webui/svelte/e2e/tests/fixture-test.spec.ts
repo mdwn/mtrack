@@ -64,6 +64,8 @@ async function playback(page: Page, id: string, extra: object) {
       song_duration_ms: 180000,
       playlist_name: "setlist",
       playlist_position: 0,
+      playlist_at_first: true,
+      playlist_at_last: false,
       playlist_songs: ["Test Song Alpha", "Test Song Beta"],
       tracks: [],
       available_playlists: ["all_songs", "setlist"],

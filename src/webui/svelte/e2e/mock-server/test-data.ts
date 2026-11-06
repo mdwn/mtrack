@@ -335,6 +335,8 @@ export const PLAYBACK_STATE = {
   song_duration_ms: 180000,
   playlist_name: "setlist",
   playlist_position: 0,
+  playlist_at_first: true,
+  playlist_at_last: false,
   playlist_off_list: false,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
@@ -362,9 +364,10 @@ export const PLAYBACK_STATE = {
   next: null,
 } satisfies SocketMessage;
 
-/** The readiness facts of a rig where everything lines up. Specs that need a
- *  problem route their own copy of this with `page.route`; nothing mutates it. */
-export const READINESS: Readiness = {
+/** The readiness of a rig where everything lines up, its facts and the
+ *  player's verdicts on them. Specs that need a problem route their own copy
+ *  of this with `page.route`; nothing mutates it. */
+export const READINESS = {
   dmx: true,
   venue: {
     name: "test-venue",
@@ -388,7 +391,46 @@ export const READINESS: Readiness = {
     unconfigured: [],
     olad: { reachable: true, unpatched: [] },
   },
-};
+  checks: [
+    {
+      key: "fixtures",
+      state: "ready",
+      summary: [{ kind: "typesReady", count: 2 }],
+      findings: [],
+    },
+    {
+      key: "venue",
+      state: "ready",
+      summary: [
+        {
+          kind: "venueAllPlaced",
+          venue: "test-venue",
+          fixtures: 8,
+          unplaced: 0,
+        },
+      ],
+      findings: [],
+    },
+    {
+      key: "groups",
+      state: "ready",
+      summary: [{ kind: "groupsReady", count: 1 }],
+      findings: [],
+    },
+    {
+      key: "shows",
+      state: "ready",
+      summary: [{ kind: "showsReady", count: 1 }],
+      findings: [],
+    },
+    {
+      key: "output",
+      state: "ready",
+      summary: [{ kind: "outputReady", count: 1 }],
+      findings: [],
+    },
+  ],
+} satisfies Readiness;
 
 /** The Fit shows page's facts: an imported venue with no tags, three groups
  *  (one with a suggestion and an alternative, one nothing fits, one that
@@ -446,6 +488,7 @@ export const FIT: FitReport = {
         any_of: [] as string[],
         prefer: [] as string[],
       },
+      tags: ["wash"],
       fixtures: ["par1"],
       songs: ["Test Song Alpha"],
       wants: ["color"],
@@ -462,6 +505,7 @@ export const FIT: FitReport = {
         any_of: [] as string[],
         prefer: [] as string[],
       },
+      tags: ["moving_head"],
       fixtures: [] as string[],
       songs: ["Test Song Alpha"],
       wants: ["move", "color"],
@@ -497,6 +541,7 @@ export const FIT: FitReport = {
         any_of: [] as string[],
         prefer: [] as string[],
       },
+      tags: ["strobe"],
       fixtures: [] as string[],
       songs: ["Test Song Alpha"],
       wants: ["strobe"],

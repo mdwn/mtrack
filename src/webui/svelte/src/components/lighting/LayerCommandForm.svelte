@@ -15,9 +15,9 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { LayerCommand } from "../../lib/lighting/types";
-  import { LAYERS } from "../../lib/lighting/types";
+  import { rules } from "../../lib/rules";
 
-  const COMMANDS = ["clear", "freeze", "unfreeze", "master"] as const;
+  const words = rules.vocabulary();
 
   interface Props {
     command: LayerCommand;
@@ -42,7 +42,7 @@
         onchange={(e) =>
           update("command", (e.target as HTMLSelectElement).value)}
       >
-        {#each COMMANDS as c (c)}
+        {#each words.layer_commands as c (c)}
           <option value={c}>{c}</option>
         {/each}
       </select>
@@ -58,7 +58,7 @@
         }}
       >
         <option value="">--</option>
-        {#each LAYERS as l (l)}
+        {#each words.layers as l (l)}
           <option value={l}>{l}</option>
         {/each}
       </select>

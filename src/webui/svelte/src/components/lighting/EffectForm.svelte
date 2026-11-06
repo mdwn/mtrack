@@ -15,16 +15,6 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { CueEffect, EffectType } from "../../lib/lighting/types";
-  import {
-    EFFECT_TYPES,
-    EASINGS,
-    LAYERS,
-    BLEND_MODES,
-    CURVES,
-    CYCLE_DIRECTIONS,
-    CHASE_DIRECTIONS,
-    CHASE_PATTERNS,
-  } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
   import type { EffectEdit, MoveParam } from "../../gen/rules/mtrack_rules";
   import { rules } from "../../lib/rules";
@@ -76,70 +66,14 @@
     onchange({ ...effect, groups: newGroups });
   }
 
-  /** What each effect type actually reads, mirroring the engine's own arms. */
-  const USED_PARAMS: Record<EffectType, string[]> = {
-    static: [
-      "dimmer",
-      "intensity",
-      "red",
-      "green",
-      "blue",
-      "white",
-      "duration",
-    ],
-    cycle: ["speed", "direction", "transition", "duration"],
-    strobe: ["frequency", "duration"],
-    move: [
-      "focus",
-      "to",
-      "from",
-      "from_pan",
-      "from_tilt",
-      "pan",
-      "tilt",
-      "easing",
-      "duration",
-    ],
-    pulse: [
-      "base_level",
-      "pulse_amplitude",
-      "intensity",
-      "frequency",
-      "duration",
-    ],
-    chase: ["pattern", "speed", "direction", "transition", "duration"],
-    dimmer: ["start_level", "end_level", "curve", "duration"],
-    rainbow: ["speed", "saturation", "brightness", "duration"],
-  };
+  /** The effects, the parameters each reads, and the values of each
+   *  keyword parameter: the parser's own tables. */
+  const words = rules.vocabulary();
 
-  /** Whether a type reads colours at all. */
-  const USES_COLOR: EffectType[] = ["static", "cycle"];
-
-  function updateType(type: EffectType) {
-    // Changing the type used to carry every field across. A cycle with speed,
-    // direction, transition and a colour became a strobe still carrying all of
-    // them — parameters the strobe ignores, written to the file on the next
-    // save. Only what the new type reads survives, with the layer, blend
-    // and timing parameters every type takes.
-    const keep = [
-      ...(USED_PARAMS[type] ?? []),
-      ...(USES_COLOR.includes(type) ? ["color"] : []),
-      "layer",
-      "blend_mode",
-      "up_time",
-      "hold_time",
-      "down_time",
-    ];
-    onchange({
-      ...effect,
-      effect: {
-        ...effect.effect,
-        type,
-        params: effect.effect.params.filter((entry) =>
-          keep.includes(entry.name),
-        ),
-      },
-    });
+  /** A new type keeps only what it reads, with the layer, blend and
+   *  timing parameters every type takes (`EffectEdit::Kind`). */
+  function updateType(kind: EffectType) {
+    edit({ op: "kind", kind });
   }
 
   function updateParam(key: string, value: unknown) {
@@ -158,7 +92,9 @@
   // never did anything — the same defect as the rainbow direction control
   // removed in #398, which is how these were found.
   let showsColor = $derived(
-    effect.effect.type === "static" || effect.effect.type === "cycle",
+    words.effects
+      .find((e) => e.kind === effect.effect.type)
+      ?.params.includes("color") ?? false,
   );
 
   let isMultiColor = $derived(
@@ -229,8 +165,8 @@
       onchange={(e) =>
         updateType((e.target as HTMLSelectElement).value as EffectType)}
     >
-      {#each EFFECT_TYPES as t (t)}
-        <option value={t}>{t}</option>
+      {#each words.effects as { kind } (kind)}
+        <option value={kind}>{kind}</option>
       {/each}
     </select>
 
@@ -352,7 +288,8 @@
                 )}
             >
               <option value="">--</option>
-              {#each CYCLE_DIRECTIONS as d (d)}<option value={d}>{d}</option
+              {#each words.cycle_directions as d (d)}<option value={d}
+                  >{d}</option
                 >{/each}
             </select>
           </label>
@@ -481,7 +418,7 @@
                 )}
             >
               <option value="">--</option>
-              {#each CHASE_PATTERNS as p (p)}<option value={p}>{p}</option
+              {#each words.chase_patterns as p (p)}<option value={p}>{p}</option
                 >{/each}
             </select>
           </label>
@@ -510,7 +447,8 @@
                 )}
             >
               <option value="">--</option
-              >{#each CHASE_DIRECTIONS as d (d)}<option value={d}>{d}</option
+              >{#each words.chase_directions as d (d)}<option value={d}
+                  >{d}</option
                 >{/each}
             </select>
           </label>
@@ -567,7 +505,7 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option>{#each CURVES as c (c)}<option
+              <option value="">--</option>{#each words.curves as c (c)}<option
                   value={c}>{c}</option
                 >{/each}
             </select>
@@ -671,7 +609,7 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option>{#each EASINGS as z (z)}<option
+              <option value="">--</option>{#each words.easings as z (z)}<option
                   value={z}>{z}</option
                 >{/each}
             </select>
@@ -759,8 +697,8 @@
                 (e.target as HTMLSelectElement).value || undefined,
               )}
           >
-            <option value="">--</option>{#each LAYERS as l (l)}<option value={l}
-                >{l}</option
+            <option value="">--</option>{#each words.layers as l (l)}<option
+                value={l}>{l}</option
               >{/each}
           </select>
         </label>
@@ -775,8 +713,8 @@
                 (e.target as HTMLSelectElement).value || undefined,
               )}
           >
-            <option value="">--</option>{#each BLEND_MODES as b (b)}<option
-                value={b}>{b}</option
+            <option value="">--</option
+            >{#each words.blend_modes as b (b)}<option value={b}>{b}</option
               >{/each}
           </select>
         </label>

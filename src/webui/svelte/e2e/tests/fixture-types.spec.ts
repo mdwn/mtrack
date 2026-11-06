@@ -257,7 +257,7 @@ test.describe("Fixture Types Management", () => {
     // The channel map is the default way in; this is the way out of it, and
     // the only path from a v1 file to the rich form.
     await card(page, "par").getByTestId("ft-edit-text").click();
-    await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type par/);
+    await expect(page.getByTestId("ft-dsl")).toHaveValue(/fixture_type "par"/);
     await expect(page.locator(".channel-row")).toHaveCount(0);
 
     // Saved back as it was found, unless the form is changed.

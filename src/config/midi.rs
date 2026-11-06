@@ -55,7 +55,9 @@ pub struct Midi {
 
 /// What the beat clock does where a loop goes back.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BeatClockSeams {
     /// Its pulses run straight on through the seam, from the first in the

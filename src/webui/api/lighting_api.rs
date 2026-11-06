@@ -138,13 +138,8 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    mode.capabilities = Some(
-                        lighting::fit::FitFixture::from_info(&info, &[])
-                            .capability_names()
-                            .into_iter()
-                            .map(String::from)
-                            .collect(),
-                    );
+                    mode.capabilities =
+                        Some(lighting::fit::FitFixture::from_info(&info, &[]).capability_names());
                     mode.cells = Some(fixture_type.cells().len());
                     mode.strobe_range =
                         fixture_type
@@ -2348,7 +2343,7 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
     // The venue's own findings: whether it loads at all (one fixture that
     // cannot be driven fails the whole venue, and nothing lights), and
     // fixtures patched over each other or past the universe's end.
-    Readiness {
+    let mut report = Readiness {
         dmx: dmx.is_some(),
         venue,
         venue_error: facts.venue_error,
@@ -2365,7 +2360,10 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
             unconfigured,
             olad,
         },
-    }
+        checks: Vec::new(),
+    };
+    report.checks = report.verdicts();
+    report
 }
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
@@ -2873,10 +2871,31 @@ fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<Stri
 
     let mut entries: Vec<(&String, &serde_json::Value)> = channels.iter().collect();
     entries.sort_by_key(|(_, v)| v.as_u64().unwrap_or(0));
-    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
+    // The editor's own check of its rows (`venue_rows`), its first finding
+    // the refusal.
+    let mut rows = Vec::new();
+    for (ch_name, ch_offset) in &entries {
         let offset = ch_offset
             .as_u64()
             .ok_or(format!("Channel '{}' offset must be a number", ch_name))?;
+        rows.push(lighting::venue_rows::ChannelRow {
+            name: ch_name.to_string(),
+            offset: Some(offset as f64),
+        });
+    }
+    if let Some(found) = lighting::venue_rows::channel_row_problems(&rows).first() {
+        use lighting::venue_rows::ChannelProblem;
+        let name = &rows[found.row as usize].name;
+        return Err(match found.problems[0] {
+            ChannelProblem::NoName => "A channel has no name".to_string(),
+            ChannelProblem::DuplicateName => format!("Channel '{name}' listed more than once"),
+            ChannelProblem::BadOffset => {
+                format!("Channel '{name}' offset must be from 1 to 65535")
+            }
+        });
+    }
+    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
+        let offset = ch_offset.as_u64().unwrap_or_default();
         let comma = if i + 1 < entries.len() { "," } else { "" };
         dsl.push_str(&format!("    \"{ch_name}\": {offset}{comma}\n"));
     }
@@ -3104,40 +3123,54 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         .and_then(|v| v.as_array())
         .ok_or("Missing 'fixtures' array")?;
 
-    let mut by_name = std::collections::HashMap::new();
+    let mut rows = Vec::new();
     for fix in fixtures {
-        let fix_name = fix
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or("Fixture missing 'name'")?;
-        let fix_type = fix
-            .get("fixture_type")
-            .and_then(|v| v.as_str())
-            .ok_or("Fixture missing 'fixture_type'")?;
-        let universe = fix
-            .get("universe")
-            .and_then(|v| v.as_u64())
-            .ok_or("Fixture missing 'universe'")?;
-        let start_channel = fix
-            .get("start_channel")
-            .and_then(|v| v.as_u64())
-            .ok_or("Fixture missing 'start_channel'")?;
-        // A row the editor could not name is refused, not saved as a fixture
-        // nobody can address (or dropped without a word).
-        if fix_name.trim().is_empty() {
-            return Err("A fixture has no name".to_string());
-        }
-        if fix_type.trim().is_empty() {
-            return Err(format!("Fixture '{fix_name}' has no fixture type"));
-        }
-        if universe == 0 {
-            return Err(format!("Fixture '{fix_name}': universe must be 1 or more"));
-        }
-        if start_channel == 0 {
-            return Err(format!(
-                "Fixture '{fix_name}': start channel must be 1 or more"
-            ));
-        }
+        let field = |key: &str| fix.get(key).ok_or(format!("Fixture missing '{key}'"));
+        let text = |key| {
+            field(key)?
+                .as_str()
+                .ok_or(format!("Fixture missing '{key}'"))
+        };
+        let number = |key| {
+            field(key)?
+                .as_u64()
+                .ok_or(format!("Fixture missing '{key}'"))
+        };
+        rows.push(lighting::venue_rows::VenueRow {
+            name: text("name")?.to_string(),
+            fixture_type: text("fixture_type")?.to_string(),
+            universe: Some(number("universe")? as f64),
+            start_channel: Some(number("start_channel")? as f64),
+            mode: None,
+        });
+    }
+    // A row the editor could not name or address is refused, not saved as
+    // a fixture nobody can address (or dropped without a word), by the
+    // editor's own check of its rows (`venue_rows`).
+    if let Some(found) = lighting::venue_rows::venue_row_problems(&rows, |_| false).first() {
+        use lighting::venue_rows::RowProblem;
+        let row = &rows[found.row as usize];
+        let name = &row.name;
+        return Err(match found.problems[0] {
+            RowProblem::NoName => "A fixture has no name".to_string(),
+            RowProblem::DuplicateName => format!("Fixture '{name}' listed more than once"),
+            RowProblem::NoType | RowProblem::NoMode => {
+                format!("Fixture '{name}' has no fixture type")
+            }
+            RowProblem::BadUniverse if row.universe == Some(0.0) => {
+                format!("Fixture '{name}': universe must be 1 or more")
+            }
+            RowProblem::BadUniverse => "Fixture 'universe' out of range".to_string(),
+            RowProblem::BadAddress if row.start_channel == Some(0.0) => {
+                format!("Fixture '{name}': start channel must be 1 or more")
+            }
+            RowProblem::BadAddress => "Fixture 'start_channel' out of range".to_string(),
+        });
+    }
+
+    let mut by_name = std::collections::HashMap::new();
+    for (fix, row) in fixtures.iter().zip(&rows) {
+        let (fix_name, fix_type) = (row.name.as_str(), row.fixture_type.as_str());
         let tags: Vec<String> = fix
             .get("tags")
             .and_then(|v| v.as_array())
@@ -3151,8 +3184,9 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
         let fixture = Fixture::new(
             fix_name.to_string(),
             fix_type.to_string(),
-            u16::try_from(universe).map_err(|_| "Fixture 'universe' out of range")?,
-            u16::try_from(start_channel).map_err(|_| "Fixture 'start_channel' out of range")?,
+            // Both in 1..=65535, by the check above.
+            row.universe.unwrap_or_default() as u16,
+            row.start_channel.unwrap_or_default() as u16,
             tags,
         )
         .with_position(optional_vec3(fix, "position")?)
@@ -3184,9 +3218,7 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
                     .to_string(),
             ),
         });
-        if by_name.insert(fix_name.to_string(), fixture).is_some() {
-            return Err(format!("Fixture '{fix_name}' listed more than once"));
-        }
+        by_name.insert(fix_name.to_string(), fixture);
     }
 
     let mut focus_points = std::collections::BTreeMap::new();
@@ -7757,6 +7789,10 @@ show "test" {
             .filter_map(|w| w["kind"].as_str())
             .collect();
         assert!(kinds.contains(&"empty-group"), "{kinds:?}");
+        // The Groups check carries the empty group, not the song's.
+        let checks = report["checks"].as_array().unwrap();
+        let groups_check = checks.iter().find(|c| c["key"] == json!("groups")).unwrap();
+        assert_eq!(groups_check["state"], json!("attention"), "{report}");
 
         // Nothing listens where olad's web server should be.
         assert_eq!(report["output"]["universes"], json!([1]));

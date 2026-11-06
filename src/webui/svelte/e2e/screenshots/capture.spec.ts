@@ -53,6 +53,8 @@ interface PlaybackState {
   song_duration_ms: number;
   playlist_name: string;
   playlist_position: number;
+  playlist_at_first: boolean;
+  playlist_at_last: boolean;
   playlist_songs: string[];
   tracks: { name: string; output_channels: number[] }[];
   available_playlists: string[];
@@ -75,6 +77,8 @@ const DEFAULT_PLAYBACK: PlaybackState = {
   song_duration_ms: 180000,
   playlist_name: "setlist",
   playlist_position: 0,
+  playlist_at_first: true,
+  playlist_at_last: false,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
     { name: "kick", output_channels: [0, 1] },

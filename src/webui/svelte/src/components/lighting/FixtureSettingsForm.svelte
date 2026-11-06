@@ -38,6 +38,7 @@
     fetchFixtureSettings,
     postFixtureSettings,
   } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     name: string;
@@ -331,19 +332,17 @@
                   })
                 : $t("lighting.settings.strobeAutoLinear")}</option
             >
-            <option value="period"
-              >{$t("lighting.settings.strobePeriod")}</option
-            >
-            <option value="linear"
-              >{$t("lighting.settings.strobeLinear")}</option
-            >
-            {#if steps > 0}
-              <option value="declared"
-                >{$t("lighting.settings.strobeDeclared", {
+            <!-- `declared` reads the GDTF's own steps, so only a type that
+                 declares some can take it. -->
+            {#each rules
+              .config_choices()
+              .strobe_curves.filter((c) => c !== "declared" || steps > 0) as c (c)}
+              <option value={c}
+                >{$t(`lighting.settings.strobeCurves.${c}`, {
                   values: { steps },
                 })}</option
               >
-            {/if}
+            {/each}
           </select>
           <span class="field-hint" data-testid="ft-set-strobe-hint"
             >{$t("lighting.settings.strobeHint")}</span

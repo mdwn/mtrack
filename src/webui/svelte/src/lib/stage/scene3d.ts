@@ -1002,7 +1002,7 @@ export class StageScene {
       const strobeHz = this.strobeRates[actor.name];
       const now = Date.now();
       const look = beamLook(channels, strobeHz, now);
-      const lit = look.strobeOn && look.intensity > 0.02;
+      const lit = look.lit;
       color.setRGB(look.rgb[0], look.rgb[1], look.rgb[2]);
       for (const material of actor.lens) {
         material.emissive.copy(lit ? color : dim);
@@ -1031,7 +1031,7 @@ export class StageScene {
               `Stage 3D: ${actor.name}: cell "${cell}" has no lens in the rig; drawn in the fixture's colour`,
             );
           }
-          const cellLit = cellLook.strobeOn && cellLook.intensity > 0.02;
+          const cellLit = cellLook.lit;
           for (const material of actor.cellLens.get(cell) ?? []) {
             material.emissive.setRGB(
               cellLook.rgb[0],
@@ -1071,7 +1071,7 @@ export class StageScene {
               const own = cellLooks.get(cell);
               if (own) {
                 beamLook_ = own;
-                beamLit = own.strobeOn && own.intensity > 0.02;
+                beamLit = own.lit;
               }
               break;
             }

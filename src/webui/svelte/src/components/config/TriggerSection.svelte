@@ -17,8 +17,6 @@
   import type {
     AudioDeviceInfo,
     ChannelCalibration,
-    MidiEvent,
-    MidiTriggerInput,
     NoiseFloor,
     TriggerConfig,
     TriggerInput,
@@ -26,6 +24,7 @@
     VelocityCurve,
   } from "../../gen/rules/mtrack_rules";
   import {
+    COMMON_SAMPLE_RATES,
     startCalibration,
     startCapture,
     stopCapture,
@@ -34,6 +33,7 @@
   import { t } from "svelte-i18n";
   import { rules } from "../../lib/rules";
   import Tooltip from "./Tooltip.svelte";
+  import MidiEventEditor from "./MidiEventEditor.svelte";
 
   interface Props {
     trigger: TriggerConfig;
@@ -126,53 +126,9 @@
     onchange();
   }
 
-  /** The MIDI events a config can name, and the range each field takes,
-   *  as the player reads them: the editor offers every kind. */
-  const midi = rules.midi_event_shapes();
-
-  /** An event's fields other than its type, with their values. */
-  function midiFields(event: MidiEvent): [string, number][] {
-    return Object.entries(event).filter(([key]) => key !== "type");
-  }
-
-  /** The fields an event's kind has, each with the event's value (or the
-   *  kind's lowest, when the event leaves it out). Keys the kind does not
-   *  have -- a misspelling the player ignores -- are not drawn. */
-  function kindFields(event: MidiEvent): [string, number][] {
-    const kind = midi.kinds.find((k) => k.type === event.type);
-    if (!kind) return [];
-    const values = new Map(midiFields(event));
-    return midiFields(kind).map(([field, lowest]) => [
-      field,
-      values.get(field) ?? lowest,
-    ]);
-  }
-
-  /** A MIDI input's event as another kind, with that kind's fields: the
-   *  ones the two share keep their values, and keys neither kind has stay
-   *  as written. */
-  function setMidiType(input: MidiTriggerInput, type: string) {
-    const kind = midi.kinds.find((k) => k.type === type);
-    if (!kind) return;
-    const drawn = new Set(kindFields(input.event).map(([field]) => field));
-    const event = { ...kind };
-    for (const [field, value] of midiFields(input.event)) {
-      if (field in kind || !drawn.has(field))
-        Object.assign(event, { [field]: value });
-    }
-    input.event = event;
-    onchange();
-  }
-
-  /** A field of a MIDI input's event, held to the range the player reads. */
-  function setMidiField(input: MidiTriggerInput, field: string, raw: string) {
-    const [lowest, highest] = midi.ranges[field];
-    const value = Math.round(Number(raw)) || lowest;
-    Object.assign(input.event, {
-      [field]: Math.min(highest, Math.max(lowest, value)),
-    });
-    onchange();
-  }
+  /** The range a MIDI velocity takes, as the player reads it. */
+  const velocities = rules.midi_event_shapes().ranges.velocity;
+  const choices = rules.config_choices();
 
   // Expanded input index for showing advanced settings
   let expandedInput: number | null = $state(null);
@@ -331,9 +287,9 @@
             <option value={String(rate)}>{rate}</option>
           {/each}
         {:else}
-          <option value="44100">44100</option>
-          <option value="48000">48000</option>
-          <option value="96000">96000</option>
+          {#each COMMON_SAMPLE_RATES as rate (rate)}
+            <option value={String(rate)}>{rate}</option>
+          {/each}
         {/if}
         {#if trigger.sample_rate && !sampleRateOptions.includes(trigger.sample_rate) && sampleRateOptions.length > 0}
           <option value={String(trigger.sample_rate)}
@@ -670,8 +626,9 @@
                     );
                   }}
                 >
-                  <option value="trigger">{$t("trigger.actionTrigger")}</option>
-                  <option value="release">{$t("trigger.actionRelease")}</option>
+                  {#each choices.trigger_actions as a (a)}
+                    <option value={a}>{$t(`trigger.actions.${a}`)}</option>
+                  {/each}
                 </select>
               </div>
             </div>
@@ -801,11 +758,9 @@
                       );
                     }}
                   >
-                    <option value="linear">{$t("trigger.linear")}</option>
-                    <option value="logarithmic"
-                      >{$t("trigger.logarithmic")}</option
-                    >
-                    <option value="fixed">{$t("trigger.fixed")}</option>
+                    {#each choices.velocity_curves as c (c)}
+                      <option value={c}>{$t(`trigger.${c}`)}</option>
+                    {/each}
                   </select>
                 </div>
               </div>
@@ -895,9 +850,9 @@
                       id="trigger-fixvel-{i}"
                       type="number"
                       min="0"
-                      max="127"
+                      max={velocities[1]}
                       class="input"
-                      value={input.fixed_velocity ?? 127}
+                      value={input.fixed_velocity ?? choices.fixed_velocity}
                       onchange={(e) => {
                         const v = parseInt(
                           (e.target as HTMLInputElement).value,
@@ -905,7 +860,7 @@
                         setOrDeleteInput(
                           input,
                           "fixed_velocity",
-                          v === 127 ? undefined : v,
+                          v === choices.fixed_velocity ? undefined : v,
                         );
                       }}
                     />
@@ -917,48 +872,11 @@
         {:else}
           <!-- MIDI trigger input -->
           <div class="input-fields">
-            <div class="field-row-auto">
-              <div class="field">
-                <label for="trigger-midi-type-{i}"
-                  >{$t("trigger.eventType")}</label
-                >
-                <select
-                  id="trigger-midi-type-{i}"
-                  class="input"
-                  value={input.event.type}
-                  onchange={(e) =>
-                    setMidiType(input, (e.target as HTMLSelectElement).value)}
-                >
-                  {#each midi.kinds as kind (kind.type)}
-                    <option value={kind.type}
-                      >{$t(`trigger.midiType.${kind.type}`)}</option
-                    >
-                  {/each}
-                </select>
-              </div>
-              {#each kindFields(input.event) as [field, value] (field)}
-                {@const [lowest, highest] = midi.ranges[field]}
-                <div class="field">
-                  <label for="trigger-midi-{field}-{i}"
-                    >{$t(`trigger.midiField.${field}`)}</label
-                  >
-                  <input
-                    id="trigger-midi-{field}-{i}"
-                    type="number"
-                    min={lowest}
-                    max={highest}
-                    class="input"
-                    {value}
-                    onchange={(e) =>
-                      setMidiField(
-                        input,
-                        field,
-                        (e.target as HTMLInputElement).value,
-                      )}
-                  />
-                </div>
-              {/each}
-            </div>
+            <MidiEventEditor
+              bind:event={input.event}
+              {onchange}
+              idPrefix="trigger-midi-{i}"
+            />
             <div class="field">
               <label for="trigger-midi-sample-{i}"
                 >{$t("trigger.midiSample")}</label
@@ -1018,11 +936,6 @@
   .field-row-3 {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 12px;
-  }
-  .field-row-auto {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
     gap: 12px;
   }
   .field-header {

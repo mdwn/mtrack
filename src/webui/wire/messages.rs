@@ -57,6 +57,10 @@ pub struct Playback {
     /// A song an edit took off the list, playing on: the playlist sits
     /// before the entry at `playlist_position` rather than on it.
     pub playlist_off_list: bool,
+    /// Whether Previous has no entry to move back to, and Next none to move
+    /// on to (`Playlist::can_move`).
+    pub playlist_at_first: bool,
+    pub playlist_at_last: bool,
     pub playlist_songs: Vec<String>,
     pub tracks: Vec<TrackInfo>,
     pub available_playlists: Vec<String>,
@@ -273,7 +277,7 @@ pub struct FixtureMetadata {
     /// What the fixture can do (`color`, `pan_tilt`, `strobe`, `cells`),
     /// named as the fit endpoint names them: a fixture with `pan_tilt` is
     /// a mover, whatever its type's channels look like.
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<crate::lighting::fit::Capability>,
     /// The cells of a pixel fixture, in the manufacturer's order: the plot
     /// draws one segment each.
     pub cells: Vec<CellPlacement>,

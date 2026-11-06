@@ -21,7 +21,7 @@ use crate::util::FaultKind;
 
 use crate::{
     config,
-    player::Player,
+    player::{Player, PLAY_DECLINED_KEY},
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, AmbientStatus, AudioHealth, AutoPlayStatus, CancelAutoPlayRequest,
@@ -137,9 +137,14 @@ impl PlayerServer {
         let song = match result {
             Ok(Some(song)) => song,
             Ok(None) => {
-                return Err(Status::failed_precondition(
-                    self.player.play_declined_reason().await,
-                ));
+                let declined = self.player.play_declined().await;
+                let mut status = Status::failed_precondition(declined.to_string());
+                // The reason by key too, so a client tells a song in the
+                // way from the other refusals without matching words.
+                if let Ok(key) = declined.key().parse() {
+                    status.metadata_mut().insert(PLAY_DECLINED_KEY, key);
+                }
+                return Err(status);
             }
             Err(e) => return Err(Status::failed_precondition(e)),
         };
@@ -1142,11 +1147,15 @@ mod test {
         assert!(resp.into_inner().song.is_some());
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Second play while already playing should fail.
-        let result = client.play(PlayRequest {}).await;
-        assert!(
-            result.is_err(),
-            "play() while playing should be a precondition failure"
+        // Second play while already playing should fail, naming why by key.
+        let status = client.play(PlayRequest {}).await.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::player::PLAY_DECLINED_KEY)
+                .map(|v| v.to_str().unwrap()),
+            Some("already_playing")
         );
 
         client.stop(StopRequest {}).await?;

@@ -15,7 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { Cue, SubLaneType } from "../../../lib/lighting/types";
-  import { LAYERS } from "../../../lib/lighting/types";
+  import { rules } from "../../../lib/rules";
   import type {
     CueLayout,
     GridLine,
@@ -77,19 +77,17 @@
     onsequenceedit,
   }: Props = $props();
 
-  const LAYER_LABELS: Record<string, string> = {
-    foreground: "FG",
-    midground: "MG",
-    background: "BG",
-  };
-
   let subLanes = $derived([
-    // Effect lanes derived from LAYERS (reversed so foreground is on top)
-    ...[...LAYERS].reverse().map((layer) => ({
-      type: `effects:${layer}` as SubLaneType,
-      label: LAYER_LABELS[layer] ?? layer,
-      height: 40,
-    })),
+    // An effect lane per layer, foreground on top, labelled by its initials
+    // (FG, MG, BG).
+    ...rules
+      .vocabulary()
+      .layers.reverse()
+      .map((layer) => ({
+        type: `effects:${layer}` as SubLaneType,
+        label: `${layer[0]}G`.toUpperCase(),
+        height: 40,
+      })),
     {
       type: "commands" as SubLaneType,
       label: $t("timeline.showGroup.cmds"),

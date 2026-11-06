@@ -42,7 +42,7 @@ fn default_gain() -> f32 {
     1.0
 }
 
-fn default_fixed_velocity() -> u8 {
+pub(super) fn default_fixed_velocity() -> u8 {
     127
 }
 
@@ -187,7 +187,9 @@ pub enum TriggerInput {
 
 /// What action an input channel performs when triggered.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerInputAction {
     /// Fire a sample (default).
@@ -199,7 +201,9 @@ pub enum TriggerInputAction {
 
 /// How amplitude maps to velocity (0-127).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityCurve {
     /// Linear mapping: velocity = peak * 127.

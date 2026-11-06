@@ -13,12 +13,7 @@
 //
 
 import type { SubdivisionValue } from "./api/songs";
-
-/** Clave hits as half-beat offsets over a two-measure 4/4 cycle (16). */
-export const CLAVE_PATTERNS: Record<"son" | "rumba", number[]> = {
-  son: [0, 3, 6, 10, 12],
-  rumba: [0, 3, 7, 10, 12],
-};
+import { rules } from "./rules";
 
 /** How to draw a subdivision option: a (beamed) note group or a clave
  * hit pattern, plus the i18n key of its caption. */
@@ -41,9 +36,15 @@ export function subdivisionIcon(
   beatDen: number,
 ): SubdivisionIcon {
   if (sub === "son" || sub === "rumba") {
+    // The player's hits (`rules.clave_half_beats`), over a two-measure
+    // 4/4 cycle of 16 half beats.
+    const hits = rules.clave_half_beats(sub);
     return {
       kind: "clave",
-      pattern: CLAVE_PATTERNS[sub],
+      pattern: [
+        ...(hits?.first ?? []),
+        ...(hits?.second ?? []).map((h) => h + 8),
+      ],
       nameKey: `metronome.subdiv.${sub}`,
     };
   }

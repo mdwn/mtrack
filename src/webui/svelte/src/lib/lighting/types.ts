@@ -17,7 +17,7 @@
 // `rules.document`, edited through `rules.effect_edit` and written back by
 // the player's writer (`rules.document_write`); its types are generated
 // from the Rust structs. What is here is the editor's own: the
-// option lists its controls offer, and the constructors its forms use.
+// constructors its forms use (the option lists are `rules.vocabulary`).
 
 import type {
   Cue,
@@ -45,56 +45,10 @@ export type {
   Timestamp,
 } from "../../gen/rules/mtrack_rules";
 
-export const EFFECT_TYPES: EffectKind[] = [
-  "static",
-  "cycle",
-  "strobe",
-  "pulse",
-  "chase",
-  "dimmer",
-  "rainbow",
-  "move",
-];
-
-export const EASINGS = ["smooth", "linear"];
-
-export const LAYERS = ["background", "midground", "foreground"] as const;
-export type Layer = (typeof LAYERS)[number];
-
-export const BLEND_MODES = [
-  "replace",
-  "multiply",
-  "add",
-  "overlay",
-  "screen",
-] as const;
-export type BlendMode = (typeof BLEND_MODES)[number];
-
-export const CURVES = [
-  "linear",
-  "exponential",
-  "logarithmic",
-  "sine",
-  "cosine",
-];
-// `direction` is two disjoint sets, not one list: `cycle` takes the ordering
-// values below, `chase` takes the spatial ones. Offering the union lets the
-// editor write a show the parser rejects.
-export const CYCLE_DIRECTIONS = ["forward", "backward", "pingpong"];
-export const CHASE_DIRECTIONS = [
-  "left_to_right",
-  "right_to_left",
-  "top_to_bottom",
-  "bottom_to_top",
-  "clockwise",
-  "counter_clockwise",
-];
-export const CHASE_PATTERNS = ["linear", "snake", "random"];
-
 /** Sub-lane content type for multi-lane show rendering */
 export type SubLaneType =
   | "effects"
-  | `effects:${Layer}`
+  | `effects:${string}`
   | "commands"
   | "sequences";
 

@@ -13,19 +13,16 @@
 //
 
 // The venue editor's placement of a new row and its row checks, as plain
-// values (no browser). The patch rule itself (what overlaps, what gangs)
-// is the player's, tested where it lives (`crates/mtrack-rules-wasm`
-// `tests/patch.rs`); the strip and the room check (`lib/lighting/patch.ts`)
-// call it through the rules module, which only a browser loads, and are
-// exercised in `lighting-venue-mode.spec.ts`.
+// values (no browser), through the player's rules module loaded under
+// node. The patch rule itself (what overlaps, what gangs) and the row
+// checks (`lighting/venue_rows.rs`) are tested where they live.
 
 import { test, expect } from "@playwright/test";
-import {
-  channelProblems,
-  nextFixtureName,
-  nextPatch,
-  rowProblems,
-} from "../../src/lib/lighting/venueRows";
+import { nextFixtureName, nextPatch } from "../../src/lib/lighting/venueRows";
+import { rules } from "../../src/lib/rules";
+import { loadRules } from "./rules-node";
+
+test.beforeAll(loadRules);
 
 test("a new fixture continues the patch: 1 → 4 → 8", () => {
   // Fixture 1 has 3 channels at 1: the next starts at 4. That one has 4
@@ -73,27 +70,46 @@ test("rows that cannot be saved are named, never dropped", () => {
     universe,
     start_channel,
   });
-  const found = rowProblems([
-    row("A"),
-    row(""),
-    row("A"),
-    row("B", ""),
-    row("C", "par", 0, 0),
-  ]);
-  expect([...found]).toEqual([
+  const byRow = (found: { row: number; problems: string[] }[] | undefined) =>
+    (found ?? []).map((p) => [p.row, p.problems]);
+  const found = rules.venue_row_problems(
+    [row("A"), row(""), row(" A"), row("B", ""), row("C", "par", 0, 0)],
+    [],
+  );
+  // ` A` and `A` are one name, as the save has it.
+  expect(byRow(found)).toEqual([
     [0, ["duplicateName"]],
     [1, ["noName"]],
     [2, ["duplicateName"]],
     [3, ["noType"]],
     [4, ["badUniverse", "badAddress"]],
   ]);
-  expect([
-    ...channelProblems([
-      { name: "red", offset: 1 },
-      { name: "red", offset: 2 },
-      { name: " ", offset: 0 },
-    ]),
-  ]).toEqual([
+  // A blank field (null) is its own row's problem alone.
+  expect(
+    byRow(
+      rules.venue_row_problems(
+        [row("A"), row("A"), { ...row("E"), universe: null }],
+        [],
+      ),
+    ),
+  ).toEqual([
+    [0, ["duplicateName"]],
+    [1, ["duplicateName"]],
+    [2, ["badUniverse"]],
+  ]);
+  // Past any universe the player addresses.
+  expect(byRow(rules.venue_row_problems([row("D", "par", 70000)], []))).toEqual(
+    [[0, ["badUniverse"]]],
+  );
+  expect(
+    byRow(
+      rules.channel_row_problems([
+        { name: "red", offset: 1 },
+        { name: "red", offset: 2 },
+        { name: " ", offset: 0 },
+      ]),
+    ),
+  ).toEqual([
     [0, ["duplicateName"]],
     [1, ["duplicateName"]],
     [2, ["noName", "badOffset"]],

@@ -471,7 +471,7 @@ fn a_move_refuses_a_missing_or_mixed_target_and_a_unitless_angle() {
         ("spots: move pan: 45, duration: 2s", "degrees"),
         (
             "spots: move focus: \"a\", easing: bouncy, duration: 2s",
-            "Invalid easing",
+            "Invalid easing 'bouncy' (expected: linear, smooth)",
         ),
         ("spots: move focus: \"a\"", "requires a 'duration'"),
         (
