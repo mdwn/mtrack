@@ -338,6 +338,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One lock refusal on every surface**: MCP refused a write while locked with the player's
+  `Player is locked. Unlock to make changes.` followed by its own hint naming the tool. It now
+  answers that sentence alone, as gRPC and the web UI do. Which operations stay open while
+  locked is one table for MCP, gRPC and the web UI; what each surface leaves open is unchanged.
 - **A status that could not read ambient light says so on every surface**: when the status's
   read of the DMX engine timed out or failed, MCP `status` gave the ambient light as
   `{"available": false, "reason": ...}`, but gRPC `Status` and the web UI's playback message left

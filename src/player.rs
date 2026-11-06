@@ -13,6 +13,7 @@
 //
 mod hardware;
 mod hardware_status;
+pub mod lock_policy;
 mod navigation;
 mod play_declined;
 mod playback;

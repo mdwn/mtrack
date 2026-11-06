@@ -175,12 +175,13 @@ impl PlayerServer {
         snapshot_to_update_response(snapshot, outcome)
     }
 
-    /// Refuses a config write while the player is locked, the way the web
-    /// UI's lock middleware does. Playback controls never call this.
+    /// Refuses `rpc` while the player is locked unless the lock policy
+    /// leaves it open, as MCP's gate and the web UI's lock middleware ask
+    /// the same table. Every config write calls this.
     #[allow(clippy::result_large_err)]
-    fn require_unlocked(&self) -> Result<(), Status> {
+    fn check_lock(&self, rpc: &str) -> Result<(), Status> {
         self.player
-            .require_unlocked()
+            .check_lock(crate::player::lock_policy::Surface::Grpc, rpc)
             .map_err(|e| Status::failed_precondition(e.to_string()))
     }
 
@@ -479,7 +480,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateAudioRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("UpdateAudio")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let audio: Option<config::Audio> = if req.audio_json.is_empty() {
@@ -501,7 +502,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateMidiRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("UpdateMidi")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let midi: Option<config::Midi> = if req.midi_json.is_empty() {
@@ -523,7 +524,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateDmxRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("UpdateDmx")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let dmx: Option<config::Dmx> = if req.dmx_json.is_empty() {
@@ -545,7 +546,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateControllersRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("UpdateControllers")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let controllers: Vec<config::Controller> = serde_json::from_str(&req.controllers_json)
@@ -561,7 +562,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<AddProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("AddProfile")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let profile: config::Profile = serde_json::from_str(&req.profile_json)
@@ -577,7 +578,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("UpdateProfile")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let body: serde_json::Value = serde_json::from_str(&req.profile_json)
@@ -598,7 +599,7 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<RemoveProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
+        self.check_lock("RemoveProfile")?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let snapshot = store
@@ -1754,32 +1755,6 @@ mod test {
         "RemoveProfile",
     ];
 
-    /// The RPCs that stay open while locked: reads and playback controls.
-    const OPEN_RPCS: &[&str] = &[
-        "Play",
-        "PlayFrom",
-        "PlaySongFrom",
-        "Seek",
-        "SeekToSection",
-        "Previous",
-        "Next",
-        "Stop",
-        "SwitchToPlaylist",
-        "Status",
-        "GetCues",
-        "GetActiveEffects",
-        "StopSamples",
-        "GetConfig",
-        "LoopSection",
-        "StopSectionLoop",
-        "SectionAck",
-        "SetTrackGain",
-        "SetTrackMute",
-        "SetAmbientMode",
-        "CancelAutoPlay",
-        "GetTrackGains",
-    ];
-
     /// Every RPC in the proto is either refused or allowed while locked, so
     /// a new one cannot slip past the lock unclassified.
     #[test]
@@ -1792,15 +1767,18 @@ mod test {
             .map(str::trim)
             .collect();
         assert!(!rpcs.is_empty());
+        let open: Vec<&str> =
+            crate::player::lock_policy::open_on(crate::player::lock_policy::Surface::Grpc)
+                .collect();
         for rpc in &rpcs {
             assert!(
-                LOCKED_RPCS.contains(rpc) ^ OPEN_RPCS.contains(rpc),
-                "RPC {rpc} must be in exactly one of LOCKED_RPCS or OPEN_RPCS; \
-                 a config or file write belongs in LOCKED_RPCS and must call \
-                 require_unlocked()"
+                LOCKED_RPCS.contains(rpc) ^ open.contains(rpc),
+                "RPC {rpc} must be in exactly one of LOCKED_RPCS or the lock \
+                 policy's OPEN_WHILE_LOCKED; a config or file write belongs in \
+                 LOCKED_RPCS and must call check_lock()"
             );
         }
-        for rpc in LOCKED_RPCS.iter().chain(OPEN_RPCS) {
+        for rpc in LOCKED_RPCS.iter().chain(&open) {
             assert!(rpcs.contains(rpc), "{rpc} is not in the proto");
         }
     }

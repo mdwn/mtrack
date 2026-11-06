@@ -6005,8 +6005,6 @@ fn snapshot_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
 /// open while locked or in [`LOCKED_TOOLS`], so a new one gets classified.
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
-    use crate::controller::mcp::service::OPEN_WHILE_LOCKED;
-
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
     player.set_locked(true);
@@ -6038,11 +6036,11 @@ async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
         .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
     listed.sort();
-    let mut classified: Vec<String> = OPEN_WHILE_LOCKED
-        .iter()
-        .chain(LOCKED_TOOLS)
-        .map(|s| s.to_string())
-        .collect();
+    let mut classified: Vec<String> =
+        crate::player::lock_policy::open_on(crate::player::lock_policy::Surface::Mcp)
+            .chain(LOCKED_TOOLS.iter().copied())
+            .map(|s| s.to_string())
+            .collect();
     classified.sort();
     assert_eq!(
         listed, classified,
@@ -6068,11 +6066,8 @@ async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
     .await;
     assert_eq!(resp["result"]["isError"], true, "{resp}");
     let text = tool_text(&resp);
-    assert!(
-        text.contains("Player is locked. Unlock to make changes.")
-            && text.contains("`write_playlist`"),
-        "{text}"
-    );
+    // The one refusal every surface gives.
+    assert_eq!(text, crate::player::LockedError.to_string());
     assert_eq!(snapshot_tree(&fixture.root), before, "a locked call wrote");
 
     // Reads and playback controls stay open.

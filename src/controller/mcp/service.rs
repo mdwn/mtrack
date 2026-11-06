@@ -35,8 +35,9 @@
 //! input because for them validation failure is a hard failure.
 //!
 //! **Lock mode.** While the player is locked, every tool not listed in
-//! [`OPEN_WHILE_LOCKED`] is refused before it runs, with a tool error
-//! (`isError: true`) whose text says the player is locked. The gate sits in
+//! [`crate::player::lock_policy::OPEN_WHILE_LOCKED`] is refused before it
+//! runs, with a tool error (`isError: true`) whose text says the player is
+//! locked. The gate sits in
 //! `call_tool`, so a new tool is refused while locked until it is listed.
 
 use std::collections::HashMap;
@@ -61,6 +62,7 @@ use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
 use crate::lighting::readiness::{group_names, VenueFacts};
+use crate::player::lock_policy::Surface;
 use crate::player::Player;
 use crate::util::FaultKind;
 
@@ -1447,9 +1449,7 @@ impl McpServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let song = match song {
-            Some(name) => Some(
-                self.song(name)?,
-            ),
+            Some(name) => Some(self.song(name)?),
             None => None,
         };
 
@@ -2752,72 +2752,17 @@ impl McpServer {
     }
 }
 
-/// The tools that stay open while the player is locked: reads, validation
-/// and offline evaluation, and the playback controls the web UI also leaves
-/// open (transport, playlist switch, samples, ambient light, section loops,
-/// auto-play). Every other tool writes config or project files and is
-/// refused while locked, so a new tool is locked out until it is listed here.
-pub(crate) const OPEN_WHILE_LOCKED: &[&str] = &[
-    // Reads.
-    "status",
-    "host_info",
-    "list_songs",
-    "list_playlists",
-    "get_cues",
-    "get_active_effects",
-    "get_fixture_state",
-    "get_config",
-    "read_song",
-    "song_details",
-    "song_beat_grid",
-    "read_playlist",
-    "lighting_dsl_reference",
-    "validate_lighting",
-    "evaluate_show",
-    "analyze_show",
-    "diff_shows",
-    "list_venues",
-    "suggest_group_tags",
-    "list_groups",
-    "list_fixture_types",
-    "list_gdtf_modes",
-    "inspect_mvr",
-    "read_song_lighting",
-    "list_venue_files",
-    "read_venue",
-    "list_fixture_type_files",
-    "read_fixture_type",
-    // Playback controls.
-    "play",
-    "play_from",
-    "play_song_from",
-    "seek",
-    "seek_to_section",
-    "stop",
-    "next",
-    "previous",
-    "switch_playlist",
-    "stop_samples",
-    "set_ambient_mode",
-    "cancel_auto_play",
-    "loop_section",
-    "stop_section_loop",
-    "section_ack",
-];
-
 impl McpServer {
     /// The tool error a locked player answers a write with, or `None` when
     /// the call may proceed.
     fn refused_while_locked(&self, tool: &str) -> Option<CallToolResult> {
-        if OPEN_WHILE_LOCKED.contains(&tool) || !self.tool_router.has_route(tool) {
+        if !self.tool_router.has_route(tool) {
             return None;
         }
-        let e = self.player.require_unlocked().err()?;
-        Some(CallToolResult::error(vec![ContentBlock::text(format!(
-            "{e} `{tool}` changes the show's config or files, which the \
-             player refuses while locked. Unlock it from the web UI's lock \
-             toggle; playback controls and reads still work."
-        ))]))
+        let e = self.player.check_lock(Surface::Mcp, tool).err()?;
+        Some(CallToolResult::error(vec![ContentBlock::text(
+            e.to_string(),
+        )]))
     }
 }
 
