@@ -1093,19 +1093,13 @@ metronome: {}
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let wav_path = temp_dir.path().join("stereo.wav");
 
-        // Write a properly interleaved stereo WAV: ch1=loud, ch2=silence
-        let spec = hound::WavSpec {
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-        let mut writer = hound::WavWriter::create(&wav_path, spec).expect("create wav");
-        for _ in 0..44100 {
-            writer.write_sample(0.9_f32).unwrap(); // ch1: loud
-            writer.write_sample(0.0_f32).unwrap(); // ch2: silence
-        }
-        writer.finalize().unwrap();
+        // A stereo WAV: ch1=loud, ch2=silence
+        crate::testutil::write_wav(
+            wav_path.clone(),
+            vec![vec![0.9_f32; 44100], vec![0.0_f32; 44100]],
+            44100,
+        )
+        .expect("write stereo wav");
 
         // file_channel 1 should see the loud signal
         let ch1_peaks = compute_track_peaks(&wav_path, 1, 10);
