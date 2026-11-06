@@ -407,6 +407,20 @@ pub enum TrackGainError {
     UnknownTrack(#[from] crate::audio::track_gains::UnknownTrackError),
 }
 
+impl TrackGainError {
+    /// What kind of fault this is, for a transport's code: no audio
+    /// profile is a precondition; a gain or track the caller named wrong is
+    /// invalid.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            TrackGainError::NoAudioProfile => crate::util::FaultKind::Precondition,
+            TrackGainError::NonFinite(_) | TrackGainError::UnknownTrack(_) => {
+                crate::util::FaultKind::Invalid
+            }
+        }
+    }
+}
+
 /// A section loop's state: the section armed, a break asked of it, when it
 /// was armed, and the reactive loop's state. It belongs to one playback, or
 /// a paused song's, and [`SectionLoop::reset`] forgets it as each starts

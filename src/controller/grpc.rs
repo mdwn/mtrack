@@ -638,15 +638,7 @@ impl PlayerService for PlayerServer {
         let applied = self
             .player
             .set_track_gain(&req.track, req.gain_db as f32)
-            .map_err(|e| match e {
-                crate::player::TrackGainError::NoAudioProfile => {
-                    Status::failed_precondition(e.to_string())
-                }
-                crate::player::TrackGainError::NonFinite(_)
-                | crate::player::TrackGainError::UnknownTrack(_) => {
-                    Status::invalid_argument(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SetTrackGainResponse {
             applied_gain_db: applied as f64,
         }))
@@ -660,15 +652,7 @@ impl PlayerService for PlayerServer {
         let muted = self
             .player
             .set_track_mute(&req.track, req.muted)
-            .map_err(|e| match e {
-                crate::player::TrackGainError::NoAudioProfile => {
-                    Status::failed_precondition(e.to_string())
-                }
-                crate::player::TrackGainError::NonFinite(_)
-                | crate::player::TrackGainError::UnknownTrack(_) => {
-                    Status::invalid_argument(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SetTrackMuteResponse { muted }))
     }
 
