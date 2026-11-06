@@ -42,8 +42,21 @@ pub(crate) fn fades_to_dark(channel: &str) -> bool {
 /// A channel's name without its section (`dimmer:background`, as GDTF
 /// profiles with several emitters name theirs) or its fine byte.
 pub(crate) fn base_channel(channel: &str) -> &str {
-    let base = channel.split(':').next().unwrap_or(channel);
-    base.strip_suffix("_fine").unwrap_or(base)
+    channel_parts(channel).0
+}
+
+/// A channel's name as its attribute and its section (`dimmer:2` is
+/// `dimmer` of section `2`; the fixture's own section is `""`), either
+/// without the `_fine` its fine byte carries (`dimmer_fine`,
+/// `dimmer:2_fine`).
+pub(crate) fn channel_parts(channel: &str) -> (&str, &str) {
+    let (base, section) = channel.split_once(':').unwrap_or((channel, ""));
+    (coarse(base), coarse(section))
+}
+
+/// A name without the `_fine` a fine byte's carries.
+fn coarse(name: &str) -> &str {
+    name.strip_suffix("_fine").unwrap_or(name)
 }
 
 /// Whether a channel carries where a head points -- pan or tilt, a section
@@ -167,11 +180,12 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             continue;
         }
         let (channel, cell) = name.split_once('#').unwrap_or((name, ""));
-        let section = channel.split_once(':').map_or("", |(_, section)| section);
+        let cell = coarse(cell);
+        let (attribute, section) = channel_parts(channel);
         parts
             .entry((section, cell))
             .or_default()
-            .add(base_channel(channel), value);
+            .add(attribute, value);
     }
     // The part a part takes its dimmer from.
     let dimmer_of = |key: (&'a str, &'a str)| {
@@ -310,6 +324,33 @@ mod tests {
 
     /// A fine byte joins its coarse one (the brighter of the two), in
     /// whichever order they come: all three flags closed stays dark.
+    /// A sectioned fine byte is its section's, not a section of its own.
+    #[test]
+    fn a_sectioned_fine_byte_is_its_sections() {
+        assert!(!lit(&[
+            ("red", 0.0),
+            ("dimmer", 0.0),
+            ("red:2", 0.0),
+            ("dimmer:2", 255.0),
+            ("dimmer:2_fine", 255.0),
+        ]));
+        assert!(!lit(&[
+            ("cyan:2", 255.0),
+            ("cyan:2_fine", 0.0),
+            ("magenta:2", 255.0),
+            ("magenta:2_fine", 0.0),
+            ("yellow:2", 255.0),
+            ("yellow:2_fine", 0.0),
+            ("dimmer", 255.0),
+        ]));
+        assert!(!lit(&[
+            ("dimmer", 255.0),
+            ("red:2", 0.0),
+            ("red:2_fine", 255.0),
+            ("dimmer:2", 0.0),
+        ]));
+    }
+
     #[test]
     fn a_fine_byte_does_not_replace_its_coarse_one() {
         let closed = [
