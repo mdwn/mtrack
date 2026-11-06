@@ -134,7 +134,10 @@ pub struct Audio {
     /// CPAL stream buffer: "default" (backend default), "min" (lowest latency), or a number (frames).
     /// When unset, uses buffer_size. Lower values = lower latency but more sensitive to callback jitter.
     #[serde(default)]
-    #[cfg_attr(feature = "tsify", tsify(type = "\"default\" | \"min\" | number"))]
+    #[cfg_attr(
+        feature = "tsify",
+        tsify(type = "\"default\" | \"min\" | number | null")
+    )]
     stream_buffer_size: Option<StreamBufferSize>,
 
     /// Number of worker threads for buffered song sources.
