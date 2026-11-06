@@ -152,6 +152,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
+  `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one
+  parser: decimal numbers with `ms`, `s`, `m` (minutes) or `h`, summed (`1m30s`); fades take
+  `beats` and `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere the
+  `duration_string` crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a
+  fade of none, and fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which
+  was "longer than any song"; the bound is now 1,000,000 seconds in every unit). No longer
+  accepted: the crate's `ns`, `us`, `d`, `w` and `y` units (`playback_delay: 100us`), and a fade of
+  `0mm` or `0ss`, which read as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as
+  `1.5s`, not `1500ms`; a `playback_delay` the clock refuses now says
+  `playback_delay '<text>' is not a valid duration`. The `duration-string` dependency is gone.
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes

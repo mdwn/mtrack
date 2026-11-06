@@ -56,37 +56,10 @@ pub(crate) enum TimeValue {
     Measures(f64),
 }
 
-/// The unit a time is written in.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DurationUnit {
-    Ms,
-    S,
-    Beats,
-    Measures,
-}
-
-/// Each unit as the grammar spells it after a number, and after a count
-/// of one: the one table, read both ways.
-const UNITS: [(DurationUnit, &str, &str); 4] = [
-    (DurationUnit::Ms, "ms", "ms"),
-    (DurationUnit::S, "s", "s"),
-    (DurationUnit::Beats, "beats", "beat"),
-    (DurationUnit::Measures, "measures", "measure"),
-];
-
-impl DurationUnit {
-    /// The unit `count` of it is written with: `1beat`, `2beats`.
-    pub fn keyword(self, count: f64) -> &'static str {
-        let (_, plural, one) = UNITS.iter().find(|(u, ..)| *u == self).expect("every unit");
-        if count == 1.0 {
-            one
-        } else {
-            plural
-        }
-    }
-}
+pub(crate) use crate::config::length::split_unit;
+/// The unit a time is written in: the one table, which the config's
+/// lengths read too.
+pub use crate::config::length::DurationUnit;
 
 /// The units a time is written in -- `500ms` or `1.5ms`, `0.5s`, `2beats`,
 /// `1measure`, or a bare number, which is seconds -- read as the number
@@ -96,16 +69,11 @@ pub(crate) fn parse_time_unit(
     value: &str,
 ) -> Result<(f64, DurationUnit), std::num::ParseFloatError> {
     let (number, unit) = split_unit(value);
-    Ok(
-        match UNITS
-            .iter()
-            .find(|(_, plural, one)| unit == *plural || unit == *one)
-        {
-            Some((unit, ..)) => (number.trim().parse()?, *unit),
-            // Assume seconds if no unit
-            None => (value.trim().parse()?, DurationUnit::S),
-        },
-    )
+    Ok(match DurationUnit::from_keyword(unit) {
+        Some(unit) => (number.trim().parse()?, unit),
+        // Assume seconds if no unit
+        None => (value.trim().parse()?, DurationUnit::S),
+    })
 }
 
 /// A time as [`parse_time_unit`] reads it, in its unit ([`TimeValue`]).
@@ -128,16 +96,6 @@ pub(crate) fn unquoted(text: &str) -> &str {
 /// quotes ([`unquoted`]).
 pub(crate) fn unquote(pair: &Pair<Rule>) -> String {
     unquoted(pair.as_str()).to_string()
-}
-
-/// A value written as a number and its unit -- `2.5s`, `4beats`, `45deg`
-/// -- split into the number as written and the unit: the letters it ends
-/// in, `""` for a bare number. Each caller takes the units it knows and
-/// reports its own errors.
-pub(crate) fn split_unit(value: &str) -> (&str, &str) {
-    let value = value.trim();
-    let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    (number, &value[number.len()..])
 }
 
 /// Each layer and its keyword, as the grammar writes it: the one table

@@ -151,7 +151,7 @@ impl Dmx {
             }
         }
         if let Some(ref delay) = self.playback_delay {
-            if super::parse_duration_string(delay).is_err() {
+            if super::length::parse_clock(delay).is_none() {
                 errors.push(format!(
                     "dmx playback_delay '{}' is not a valid duration",
                     delay

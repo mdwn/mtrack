@@ -1192,8 +1192,8 @@ pub fn fade_length_text(text: &str) -> Option<String> {
 }
 
 /// An entry's `auto_play` written as text, as the player reads it: off,
-/// a gap before its song (`2s`, `500ms`, `2m`; `true` is none), or text it
-/// refuses (`2`, a number with no unit).
+/// a gap before its song (the config's clock: `2s`, `1.5s`, `500ms`, `2m`;
+/// `true` is none), or text it refuses (`2`, a number with no unit).
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
 #[tsify(into_wasm_abi)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -1043,12 +1043,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "duration-string"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edbd404ab304f4426de3e981a875a77129597ce04202c9b8b4502c6f1c246809"
-
-[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2278,7 +2272,6 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "crossterm",
- "duration-string",
  "futures-util",
  "hostname",
  "hound",
@@ -2363,7 +2356,6 @@ name = "mtrack-rules-wasm"
 version = "0.1.0"
 dependencies = [
  "config",
- "duration-string",
  "indexmap",
  "midly",
  "pest",

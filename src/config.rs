@@ -20,7 +20,7 @@ mod error;
 mod fade;
 mod hostname;
 mod kind_data;
-mod length;
+pub(crate) mod length;
 pub mod lighting;
 pub mod metronome;
 #[cfg(test)]
@@ -77,7 +77,7 @@ pub use self::playlist::{
     FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
-pub(crate) use self::duration::{parse_duration_string, parse_playback_delay};
+pub(crate) use self::duration::parse_playback_delay;
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};
 pub(crate) use self::player::list_profile_files;
@@ -96,20 +96,3 @@ pub use self::track::Track;
 
 mod kind;
 pub use self::kind::{peek_kind, ConfigKind};
-
-#[cfg(test)]
-mod duration_string_test {
-    use super::parse_duration_string;
-    use std::time::Duration;
-
-    #[test]
-    fn every_config_duration_parses_by_one_rule() {
-        assert_eq!(
-            parse_duration_string("500ms"),
-            Ok(Duration::from_millis(500))
-        );
-        assert_eq!(parse_duration_string("2s"), Ok(Duration::from_secs(2)));
-        assert!(parse_duration_string("soon").is_err());
-        assert!(parse_duration_string("").is_err());
-    }
-}
