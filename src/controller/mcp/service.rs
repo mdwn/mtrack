@@ -630,18 +630,12 @@ impl McpServer {
             let song = self.song(name)?;
             let shows = crate::lighting::evaluate::registered_shows(&song);
 
-            // Merged and time-sorted, the way the player's own timeline
-            // combines a song's shows. Concatenating per show would restart
-            // indices at zero for each one and interleave their times, so the
-            // same song answered differently depending on which branch ran.
-            let tempo = crate::lighting::timeline::shows_tempo_map(&shows, None);
-            let mut cues: Vec<(std::time::Duration, usize)> = shows
-                .iter()
-                .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
-                .collect();
-            cues.sort_by_key(|(time, _)| *time);
-
-            let cues: Vec<Value> = cues
+            // Merged and time-sorted by the player's own timeline, so the
+            // same song answers as the loaded timeline does.
+            let timeline = crate::lighting::timeline::LightingTimeline::new(shows);
+            let tempo = timeline.tempo_map();
+            let cues: Vec<Value> = timeline
+                .cue_effect_counts()
                 .into_iter()
                 .enumerate()
                 .map(|(index, (time, effects))| {
