@@ -32,7 +32,8 @@ use super::effect_parse::{
     CHASE_DIRECTIONS, CHASE_PATTERNS, COMMON_PARAMS, CYCLE_DIRECTIONS, DIMMER_CURVES, EASINGS,
 };
 use super::grammar::{LightingParser, Rule};
-use super::types::{EFFECT_KEYWORDS, LAYER_COMMAND_KEYWORDS, SEQUENCE_LOOPS};
+use super::show::parse_sequence_loop_param;
+use super::types::{SequenceLoop, EFFECT_KEYWORDS, LAYER_COMMAND_KEYWORDS, SEQUENCE_LOOPS};
 use super::utils::{unquoted, BLEND_KEYWORDS, LAYER_KEYWORDS};
 use super::writer::{dropped, length_text, number};
 
@@ -288,15 +289,17 @@ impl EffectParams {
 
 impl SequenceRef {
     /// The reference playing `count` passes; `None` for a count the
-    /// player refuses (none, or not a whole number).
+    /// player refuses (none, or not a whole number), by its own rule
+    /// ([`parse_sequence_loop_param`]).
     pub fn with_loop_count(&self, count: f64) -> Option<SequenceRef> {
-        if !(count >= 1.0 && count.fract() == 0.0 && count <= f64::from(u32::MAX)) {
-            return None;
+        let written = number(count);
+        match parse_sequence_loop_param(&written) {
+            Ok(SequenceLoop::Count(_)) => Some(SequenceRef {
+                loop_: Some(written),
+                ..self.clone()
+            }),
+            _ => None,
         }
-        Some(SequenceRef {
-            loop_: Some(number(count)),
-            ..self.clone()
-        })
     }
 }
 
@@ -480,9 +483,14 @@ mod tests {
             .sequences[0]
             .clone();
         assert_eq!(r.with_loop_count(3.0).unwrap().loop_.as_deref(), Some("3"));
-        for count in [0.0, -1.0, 1.5, f64::NAN, 1e10] {
+        for count in [0.0, -1.0, 1.5, f64::NAN, f64::INFINITY, 1e30] {
             assert!(r.with_loop_count(count).is_none(), "{count}");
         }
+        // As many passes as the player takes: past `u32` where it does.
+        assert_eq!(
+            r.with_loop_count(5e9).is_some(),
+            "5000000000".parse::<usize>().is_ok()
+        );
     }
 
     #[test]

@@ -688,7 +688,9 @@ fn parse_sequence_reference_pair(seq_ref_pair: Pair<Rule>) -> Result<SequenceCal
     })
 }
 
-fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
+/// A sequence reference's `loop:` value: a mode's keyword, or a count of
+/// one or more passes. The one rule; the editor's counts are checked by it.
+pub(super) fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
     // Be robust against trailing comments or extra tokens after the loop value.
     // Examples we want to support:
     //   loop: 3
@@ -707,24 +709,25 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
     if let Some((named, _)) = SEQUENCE_LOOPS.iter().find(|(_, k)| *k == token) {
         return Ok(*named);
     }
+    let expected = || {
+        let modes: Vec<String> = SEQUENCE_LOOPS
+            .iter()
+            .map(|(_, k)| format!("'{k}'"))
+            .collect();
+        format!("Expected {}, or a number", modes.join(", "))
+    };
     match token {
         numeric if !numeric.is_empty() => {
             // Try to parse as a number
-            let count: usize = numeric.parse().map_err(|_| {
-                format!(
-                    "Invalid loop count: '{}'. Expected 'once', 'loop', 'pingpong', 'random', or a number",
-                    numeric
-                )
-            })?;
+            let count: usize = numeric
+                .parse()
+                .map_err(|_| format!("Invalid loop count: '{numeric}'. {}", expected()))?;
             if count == 0 {
                 return Err("Loop count must be at least 1".into());
             }
             Ok(SequenceLoop::Count(count))
         }
-        _ => Err(
-            "Invalid loop parameter. Expected 'once', 'loop', 'pingpong', 'random', or a number"
-                .into(),
-        ),
+        _ => Err(format!("Invalid loop parameter. {}", expected()).into()),
     }
 }
 
