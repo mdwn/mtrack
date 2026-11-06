@@ -76,6 +76,7 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
     while let Some(entries) = pending.pop() {
         for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
             if !inside(&path) {
+                warn!(link = %path.display(), "A link among the lighting files leads out of their directory, or to nothing; passing over it");
                 continue;
             }
             if path.is_dir() {
