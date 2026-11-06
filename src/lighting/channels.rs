@@ -165,8 +165,8 @@ impl Light {
 /// cyan, magenta and yellow flags pass) times its dimmer. A part takes the
 /// dimmer, and a flag, it lacks from the part above it: its section's,
 /// else the fixture's. Whether it mixes subtractively is its section's
-/// (by the section's own channels) where the section has a colour of its
-/// own, else the fixture's (by its own channels, as the engine's
+/// (by the section's own channels) where the section has red, green or
+/// blue or a full CMY set of its own, else the fixture's (by its own channels, as the engine's
 /// `has_cmy` decides it). A
 /// part with a dimmer and no emitter that no other part takes its dimmer
 /// from is a light of its own (a ring of white on a dimmer), lit by that
@@ -193,13 +193,14 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
     // A part, then the parts above it it takes what it lacks from.
     let above = |key: (&'a str, &'a str)| [key, (key.0, ""), ("", "")];
     // Whether a scope (the fixture, a section) mixes subtractively, by its
-    // own channels; `None` for one with no colour of its own.
+    // own channels; `None` for one that does not decide for itself: with
+    // no red, green or blue and no full CMY set of its own (a GDTF head
+    // with two CMY units distils to `cyan:A` and `magenta:B`, `yellow:B`).
     let own_subtractive = |scope| {
         let levels = &parts.get(&scope)?.levels;
-        let colour = CMY_OF_RGB
-            .iter()
-            .any(|(rgb, cmy)| levels.contains_key(*rgb) || levels.contains_key(*cmy));
-        colour.then(|| mixes_subtractively(|c| levels.contains_key(c)))
+        let decides = CMY_OF_RGB.iter().any(|(rgb, _)| levels.contains_key(*rgb))
+            || CMY_OF_RGB.iter().all(|(_, cmy)| levels.contains_key(*cmy));
+        decides.then(|| mixes_subtractively(|c| levels.contains_key(c)))
     };
     // A part follows its section's decision, else the fixture's.
     let subtractive = |key: (&'a str, &'a str)| {
@@ -422,6 +423,27 @@ mod tests {
             ("yellow:1", 255.0),
             ("dimmer", 255.0),
         ]));
+    }
+
+    /// A section with part of a CMY set (no red, green or blue) follows the
+    /// fixture: on a subtractive fixture its flags are flags, the rest
+    /// borrowed from the fixture.
+    #[test]
+    fn a_section_with_part_of_a_cmy_set_follows_the_fixture() {
+        let closed = [("cyan", 255.0), ("magenta", 255.0), ("yellow", 255.0)];
+        let with = |more: &[(&'static str, f64)]| {
+            let mut all = closed.to_vec();
+            all.extend_from_slice(more);
+            lit(&all)
+        };
+        assert!(!with(&[("dimmer", 255.0), ("cyan:1", 255.0)]));
+        assert!(!with(&[
+            ("cyan:A", 255.0),
+            ("magenta:B", 255.0),
+            ("yellow:B", 255.0),
+            ("dimmer", 255.0),
+        ]));
+        assert!(with(&[("cyan:1", 0.0)]));
     }
 
     /// A sectioned fine byte is its section's, not a section of its own.
