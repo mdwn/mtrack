@@ -42,6 +42,7 @@ export async function offeringToReplaceBroken(
   acting: "save" | "delete",
 ): Promise<Response> {
   const res = await send();
+  if (res.ok) await sayWhatWasKept(res);
   if (res.status !== 409) return res;
   const body: Partial<LightingFileRefusal> = await res
     .clone()
@@ -82,20 +83,24 @@ export async function offeringToReplaceBroken(
   });
   if (!confirmed) return res;
   const retried = await send(broken.map((f) => f.file));
-  if (retried.ok) {
-    // The server keeps each broken file aside rather than losing it; say
-    // where, so nothing it held is a surprise to find gone.
-    const answer: { kept?: string[] } = await retried
-      .clone()
-      .json()
-      .catch(() => ({}));
-    if (answer.kept && answer.kept.length > 0) {
-      void showAlert(
-        tr("lighting.brokenFileKept", {
-          values: { files: answer.kept.join(", ") },
-        }),
-      );
-    }
-  }
+  if (retried.ok) await sayWhatWasKept(retried);
   return retried;
+}
+
+/** The server keeps each file a save replaced aside rather than losing it
+ *  (a broken file the person chose to replace, or a twin the save retired,
+ *  even on a first try): says where, so nothing it held is a surprise to
+ *  find gone. */
+async function sayWhatWasKept(res: Response): Promise<void> {
+  const answer: { kept?: string[] } = await res
+    .clone()
+    .json()
+    .catch(() => ({}));
+  if (answer.kept && answer.kept.length > 0) {
+    void showAlert(
+      get(t)("lighting.brokenFileKept", {
+        values: { files: answer.kept.join(", ") },
+      }),
+    );
+  }
 }

@@ -13,7 +13,10 @@
 //
 
 import { test, expect } from "@playwright/test";
-import type { LightingFileRefusal } from "../../src/gen/rules/mtrack_rules";
+import type {
+  FixtureTypeSaved,
+  LightingFileRefusal,
+} from "../../src/gen/rules/mtrack_rules";
 import { card } from "../support/locators";
 
 test.describe("Fixture Types Management", () => {
@@ -498,6 +501,29 @@ test.describe("Fixture Types Management", () => {
     // The old file was kept aside, and the editor says where.
     await expect(dialog).toContainText(
       "The old file was kept as par.light.replaced-20261106-101500.",
+    );
+  });
+
+  test("a first-try save that retired a twin says where it was kept", async ({
+    page,
+  }) => {
+    await page.route("**/api/lighting/fixture-types/par*", async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      return route.fulfill({
+        json: {
+          status: "saved",
+          name: "par",
+          kept: ["par.fixture.replaced-20261106-101500"],
+        } satisfies FixtureTypeSaved,
+      });
+    });
+    await card(page, "par").click();
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    await expect(page.locator(".dialog-overlay")).toContainText(
+      "The old file was kept as par.fixture.replaced-20261106-101500.",
     );
   });
 

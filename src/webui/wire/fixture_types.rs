@@ -235,6 +235,21 @@ pub struct BrokenLightingFile {
     pub also_mentions: Vec<String>,
 }
 
+/// A saved fixture type.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FixtureTypeSaved {
+    /// Always `saved`.
+    pub status: String,
+    pub name: String,
+    /// Each file the save replaced or retired, kept aside: a broken file
+    /// replaced at the person's word, or the type's twin in its other form.
+    /// By its path in the directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub kept: Vec<String>,
+}
+
 /// A deleted fixture type, and what became of its archive.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

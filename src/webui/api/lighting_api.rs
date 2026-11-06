@@ -2087,10 +2087,11 @@ pub(super) async fn put_fixture_type(
     .await?;
 
     // The reply names any broken file kept aside, for the editor to say so.
-    let mut reply = json!({"status": "saved", "name": name});
-    if !kept.is_empty() {
-        reply["kept"] = json!(kept);
-    }
+    let reply = crate::webui::wire::fixture_types::FixtureTypeSaved {
+        status: "saved".to_string(),
+        name,
+        kept,
+    };
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(reply)).into_response())
 }
 
