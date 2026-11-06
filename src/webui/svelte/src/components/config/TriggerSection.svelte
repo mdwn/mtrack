@@ -857,9 +857,15 @@
                       class="input"
                       value={input.fixed_velocity ?? choices.fixed_velocity}
                       onchange={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
+                        // Held to the velocities a hit plays at, as the
+                        // player holds it; a blank field is the default.
+                        const field = e.target as HTMLInputElement;
+                        const [lowest, highest] = choices.trigger_velocity;
+                        const typed = parseInt(field.value);
+                        const v = Number.isNaN(typed)
+                          ? choices.fixed_velocity
+                          : Math.min(highest, Math.max(lowest, typed));
+                        field.value = String(v);
                         setOrDeleteInput(
                           input,
                           "fixed_velocity",

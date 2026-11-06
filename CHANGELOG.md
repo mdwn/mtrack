@@ -353,8 +353,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory it cannot read is still that 500. A link in these directories is followed only to
   what is inside the directory: a linked subdirectory or file leading out of it, or a link to
   nothing, is no longer listed (MCP `list_venue_files` showed `linked/secret.venue`, which its
-  read refused) nor loaded as venues or fixture types. The trigger editor's fixed velocity field takes 1–127, the
-  velocities a hit plays at (it allowed 0).
+  read refused) nor loaded as venues or fixture types.
+- **The trigger editor's fixed velocity is held to 1–127**, the velocities a hit plays at: typing
+  0 saves 1, typing 200 saves 127, and clearing the field saves the default. It saved whatever was
+  typed, 0 included, and its tooltip said 0-127.
 - **A quiet trigger hit plays**: with the `linear` velocity curve, a hit just over a low threshold
   (`threshold: 0.005`, peak 0.006) had velocity 0, which played nothing ("No sample file for
   velocity" for a layered sample). Every curve's velocity is now held to 1–127, as `logarithmic`'s
