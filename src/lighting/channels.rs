@@ -129,23 +129,23 @@ impl Light {
         self.levels.get("dimmer").copied()
     }
 
-    /// Its brightest emitter -- for a fixture mixing subtractively, the
-    /// white its flags pass counting as one: all of it while any flag is
-    /// open, none with all three closed -- or `None` when it has no
-    /// emitter. A colour temperature is a setting, not light.
-    fn emitted(&self) -> Option<f64> {
-        let subtractive = mixes_subtractively(|c| self.levels.contains_key(c));
-        let flag = |name: &str| subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| *cmy == name);
-        let passed = subtractive.then(|| {
+    /// Its brightest emitter -- on a fixture mixing subtractively
+    /// (`subtractive`), the white its flags pass counting as one when it
+    /// has a flag of its own: all of it while any flag is open, none with
+    /// all three closed, a flag it lacks being `flag`'s -- or `None` when
+    /// it has no emitter. A colour temperature is a setting, not light.
+    fn emitted(&self, subtractive: bool, flag: impl Fn(&str) -> f64) -> Option<f64> {
+        let is_flag = |name: &str| subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| *cmy == name);
+        let passed = self.levels.keys().any(|name| is_flag(name)).then(|| {
             FULL - CMY_OF_RGB
                 .iter()
-                .map(|(_, cmy)| self.levels[*cmy])
+                .map(|(_, cmy)| self.levels.get(*cmy).copied().unwrap_or_else(|| flag(cmy)))
                 .fold(FULL, f64::min)
         });
         self.levels
             .iter()
             .filter(|(name, _)| {
-                !flag(name)
+                !is_flag(name)
                     && !matches!(
                         name.as_str(),
                         "dimmer" | "ct" | "cto" | "ctb" | "color_temp"
@@ -161,15 +161,17 @@ impl Light {
 /// is lit: the light it emits is above 0. Each part of it -- the fixture
 /// itself, a section of a GDTF profile's (`red:2`), a cell or a ganged
 /// mirror (`red#2`, `red:2#3`) -- emits its brightest emitter (red, green,
-/// blue, white, amber, UV, …, or, mixing subtractively, the white its
-/// cyan, magenta and yellow flags pass) times its dimmer: its own, else
-/// its section's, else the fixture's. A part with a dimmer and no emitter
-/// that no other part takes its dimmer from is a light of its own (a ring
-/// of white on a dimmer), lit by that dimmer; the fixture's own dimmer is
-/// one only when nothing in the fixture has an emitter. The fixture is lit
-/// when any part is. Nothing else lights it: a strobe, a colour wheel,
-/// where it points, an optic or a colour temperature. The rig is dark when
-/// no fixture is lit.
+/// blue, white, amber, UV, …, or, on a fixture mixing subtractively, the
+/// white its cyan, magenta and yellow flags pass) times its dimmer. A part
+/// takes the dimmer, and a flag, it lacks from the part above it: its
+/// section's, else the fixture's. Whether the fixture mixes subtractively
+/// is decided once, from all its channels, as the engine decides it. A
+/// part with a dimmer and no emitter that no other part takes its dimmer
+/// from is a light of its own (a ring of white on a dimmer), lit by that
+/// dimmer; the fixture's own dimmer is one only when nothing in the
+/// fixture has an emitter. The fixture is lit when any part is. Nothing
+/// else lights it: a strobe, a colour wheel, where it points, an optic or
+/// a colour temperature. The rig is dark when no fixture is lit.
 pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
     use std::collections::{BTreeMap, BTreeSet};
     // Each part's light, by its section and its cell; the fixture's own
@@ -187,16 +189,32 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             .or_default()
             .add(attribute, value);
     }
+    // A part, then the parts above it it takes what it lacks from.
+    let above = |key: (&'a str, &'a str)| [key, (key.0, ""), ("", "")];
+    let subtractive = mixes_subtractively(|c| parts.values().any(|l| l.levels.contains_key(c)));
+    let emitted: BTreeMap<(&str, &str), Option<f64>> = parts
+        .iter()
+        .map(|(&key, light)| {
+            let flag = |name: &str| {
+                above(key)
+                    .into_iter()
+                    .find_map(|k| parts.get(&k)?.levels.get(name).copied())
+                    // A flag the fixture lacks is open.
+                    .unwrap_or(0.0)
+            };
+            (key, light.emitted(subtractive, flag))
+        })
+        .collect();
     // The part a part takes its dimmer from.
-    let dimmer_of = |key: (&'a str, &'a str)| {
-        [key, (key.0, ""), ("", "")]
+    let dimmer_of = |key| {
+        above(key)
             .into_iter()
             .find(|k| parts.get(k).and_then(Light::dimmer).is_some())
     };
     let mut used = BTreeSet::new();
     let mut lit = false;
-    for (&key, light) in &parts {
-        let Some(emitted) = light.emitted() else {
+    for (&key, emitted) in &emitted {
+        let Some(emitted) = emitted else {
             continue;
         };
         let dimmer = match dimmer_of(key) {
@@ -208,9 +226,9 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
         };
         lit |= dimmer * emitted > 0.0;
     }
-    let any_emitter = parts.values().any(|light| light.emitted().is_some());
+    let any_emitter = emitted.values().any(Option::is_some);
     lit || parts.iter().any(|(key, light)| {
-        light.emitted().is_none()
+        emitted[key].is_none()
             && !used.contains(key)
             && (*key != ("", "") || !any_emitter)
             && light.dimmer().is_some_and(|d| d > 0.0)
@@ -324,6 +342,39 @@ mod tests {
 
     /// A fine byte joins its coarse one (the brighter of the two), in
     /// whichever order they come: all three flags closed stays dark.
+    /// Subtractive mixing is the fixture's, decided once; a part lacking a
+    /// flag takes it from the part above it.
+    #[test]
+    fn a_part_takes_the_flags_it_lacks_from_above() {
+        // A cell closing cyan, under the fixture's closed flags: dark.
+        assert!(!lit(&[
+            ("cyan", 255.0),
+            ("magenta", 255.0),
+            ("yellow", 255.0),
+            ("cyan#2", 255.0),
+            ("dimmer", 255.0),
+        ]));
+        // A cell opening cyan under them passes light.
+        assert!(lit(&[
+            ("cyan", 255.0),
+            ("magenta", 255.0),
+            ("yellow", 255.0),
+            ("cyan#2", 0.0),
+            ("dimmer", 255.0),
+        ]));
+        // A section closing all three of its own, under an open fixture.
+        assert!(!lit(&[
+            ("cyan", 0.0),
+            ("magenta", 0.0),
+            ("yellow", 0.0),
+            ("dimmer", 0.0),
+            ("cyan:2", 255.0),
+            ("magenta:2", 255.0),
+            ("yellow:2", 255.0),
+            ("dimmer:2", 255.0),
+        ]));
+    }
+
     /// A sectioned fine byte is its section's, not a section of its own.
     #[test]
     fn a_sectioned_fine_byte_is_its_sections() {
