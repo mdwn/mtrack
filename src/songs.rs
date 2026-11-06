@@ -598,6 +598,11 @@ impl Song {
             }
 
             let path = entry.path();
+            // A hidden file (`.draft.light`, `._Show.light`) is not the
+            // song's, as the loader and the listings pass it over.
+            if is_hidden(&path) {
+                continue;
+            }
             let stem = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
@@ -2199,18 +2204,30 @@ pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
         .collect())
 }
 
-/// Whether a walk of the songs directory leaves the directory `path` out: a
-/// hidden one (`.git`, `.claude`, …).
+/// Whether `path` is hidden: its name starts with a dot (`.git`,
+/// `.draft.light`, `._Show.light`). The one hidden rule: the song loader,
+/// `songs --init` and the song file listing and browser pass such a file or
+/// directory over, the lighting files walk (`project_files::files_under`)
+/// too, and no save writes one ([`has_hidden_part`]).
 pub fn is_hidden(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.starts_with('.'))
 }
 
+/// Whether any part of the relative path `relative` is hidden
+/// ([`is_hidden`]): `Foo/.x.light`, `.git/show.light`. A save refuses such a
+/// path, as the walks would never find what it wrote.
+pub fn has_hidden_part(relative: &Path) -> bool {
+    relative
+        .iter()
+        .any(|part| part != "." && part != ".." && is_hidden(Path::new(part)))
+}
+
 /// The song directories under `root`, in name order: each directory below
 /// it that holds an audio track, a MIDI file or a song's config, under any
 /// name, or a `song.yaml` that does not read ([`marks_a_song_dir`]). The walk
-/// leaves out hidden directories and does not descend into a song
+/// leaves out hidden directories and files and does not descend into a song
 /// directory, so a library laid out as `artist/album/song/` is found at any
 /// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
 /// (none of those files) are not songs. `root` itself is never one. A subdirectory that cannot be
@@ -2223,10 +2240,11 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
         // codeql[rust/path-injection] dir is the songs directory or one below it.
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
+            if is_hidden(&path) {
+                continue;
+            }
             if path.is_dir() {
-                if !is_hidden(&path) {
-                    subdirs.push(path);
-                }
+                subdirs.push(path);
             } else if matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi)
                 || marks_a_song_dir(&path)
             {
@@ -2331,7 +2349,7 @@ pub fn has_song_config(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|entries| {
         entries
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .any(|path| marks_a_song_dir(&path))
+            .any(|path| !is_hidden(&path) && marks_a_song_dir(&path))
     })
 }
 
@@ -2384,12 +2402,12 @@ pub fn get_all_songs_with_defaults(
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
+        // Hidden files and directories are passed over (`._song.yaml`).
+        if is_hidden(&path) {
+            continue;
+        }
 
         if path.is_dir() {
-            if is_hidden(&path) {
-                continue;
-            }
-
             let child = get_all_songs_with_defaults(path.as_path(), default_metronome)?;
             child.list().iter().for_each(|song| {
                 insert_song(&mut songs, song.clone());
@@ -5070,6 +5088,30 @@ pilot:
 
         assert_eq!(song.tracks().len(), 1);
         assert_eq!(song.tracks()[0].name(), "bass");
+        Ok(())
+    }
+
+    /// A hidden file (`.draft.light`, `._Show.light`, `._bass.wav`) is not
+    /// the song's: init leaves it out, as the loader and listings do.
+    #[test]
+    fn initialize_passes_hidden_files_over() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("hidden");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("bass.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        crate::testutil::write_wav(song_dir.join("._bass.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let show =
+            "show \"s\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}\n";
+        for file in [".draft.light", "._Show.light"] {
+            fs::write(song_dir.join(file), show)?;
+        }
+
+        let song = super::Song::initialize(&song_dir)?;
+        assert_eq!(song.tracks().len(), 1);
+        assert!(song.dsl_lighting_shows().is_empty());
+        assert!(super::has_hidden_part(Path::new("Foo/.x.light")));
+        assert!(super::has_hidden_part(Path::new(".git/show.light")));
+        assert!(!super::has_hidden_part(Path::new("Foo/x.light")));
         Ok(())
     }
 

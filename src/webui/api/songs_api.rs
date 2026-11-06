@@ -531,8 +531,8 @@ pub(super) async fn get_song_files(
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            // Skip song config files
-            if crate::songs::is_song_config_name(&path) {
+            // Skip song config files, and hidden files (`songs::is_hidden`).
+            if crate::songs::is_song_config_name(&path) || crate::songs::is_hidden(&path) {
                 continue;
             }
             files.push(SongFile {

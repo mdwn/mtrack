@@ -318,6 +318,17 @@ fn light_show_path(
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
     let root = VerifiedRoot::new(&state.songs_path()).map_err(|e| e.into_response())?;
+    // A hidden file or directory is one the loader and listing pass over
+    // (`songs::is_hidden`): a save there would vanish.
+    if crate::songs::has_hidden_part(std::path::Path::new(name)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!(
+                "{name} is a hidden file name; the lighting system would not read it"
+            )})),
+        )
+            .into_response());
+    }
     let path = SafePath::validate_relative(name, &root).map_err(|e| e.into_response())?;
     if crate::songs::FileKind::of(&path) != crate::songs::FileKind::Lighting {
         return Err((
@@ -773,10 +784,9 @@ fn lighting_write_path(
         .join("/");
     // A file is named for what it holds; a name starting with a dot is a
     // hidden file the loaders pass over, so the save would vanish.
-    if crate::songs::is_hidden(file) {
+    if crate::songs::has_hidden_part(std::path::Path::new(&relative)) {
         return Err(refuse(format!(
-            "{} is a hidden file name; the lighting system would not read it",
-            crate::util::filename_display(file)
+            "{relative} is a hidden file name; the lighting system would not read it"
         )));
     }
     let root = VerifiedRoot::new(dir).map_err(|e| e.into_response())?;
@@ -4145,7 +4155,12 @@ show "test" {
                     .unwrap(),
             )
         };
-        for uri in ["/lighting/notes.txt", "/lighting/song.yaml"] {
+        for uri in [
+            "/lighting/notes.txt",
+            "/lighting/song.yaml",
+            "/lighting/Foo%2F.x.light",
+            "/lighting/.x.light",
+        ] {
             assert_eq!(
                 put(uri).await.unwrap().status(),
                 StatusCode::BAD_REQUEST,
@@ -4153,6 +4168,7 @@ show "test" {
             );
         }
         assert!(!state.songs_path().join("notes.txt").exists());
+        assert!(!state.songs_path().join(".x.light").exists());
         assert_eq!(
             put("/lighting/Show.LIGHT").await.unwrap().status(),
             StatusCode::OK

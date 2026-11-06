@@ -118,8 +118,8 @@ pub(super) async fn browse_directory(
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                // Skip hidden files
-                if name.starts_with('.') {
+                // Skip hidden files (`songs::is_hidden`).
+                if crate::songs::is_hidden(&path) {
                     continue;
                 }
                 let is_dir = path.is_dir();
