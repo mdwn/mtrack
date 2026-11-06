@@ -590,7 +590,7 @@ pub(super) async fn post_song(
     };
 
     let config_path = song_dir.join_filename("song.yaml");
-    if config_path.exists() {
+    if config_path.exists() || songs::has_song_config(song_dir.as_path()) {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),
@@ -923,36 +923,27 @@ fn remove_song_from_playlists(
     }
 }
 
-/// Generates song.yaml for a song directory if one doesn't already exist.
-/// If song.yaml already exists, it is left untouched so that manual edits
-/// (track names, lighting config, etc.) are preserved.
+/// Generates song.yaml for a song directory if it holds no song config yet,
+/// under any name (`songs::init_song_dir`): one that does, `song.yml`
+/// included, is left untouched so that manual edits (track names, lighting
+/// config, etc.) are preserved.
 pub(super) fn ensure_song_config(
     song_dir: &std::path::Path,
 ) -> Result<(), Box<axum::response::Response>> {
-    let config_path = song_dir.join("song.yaml");
-    if config_path.exists() {
-        return Ok(());
-    }
-
-    let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to initialize song: {}", e)})),
+    // The one rule `songs --init` and the bulk import take: a directory
+    // that holds a song config under any name (`song.yml`) keeps it.
+    let name = crate::util::filename_display(song_dir).to_string();
+    songs::init_song_dir(song_dir, &name)
+        .map(|_| ())
+        .map_err(|e| {
+            Box::new(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("Failed to create the song config: {}", e)})),
+                )
+                    .into_response(),
             )
-                .into_response(),
-        )
-    })?;
-
-    song.get_config().save(&config_path).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to save song config: {}", e)})),
-            )
-                .into_response(),
-        )
-    })
+        })
 }
 
 /// Whether song `name` has a file `filename` already, for
@@ -1540,6 +1531,37 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
         let config = std::fs::read_to_string(state.songs_path().join("NewSong/song.yaml")).unwrap();
         assert!(config.contains("Bass.WAV"), "{config}");
+    }
+
+    /// An upload to a song whose config is `song.yml` adds no `song.yaml`
+    /// beside it: the one rule `songs --init` takes.
+    #[tokio::test]
+    async fn upload_track_to_a_yml_song_adds_no_song_yaml() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("YmlSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        let config = "name: YmlSong\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        std::fs::write(song_dir.join("song.yml"), config).unwrap();
+        std::fs::write(song_dir.join("track1.wav"), create_test_wav()).unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/YmlSong/tracks/bass.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!song_dir.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config
+        );
     }
 
     #[tokio::test]

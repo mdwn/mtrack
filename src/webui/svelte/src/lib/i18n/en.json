@@ -943,7 +943,7 @@
   "songs.import.audioFileCount": "{count} audio file{count, plural, one {} other {s}}",
   "songs.import.midiFileCount": "{count} MIDI",
   "songs.import.lightingFileCount": "{count} lighting",
-  "songs.import.songExists": "song.yaml already exists in this directory",
+  "songs.import.songExists": "A song config already exists in this directory",
   "playlists.title": "Playlists",
   "playlists.new": "New",
   "playlists.namePlaceholder": "Playlist name",

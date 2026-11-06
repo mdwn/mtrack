@@ -338,6 +338,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A song kept as `song.yml` gets no `song.yaml` beside it**: uploading a track or a sample to
+  such a song, creating a song in its directory from the web UI's file browser, or creating it
+  under its name wrote (or refused only on) a `song.yaml`, so a generated config sat beside the
+  user's and the song loaded twice. They now take the rule `songs --init` takes: a directory
+  holding a song config under any name keeps it (the browser's create answers 409).
 - **File extensions are read in any case, by one rule**: a playlist kept as `Encore.YAML` was
   passed over by the player; it now loads, and the web UI and MCP save and delete it in place.
   A song config named `Album.YAML` or `song.YML` is now loaded as one, so a file once ignored for
