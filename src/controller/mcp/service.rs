@@ -153,23 +153,24 @@ pub struct SwitchPlaylistArgs {
     pub name: String,
 }
 
-/// Ambient light's mode.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum AmbientModeArg {
-    /// Between songs, after its delay: the usual.
-    Auto,
-    /// Now, over any song, until `auto` again.
-    On,
-    /// None: ambient playing fades out.
-    Off,
+/// Ambient light's mode: one of [`AmbientMode::ALL`]'s names.
+fn ambient_mode_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use crate::dmx::engine::AmbientMode;
+    let names: Vec<&str> = AmbientMode::ALL.iter().map(|m| m.as_str()).collect();
+    schemars::json_schema!({
+        "type": "string",
+        "enum": names,
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetAmbientModeArgs {
-    /// `auto`, `on` or `off`.
-    pub mode: AmbientModeArg,
+    /// `auto` (between songs, after its delay: the usual), `on` (now, over
+    /// any song, until `auto` again) or `off` (none: ambient playing fades
+    /// out).
+    #[schemars(schema_with = "ambient_mode_schema")]
+    pub mode: crate::dmx::engine::AmbientMode,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -869,12 +870,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SetAmbientModeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::dmx::engine::AmbientMode;
-        let mode = match args.mode {
-            AmbientModeArg::Auto => AmbientMode::Auto,
-            AmbientModeArg::On => AmbientMode::On,
-            AmbientModeArg::Off => AmbientMode::Off,
-        };
+        let mode = args.mode;
         let player = self.player.clone();
         tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
             .await

@@ -689,7 +689,8 @@ impl PlayerService for PlayerServer {
         let name = request.into_inner().mode;
         let mode = crate::dmx::engine::AmbientMode::parse(&name).ok_or_else(|| {
             Status::invalid_argument(format!(
-                "unknown ambient mode '{name}': use auto, on or off"
+                "unknown ambient mode '{name}': use {}",
+                crate::dmx::engine::AmbientMode::names()
             ))
         })?;
         let player = self.player.clone();
