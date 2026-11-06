@@ -350,6 +350,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Position help names every form**: the MCP `play_from`, `play_song_from`, `seek` and
   `evaluate_show` argument descriptions and the CLI's `play --from` and `seek` help now say a
   bare number of seconds (`90`) is a position too, as it always was.
+- **Docs**: the OSC `status` message carries `Playing` or `Stopped` only (player configuration
+  said it carried the elapsed time and duration); a `tempo {}` block may sit anywhere in a show
+  or sequence body, the last one winning; `master`'s `speed` may go above 1; the lighting CLI
+  commands use `--fixture-types-dir`/`--venues-dir`, not the config's `directories`; `migrate`
+  takes a positional path; MIDI sample triggers match other event types exactly; MCP `status`'s
+  `ambient` has a `source`; the web UI page lists MP4 and `.aif`, the MIDI controller's ambient
+  and auto-play events, auto-play status events, and the audio stalled and reconnecting states;
+  Home and End skip only while stopped or paused; a `strobe` can be flashed through a dimmer or
+  colour channels. The docs' tables of effects, defaults, OSC addresses, trigger inputs, MIDI
+  event kinds and CLI commands are now tested against the code.
 
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture

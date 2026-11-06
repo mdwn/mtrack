@@ -17,7 +17,8 @@ A show needs a tempo map to use anything musical: `@measure/beat` cues, `4measur
   verify-light-show` runs without a song, so a beat-based show needs the block to pass there
   ([Verification](verification.md)).
 
-A show that uses musical timing with neither fails to parse with "requires a tempo section".
+A show that uses musical timing with neither fails to parse with an error saying it "requires a
+tempo section" (or "require", for a musical duration).
 
 ## Time-Based Cues
 
@@ -92,8 +93,9 @@ show "Measure-Based Show" {
 ## Tempo Sections
 
 A `tempo {}` block defines BPM, time signature, and tempo changes. It goes at file scope
-(applying to every show and sequence in the file) or as the first item inside a `show { }`
-body. `start` is where measure 1 beat 1 falls in the song: a song with a lead-in before the
+(applying to every show and sequence in the file) or inside a `show { }` or `sequence { }`
+body, anywhere among its cues, where it governs every cue of that body. Where a body or the
+file holds several, the last one wins. `start` is where measure 1 beat 1 falls in the song: a song with a lead-in before the
 click starts needs it set to that lead-in, or every cue lands early by exactly that much.
 
 **Basic tempo:**
@@ -277,7 +279,7 @@ show "Song" {
 
 `offset N measures` shifts the measure numbering for the cues that follow it, so a cue written
 as `@M/B` plays at measure `M + N`. `reset_measures` puts the numbering back so `@M/B` plays at
-measure `M` again. Both need a tempo map.
+measure `M` again. `offset` needs a tempo map.
 
 Three rules decide what a command affects:
 
@@ -389,7 +391,7 @@ time, and a cue may hold several.
 | `clear(layer: midground)` | Stops every effect on that one layer, and resets that layer's master and freeze. |
 | `freeze(layer: background)` | Holds every effect on the layer where it is: they stop advancing in time and keep their current output. |
 | `unfreeze(layer: background)` | Resumes the layer's effects from where they were frozen. |
-| `master(layer: foreground, intensity: 50%)` | Scales the layer's output. `speed: 0.5` scales how fast its effects run instead; give one or both. Values are a percentage or a `0.0`–`1.0` number. |
+| `master(layer: foreground, intensity: 50%)` | Scales the layer's output. `speed: 0.5` scales how fast its effects run instead; give one or both. `intensity` is a percentage or a `0.0`–`1.0` number; `speed` is a multiplier, a number or a percentage, and may go above 1 (`speed: 2` runs the layer's effects at double speed). |
 | `stop sequence "Verse Pattern"` | Stops the named sequence if it is playing. |
 | `offset 4 measures` | Shifts the measure numbering of the cues that follow ([Measure Offsets](#measure-offsets)). |
 | `reset_measures` | Removes the shift for the cues that follow. |

@@ -602,6 +602,29 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// The CLI reference names every subcommand, and only those.
+    #[test]
+    fn the_cli_reference_names_every_command() {
+        use clap::CommandFactory;
+        let reference = include_str!("../docs/src/reference/cli.md");
+        let mut documented: Vec<&str> = reference
+            .split("`mtrack ")
+            .skip(1)
+            .filter_map(|rest| rest.split([' ', '`']).next())
+            .filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .filter(|word| !word.is_empty())
+            .collect();
+        documented.sort();
+        documented.dedup();
+        let mut commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+            .map(|c| c.get_name().to_string())
+            .collect();
+        commands.sort();
+        assert_eq!(documented, commands);
+    }
+
     mod format_device_list_tests {
         use super::*;
 

@@ -56,6 +56,9 @@ midi_event:
 When an event is used to match incoming MIDI, the two uses compare differently. The MIDI
 controller's keys (`play`, `prev`, ...) match the whole event, velocity included, so a Note On
 with a different velocity is not recognized. A `kind: midi` sample trigger matches a Note
-On/Off on channel and key only; the incoming velocity drives the sample's velocity handling.
+On/Off on channel and key only; the incoming velocity drives the sample's velocity handling,
+and a Note On at velocity 0 is a release, never a trigger. Any other event type must match
+exactly: a control change on controller and value, a program change on program, aftertouch on
+key and velocity, channel aftertouch on velocity, pitch bend on bend.
 
 System Exclusive, system real-time and other message types cannot be written in configuration.

@@ -194,9 +194,10 @@ loop {
 
 ### Tempo and beat-based timing
 
-A `tempo { ... }` block enables musical-time conversion. Place it either at
-file scope (applies to every show/sequence) or as the first item inside a
-`show { ... }` body. Fields go on separate lines:
+A `tempo { ... }` block enables musical-time conversion. Place it at file
+scope (applies to every show/sequence) or inside a `show { ... }` or
+`sequence { ... }` body, where it governs every cue of that body; where there
+are several, the last wins. Fields go on separate lines:
 
 ```
 tempo {
