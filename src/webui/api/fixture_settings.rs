@@ -318,9 +318,24 @@ fn plan(
                  hyphens and underscores; not a route name)"
             ))
         })?;
-        if existing_fixture_type_file(root, types_dir, &new_name).is_some()
-            || library.get(&new_name).is_some()
+        // The name is taken by a type that has it, or by a file that does
+        // not read and may hold it (`project_files::locate_fixture_type`),
+        // which says so: renaming onto it would leave two once it is fixed.
+        if let Some(found) = super::lighting_api::existing_fixture_type(root, types_dir, &new_name)
         {
+            let file = crate::lighting::project_files::display_in(types_dir, &found.path);
+            return Err((
+                StatusCode::CONFLICT,
+                match found.declares {
+                    Ok(_) => format!("there is already a fixture type named \"{new_name}\""),
+                    Err(_) => format!(
+                        "{file} does not read and may hold a fixture type named \"{new_name}\"; \
+                         fix or move it first, or choose another name"
+                    ),
+                },
+            ));
+        }
+        if library.get(&new_name).is_some() {
             return Err((
                 StatusCode::CONFLICT,
                 format!("there is already a fixture type named \"{new_name}\""),
@@ -853,6 +868,30 @@ mod test {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    /// A rename onto a name a broken file may hold is refused, naming the
+    /// file and why, not "there is already a fixture type".
+    #[tokio::test]
+    async fn a_rename_onto_a_name_a_broken_file_may_hold_says_so() {
+        let (state, dir) = test_state();
+        project(dir.path());
+        std::fs::write(
+            dir.path().join("types/other.light"),
+            "fixture_type \"Other\" {\n",
+        )
+        .unwrap();
+        let (status, body) = post(
+            state,
+            "Brick",
+            json!({"name": "Other", "write": false}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let error = body.to_string();
+        assert!(error.contains("other.light does not read"), "{error}");
+        assert!(!error.contains("already"), "{error}");
     }
 
     #[tokio::test]

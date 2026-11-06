@@ -631,7 +631,7 @@ use lighting::project_files::{put_back, set_aside_all};
 /// nor its archive when the project's GDTF library has a fixture of that
 /// name (`root`): the library answers for it, and the broken file is left
 /// alone.
-fn existing_fixture_type(
+pub(super) fn existing_fixture_type(
     root: &std::path::Path,
     dir: &std::path::Path,
     name: &str,
