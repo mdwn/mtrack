@@ -338,6 +338,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mtrack verify --check` refuses a category it does not know**: `mtrack verify mtrack.yaml
+  --check track_mappings` (a typo) ran no checks and exited 0. It now fails with clap's error
+  listing the categories (`track-mappings`).
 - **One text for "no effect engine"**: with no DMX engine, gRPC `GetActiveEffects` (and so
   `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
   answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
