@@ -14,6 +14,8 @@
 
 // Paths as the file browsers show them.
 
+import { rules } from "../rules";
+
 /** The directory above `path`; the root is its own. */
 export function parentPath(path: string): string {
   const parts = path.replace(/\/+$/, "").split("/");
@@ -36,4 +38,15 @@ export function breadcrumbs(path: string): { name: string; path: string }[] {
 /** A file's name without its extension: a track's default name. */
 export function withoutExtension(file: string): string {
   return file.replace(/\.[^.]+$/, "");
+}
+
+/**
+ * What a file picker for audio accepts (`accept=`): the player's audio
+ * extensions (`songs::AUDIO_EXTENSIONS`). Browsers match them in any case.
+ */
+export function audioAccept(): string {
+  return rules
+    .audio_extensions()
+    .map((ext) => "." + ext)
+    .join(",");
 }

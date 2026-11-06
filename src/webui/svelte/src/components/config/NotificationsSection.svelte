@@ -22,6 +22,7 @@
 <script lang="ts">
   import type { NotificationConfig } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import Tooltip from "./Tooltip.svelte";
   import FileUpload from "../songs/FileUpload.svelte";
 
@@ -223,7 +224,7 @@
   {#if onupload}
     <div class="upload-area">
       <FileUpload
-        accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.aiff,.aif"
+        accept={audioAccept()}
         label={uploading
           ? $t("common.uploading")
           : $t("notifications.dropAudio")}

@@ -127,6 +127,11 @@ mod ambient_source;
 #[path = "../../../src/state/pose.rs"]
 mod pose;
 
+/// What a file in a song directory is, by its extension
+/// (`src/songs/file_kind.rs`).
+#[path = "../../../src/songs/file_kind.rs"]
+mod file_kind;
+
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
@@ -193,6 +198,10 @@ pub mod playlist {
 
 pub mod state {
     pub use crate::pose::PoseSnapshot;
+}
+
+pub mod songs {
+    pub use crate::file_kind::{FileKind, AUDIO_EXTENSIONS};
 }
 
 pub mod webui {
@@ -1078,6 +1087,16 @@ pub struct BuiltinSounds(pub metronome_config::MetronomeSounds);
 #[wasm_bindgen]
 pub fn metronome_sounds() -> BuiltinSounds {
     BuiltinSounds(metronome_config::MetronomeSounds::builtin())
+}
+
+/// The extensions of the audio files the player reads as tracks, in any
+/// case (`songs::AUDIO_EXTENSIONS`): what a file picker for audio accepts.
+#[wasm_bindgen]
+pub fn audio_extensions() -> Vec<String> {
+    songs::AUDIO_EXTENSIONS
+        .iter()
+        .map(|ext| ext.to_string())
+        .collect()
 }
 
 /// The samples of a synthesized click at `freq` Hz and `volume`, at

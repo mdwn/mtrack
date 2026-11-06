@@ -55,7 +55,7 @@
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
   import NotificationsSection from "../config/NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
-  import { withoutExtension } from "../../lib/util/paths";
+  import { audioAccept, withoutExtension } from "../../lib/util/paths";
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -1085,7 +1085,7 @@
         />
         <div class="upload-area">
           <FileUpload
-            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+            accept={audioAccept()}
             label={uploading
               ? $t("common.uploading")
               : $t("songs.detail.dropAudio")}

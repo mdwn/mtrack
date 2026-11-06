@@ -19,6 +19,7 @@ use serde::Serialize;
 use crate::audio::beat_grid::BeatGrid;
 use crate::audio::guessed_tempo::GuessedTempo;
 use crate::config::{Section, TempoConfig};
+pub use crate::songs::FileKind;
 
 /// `GET /api/songs`: the songs the player knows, and those that failed to
 /// load.
@@ -102,18 +103,6 @@ pub struct SongFile {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: FileKind,
-}
-
-/// What a file is to the player, by its extension.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FileKind {
-    Directory,
-    Audio,
-    Midi,
-    Lighting,
-    Other,
 }
 
 /// `GET /api/browse`: a directory under the config root, directories first.

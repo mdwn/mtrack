@@ -127,7 +127,7 @@ pub(super) async fn browse_directory(
                     kind: if is_dir {
                         FileKind::Directory
                     } else {
-                        super::songs_api::file_kind(&path)
+                        FileKind::of(&path)
                     },
                     path: to_relative(&path),
                     name,
@@ -365,10 +365,8 @@ fn bulk_import_recursive(
             if !name.starts_with('.') {
                 subdirs.push(path);
             }
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if songs::is_supported_audio_extension(&ext.to_lowercase()) {
-                has_audio = true;
-            }
+        } else if FileKind::of(&path) == FileKind::Audio {
+            has_audio = true;
         }
     }
     subdirs.sort();

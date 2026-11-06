@@ -563,7 +563,7 @@ pub(super) async fn get_song_files(
                 continue;
             }
             files.push(SongFile {
-                kind: file_kind(&path),
+                kind: FileKind::of(&path),
                 name: filename,
             });
         }
@@ -578,24 +578,6 @@ pub(super) async fn get_song_files(
     files.sort_by(|a, b| a.name.cmp(&b.name));
 
     (StatusCode::OK, Json(SongFiles { files })).into_response()
-}
-
-/// What a file is to the player, by its extension.
-pub(super) fn file_kind(path: &std::path::Path) -> FileKind {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if songs::is_supported_audio_extension(&ext) {
-        FileKind::Audio
-    } else if ext == "mid" {
-        FileKind::Midi
-    } else if ext == "light" {
-        FileKind::Lighting
-    } else {
-        FileKind::Other
-    }
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,
@@ -1045,11 +1027,9 @@ pub(super) fn validate_track_filename(
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext != "mid" && ext != "light" && !songs::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if FileKind::of(path) == FileKind::Other {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -1575,6 +1555,29 @@ mod test {
 
         assert!(state.songs_path().join("NewSong/track1.wav").exists());
         assert!(state.songs_path().join("NewSong/song.yaml").exists());
+    }
+
+    /// An extension in capitals is the same audio type: `Bass.WAV` is taken
+    /// and becomes a track, as the file listing calls it audio.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/NewSong/tracks/Bass.WAV")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = std::fs::read_to_string(state.songs_path().join("NewSong/song.yaml")).unwrap();
+        assert!(config.contains("Bass.WAV"), "{config}");
     }
 
     #[tokio::test]

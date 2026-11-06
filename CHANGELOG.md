@@ -338,6 +338,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An audio file's extension is read in any case**: `Bass.WAV` in a song directory was listed
+  as audio by the web UI but ignored by `mtrack songs --init` ("Unknown extension: WAV") and
+  refused by the track and sample uploads (400 "Unsupported file type: .WAV"). All of them now
+  take it, as do `.MID` and `.LIGHT` files. The web UI's audio file pickers offer the player's
+  own list of extensions, so the notification sound picker now offers `.mp4` too.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.

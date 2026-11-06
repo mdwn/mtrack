@@ -31,13 +31,8 @@ use crate::config;
 use crate::proto::player;
 use crate::util::{filename_display, FileStamp};
 
-/// Returns true if the extension is a supported audio (non-MIDI) format.
-pub fn is_supported_audio_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        "wav" | "flac" | "mp3" | "ogg" | "aac" | "m4a" | "mp4" | "aiff" | "aif"
-    )
-}
+mod file_kind;
+pub use file_kind::{FileKind, AUDIO_EXTENSIONS};
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 ///
@@ -604,13 +599,8 @@ impl Song {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Unreadable file stem");
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("Unreadable file extension");
-
-            match extension {
-                "mid" => {
+            match FileKind::of(&path) {
+                FileKind::Midi => {
                     if stem.starts_with("dmx_") {
                         light_shows.push(LightShow {
                             universe_name: "default universe".to_string(),
@@ -624,18 +614,19 @@ impl Song {
                         })
                     }
                 }
-                "light" => {
+                FileKind::Lighting => {
                     // Collected, not parsed: musical timing resolves at parse
                     // time, and the beat grid that supplies it needs the tracks
                     // this scan has not finished reading yet.
                     light_paths.push(path);
                 }
-                ext if is_supported_audio_extension(ext) => {
+                FileKind::Audio => {
                     let mut new_tracks = Track::load_tracks(&path)?;
                     tracks.append(&mut new_tracks);
                 }
-                unknown_extension => {
-                    info!("Unknown extension: {unknown_extension}. Ignoring file.");
+                FileKind::Directory | FileKind::Other => {
+                    let extension = path.extension().unwrap_or_default().to_string_lossy();
+                    info!("Unknown extension: {extension}. Ignoring file.");
                 }
             }
         }
@@ -1816,12 +1807,11 @@ impl Track {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("Unreadable file stem");
-        let extension = track_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("Unreadable file extension");
-
-        if !is_supported_audio_extension(extension) {
+        if FileKind::of(track_path) != FileKind::Audio {
+            let extension = track_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("Unreadable file extension");
             return Err(format!(
                 "Unsupported audio format '.{}' for file '{}'",
                 extension,
@@ -4570,24 +4560,20 @@ pilot:
         Ok(())
     }
 
+    /// `Bass.WAV` is an audio track to `songs --init`, as it is to the file
+    /// listing and the upload.
     #[test]
-    fn is_supported_audio_extension_accepted() {
-        for ext in &["wav", "mp3", "flac", "ogg", "aac", "m4a", "aiff"] {
-            assert!(
-                super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to be a supported audio extension"
-            );
-        }
-    }
+    fn initialize_reads_extensions_in_any_case() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("loud");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("Bass.WAV"), vec![vec![1_i32, 2, 3]], 44100)?;
 
-    #[test]
-    fn is_supported_audio_extension_rejected() {
-        for ext in &["txt", "yaml", "mid", "light", ""] {
-            assert!(
-                !super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to NOT be a supported audio extension"
-            );
-        }
+        let song = super::Song::initialize(&song_dir)?;
+
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "bass");
+        Ok(())
     }
 
     #[test]

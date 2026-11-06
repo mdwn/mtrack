@@ -283,11 +283,9 @@ fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Re
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if !songs_crate::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if songs_crate::FileKind::of(path) != songs_crate::FileKind::Audio {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
