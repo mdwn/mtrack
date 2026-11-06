@@ -498,7 +498,7 @@ pub fn test_audio(config: &str, hostname: Option<String>) -> Result<(), Box<dyn 
 
 pub fn verify(
     config: &str,
-    check: Option<Vec<String>>,
+    check: Option<Vec<verify::Check>>,
     hostname: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let config_path = Path::new(config);
@@ -512,12 +512,12 @@ pub fn verify(
     }
 
     let run_all = check.is_none();
-    let checks: Vec<String> = check.unwrap_or_default();
+    let checks: Vec<verify::Check> = check.unwrap_or_default();
 
     let mut report = verify::VerificationReport::default();
 
     // Track mapping checks.
-    if run_all || checks.iter().any(|c| c == "track-mappings") {
+    if run_all || checks.contains(&verify::Check::TrackMappings) {
         let all_profiles = player_config.all_profiles();
 
         if all_profiles.len() > 1 {
@@ -1574,7 +1574,7 @@ dmx:
             // Provide a specific check
             assert!(verify(
                 config_path.to_str().unwrap(),
-                Some(vec!["track-mappings".to_string()]),
+                Some(vec![verify::Check::TrackMappings]),
                 None
             )
             .is_ok());
@@ -1593,13 +1593,8 @@ dmx:
                 ),
             )
             .unwrap();
-            // Provide a check that doesn't match track-mappings, so that branch is skipped
-            assert!(verify(
-                config_path.to_str().unwrap(),
-                Some(vec!["other-check".to_string()]),
-                None
-            )
-            .is_ok());
+            // Select no checks, so the track-mappings branch is skipped
+            assert!(verify(config_path.to_str().unwrap(), Some(vec![]), None).is_ok());
         }
 
         #[test]

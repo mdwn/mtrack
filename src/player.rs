@@ -13,6 +13,7 @@
 //
 mod hardware;
 mod hardware_status;
+pub mod lock_policy;
 mod navigation;
 mod play_declined;
 mod playback;
@@ -25,7 +26,9 @@ pub use hardware_status::{
     SubsystemStatus, TestOutputStatus,
 };
 pub use play_declined::{PlayDeclined, PLAY_DECLINED_KEY};
-pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
+pub use status::{
+    AmbientStatus, DmxRead, LightingStatus, PlayerStatus, AMBIENT_UNREAD, STATUS_DMX_READ_TIMEOUT,
+};
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -56,6 +59,10 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
+
+/// What every surface says for the lighting effects when there is no
+/// effect engine (no DMX engine configured).
+pub const NO_EFFECT_ENGINE: &str = "no effect engine configured";
 
 /// Direction for playlist navigation.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -398,6 +405,20 @@ pub enum TrackGainError {
     NoAudioProfile,
     #[error(transparent)]
     UnknownTrack(#[from] crate::audio::track_gains::UnknownTrackError),
+}
+
+impl TrackGainError {
+    /// What kind of fault this is, for a transport's code: no audio
+    /// profile is a precondition; a gain or track the caller named wrong is
+    /// invalid.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            TrackGainError::NoAudioProfile => crate::util::FaultKind::Precondition,
+            TrackGainError::NonFinite(_) | TrackGainError::UnknownTrack(_) => {
+                crate::util::FaultKind::Invalid
+            }
+        }
+    }
 }
 
 /// A section loop's state: the section armed, a break asked of it, when it
@@ -1111,6 +1132,13 @@ impl Player {
             .dmx_engine
             .clone()
             .map(|engine| engine.format_active_effects())
+    }
+
+    /// The active lighting effects as text for a surface to show:
+    /// [`Player::format_active_effects`], or [`NO_EFFECT_ENGINE`] without one.
+    pub fn active_effects_summary(&self) -> String {
+        self.format_active_effects()
+            .unwrap_or_else(|| NO_EFFECT_ENGINE.to_string())
     }
 
     /// Emits the per-song MIDI event and notifies all song-change notifiers.
@@ -4577,7 +4605,7 @@ mod test {
             .await;
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("not found"));
+        assert_eq!(err.to_string(), "unable to find song Nonexistent Song");
         Ok(())
     }
 

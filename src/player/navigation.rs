@@ -67,9 +67,15 @@ impl Player {
             let all_songs = self
                 .get_all_songs_playlist()
                 .ok_or("all_songs playlist not available")?;
-            let song = all_songs
-                .navigate_to(song_name)
-                .ok_or_else(|| format!("Song '{}' not found", song_name))?;
+            // The registry says why it has no such song: none by that
+            // name, or one that failed to load.
+            all_songs
+                .registry()
+                .get(song_name)
+                .map_err(|e| e.to_string())?;
+            let song = all_songs.navigate_to(song_name).ok_or_else(|| {
+                crate::songs::SongLookupError::NotFound(song_name.to_string()).to_string()
+            })?;
             *self.active_playlist.write() = crate::playlist::ALL_SONGS.to_string();
             Ok(song)
         });

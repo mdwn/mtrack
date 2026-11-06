@@ -413,6 +413,20 @@ test.describe("Dashboard: auto play and ambient light", () => {
       "Ambient light soon · the playlist's",
     );
 
+    // A status read of the DMX engine that did not answer says so, rather
+    // than passing for no DMX engine; the mode is not known, so no buttons.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      ambient: {
+        available: false,
+        reason: "could not read the ambient light's state",
+      },
+    });
+    await expect(page.getByTestId("ambient-badge")).toHaveText(
+      "Ambient light: no reading",
+    );
+    await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
+
     await sendWsMessage(page, wsId, { ...frame, is_playing: true });
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
     await expect(page.getByTestId("ambient-badge")).toHaveCount(0);

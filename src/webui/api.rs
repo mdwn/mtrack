@@ -36,42 +36,21 @@ use axum::{
 use serde_json::json;
 
 use super::server::WebUiState;
+use crate::player::lock_policy::{self, Surface};
 use crate::songs as songs_crate;
 
-/// The routes that stay open while the player is locked, by method and the
-/// route's own pattern (never the request path: a venue named `lock` matches
-/// `/lighting/venues/{name}`, not the lock toggle). These are the lock toggle,
-/// validation, playlist activation (a playback control, not an edit), the
-/// controller restart, and the pure reads that happen to be POSTs (a preview
-/// evaluation and the upload inspectors, which write nothing).
-const LOCKED_ALLOWLIST: &[(&str, &str)] = &[
-    ("PUT", "/lock"),
-    ("POST", "/config/validate"),
-    ("POST", "/lighting/validate"),
-    ("POST", "/playlists/{name}/activate"),
-    ("POST", "/controllers/restart"),
-    ("POST", "/lighting/evaluate"),
-    ("POST", "/lighting/mvr/inspect"),
-    // Releasing a fixture test only ever makes the lights go back to the show.
-    ("DELETE", "/lighting/fixture-test"),
-];
-
-/// True when a request may proceed while the player is locked.
+/// True when a request may proceed while the player is locked: every GET,
+/// and the routes [`lock_policy::OPEN_WHILE_LOCKED`] lists, by method and
+/// the route's own pattern (never the request path: a venue named `lock`
+/// matches `/lighting/venues/{name}`, not the lock toggle).
 fn allowed_while_locked(method: &axum::http::Method, pattern: Option<&str>) -> bool {
-    if method == axum::http::Method::GET {
-        return true;
-    }
-    let Some(pattern) = pattern else {
-        return false;
-    };
+    let pattern = pattern.unwrap_or_default();
     let pattern = pattern.strip_prefix("/api").unwrap_or(pattern);
-    LOCKED_ALLOWLIST
-        .iter()
-        .any(|(m, p)| *m == method.as_str() && *p == pattern)
+    lock_policy::open_while_locked(Surface::Web, &format!("{method} {pattern}"))
 }
 
 /// Middleware that rejects mutating requests (non-GET) when the player is locked,
-/// except the exact routes in [`LOCKED_ALLOWLIST`].
+/// except the exact routes [`lock_policy::OPEN_WHILE_LOCKED`] lists.
 /// Applied at the server layer where the state is available.
 pub(crate) async fn lock_guard(
     State(state): State<WebUiState>,

@@ -151,10 +151,12 @@ pub(super) async fn get_song(
 
     let result = {
         let all_songs = state.player.songs();
-        match all_songs.get(&name) {
-            Ok(song) => match Some(song.config_path_or_default()).filter(|p| p.is_file()) {
-                Some(path) => GetSongResult::YamlPath(path),
-                None => GetSongResult::Summary(
+        // The file the song was read from, loaded or not, by the registry's
+        // one rule.
+        match all_songs.config_path(&name).filter(|p| p.is_file()) {
+            Some(path) => GetSongResult::YamlPath(path),
+            None => match all_songs.get(&name) {
+                Ok(song) => GetSongResult::Summary(
                     (
                         StatusCode::OK,
                         Json(json!({
@@ -169,29 +171,17 @@ pub(super) async fn get_song(
                     )
                         .into_response(),
                 ),
-            },
-            Err(_) => {
-                if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
-                    match Some(failure.config_path().to_path_buf()).filter(|p| p.is_file()) {
-                        Some(path) => GetSongResult::YamlPath(path),
-                        None => GetSongResult::NotFound(
-                            (
-                                StatusCode::NOT_FOUND,
-                                Json(json!({"error": format!("No config file found for failed song: {}", name)})),
-                            )
-                                .into_response(),
-                        ),
-                    }
-                } else {
+                Err(crate::songs::SongLookupError::FailedToLoad { .. }) => {
                     GetSongResult::NotFound(
                         (
                             StatusCode::NOT_FOUND,
-                            Json(json!({"error": format!("Song not found: {}", name)})),
+                            Json(json!({"error": format!("No config file found for failed song: {}", name)})),
                         )
                             .into_response(),
                     )
                 }
-            }
+                Err(e) => GetSongResult::NotFound(super::helpers::song_lookup_response(e)),
+            },
         }
     };
 
@@ -388,13 +378,7 @@ pub(super) async fn get_song_waveform(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     // Check cache first. Virtual tracks (metronome, pilot) render fresh in
@@ -462,13 +446,7 @@ pub(super) async fn get_song_tempo_guess(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     // Try MIDI file first — it has authoritative tempo/time-sig events.
@@ -536,13 +514,7 @@ pub(super) async fn get_song_files(
     let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response();
-        }
+        Err(e) => return super::helpers::song_lookup_response(e).into_response(),
     };
 
     let song_dir = song.base_path().to_path_buf();
@@ -842,16 +814,9 @@ fn song_config_path(
     name: &str,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
-    let songs = player.songs();
-    let loaded = match songs.get(name) {
-        Ok(song) => Some(song.config_path_or_default()),
-        Err(_) => songs
-            .failures()
-            .iter()
-            .find(|f| f.name() == name)
-            .map(|f| f.config_path().to_path_buf()),
-    };
-    Ok(loaded
+    Ok(player
+        .songs()
+        .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
         .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
 }
@@ -877,7 +842,7 @@ pub(super) fn resolve_song_dir(
 
     // Check failures list — the song exists on disk but failed to load.
     let all_songs = player.songs();
-    if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+    if let Some(failure) = all_songs.failure(name) {
         if let Ok(safe) = SafePath::resolve(failure.base_path(), &root) {
             if safe.is_dir() {
                 return Ok(safe);
@@ -892,13 +857,9 @@ pub(super) fn resolve_song_dir(
         }
     }
 
-    Err(Box::new(
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Song not found: {}", name)})),
-        )
-            .into_response(),
-    ))
+    Err(Box::new(super::helpers::song_lookup_response(
+        crate::songs::SongLookupError::NotFound(name.to_string()),
+    )))
 }
 
 /// Resolves a song directory from the registry, falling back to creating it
@@ -1456,7 +1417,10 @@ mod test {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].as_str().unwrap().contains("Song not found"));
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("unable to find song"));
     }
 
     #[tokio::test]
@@ -1479,7 +1443,7 @@ mod test {
         assert!(parsed["error"]
             .as_str()
             .unwrap()
-            .contains("Song not found: FakeSong"));
+            .contains("unable to find song FakeSong"));
     }
 
     #[tokio::test]
@@ -1527,7 +1491,7 @@ mod test {
         assert!(parsed["error"]
             .as_str()
             .unwrap()
-            .contains("Song not found: DoesNotExist"));
+            .contains("unable to find song DoesNotExist"));
     }
 
     #[tokio::test]

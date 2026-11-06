@@ -31,9 +31,7 @@ use tonic_web::GrpcWebLayer;
 use tower::{Layer, ServiceExt};
 use tracing::{debug, error, info};
 
-use crate::controller::grpc::PlayerServer;
 use crate::player::Player;
-use crate::proto::player::v1::player_service_server::PlayerServiceServer;
 use crate::state::StateSnapshot;
 
 use super::state as ws_state;
@@ -317,12 +315,8 @@ async fn grpc_web_handler(
         method, uri, content_type
     );
 
-    let grpc_svc = match state.player.config_store() {
-        Some(store) => {
-            PlayerServiceServer::new(PlayerServer::with_config_store(state.player.clone(), store))
-        }
-        None => PlayerServiceServer::new(PlayerServer::new(state.player.clone())),
-    };
+    // The same service, behind the same lock, as native gRPC.
+    let grpc_svc = crate::controller::grpc::player_service(state.player.clone());
     let grpc_web = GrpcWebLayer::new().layer(grpc_svc);
 
     match grpc_web.oneshot(request).await {

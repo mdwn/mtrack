@@ -32,7 +32,8 @@ pub trait Driver: Send + Sync + 'static {
 /// A transport command a controller's event maps to: what the OSC and MIDI
 /// controllers both take, and the one answer for what the player does on
 /// it. A failure is logged, as a controller has no reply to carry it in.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, strum::EnumDiscriminants)]
+#[strum_discriminants(name(TransportActionKind), derive(strum::VariantArray))]
 pub(crate) enum TransportAction {
     Play,
     Prev,
@@ -47,6 +48,24 @@ pub(crate) enum TransportAction {
 }
 
 impl TransportAction {
+    /// Every action a controller event can be configured as, in the order a
+    /// controller matches an event against them: the one table the MIDI and
+    /// OSC controllers both classify by.
+    pub(crate) const ALL: [TransportAction; 12] = [
+        TransportAction::Play,
+        TransportAction::Prev,
+        TransportAction::Next,
+        TransportAction::Stop,
+        TransportAction::AllSongs,
+        TransportAction::Playlist,
+        TransportAction::SectionAck,
+        TransportAction::StopSectionLoop,
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::On),
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::Off),
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::Auto),
+        TransportAction::CancelAutoPlay,
+    ];
+
     pub(crate) async fn run(self, player: &Player) {
         match self {
             TransportAction::Play => {
@@ -85,6 +104,45 @@ impl TransportAction {
                 player.cancel_waiting_auto_play();
             }
         }
+    }
+}
+
+/// A controller's configured event for each transport action, in
+/// [`TransportAction::ALL`]'s order, so classifying an event is one lookup
+/// on every controller.
+#[derive(Clone)]
+pub(crate) struct TransportBindings<E>(Vec<(E, TransportAction)>);
+
+impl<E> TransportBindings<E> {
+    /// The bindings `event_for` configures: the event for each action, or
+    /// `None` for an action with none.
+    pub(crate) fn new(
+        mut event_for: impl FnMut(TransportAction) -> Result<Option<E>, Box<dyn Error>>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut bindings = Vec::new();
+        for action in TransportAction::ALL {
+            if let Some(event) = event_for(action)? {
+                bindings.push((event, action));
+            }
+        }
+        Ok(TransportBindings(bindings))
+    }
+
+    /// The action of the first event `matches` accepts.
+    pub(crate) fn classify(&self, matches: impl Fn(&E) -> bool) -> Option<TransportAction> {
+        self.0
+            .iter()
+            .find(|(event, _)| matches(event))
+            .map(|(_, action)| *action)
+    }
+
+    /// The event bound to `action`, if any.
+    #[cfg(test)]
+    pub(crate) fn event(&self, action: TransportAction) -> Option<&E> {
+        self.0
+            .iter()
+            .find(|(_, bound)| *bound == action)
+            .map(|(event, _)| event)
     }
 }
 
@@ -537,6 +595,40 @@ impl Controller {
 
 #[cfg(test)]
 mod test {
+    use super::{TransportAction, TransportActionKind};
+
+    /// [`TransportAction::ALL`] lists every action: each kind, and each
+    /// ambient mode, exactly once.
+    #[test]
+    fn all_lists_every_action_once() {
+        use strum::VariantArray;
+        for kind in TransportActionKind::VARIANTS {
+            match kind {
+                TransportActionKind::AmbientMode => {
+                    for &mode in crate::dmx::engine::AmbientMode::ALL {
+                        let action = TransportAction::AmbientMode(mode);
+                        assert_eq!(
+                            TransportAction::ALL
+                                .iter()
+                                .filter(|a| **a == action)
+                                .count(),
+                            1,
+                            "{action:?}"
+                        );
+                    }
+                }
+                _ => assert_eq!(
+                    TransportAction::ALL
+                        .iter()
+                        .filter(|a| TransportActionKind::from(**a) == *kind)
+                        .count(),
+                    1,
+                    "{kind:?}"
+                ),
+            }
+        }
+    }
+
     use std::{collections::HashMap, error::Error, io, path::Path, sync::Arc};
 
     use tokio::{

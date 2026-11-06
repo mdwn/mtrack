@@ -17,6 +17,7 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent};
 use tokio::sync::watch;
 
+use crate::controller::TransportAction;
 use crate::player::Player;
 use crate::state::{FixtureSnapshot, StateSnapshot};
 
@@ -129,43 +130,24 @@ impl App {
         }
     }
 
-    /// Processes a keyboard event and returns the action to take.
+    /// Processes a keyboard event and returns the action to take. Each key
+    /// runs the transport action the controllers run, which logs a failure
+    /// to the log pane.
     pub async fn handle_key_event(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.player.stop().await;
-                Action::Quit
+        let (transport, action) = match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => (TransportAction::Stop, Action::Quit),
+            KeyCode::Char(' ') | KeyCode::Enter if self.is_playing => {
+                (TransportAction::Stop, Action::None)
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                if self.is_playing {
-                    self.player.stop().await;
-                } else {
-                    let _ = self.player.play().await;
-                }
-                Action::None
-            }
-            KeyCode::Right | KeyCode::Char('n') => {
-                self.player.next().await;
-                Action::None
-            }
-            KeyCode::Left | KeyCode::Char('p') => {
-                self.player.prev().await;
-                Action::None
-            }
-            KeyCode::Char('a') => {
-                let _ = self
-                    .player
-                    .switch_to_playlist(crate::playlist::ALL_SONGS)
-                    .await;
-                Action::None
-            }
-            KeyCode::Char('l') => {
-                let name = self.player.persisted_playlist_name();
-                let _ = self.player.switch_to_playlist(&name).await;
-                Action::None
-            }
-            _ => Action::None,
-        }
+            KeyCode::Char(' ') | KeyCode::Enter => (TransportAction::Play, Action::None),
+            KeyCode::Right | KeyCode::Char('n') => (TransportAction::Next, Action::None),
+            KeyCode::Left | KeyCode::Char('p') => (TransportAction::Prev, Action::None),
+            KeyCode::Char('a') => (TransportAction::AllSongs, Action::None),
+            KeyCode::Char('l') => (TransportAction::Playlist, Action::None),
+            _ => return Action::None,
+        };
+        transport.run(&self.player).await;
+        action
     }
 }
 

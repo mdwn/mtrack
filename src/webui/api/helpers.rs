@@ -37,6 +37,12 @@ pub(crate) fn fault_response(kind: FaultKind, message: String) -> axum::response
     (status, Json(json!({"error": message}))).into_response()
 }
 
+/// The web API's answer to a song lookup that failed: 404 for no such
+/// song, 400 for one that did not load, saying why.
+pub(crate) fn song_lookup_response(e: crate::songs::SongLookupError) -> axum::response::Response {
+    fault_response(e.kind(), e.to_string())
+}
+
 pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
     crate::util::project_dir_of(&state.config_path)
 }

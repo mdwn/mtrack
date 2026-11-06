@@ -101,7 +101,10 @@ export async function fetchTempoGuess(
   name: string,
 ): Promise<TempoGuess | null> {
   const res = await get(`/songs/${encodeURIComponent(name)}/tempo-guess`);
-  if (res.status === 404) return null;
+  // No guess: none to make (404), or a song that failed to load (400),
+  // whose load error the song view already shows. Neither tempo editor has
+  // anywhere to say more, so both leave the tempo as it is.
+  if (res.status === 404 || res.status === 400) return null;
   if (!res.ok) throw new Error(`Failed to fetch tempo guess: ${res.status}`);
   return res.json();
 }
