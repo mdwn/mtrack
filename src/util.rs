@@ -30,6 +30,30 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         .unwrap_or("<non-string panic payload>")
 }
 
+/// The files directly in `dir` named `<stem>.<extension>` for one of
+/// `extensions`, the extension in any case (`songs::extension_of`): the
+/// forms one name can take, the one that names it first. That is the one
+/// spelled in lowercase (`Set.yaml` before `Set.YAML`, as when only the
+/// lowercase spelling was read), then by `extensions`' order, then by path,
+/// so the answer is the same however the directory lists its files.
+pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<((bool, usize), PathBuf)> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|path| path.is_file() && path.file_stem().is_some_and(|s| s == stem))
+        .filter_map(|path| {
+            let extension = crate::songs::extension_of(&path)?;
+            let rank = extensions.iter().position(|e| *e == extension)?;
+            let written = path.extension().and_then(|e| e.to_str()) == Some(extension.as_str());
+            Some(((!written, rank), path))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
 pub fn filename_display(path: &Path) -> &str {
     path.file_name()
         .and_then(|f| f.to_str())

@@ -100,26 +100,6 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
     Ok(out)
 }
 
-/// The files directly in `dir` named `<stem>.<extension>` for one of
-/// `extensions`, the extension in any case (`songs::extension_of`): the
-/// forms one name can take, in `extensions`' order.
-pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut found: Vec<(usize, PathBuf)> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|path| path.is_file() && path.file_stem().is_some_and(|s| s == stem))
-        .filter_map(|path| {
-            let extension = crate::songs::extension_of(&path)?;
-            let rank = extensions.iter().position(|e| *e == extension)?;
-            Some((rank, path))
-        })
-        .collect();
-    found.sort();
-    found.into_iter().map(|(_, path)| path).collect()
-}
-
 /// A file that could not be read or parsed, or a name two files declare.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileProblem {

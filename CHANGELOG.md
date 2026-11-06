@@ -340,7 +340,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **File extensions are read in any case, by one rule**: a playlist kept as `Encore.YAML` was
   passed over by the player; it now loads, and the web UI and MCP save and delete it in place.
-  A song config named `Album.YAML` or `song.YML` is now loaded as one, and `mtrack start
+  A song config named `Album.YAML` or `song.YML` is now loaded as one, so a file once ignored for
+  its capitals (`Backup.YAML` in a song directory) is now a song's config. Of two files at one
+  name (`Set.yaml` and `Set.YAML`, `song.yaml` and a stale `song.YML`) the lowercase spelling is
+  the one read, as when it was the only one, then `.yaml` before `.yml`; a song directory loads
+  one config per name. `mtrack start
   ./Live.YAML` / `mtrack migrate ./Live.YAML` take it as the config file rather than a directory.
   GDTF archives (`.GDTF`), MVR files (`.MVR`, also as an export name) and their `.GLB` meshes
   were already matched in any case, and still are.

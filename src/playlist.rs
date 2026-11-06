@@ -570,7 +570,7 @@ pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
     if is_reserved_name(name) {
         return Err(ReservedName(name.to_string()));
     }
-    let existing = crate::lighting::project_files::files_at_stem(dir, name, PLAYLIST_EXTENSIONS);
+    let existing = crate::util::files_at_stem(dir, name, PLAYLIST_EXTENSIONS);
     if let [file, others @ ..] = existing.as_slice() {
         for other in others {
             warn!(

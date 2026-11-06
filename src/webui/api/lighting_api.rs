@@ -510,7 +510,7 @@ pub(super) fn existing_fixture_type_file(
     if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
         return Some(declared.file.clone());
     }
-    lighting::project_files::files_at_stem(dir, &sanitize_filename(name), FIXTURE_TYPE_EXTENSIONS)
+    crate::util::files_at_stem(dir, &sanitize_filename(name), FIXTURE_TYPE_EXTENSIONS)
         .into_iter()
         .next()
 }
@@ -568,7 +568,7 @@ pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTE
 /// The file a venue of this name lives in, if one exists: `.venue` first,
 /// then `.light`.
 fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    lighting::project_files::files_at_stem(dir, &sanitize_filename(name), VENUE_EXTENSIONS)
+    crate::util::files_at_stem(dir, &sanitize_filename(name), VENUE_EXTENSIONS)
         .into_iter()
         .next()
 }
@@ -1774,7 +1774,7 @@ pub(super) async fn put_fixture_type(
     // The files at the stem, by their kind (`songs::extension_of`), never by
     // their spelling: on a filesystem that ignores case, `Par.fixture` and
     // `Par.FIXTURE` are one file.
-    let at_stem = lighting::project_files::files_at_stem(&folder, &stem, FIXTURE_TYPE_EXTENSIONS);
+    let at_stem = crate::util::files_at_stem(&folder, &stem, FIXTURE_TYPE_EXTENSIONS);
     let is_form =
         |path: &std::path::Path| crate::songs::extension_of(path).as_deref() == Some(extension);
     // The file of this form already at the stem, if any, is written in

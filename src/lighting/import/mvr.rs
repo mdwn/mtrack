@@ -895,7 +895,7 @@ fn find_existing_venue(
     // venues, or text that does not parse (a file that parsed declares its
     // names, whichever rule set them aside).
     let stem = fixture_filename_stem(venue_name);
-    if let Some(path) = crate::lighting::project_files::files_at_stem(
+    if let Some(path) = crate::util::files_at_stem(
         &project.join(venues_dir),
         &stem,
         crate::lighting::project_files::VENUE_EXTENSIONS,

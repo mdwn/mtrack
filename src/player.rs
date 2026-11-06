@@ -4459,8 +4459,15 @@ mod test {
         let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
         assert_eq!(playlists["my_set"].songs().len(), 2);
         assert!(playlists["all_songs"].songs().len() > 1);
-        // The extension is read in any case.
+        // The extension is read in any case; of `Set.YAML` and `Set.yaml`,
+        // the lowercase spelling is the playlist, as when it was the only
+        // one read.
         assert_eq!(playlists["Encore"].songs().len(), 1);
+        fs::write(pl_dir.join("Set.yaml"), "songs:\n- Song 1\n- Song 3\n")?;
+        fs::write(pl_dir.join("Set.YAML"), "songs:\n- Song 1\n")?;
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
+        assert_eq!(playlists["Set"].songs().len(), 2);
 
         Ok(())
     }

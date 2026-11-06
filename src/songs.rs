@@ -2269,6 +2269,19 @@ fn song_yaml(path: &Path) -> SongYaml {
     }
 }
 
+/// Whether `path` is the config a song directory's file name resolves to:
+/// of `song.yaml` and a stale `song.YML` beside it, only one is loaded, by
+/// the order `util::files_at_stem` gives (the lowercase spelling first), so
+/// one song is not loaded twice from whichever the directory listed first.
+fn names_its_config(path: &Path) -> bool {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return true;
+    };
+    crate::util::files_at_stem(dir, stem, YAML_EXTENSIONS)
+        .first()
+        .is_none_or(|first| first == path)
+}
+
 /// Whether `path` is a song's config to the song loader: `kind: song`, or
 /// no `kind` and it reads as a song. One rule for the loader, `songs
 /// --init` and the bulk import: a directory holding one is a song's, and
@@ -2354,7 +2367,12 @@ pub fn get_all_songs_with_defaults(
         // ([`song_yaml`]): a declared song's failure is recorded, an
         // untyped file's skipped silently.
         let candidate = song_yaml(&path);
-        if candidate != SongYaml::NotOne {
+        if candidate != SongYaml::NotOne && !names_its_config(&path) {
+            warn!(
+                "Skipping {}: another file at its name is the song's config",
+                path.display()
+            );
+        } else if candidate != SongYaml::NotOne {
             let is_declared_song = candidate == SongYaml::Declared;
             {
                 match config::Song::deserialize(path.as_path()) {
@@ -4302,6 +4320,29 @@ sections:
             fs::read_to_string(root.join("Foo/song.yaml"))?,
             "name: Foo\ntracks: [\n"
         );
+        Ok(())
+    }
+
+    /// Of `song.yaml` and a stale `song.YML` beside it, one song is loaded,
+    /// from the lowercase spelling, whatever order the directory lists them.
+    #[test]
+    fn one_config_per_name_in_a_song_directory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song = tempdir.path().join("Foo");
+        fs::create_dir_all(&song)?;
+        crate::testutil::write_wav(song.join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            song.join("song.yaml"),
+            "name: Foo\ntracks:\n  - name: new\n    file: t.wav\n",
+        )?;
+        fs::write(
+            song.join("song.YML"),
+            "name: Foo\ntracks:\n  - name: old\n    file: t.wav\n",
+        )?;
+
+        let songs = get_all_songs(tempdir.path())?;
+        assert_eq!(songs.len(), 1);
+        assert_eq!(songs.list()[0].tracks()[0].name(), "new");
         Ok(())
     }
 
