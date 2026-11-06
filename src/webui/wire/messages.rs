@@ -93,8 +93,8 @@ pub struct Playback {
     /// second stop cuts it.
     pub ending: Option<Ending>,
     /// The show the rig plays while no song is: present with a DMX engine,
-    /// whatever the mode, so the card can show it; `null` without one, or
-    /// when the read did not answer.
+    /// whatever the mode, so the card can show it, or that the read did not
+    /// answer; `null` without one.
     pub ambient: Option<AmbientState>,
     /// What comes after the current song and how it arrives; `null` with no
     /// current song.
@@ -187,10 +187,34 @@ pub struct Ending {
     pub remaining_ms: u64,
 }
 
+/// Ambient light as the status reports it, on every surface: the web UI's
+/// playback message and MCP's `status` serialize it, gRPC's `Status` maps
+/// it. Built by `DmxRead::<AmbientStatus>::view` alone.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum AmbientState {
+    /// The status read the DMX engine.
+    Read(AmbientReading),
+    /// The status's read of the DMX engine did not answer in time, or
+    /// failed: not the same as no DMX engine (no ambient at all).
+    Unread(AmbientUnread),
+}
+
+/// Ambient light whose status read did not answer.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct AmbientUnread {
+    /// Always `false`.
+    pub available: bool,
+    /// Why there is nothing to report.
+    pub reason: String,
+}
+
 /// Ambient light: its mode, its show and what it is doing.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct AmbientState {
+pub struct AmbientReading {
     pub mode: AmbientMode,
     /// Whose settings are up: the profile's, the playlist's, or the
     /// entry's (the song about to play).

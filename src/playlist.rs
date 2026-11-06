@@ -85,7 +85,7 @@ impl fmt::Display for Playlist {
         for song_name in self.songs.iter() {
             match self.registry.get(song_name) {
                 Ok(song) => writeln!(f, "  - {} (Channels: {})", song.name(), song.num_channels())?,
-                Err(_) => writeln!(f, "  - {} (unable to find song)", song_name)?,
+                Err(e) => writeln!(f, "  - {} ({})", song_name, e)?,
             };
         }
 

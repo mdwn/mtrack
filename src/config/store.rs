@@ -66,6 +66,28 @@ pub struct ConfigStore {
     change_tx: broadcast::Sender<()>,
 }
 
+/// A config section a surface updates whole from a JSON body, through
+/// [`ConfigStore::update_section`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigSection {
+    Audio,
+    Midi,
+    Dmx,
+    Controllers,
+}
+
+impl ConfigSection {
+    /// The section's name in the config.
+    pub fn name(self) -> &'static str {
+        match self {
+            ConfigSection::Audio => "audio",
+            ConfigSection::Midi => "midi",
+            ConfigSection::Dmx => "dmx",
+            ConfigSection::Controllers => "controllers",
+        }
+    }
+}
+
 /// A change to one hardware subsystem, applied wherever that subsystem is
 /// actually configured.
 ///
@@ -483,6 +505,48 @@ impl ConfigStore {
     ) -> Result<ConfigSnapshot, ConfigError> {
         self.update_subsystem(SubsystemUpdate::Dmx(dmx), checksum)
             .await
+    }
+
+    /// Updates `section` from its JSON form, as MCP, gRPC and the web API
+    /// take it: `null` removes the audio, MIDI or DMX section; the
+    /// controllers are a list. A body that is not the section's shape, or a
+    /// section that does not validate, is a validation error.
+    pub async fn update_section(
+        &self,
+        section: ConfigSection,
+        body: serde_json::Value,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        fn parse<T: serde::de::DeserializeOwned>(
+            section: ConfigSection,
+            body: serde_json::Value,
+        ) -> Result<T, ConfigError> {
+            serde_json::from_value(body).map_err(|e| {
+                ConfigError::Validation(format!("invalid {} JSON: {e}", section.name()))
+            })
+        }
+        fn valid<T>(
+            section: Option<T>,
+            validate: impl Fn(&T) -> Result<(), Vec<String>>,
+        ) -> Result<Option<T>, ConfigError> {
+            if let Some(section) = &section {
+                validate(section).map_err(|errors| ConfigError::Validation(errors.join("; ")))?;
+            }
+            Ok(section)
+        }
+        let update = match section {
+            ConfigSection::Audio => {
+                SubsystemUpdate::Audio(valid(parse(section, body)?, Audio::validate)?)
+            }
+            ConfigSection::Midi => {
+                SubsystemUpdate::Midi(valid(parse(section, body)?, Midi::validate)?)
+            }
+            ConfigSection::Dmx => {
+                SubsystemUpdate::Dmx(valid(parse(section, body)?, Dmx::validate)?)
+            }
+            ConfigSection::Controllers => SubsystemUpdate::Controllers(parse(section, body)?),
+        };
+        self.update_subsystem(update, checksum).await
     }
 
     /// Applies a subsystem update to wherever the loader will actually read it.

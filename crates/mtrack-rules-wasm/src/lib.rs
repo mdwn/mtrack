@@ -1008,6 +1008,18 @@ pub fn midi_event_shapes() -> config::MidiEventShapes {
     config::MidiEventShapes::new()
 }
 
+/// Ambient light's modes, in the order the dashboard offers them.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct AmbientModes(pub Vec<dmx::engine::AmbientMode>);
+
+/// Every ambient light mode: the dashboard's mode buttons.
+#[wasm_bindgen]
+pub fn ambient_modes() -> AmbientModes {
+    AmbientModes(dmx::engine::AmbientMode::ALL.to_vec())
+}
+
 /// The values each of a config's choices takes: what the config editor's
 /// selects offer.
 #[wasm_bindgen]
