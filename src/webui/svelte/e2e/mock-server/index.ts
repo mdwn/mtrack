@@ -416,6 +416,7 @@ const GDTF_INSPECTION: GdtfInspection = {
       name: "1: RGB",
       footprint: 3,
       capabilities: ["color", "dimmer"],
+      wants: ["color", "dimmer"],
       cells: 0,
       channels: [
         [1, "red"],
@@ -427,6 +428,7 @@ const GDTF_INSPECTION: GdtfInspection = {
       name: "8: RGBS",
       footprint: 4,
       capabilities: ["color", "dimmer", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
       cells: 0,
       strobe_range: { min_hz: 0.4, max_hz: 25 },
       channels: [

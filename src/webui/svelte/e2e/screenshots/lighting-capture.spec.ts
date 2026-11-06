@@ -60,6 +60,7 @@ const MODES = [
     channel_count: 3,
     footprint: 3,
     capabilities: ["color"],
+    wants: ["color", "dimmer"],
     cells: 0,
     channels: [
       [1, "red"],
@@ -72,6 +73,7 @@ const MODES = [
     channel_count: 4,
     footprint: 4,
     capabilities: ["color", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
     cells: 0,
     strobe_range: { min_hz: 0.4, max_hz: 25 },
     channels: [
@@ -86,6 +88,7 @@ const MODES = [
     channel_count: 5,
     footprint: 5,
     capabilities: ["color", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
     cells: 0,
     strobe_range: { min_hz: 0.4, max_hz: 25 },
     channels: [
@@ -101,6 +104,7 @@ const MODES = [
     channel_count: 7,
     footprint: 7,
     capabilities: ["color", "dimmer", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
     cells: 0,
     strobe_range: { min_hz: 0.4, max_hz: 25 },
     channels: [

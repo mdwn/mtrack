@@ -1321,6 +1321,19 @@ pub fn beam_angle_valid(degrees: f64) -> bool {
     lighting::fixture_data::beam_angle_valid(degrees)
 }
 
+/// What a show can ask of a fixture, in the order a fixture's page lists
+/// them (`Want::ALL`).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct Wants(pub Vec<lighting::findings::Want>);
+
+/// [`Wants`], for the web UI.
+#[wasm_bindgen]
+pub fn wants() -> Wants {
+    Wants(lighting::findings::Want::ALL.to_vec())
+}
+
 // ── DMX patch ───────────────────────────────────────────────────────────────
 
 /// The spans of a venue's fixtures, as the UI holds them.

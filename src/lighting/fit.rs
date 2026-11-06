@@ -166,6 +166,15 @@ impl FitFixture {
         self.tally.have(want) > 0
     }
 
+    /// What the fixture can do of what a show asks ([`Want::ALL`], by
+    /// lint's rule, `Want::met_by`), in the order a page lists them.
+    pub fn wants(&self) -> Vec<Want> {
+        Want::ALL
+            .into_iter()
+            .filter(|want| self.can(*want))
+            .collect()
+    }
+
     /// The capability names the pages show: the four shows can ask for
     /// (`color`, `pan_tilt`, `strobe`, `cells`) first, then what else the
     /// fixture has — `dimmer`, `white`, `zoom`, `focus`, `gobo` and
