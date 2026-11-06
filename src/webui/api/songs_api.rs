@@ -2277,13 +2277,6 @@ mod test {
             "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
         )
         .unwrap();
-        // A stale config in other capitals is a song config too, not a file
-        // of the song's (`songs::is_song_config_name`).
-        std::fs::write(
-            song_dir.join("song.YML"),
-            "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
-        )
-        .unwrap();
 
         state.player.reload_songs().await.unwrap();
 

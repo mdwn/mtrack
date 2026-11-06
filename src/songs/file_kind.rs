@@ -47,6 +47,16 @@ pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     extension_of(path).is_some_and(|e| extensions.contains(&e.as_str()))
 }
 
+/// Whether `path`'s extension is one of `extensions` as written, case and
+/// all: the rule for a config file's name (`songs::is_yaml_config`), which
+/// stays lowercase, where a media or lighting file's is read in any case
+/// ([`has_extension`]).
+pub fn has_exact_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| extensions.contains(&e))
+}
+
 /// What a file is to the player, by its extension.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]

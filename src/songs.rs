@@ -33,7 +33,8 @@ use crate::util::{filename_display, FileStamp};
 
 mod file_kind;
 pub use file_kind::{
-    extension_of, has_extension, FileKind, AUDIO_EXTENSIONS, LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
+    extension_of, has_exact_extension, has_extension, FileKind, AUDIO_EXTENSIONS,
+    LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
 };
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
@@ -2248,18 +2249,22 @@ enum SongYaml {
     Untyped,
 }
 
-/// The extensions of a YAML config file the player reads, lowercase.
+/// The extensions of a YAML config file the player reads: a song's, a
+/// playlist's, a profile's, the config's own. Lowercase, as written:
+/// `Set.YAML` is not one.
 pub const YAML_EXTENSIONS: &[&str] = &["yaml", "yml"];
 
-/// Whether `path` is a YAML file to the song loader, by its extension in
-/// any case ([`YAML_EXTENSIONS`]).
-fn song_yaml_extension(path: &Path) -> bool {
-    has_extension(path, YAML_EXTENSIONS)
+/// Whether `path` is a YAML config file by its name ([`YAML_EXTENSIONS`],
+/// exactly as written: `has_exact_extension`). The one rule the song,
+/// playlist and profile loaders, the web UI's editors and the CLI's config
+/// path take.
+pub fn is_yaml_config(path: &Path) -> bool {
+    has_exact_extension(path, YAML_EXTENSIONS)
 }
 
 /// What the song loader makes of `path` ([`SongYaml`]).
 fn song_yaml(path: &Path) -> SongYaml {
-    if !song_yaml_extension(path) {
+    if !is_yaml_config(path) {
         return SongYaml::NotOne;
     }
     match config::peek_kind(path) {
@@ -2267,19 +2272,6 @@ fn song_yaml(path: &Path) -> SongYaml {
         None => SongYaml::Untyped,
         Some(_) => SongYaml::NotOne,
     }
-}
-
-/// Whether `path` is the config a song directory's file name resolves to:
-/// of `song.yaml` and a stale `song.YML` beside it, only one is loaded, by
-/// the order `util::files_at_stem` gives (the lowercase spelling first), so
-/// one song is not loaded twice from whichever the directory listed first.
-fn names_its_config(path: &Path) -> bool {
-    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
-        return true;
-    };
-    crate::util::files_at_stem(dir, stem, YAML_EXTENSIONS)
-        .first()
-        .is_none_or(|first| first == path)
 }
 
 /// Whether `path` is a song's config to the song loader: `kind: song`, or
@@ -2303,11 +2295,11 @@ pub fn marks_a_song_dir(path: &Path) -> bool {
 }
 
 /// Whether `path` is named as a song directory's config: `song.yaml` or
-/// `song.yml`, the extension in any case (`song.YML`). What the song files
-/// listing hides, what MCP takes for the directory layout, and what marks a
-/// song directory whether or not it reads ([`marks_a_song_dir`]).
+/// `song.yml`, as written ([`is_yaml_config`]). What the song files listing
+/// hides, what MCP takes for the directory layout, and what marks a song
+/// directory whether or not it reads ([`marks_a_song_dir`]).
 pub fn is_song_config_name(path: &Path) -> bool {
-    path.file_stem().is_some_and(|stem| stem == "song") && song_yaml_extension(path)
+    path.file_stem().is_some_and(|stem| stem == "song") && is_yaml_config(path)
 }
 
 /// Whether the directory `dir` holds a file that makes it a song's
@@ -2373,12 +2365,7 @@ pub fn get_all_songs_with_defaults(
         // ([`song_yaml`]): a declared song's failure is recorded, an
         // untyped file's skipped silently.
         let candidate = song_yaml(&path);
-        if candidate != SongYaml::NotOne && !names_its_config(&path) {
-            warn!(
-                "Skipping {}: another file at its name is the song's config",
-                path.display()
-            );
-        } else if candidate != SongYaml::NotOne {
+        if candidate != SongYaml::NotOne {
             let is_declared_song = candidate == SongYaml::Declared;
             {
                 match config::Song::deserialize(path.as_path()) {
@@ -4329,37 +4316,23 @@ sections:
         Ok(())
     }
 
+    /// A song config's name is `song.yaml` or `song.yml` as written: config
+    /// names stay lowercase.
     #[test]
-    fn a_song_config_is_named_song_in_any_case() {
-        for name in ["song.yaml", "song.yml", "song.YML", "song.Yaml"] {
+    fn a_song_config_is_named_song_in_lowercase() {
+        for name in ["song.yaml", "song.yml"] {
             assert!(super::is_song_config_name(Path::new(name)), "{name}");
         }
-        for name in ["Song.yaml", "songs.yaml", "song.json", "album.yaml"] {
+        for name in [
+            "song.YML",
+            "song.Yaml",
+            "Song.yaml",
+            "songs.yaml",
+            "song.json",
+            "album.yaml",
+        ] {
             assert!(!super::is_song_config_name(Path::new(name)), "{name}");
         }
-    }
-
-    /// Of `song.yaml` and a stale `song.YML` beside it, one song is loaded,
-    /// from the lowercase spelling, whatever order the directory lists them.
-    #[test]
-    fn one_config_per_name_in_a_song_directory() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?;
-        let song = tempdir.path().join("Foo");
-        fs::create_dir_all(&song)?;
-        crate::testutil::write_wav(song.join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
-        fs::write(
-            song.join("song.yaml"),
-            "name: Foo\ntracks:\n  - name: new\n    file: t.wav\n",
-        )?;
-        fs::write(
-            song.join("song.YML"),
-            "name: Foo\ntracks:\n  - name: old\n    file: t.wav\n",
-        )?;
-
-        let songs = get_all_songs(tempdir.path())?;
-        assert_eq!(songs.len(), 1);
-        assert_eq!(songs.list()[0].tracks()[0].name(), "new");
-        Ok(())
     }
 
     /// Two song directories of one name below different ones are each
