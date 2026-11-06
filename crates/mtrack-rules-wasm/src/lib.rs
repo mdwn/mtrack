@@ -1187,7 +1187,12 @@ pub fn fade_length_text(text: &str) -> Option<String> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AutoPlayReading {
     Off,
-    Gap { ms: f64 },
+    /// The gap, and as a reader is shown it (`config::length::clock_text`:
+    /// `1.5s`).
+    Gap {
+        ms: f64,
+        text: String,
+    },
     Invalid,
 }
 
@@ -1200,9 +1205,20 @@ pub fn auto_play_read(text: &str) -> AutoPlayReading {
         Ok(Ok(None)) => AutoPlayReading::Off,
         Ok(Ok(Some(gap))) => AutoPlayReading::Gap {
             ms: gap.as_secs_f64() * 1000.0,
+            text: config::length::clock_text(gap),
         },
         _ => AutoPlayReading::Invalid,
     }
+}
+
+/// A gap of `ms` milliseconds as a reader is shown it, as the config's
+/// clock writes it (`config::length::clock_text`: `2s`, `1.5s`); empty for
+/// a time no song has.
+#[wasm_bindgen]
+pub fn gap_text(ms: f64) -> String {
+    bounds::at_ms(ms)
+        .map(config::length::clock_text)
+        .unwrap_or_default()
 }
 
 // ── Positions ───────────────────────────────────────────────────────────────

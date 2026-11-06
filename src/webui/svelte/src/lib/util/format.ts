@@ -20,8 +20,3 @@ import { rules } from "../rules";
 export function formatFadeLength(length: string): string {
   return rules.fade_length_text(length) ?? length.trim();
 }
-
-/** A gap in milliseconds as seconds: `2s`, `1.5s`. */
-export function formatGapMs(ms: number): string {
-  return `${Math.round(ms / 100) / 10}s`;
-}
