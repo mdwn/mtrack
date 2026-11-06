@@ -832,8 +832,9 @@ pub fn number(n: f64) -> String {
     }
 }
 
-/// `Math.round`: to the nearest integer, a half up.
-fn round(n: f64) -> f64 {
+/// `Math.round`: to the nearest integer, a half up. The one rounding a
+/// length is snapped and named by (the web UI's `duration_snap` too).
+pub fn round(n: f64) -> f64 {
     (n + 0.5).floor()
 }
 

@@ -261,6 +261,12 @@ pub mod bounds {
         secs.is_finite() && secs.abs() <= MAX_SECS
     }
 
+    /// `ms` milliseconds as a time on a song: `None` for a negative one or
+    /// one past [`MAX_SECS`].
+    pub fn at_ms(ms: f64) -> Option<std::time::Duration> {
+        (ms >= 0.0 && secs(ms / 1000.0)).then(|| std::time::Duration::from_secs_f64(ms / 1000.0))
+    }
+
     pub fn beat(beat: f64) -> bool {
         beat.is_finite() && beat.abs() <= MAX_BEAT
     }
@@ -548,10 +554,7 @@ impl TempoQuery {
         let (at, measure, beat, label, sig) = match self {
             TempoQuery::Time { ms } => {
                 let map = map.as_ref()?;
-                if *ms < 0.0 || !bounds::secs(ms / 1000.0) {
-                    return None;
-                }
-                let at = Duration::from_secs_f64(ms / 1000.0);
+                let at = bounds::at_ms(*ms)?;
                 let (measure, beat) = map.time_to_measure_beat(at);
                 let sig = map.time_signature_at_time(at, 0.0);
                 (at, measure, beat, map.position_label(at), sig)
@@ -574,10 +577,7 @@ impl TempoQuery {
                 )
             }
             TempoQuery::Span { from_ms, duration } => {
-                if *from_ms < 0.0 || !bounds::secs(from_ms / 1000.0) {
-                    return None;
-                }
-                let from = Duration::from_secs_f64(from_ms / 1000.0);
+                let from = bounds::at_ms(*from_ms)?;
                 let length =
                     lighting::parser::utils::parse_duration_string(duration, &map, Some(from), 0.0)
                         .ok()?;
@@ -650,16 +650,8 @@ impl TempoDistance {
     /// The distance from `from_ms` to `to_ms` on `source`'s map; `None`
     /// when the source makes no map or a time is not one.
     pub fn between(source: &TempoSource, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
-        if from_ms < 0.0
-            || to_ms < 0.0
-            || !bounds::secs(from_ms / 1000.0)
-            || !bounds::secs(to_ms / 1000.0)
-        {
-            return None;
-        }
+        let (from, to) = (bounds::at_ms(from_ms)?, bounds::at_ms(to_ms)?);
         let map = source.to_tempo_map().ok()?;
-        let from = Duration::from_secs_f64(from_ms / 1000.0);
-        let to = Duration::from_secs_f64(to_ms / 1000.0);
         Some(TempoDistance {
             ms: to_ms - from_ms,
             beats: map.beats_between(from, to),
@@ -783,11 +775,7 @@ impl LayoutRequest {
             }
             None => None,
         };
-        let until = if self.until_ms > 0.0 && bounds::secs(self.until_ms / 1000.0) {
-            Duration::from_secs_f64(self.until_ms / 1000.0)
-        } else {
-            Duration::ZERO
-        };
+        let until = bounds::at_ms(self.until_ms).unwrap_or(Duration::ZERO);
         lighting::parser::layout::layout(
             &self.source,
             self.path.as_deref().map(Path::new),
@@ -927,8 +915,8 @@ pub fn snapped_length(
     }
     let span = TempoDistance::between(source, at_ms, at_ms + duration_ms)?;
     let map = source.to_tempo_map().ok()?;
-    let round = |n: f64| (n + 0.5).floor();
-    let from = Duration::from_secs_f64(at_ms / 1000.0);
+    let round = lighting::parser::writer::round;
+    let from = bounds::at_ms(at_ms)?;
     // The player's own length of that many bars or beats from there.
     let length = match step {
         None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),

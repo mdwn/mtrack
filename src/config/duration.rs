@@ -31,3 +31,10 @@ pub(crate) fn parse_playback_delay(
     }
 }
 
+/// Why `section`'s `playback_delay` is refused, `None` when it is unset or
+/// reads: the one check, for each section that takes one.
+pub(crate) fn playback_delay_problem(section: &str, raw: &Option<String>) -> Option<String> {
+    raw.as_deref()
+        .filter(|delay| super::length::parse_clock(delay).is_none())
+        .map(|delay| format!("{section} playback_delay '{delay}' is not a valid duration"))
+}

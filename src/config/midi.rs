@@ -117,14 +117,7 @@ impl Midi {
         if self.device.trim().is_empty() {
             errors.push("midi device must not be empty".to_string());
         }
-        if let Some(ref delay) = self.playback_delay {
-            if super::length::parse_clock(delay).is_none() {
-                errors.push(format!(
-                    "midi playback_delay '{}' is not a valid duration",
-                    delay
-                ));
-            }
-        }
+        errors.extend(super::playback_delay_problem("midi", &self.playback_delay));
 
         if errors.is_empty() {
             Ok(())

@@ -77,7 +77,7 @@ pub use self::playlist::{
     FadeStatus, Playlist, PlaylistEntry,
 };
 // Sample types are exported for external configuration
-pub(crate) use self::duration::parse_playback_delay;
+pub(crate) use self::duration::{parse_playback_delay, playback_delay_problem};
 pub use self::hostname::resolve_hostname;
 pub use self::notification::{NotificationConfig, SongNotificationConfig};
 pub(crate) use self::player::list_profile_files;
