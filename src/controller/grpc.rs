@@ -214,20 +214,6 @@ impl PlayerServer {
         }))
     }
 
-    /// Applies a saved config change to the running hardware, then builds
-    /// the response: the new checksum, and whether the change is applied.
-    ///
-    /// The web UI's mutation endpoints have always reloaded; these had not, so
-    /// a client could change the audio device, receive a fresh checksum, and
-    /// find the running hardware unchanged until the process restarted. The
-    /// reply says whether it was applied, deferred until the player is idle,
-    /// or not applied because the reload failed, as every surface's does (see
-    /// [`crate::player::ConfigApply`]).
-    ///
-    /// Safe to do from inside a gRPC call because the reload leaves each
-    /// controller running whose config has not changed -- otherwise this
-    /// would tear down the very transport carrying the response.
-    #[allow(clippy::result_large_err)]
     /// Saves `section` from its JSON (empty for `null`), as MCP's tools
     /// and the store parse it, then applies it.
     async fn update_section(
@@ -251,6 +237,20 @@ impl PlayerServer {
         self.reload_and_respond(snapshot).await
     }
 
+    /// Applies a saved config change to the running hardware, then builds
+    /// the response: the new checksum, and whether the change is applied.
+    ///
+    /// The web UI's mutation endpoints have always reloaded; these had not, so
+    /// a client could change the audio device, receive a fresh checksum, and
+    /// find the running hardware unchanged until the process restarted. The
+    /// reply says whether it was applied, deferred until the player is idle,
+    /// or not applied because the reload failed, as every surface's does (see
+    /// [`crate::player::ConfigApply`]).
+    ///
+    /// Safe to do from inside a gRPC call because the reload leaves each
+    /// controller running whose config has not changed -- otherwise this
+    /// would tear down the very transport carrying the response.
+    #[allow(clippy::result_large_err)]
     async fn reload_and_respond(
         &self,
         snapshot: config::store::ConfigSnapshot,

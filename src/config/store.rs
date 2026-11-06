@@ -66,13 +66,6 @@ pub struct ConfigStore {
     change_tx: broadcast::Sender<()>,
 }
 
-/// A change to one hardware subsystem, applied wherever that subsystem is
-/// actually configured.
-///
-/// The two destinations serialize differently -- a profile holds an
-/// `AudioConfig` (device settings plus this machine's routing and gains), the
-/// legacy top level holds a bare `Audio` -- so the update is carried as a value
-/// and applied by the destination rather than by the caller.
 /// A config section a surface updates whole from a JSON body, through
 /// [`ConfigStore::update_section`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +88,13 @@ impl ConfigSection {
     }
 }
 
+/// A change to one hardware subsystem, applied wherever that subsystem is
+/// actually configured.
+///
+/// The two destinations serialize differently -- a profile holds an
+/// `AudioConfig` (device settings plus this machine's routing and gains), the
+/// legacy top level holds a bare `Audio` -- so the update is carried as a value
+/// and applied by the destination rather than by the caller.
 enum SubsystemUpdate {
     Audio(Option<Audio>),
     Midi(Option<Midi>),
