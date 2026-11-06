@@ -14,7 +14,11 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import { formatMs } from "../../../lib/lighting/timeline-state";
+  import {
+    formatMs,
+    SNAP_BEATS,
+    snapLabel,
+  } from "../../../lib/lighting/timeline-state";
 
   interface Props {
     pixelsPerMs: number;
@@ -152,12 +156,9 @@
                 .value as import("../../../lib/lighting/timeline-state").SnapResolution,
             )}
         >
-          <option value="measure">{$t("timeline.toolbar.measure")}</option>
-          <option value="beat">{$t("timeline.toolbar.beat")}</option>
-          <option value="1/2">1/2</option>
-          <option value="1/4">1/4</option>
-          <option value="1/8">1/8</option>
-          <option value="1/16">1/16</option>
+          {#each Object.keys(SNAP_BEATS) as r (r)}
+            <option value={r}>{snapLabel(r, $t)}</option>
+          {/each}
         </select>
       {/if}
     </div>

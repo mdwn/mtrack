@@ -28,7 +28,7 @@ use super::sequences::{line_at, param_refs, SequenceLibrary};
 use super::tempo_parse::parse_tempo_definition;
 use super::types::{
     pass_start, Cue, LayerCommand, LayerCommandParam, LayerCommandType, LightShow, LightShows,
-    ParseContext, Sequence, SequenceCall, SequenceLoop,
+    ParseContext, Sequence, SequenceCall, SequenceLoop, SEQUENCE_LOOPS,
 };
 use super::utils::{
     items, parse_duration_string, parse_layer, parse_measure_time, parse_percentage_to_f64,
@@ -704,11 +704,10 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
         .trim();
     let token = cleaned.split_whitespace().next().unwrap_or("");
 
+    if let Some((named, _)) = SEQUENCE_LOOPS.iter().find(|(_, k)| *k == token) {
+        return Ok(*named);
+    }
     match token {
-        "once" => Ok(SequenceLoop::Once),
-        "loop" => Ok(SequenceLoop::Loop),
-        "pingpong" => Ok(SequenceLoop::PingPong),
-        "random" => Ok(SequenceLoop::Random),
         numeric if !numeric.is_empty() => {
             // Try to parse as a number
             let count: usize = numeric.parse().map_err(|_| {

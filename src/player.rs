@@ -23,6 +23,7 @@ pub use hardware_status::{
     AudioOutputHealth, ControllerStatus, HardwareStatusSnapshot, LightingVenueStatus,
     SubsystemStatus, TestOutputStatus,
 };
+pub use playback::PlayDeclined;
 pub use status::{AmbientStatus, DmxRead, LightingStatus, PlayerStatus, STATUS_DMX_READ_TIMEOUT};
 
 use midly::live::LiveEvent;

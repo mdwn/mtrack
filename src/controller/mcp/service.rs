@@ -718,7 +718,7 @@ impl McpServer {
         json!({
             "started": false,
             "now_playing": Value::Null,
-            "reason": self.player.play_declined_reason().await,
+            "reason": self.player.play_declined().await.to_string(),
             "hint": "check `status`; call `stop` first, or use `seek` to \
                      move within the current song",
         })

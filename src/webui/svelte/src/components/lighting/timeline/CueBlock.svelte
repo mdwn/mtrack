@@ -1,8 +1,10 @@
 <script lang="ts" module>
+  import type { EffectKind } from "../../../gen/rules/mtrack_rules";
+
   /** An effect as a block shows it: its type, groups and colours, from the
    *  document for the cue's own effects, from the layout for a pass's. */
   export interface BlockEffect {
-    type: string;
+    type: EffectKind;
     groups: string[];
     colors: string[];
   }

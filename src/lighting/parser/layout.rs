@@ -27,10 +27,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use super::effect_parse::effect_keyword;
 use super::grammar::Rule;
 use super::include::IncludeReader;
 use super::show::{parse_file_with, ParsedCue, ParsedShow};
+use super::types::EffectKind;
 use super::utils::unquote;
 use crate::lighting::effects::DEFAULT_LAYER;
 use crate::tempo::TempoMap;
@@ -181,8 +181,7 @@ pub struct CueLayout {
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EffectLayout {
-    /// Its keyword: `static`, `cycle`, …
-    pub kind: String,
+    pub kind: EffectKind,
     /// The layer it runs on, the default when the line names none.
     pub layer: String,
     pub groups: Vec<String>,
@@ -431,7 +430,7 @@ fn cue_layout(
                 .iter()
                 .enumerate()
                 .map(move |(i, effect)| EffectLayout {
-                    kind: effect_keyword(&effect.effect_type).to_string(),
+                    kind: EffectKind::of(&effect.effect_type),
                     layer: effect.layer.unwrap_or(DEFAULT_LAYER).keyword().to_string(),
                     groups: effect.groups.clone(),
                     start_ms: ms(placed.time),
@@ -617,7 +616,7 @@ mod tests {
         let loop_effects: Vec<_> = show.cues[2]
             .effects
             .iter()
-            .filter(|e| e.kind == "strobe")
+            .filter(|e| e.kind == EffectKind::Strobe)
             .collect();
         assert_eq!(loop_effects.len(), 2);
         close(loop_effects[1].start_ms, 8250.0, "second pass of the loop");

@@ -25,9 +25,15 @@ use pest::Parser;
 use serde::{Deserialize, Serialize};
 
 use super::document::DurationUnit;
-use super::document::{CueEffect, EffectKind, EffectParams, Param, Remarks, SequenceRef};
+use super::document::{
+    CueEffect, EffectKind, EffectParams, LayerCommandType, Param, Remarks, SequenceRef,
+};
+use super::effect_parse::{
+    CHASE_DIRECTIONS, CHASE_PATTERNS, COMMON_PARAMS, CYCLE_DIRECTIONS, DIMMER_CURVES, EASINGS,
+};
 use super::grammar::{LightingParser, Rule};
-use super::utils::unquoted;
+use super::types::{EFFECT_KEYWORDS, LAYER_COMMAND_KEYWORDS, SEQUENCE_LOOPS};
+use super::utils::{unquoted, BLEND_KEYWORDS, LAYER_KEYWORDS};
 use super::writer::{dropped, length_text, number};
 
 /// An edit of an effect line's parameters, as a form makes it.
@@ -55,6 +61,60 @@ pub enum EffectEdit {
         #[cfg_attr(feature = "tsify", tsify(optional))]
         value: Option<String>,
     },
+    /// The effect turned into `kind`, keeping only the parameters `kind`
+    /// reads and those every effect takes.
+    Kind { kind: EffectKind },
+}
+
+/// The words an effect line's form offers, off the parser's own tables:
+/// each effect and the parameters it reads, and the values each keyword
+/// parameter takes.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(into_wasm_abi))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Vocabulary {
+    pub effects: Vec<EffectWords>,
+    pub layers: Vec<&'static str>,
+    pub blend_modes: Vec<&'static str>,
+    pub curves: Vec<&'static str>,
+    pub easings: Vec<&'static str>,
+    pub cycle_directions: Vec<&'static str>,
+    pub chase_directions: Vec<&'static str>,
+    pub chase_patterns: Vec<&'static str>,
+    pub layer_commands: Vec<LayerCommandType>,
+    pub loops: Vec<&'static str>,
+}
+
+/// An effect and the parameters it reads (`EffectKind::params`).
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct EffectWords {
+    pub kind: EffectKind,
+    pub params: Vec<&'static str>,
+}
+
+/// The [`Vocabulary`] of the grammar.
+pub fn vocabulary() -> Vocabulary {
+    fn words<T>(table: &[(T, &'static str)]) -> Vec<&'static str> {
+        table.iter().map(|(_, word)| *word).collect()
+    }
+    Vocabulary {
+        effects: EFFECT_KEYWORDS
+            .iter()
+            .map(|(kind, _)| EffectWords {
+                kind: *kind,
+                params: kind.params().to_vec(),
+            })
+            .collect(),
+        layers: words(&LAYER_KEYWORDS),
+        blend_modes: words(&BLEND_KEYWORDS),
+        curves: words(&DIMMER_CURVES),
+        easings: words(&EASINGS),
+        cycle_directions: words(&CYCLE_DIRECTIONS),
+        chase_directions: words(&CHASE_DIRECTIONS),
+        chase_patterns: words(&CHASE_PATTERNS),
+        layer_commands: LAYER_COMMAND_KEYWORDS.iter().map(|(c, _)| *c).collect(),
+        loops: words(&SEQUENCE_LOOPS),
+    }
 }
 
 /// A `move`'s target and start parameters.
@@ -103,6 +163,15 @@ impl CueEffect {
             EffectEdit::Set { name, value } => self.with_param(name, value.as_deref()),
             EffectEdit::Remove { names } => self.without_params(names),
             EffectEdit::Colors { colors } => self.with_colors(colors),
+            EffectEdit::Kind { kind } => {
+                let keeps = |p: &Param| {
+                    kind.params().contains(&p.name.as_str())
+                        || COMMON_PARAMS.contains(&p.name.as_str())
+                };
+                let mut next = self.with_kept(self.effect.params.clone(), |p, _| !keeps(p));
+                next.effect.kind = *kind;
+                next
+            }
             EffectEdit::Move { key, value } => {
                 let (_, name, clears, point) = MOVE_PARAMS
                     .iter()

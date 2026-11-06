@@ -133,6 +133,24 @@ pub struct FitVenue {
     pub error: Option<FitVenueError>,
 }
 
+/// What a fixture can do, as the pages name it: the four a show can ask
+/// for, then what else it has (see `FitFixture::capability_names`).
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    Color,
+    PanTilt,
+    Strobe,
+    Cells,
+    Dimmer,
+    White,
+    Zoom,
+    Focus,
+    Gobo,
+    ColorWheel,
+}
+
 /// A fixture of the venue, as the fit page offers it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -142,8 +160,7 @@ pub struct FitFixtureView {
     pub fixture_type: String,
     pub tags: Vec<String>,
     pub position: Option<Vec3>,
-    /// What it can do, as the engine names it (`color`, `pan_tilt`, ...).
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<Capability>,
 }
 
 /// The fixture that fails the venue, when one does, and why.

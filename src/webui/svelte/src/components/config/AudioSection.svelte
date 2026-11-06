@@ -22,6 +22,9 @@
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import { channelsLabel, probeAudioDevice } from "../../lib/api/config";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   interface Props {
     audio: AudioConfig;
@@ -320,8 +323,9 @@
             <option value={fmt}>{fmt}</option>
           {/each}
         {:else}
-          <option value="int">int</option>
-          <option value="float">float</option>
+          {#each choices.sample_formats as fmt (fmt)}
+            <option value={fmt}>{fmt}</option>
+          {/each}
         {/if}
         {#if audio.sample_format && !sampleFormatOptions.includes(audio.sample_format) && sampleFormatOptions.length > 0}
           <option value={audio.sample_format}>{audio.sample_format}</option>
@@ -456,8 +460,9 @@
           )}
       >
         <option value="">{$t("audio.resamplerDefault")}</option>
-        <option value="sinc">sinc</option>
-        <option value="fft">fft</option>
+        {#each choices.resamplers as r (r)}
+          <option value={r}>{r}</option>
+        {/each}
       </select>
     </div>
 

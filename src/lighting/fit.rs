@@ -170,33 +170,31 @@ impl FitFixture {
     /// (`color`, `pan_tilt`, `strobe`, `cells`) first, then what else the
     /// fixture has — `dimmer`, `white`, `zoom`, `focus`, `gobo` and
     /// `color_wheel`.
-    pub fn capability_names(&self) -> Vec<&'static str> {
+    pub fn capability_names(&self) -> Vec<Capability> {
         let mut out = Vec::new();
-        if self.can(Want::Color) {
-            out.push("color");
-        }
-        if self.can(Want::Move) {
-            out.push("pan_tilt");
-        }
-        if self.can(Want::Strobe) {
-            out.push("strobe");
-        }
-        if self.can(Want::Cells) {
-            out.push("cells");
+        for (want, name) in [
+            (Want::Color, Capability::Color),
+            (Want::Move, Capability::PanTilt),
+            (Want::Strobe, Capability::Strobe),
+            (Want::Cells, Capability::Cells),
+        ] {
+            if self.can(want) {
+                out.push(name);
+            }
         }
         for (bit, name) in [
-            (FixtureCapabilities::DIMMING, "dimmer"),
-            (FixtureCapabilities::WHITE_COLOR, "white"),
-            (FixtureCapabilities::ZOOMING, "zoom"),
-            (FixtureCapabilities::FOCUSING, "focus"),
-            (FixtureCapabilities::GOBO, "gobo"),
+            (FixtureCapabilities::DIMMING, Capability::Dimmer),
+            (FixtureCapabilities::WHITE_COLOR, Capability::White),
+            (FixtureCapabilities::ZOOMING, Capability::Zoom),
+            (FixtureCapabilities::FOCUSING, Capability::Focus),
+            (FixtureCapabilities::GOBO, Capability::Gobo),
         ] {
             if self.capabilities.contains(bit) {
                 out.push(name);
             }
         }
         if self.color_wheel {
-            out.push("color_wheel");
+            out.push(Capability::ColorWheel);
         }
         out
     }
@@ -420,7 +418,7 @@ impl FitReport {
                         fixture_type: f.fixture_type.clone(),
                         tags: f.tags.clone(),
                         position: f.position,
-                        capabilities: f.capability_names().into_iter().map(String::from).collect(),
+                        capabilities: f.capability_names(),
                     })
                     .collect(),
                 focus_points: focus_points.clone(),
@@ -770,18 +768,20 @@ mod test {
 
     #[test]
     fn capability_names_carry_what_else_the_fixture_has() {
+        use Capability::*;
         assert_eq!(
             named(&["red", "green", "blue", "white", "dimmer", "zoom"]).capability_names(),
-            vec!["color", "strobe", "dimmer", "white", "zoom"]
+            vec![Color, Strobe, Dimmer, White, Zoom]
         );
-        assert_eq!(named(&["pan", "tilt"]).capability_names(), vec!["pan_tilt"]);
+        assert_eq!(named(&["pan", "tilt"]).capability_names(), vec![PanTilt]);
     }
 
     #[test]
     fn a_wheel_is_colour_only_when_nothing_mixes() {
+        use Capability::*;
         assert_eq!(
             named(&["color1", "dimmer"]).capability_names(),
-            vec!["strobe", "dimmer", "color_wheel"]
+            vec![Strobe, Dimmer, ColorWheel]
         );
         // A mixing fixture with a wheel is a colour fixture: the wheel is extra.
         assert!(!named(&["red", "green", "blue", "color1"]).color_wheel);

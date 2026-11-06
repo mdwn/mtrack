@@ -75,7 +75,9 @@ export function abilities(mode: GdtfMode): Ability[] {
 /** Channels a static can set but no effect drives, named for the panel. */
 export function extras(mode: GdtfMode): string[] {
   const caps = new Set(mode.capabilities ?? []);
-  return ["white", "zoom", "focus", "gobo"].filter((c) => caps.has(c));
+  return (["white", "zoom", "focus", "gobo"] as const).filter((c) =>
+    caps.has(c),
+  );
 }
 
 /** What a mode lacks that another mode of the archive has. */
@@ -124,17 +126,4 @@ export function filterModes(modes: GdtfMode[], query: string): GdtfMode[] {
       m.name.toLowerCase().includes(q) ||
       `${m.footprint} addresses`.includes(q),
   );
-}
-
-/** The file stem the server writes a type under: lower-case ASCII letters
- *  and digits, runs of anything else as one underscore (the server's
- *  `fixture_filename_stem`). */
-export function fileStem(name: string): string {
-  let out = "";
-  for (const c of name) {
-    if (/[A-Za-z0-9]/.test(c)) out += c.toLowerCase();
-    else if (!out.endsWith("_") && out.length > 0) out += "_";
-  }
-  out = out.replace(/_+$/, "");
-  return out || "fixture";
 }

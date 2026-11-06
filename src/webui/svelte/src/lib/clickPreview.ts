@@ -12,33 +12,21 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// Mirrors the backend's synthesized click (audio/metronome.rs): a sine
-// burst with a 1ms attack and exponential decay, 50ms long.
-const CLICK_SECS = 0.05;
-const ATTACK_SECS = 0.001;
-const DECAY_TAU_SECS = 0.012;
+import { rules } from "./rules";
 
 let ctx: AudioContext | null = null;
 
-/** Plays a synthesized click locally (browser output, not the player). */
+/** Plays the player's synthesized click (`rules.click_samples`) locally
+ *  (browser output, not the player). */
 export function previewClick(freq: number, volume: number) {
   ctx ??= new AudioContext();
   // Some browsers suspend fresh contexts until a user gesture completes.
   if (ctx.state === "suspended") void ctx.resume();
 
-  const rate = ctx.sampleRate;
-  const total = Math.max(1, Math.round(rate * CLICK_SECS));
-  const attack = Math.max(1, Math.round(rate * ATTACK_SECS));
-  const buffer = ctx.createBuffer(1, total, rate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < total; i++) {
-    const t = i / rate;
-    const envelope =
-      i < attack
-        ? i / attack
-        : Math.exp(-((i - attack) / rate) / DECAY_TAU_SECS);
-    data[i] = Math.sin(2 * Math.PI * freq * t) * envelope * volume;
-  }
+  const samples = rules.click_samples(freq, volume, ctx.sampleRate);
+  if (!samples) return;
+  const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buffer.getChannelData(0).set(samples);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);

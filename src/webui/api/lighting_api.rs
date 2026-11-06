@@ -138,13 +138,8 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    mode.capabilities = Some(
-                        lighting::fit::FitFixture::from_info(&info, &[])
-                            .capability_names()
-                            .into_iter()
-                            .map(String::from)
-                            .collect(),
-                    );
+                    mode.capabilities =
+                        Some(lighting::fit::FitFixture::from_info(&info, &[]).capability_names());
                     mode.cells = Some(fixture_type.cells().len());
                     mode.strobe_range =
                         fixture_type

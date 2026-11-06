@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { Code, ConnectError } from "@connectrpc/connect";
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import {
     fetchLightingFile,
@@ -198,11 +199,11 @@
         startTime: create(DurationSchema, { seconds, nanos }),
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("already playing")) {
+      // A song in the way is the player's `Aborted`.
+      if (e instanceof ConnectError && e.code === Code.Aborted) {
         error = "Another song is playing. Stop it first.";
       } else {
-        error = `Playback failed: ${msg}`;
+        error = `Playback failed: ${e instanceof Error ? e.message : e}`;
       }
     }
   }

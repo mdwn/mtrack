@@ -273,7 +273,7 @@ pub struct FixtureMetadata {
     /// What the fixture can do (`color`, `pan_tilt`, `strobe`, `cells`),
     /// named as the fit endpoint names them: a fixture with `pan_tilt` is
     /// a mover, whatever its type's channels look like.
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<crate::lighting::fit::Capability>,
     /// The cells of a pixel fixture, in the manufacturer's order: the plot
     /// draws one segment each.
     pub cells: Vec<CellPlacement>,

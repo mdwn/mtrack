@@ -109,6 +109,14 @@ pub(crate) enum SequenceLoop {
     Count(usize), // Loop N times
 }
 
+/// Each named loop mode and its keyword, as the grammar writes it.
+pub(crate) const SEQUENCE_LOOPS: [(SequenceLoop, &str); 4] = [
+    (SequenceLoop::Once, "once"),
+    (SequenceLoop::Loop, "loop"),
+    (SequenceLoop::PingPong, "pingpong"),
+    (SequenceLoop::Random, "random"),
+];
+
 /// A `sequence "name"(…), loop: …` reference, as written in a cue.
 #[derive(Debug, Clone)]
 pub(crate) struct SequenceCall {
@@ -285,7 +293,7 @@ pub enum LayerCommandType {
 
 /// Each layer command and its keyword, as the grammar writes it: the one
 /// table both ways are read off.
-const LAYER_COMMAND_KEYWORDS: [(LayerCommandType, &str); 4] = [
+pub(crate) const LAYER_COMMAND_KEYWORDS: [(LayerCommandType, &str); 4] = [
     (LayerCommandType::Clear, "clear"),
     (LayerCommandType::Freeze, "freeze"),
     (LayerCommandType::Unfreeze, "unfreeze"),
@@ -357,7 +365,7 @@ pub enum EffectKind {
 
 /// Each effect and its keyword, as the grammar writes it: the one table
 /// both ways are read off.
-const EFFECT_KEYWORDS: [(EffectKind, &str); 8] = [
+pub(crate) const EFFECT_KEYWORDS: [(EffectKind, &str); 8] = [
     (EffectKind::Static, "static"),
     (EffectKind::Cycle, "cycle"),
     (EffectKind::Strobe, "strobe"),

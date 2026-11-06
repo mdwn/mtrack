@@ -33,6 +33,27 @@ fn waiting_entry_at(playlist: &crate::playlist::Playlist, past_last_entry: bool)
     playlist.entry().filter(|_| !past_last_entry)
 }
 
+/// Why a play started no song.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayDeclined {
+    AlreadyPlaying,
+    EmptyPlaylist,
+    NotStarted,
+}
+
+impl std::fmt::Display for PlayDeclined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PlayDeclined::AlreadyPlaying => "song already playing",
+            PlayDeclined::EmptyPlaylist => {
+                "the playlist is empty — no songs loaded, which usually \
+                 means none passed validation at startup (check the log)"
+            }
+            PlayDeclined::NotStarted => "the player did not start a song",
+        })
+    }
+}
+
 impl Player {
     /// Plays the song at the current position. Returns the song if playback started successfully.
     /// Returns None if a song is already playing.
@@ -46,16 +67,14 @@ impl Player {
 
     /// Why a play returned no song, read from the player's state rather than
     /// assumed: the one derivation every surface answers with.
-    pub async fn play_declined_reason(&self) -> String {
+    pub async fn play_declined(&self) -> PlayDeclined {
         if self.is_playing().await {
-            return "song already playing".to_string();
+            PlayDeclined::AlreadyPlaying
+        } else if self.get_playlist().songs().is_empty() {
+            PlayDeclined::EmptyPlaylist
+        } else {
+            PlayDeclined::NotStarted
         }
-        if self.get_playlist().songs().is_empty() {
-            return "the playlist is empty — no songs loaded, which usually \
-                    means none passed validation at startup (check the log)"
-                .to_string();
-        }
-        "the player did not start a song".to_string()
     }
 
     /// Plays the song starting from a specific time position.

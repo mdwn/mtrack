@@ -26,6 +26,9 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
+  import { rules } from "../../lib/rules";
+
+  const choices = rules.config_choices();
 
   export type SampleBrowseTarget = {
     sampleName: string;
@@ -351,11 +354,9 @@
                       );
                     }}
                   >
-                    <option value="play_to_completion"
-                      >{$t("samples.playToCompletion")}</option
-                    >
-                    <option value="stop">{$t("samples.releaseStop")}</option>
-                    <option value="fade">{$t("samples.releaseFade")}</option>
+                    {#each choices.release_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.releases.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
 
@@ -379,10 +380,9 @@
                       );
                     }}
                   >
-                    <option value="cut">{$t("samples.retriggerCut")}</option>
-                    <option value="polyphonic"
-                      >{$t("samples.retriggerPolyphonic")}</option
-                    >
+                    {#each choices.retrigger_behaviors as b (b)}
+                      <option value={b}>{$t(`samples.retriggers.${b}`)}</option>
+                    {/each}
                   </select>
                 </div>
               </div>
@@ -463,15 +463,11 @@
                         onchange();
                       }}
                     >
-                      <option value="ignore"
-                        >{$t("samples.velocityIgnore")}</option
-                      >
-                      <option value="scale"
-                        >{$t("samples.velocityScale")}</option
-                      >
-                      <option value="layers"
-                        >{$t("samples.velocityLayers")}</option
-                      >
+                      {#each choices.velocity_modes as m (m)}
+                        <option value={m}
+                          >{$t(`samples.velocityModes.${m}`)}</option
+                        >
+                      {/each}
                     </select>
                   </div>
 

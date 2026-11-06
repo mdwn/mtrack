@@ -42,8 +42,12 @@ test.describe("Profile Editor - Triggers Section", () => {
     await page.getByRole("button", { name: "+ MIDI" }).click();
     await expect(page.locator(".input-card.midi")).toBeVisible();
     // Should show MIDI-specific fields
-    await expect(page.locator('[id^="trigger-midi-type-"]')).toBeVisible();
-    await expect(page.locator('[id^="trigger-midi-channel-"]')).toBeVisible();
+    await expect(
+      page.locator('[id^="trigger-midi-"][id$="-type"]'),
+    ).toBeVisible();
+    await expect(
+      page.locator('[id^="trigger-midi-"][id$="-channel"]'),
+    ).toBeVisible();
   });
 
   test("a control change trigger saves its controller and value, not a key", async ({
@@ -51,12 +55,12 @@ test.describe("Profile Editor - Triggers Section", () => {
   }) => {
     await page.getByRole("button", { name: "+ MIDI" }).click();
     await page
-      .locator('[id^="trigger-midi-type-"]')
+      .locator('[id^="trigger-midi-"][id$="-type"]')
       .selectOption("control_change");
-    await page.locator('[id^="trigger-midi-controller-"]').fill("5");
-    await page.locator('[id^="trigger-midi-controller-"]').blur();
-    await page.locator('[id^="trigger-midi-value-"]').fill("64");
-    await page.locator('[id^="trigger-midi-value-"]').blur();
+    await page.locator('[id^="trigger-midi-"][id$="-controller"]').fill("5");
+    await page.locator('[id^="trigger-midi-"][id$="-controller"]').blur();
+    await page.locator('[id^="trigger-midi-"][id$="-value"]').fill("64");
+    await page.locator('[id^="trigger-midi-"][id$="-value"]').blur();
 
     const saved = page.waitForRequest(
       (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
@@ -166,11 +170,11 @@ samples: {}
   await page.locator(".profile-row", { hasText: "test-host" }).click();
   await page.locator(".tab", { hasText: "Triggers" }).click();
 
-  await expect(page.locator('[id^="trigger-midi-type-"]')).toHaveValue(
+  await expect(page.locator('[id^="trigger-midi-"][id$="-type"]')).toHaveValue(
     "program_change",
   );
-  await page.locator('[id^="trigger-midi-channel-"]').fill("4");
-  await page.locator('[id^="trigger-midi-channel-"]').blur();
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("4");
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
   const saved = page.waitForRequest(
     (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
@@ -190,12 +194,12 @@ test("a MIDI field is held to the range the player reads", async ({ page }) => {
   await page.getByRole("button", { name: "Enable Triggers" }).click();
   await page.getByRole("button", { name: "+ MIDI" }).click();
   await page
-    .locator('[id^="trigger-midi-type-"]')
+    .locator('[id^="trigger-midi-"][id$="-type"]')
     .selectOption("control_change");
-  await page.locator('[id^="trigger-midi-value-"]').fill("200");
-  await page.locator('[id^="trigger-midi-value-"]').blur();
-  await page.locator('[id^="trigger-midi-channel-"]').fill("0");
-  await page.locator('[id^="trigger-midi-channel-"]').blur();
+  await page.locator('[id^="trigger-midi-"][id$="-value"]').fill("200");
+  await page.locator('[id^="trigger-midi-"][id$="-value"]').blur();
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("0");
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
   const saved = page.waitForRequest(
     (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
@@ -230,9 +234,11 @@ samples: {}
   await page.locator(".profile-row", { hasText: "test-host" }).click();
   await page.locator(".tab", { hasText: "Triggers" }).click();
 
-  await expect(page.locator('[id^="trigger-midi-velcity-"]')).toHaveCount(0);
-  await page.locator('[id^="trigger-midi-channel-"]').fill("2");
-  await page.locator('[id^="trigger-midi-channel-"]').blur();
+  await expect(
+    page.locator('[id^="trigger-midi-"][id$="-velcity"]'),
+  ).toHaveCount(0);
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').fill("2");
+  await page.locator('[id^="trigger-midi-"][id$="-channel"]').blur();
 
   const saved = page.waitForRequest(
     (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),

@@ -163,3 +163,27 @@ test("an edited effect switched to another type keeps its parameters", async ({
   expect(saved).toContain("duration: 3s");
   expect(rules.document(saved, "show.light").error).toBeUndefined();
 });
+
+test("a type switch keeps what the new type and every type read", async () => {
+  // `EffectEdit::Kind`, off the parser's table: `per` is read by every
+  // effect and `spread` by both cycle and rainbow, so both survive a cycle
+  // turned rainbow; the cycle's `direction` does not.
+  await loadRules();
+  const source = `show "T" {\n    @00:00.000\n    wash: cycle color: "red", direction: forward, spread: 30deg, per: cell, duration: 2s\n}\n`;
+  const effect = rules.document(source, "show.light").document!.shows[0].cues[0]
+    .effects[0];
+  const next = rules.effect_edit(effect, { op: "kind", kind: "rainbow" })!;
+  expect(next.effect.type).toBe("rainbow");
+  expect(next.effect.params.map((p) => p.name)).toEqual([
+    "spread",
+    "per",
+    "duration",
+  ]);
+});
+
+test("the colour picker shows an rgb() colour as the parser reads it", async () => {
+  await loadRules();
+  expect(rules.color_hex("rgb(255, 128, 0)")).toBe("#ff8000");
+  expect(rules.color_hex('"Pink"')).toBe("#ffc0cb");
+  expect(rules.color_hex("nope")).toBeUndefined();
+});

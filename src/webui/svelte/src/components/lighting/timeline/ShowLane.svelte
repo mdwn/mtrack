@@ -16,7 +16,6 @@
   import { t } from "svelte-i18n";
   import type {
     Cue,
-    Layer,
     Timestamp,
     SubLaneType,
   } from "../../../lib/lighting/types";
@@ -228,7 +227,7 @@
     const newCue = emptyCue(ts);
     if (subLaneType === "effects" || subLaneType?.startsWith("effects:")) {
       const layer = subLaneType?.startsWith("effects:")
-        ? (subLaneType.split(":")[1] as Layer)
+        ? subLaneType.split(":")[1]
         : undefined;
       newCue.effects = [rules.effect_new(layer, !!tempoSource)];
     } else if (subLaneType === "commands") {

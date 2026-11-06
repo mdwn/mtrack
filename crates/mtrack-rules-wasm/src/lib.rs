@@ -323,6 +323,7 @@ type EffectParamsJs = <EffectParams as Tsify>::JsType;
 type EffectEditJs = <EffectEdit as Tsify>::JsType;
 type SequenceRefJs = <SequenceRef as Tsify>::JsType;
 type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
+type ClaveKindJs = <metronome_config::ClaveKind as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
 
@@ -846,6 +847,20 @@ pub fn effect_view(effect: EffectParamsJs) -> Option<EffectView> {
     Some(effect.view())
 }
 
+/// The words an effect line's form offers (`edit::vocabulary`).
+#[wasm_bindgen]
+pub fn vocabulary() -> lighting::parser::edit::Vocabulary {
+    lighting::parser::edit::vocabulary()
+}
+
+/// A colour as the parser reads it (`#rrggbb`, `rgb(r, g, b)` or a name,
+/// quoted or not), as `#rrggbb`; `None` for text that is no colour.
+#[wasm_bindgen]
+pub fn color_hex(text: &str) -> Option<String> {
+    let c = lighting::parser::utils::parse_color_string(text)?;
+    Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
+}
+
 /// The effect a click on a timeline lane adds (`edit::new_effect`).
 #[wasm_bindgen]
 pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
@@ -985,6 +1000,13 @@ pub fn midi_event_shapes() -> config::MidiEventShapes {
     config::MidiEventShapes::new()
 }
 
+/// The values each of a config's choices takes: what the config editor's
+/// selects offer.
+#[wasm_bindgen]
+pub fn config_choices() -> config::ConfigChoices {
+    config::ConfigChoices::default()
+}
+
 // ── Metronome ───────────────────────────────────────────────────────────────
 
 /// Per-beat accent levels: 0 silent, 1 normal, 2 half, 3 accent.
@@ -1023,6 +1045,78 @@ pub fn subdivision_at(metronome: MetronomeConfigJs, measure: u32) -> Option<Subd
     }
     let metronome: MetronomeConfig = read(JsValue::from(metronome))?;
     Some(metronome.subdivision_at(measure).0.clone())
+}
+
+/// The built-in synthesized click of each role
+/// (`MetronomeSounds::builtin`): what a fresh sound override starts at.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct BuiltinSounds(pub metronome_config::MetronomeSounds);
+
+/// [`BuiltinSounds`], for the web UI.
+#[wasm_bindgen]
+pub fn metronome_sounds() -> BuiltinSounds {
+    BuiltinSounds(metronome_config::MetronomeSounds::builtin())
+}
+
+/// The samples of a synthesized click at `freq` Hz and `volume`, at
+/// `sample_rate` (`synthesize_click`, the click the player renders): what
+/// a click's preview plays. `None` for a rate past 384 kHz or a value that
+/// is no number.
+#[wasm_bindgen]
+pub fn click_samples(freq: f64, volume: f64, sample_rate: u32) -> Option<Vec<f32>> {
+    (freq.is_finite() && volume.is_finite() && (1..=384_000).contains(&sample_rate))
+        .then(|| metronome_config::synthesize_click(freq, volume, sample_rate))
+}
+
+/// A clave's half-beat offsets in the first and second measure of its
+/// cycle (`ClaveKind::half_beats`).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct ClaveHalfBeats {
+    pub first: Vec<u32>,
+    pub second: Vec<u32>,
+}
+
+/// [`ClaveHalfBeats`] of a clave, for the web UI; `None` for a value that
+/// is not a clave.
+#[wasm_bindgen]
+pub fn clave_half_beats(kind: ClaveKindJs) -> Option<ClaveHalfBeats> {
+    let (first, second) = read::<metronome_config::ClaveKind>(JsValue::from(kind))?.half_beats();
+    let offsets = |hits: &[usize]| hits.iter().map(|&h| h as u32).collect();
+    Some(ClaveHalfBeats {
+        first: offsets(first),
+        second: offsets(second),
+    })
+}
+
+// ── Limits ──────────────────────────────────────────────────────────────────
+
+/// The player's fixed limits the UI bounds its inputs by.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+pub struct Limits {
+    /// The channels of a DMX universe (`patch::UNIVERSE_SIZE`).
+    pub universe_size: u32,
+    /// The lowest and highest gain a track is set to, in dB
+    /// (`track_gains`); the lowest is silence.
+    pub gain_db: (f32, f32),
+    /// The largest numerator a song's time signature takes, and its
+    /// denominators (`tempo::SONG_MAX_NUMERATOR`, `SONG_DENOMINATORS`).
+    pub signature_numerator_max: u32,
+    pub signature_denominators: Vec<u32>,
+}
+
+/// [`Limits`], for the web UI.
+#[wasm_bindgen]
+pub fn limits() -> Limits {
+    Limits {
+        universe_size: patch::UNIVERSE_SIZE,
+        gain_db: (track_gains::MIN_GAIN_DB, track_gains::MAX_GAIN_DB),
+        signature_numerator_max: tempo::SONG_MAX_NUMERATOR,
+        signature_denominators: tempo::SONG_DENOMINATORS.to_vec(),
+    }
 }
 
 // ── DMX patch ───────────────────────────────────────────────────────────────

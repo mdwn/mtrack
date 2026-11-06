@@ -910,11 +910,8 @@ pub fn build_metadata_json(
 
             for fi in &fixture_infos {
                 let tags = venue_fixtures.get(&fi.name).cloned().unwrap_or_default();
-                let capabilities = crate::lighting::fit::FitFixture::from_info(fi, &tags)
-                    .capability_names()
-                    .into_iter()
-                    .map(String::from)
-                    .collect();
+                let capabilities =
+                    crate::lighting::fit::FitFixture::from_info(fi, &tags).capability_names();
                 let fixture = wire::FixtureMetadata {
                     placement: wire::FixturePlacement {
                         tags,

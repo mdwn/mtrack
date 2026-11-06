@@ -24,7 +24,9 @@ import type {
   TempoSource,
   Timestamp,
   TempoSection,
+  EffectKind,
 } from "../../gen/rules/mtrack_rules";
+import type { Translate } from "../i18n";
 import { rules } from "../rules";
 
 export type { GridLine };
@@ -170,6 +172,14 @@ export const SNAP_BEATS: Record<SnapResolution, number | undefined> = {
   "1/16": 0.0625,
 };
 
+/** What a snap resolution's option says: `measure` and `beat` by name,
+ *  the fractions as written. */
+export function snapLabel(resolution: string, t: Translate): string {
+  return resolution === "measure" || resolution === "beat"
+    ? t(`timeline.toolbar.${resolution}`)
+    : resolution;
+}
+
 /** The nearest barline, or the nearest step of a beat counted from the
  *  bar's downbeat (so an odd metre's bar keeps its subdivisions), by the
  *  tempo map's own positions. */
@@ -235,26 +245,18 @@ export function offsetMarkers(layout: Layout): OffsetMarker[] {
   return markers.sort((a, b) => a.ms - b.ms);
 }
 
-/** Effect type color coding */
-export function effectTypeColor(type: string): string {
-  switch (type) {
-    case "static":
-      return "#3b82f6";
-    case "cycle":
-      return "#8b5cf6";
-    case "strobe":
-      return "#eab308";
-    case "pulse":
-      return "#22c55e";
-    case "chase":
-      return "#f97316";
-    case "dimmer":
-      return "#6b7280";
-    case "rainbow":
-      return "#ec4899";
-    case "move":
-      return "#14b8a6";
-    default:
-      return "#6b7280";
-  }
+/** Effect type color coding, one per effect the grammar has. */
+const EFFECT_COLORS: Record<EffectKind, string> = {
+  static: "#3b82f6",
+  cycle: "#8b5cf6",
+  strobe: "#eab308",
+  pulse: "#22c55e",
+  chase: "#f97316",
+  dimmer: "#6b7280",
+  rainbow: "#ec4899",
+  move: "#14b8a6",
+};
+
+export function effectTypeColor(type: EffectKind): string {
+  return EFFECT_COLORS[type];
 }

@@ -20,10 +20,12 @@ import type { TempoSection, TempoChange } from "./lighting/types";
 import { rules } from "./rules";
 
 /** `[numerator, denominator]` of a `4/4`-style string, by the player's own
- * parser; 4/4 stands in for a string it refuses, since the editor's model
- * has to show something. */
+ * parser; the player's default metre stands in for a string it refuses,
+ * since the editor's model has to show something. */
 function sigOf(raw: string | undefined): [number, number] {
-  return rules.signature_parse(raw ?? "") ?? [4, 4];
+  return (
+    rules.signature_parse(raw ?? "") ?? rules.tempo_defaults().time_signature
+  );
 }
 
 /** song.yaml tempo config -> the lighting TempoEditor's data model. */

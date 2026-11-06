@@ -29,17 +29,10 @@ use super::click_analysis::BeatGrid;
 use super::sample_source::error::SampleSourceError;
 use super::sample_source::traits::SampleSource;
 use crate::config::metronome::{
-    ClaveKind, ClickSound, MetronomeConfig, Subdivision, DEFAULT_ACCENT_FREQ,
+    synthesize_click, ClickSound, MetronomeConfig, Subdivision, DEFAULT_ACCENT_FREQ,
     DEFAULT_ACCENT_VOLUME, DEFAULT_HALF_FREQ, DEFAULT_HALF_VOLUME, DEFAULT_NORMAL_FREQ,
     DEFAULT_NORMAL_VOLUME, DEFAULT_SUB_FREQ, DEFAULT_SUB_VOLUME,
 };
-
-/// Length of a synthesized click in seconds.
-const SYNTH_CLICK_SECS: f64 = 0.05;
-/// Attack ramp of a synthesized click in seconds.
-const SYNTH_ATTACK_SECS: f64 = 0.001;
-/// Exponential decay time constant of a synthesized click in seconds.
-const SYNTH_DECAY_TAU_SECS: f64 = 0.012;
 
 /// The kind of click at a beat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,15 +53,6 @@ pub enum ClickKind {
 pub struct ClickEvent {
     pub sample_pos: i64,
     pub kind: ClickKind,
-}
-
-/// Clave patterns as half-beat offsets (eighths when the beat is a quarter)
-/// within the first and second measure of a two-measure cycle, 3-2 direction.
-fn clave_pattern(kind: ClaveKind) -> (&'static [usize], &'static [usize]) {
-    match kind {
-        ClaveKind::Son => (&[0, 3, 6], &[2, 4]),
-        ClaveKind::Rumba => (&[0, 3, 7], &[2, 4]),
-    }
 }
 
 /// Measure boundaries as beat-index ranges; without measure starts the
@@ -191,7 +175,7 @@ pub fn click_events_from_beat_grid(
                 }
             }
             Subdivision::Clave(clave) => {
-                let (first, second) = clave_pattern(*clave);
+                let (first, second) = clave.half_beats();
                 let pattern = if (measure_idx - sub_anchor).is_multiple_of(2) {
                     first
                 } else {
@@ -216,25 +200,6 @@ pub fn click_events_from_beat_grid(
         }
     }
     events
-}
-
-/// Synthesizes a click: a sine burst with a short attack and exponential decay.
-fn synthesize_click(freq: f64, volume: f64, sample_rate: u32) -> Vec<f32> {
-    let rate = sample_rate as f64;
-    let total = (rate * SYNTH_CLICK_SECS).max(1.0) as usize;
-    let attack = (rate * SYNTH_ATTACK_SECS).max(1.0) as usize;
-
-    (0..total)
-        .map(|n| {
-            let t = n as f64 / rate;
-            let envelope = if n < attack {
-                n as f64 / attack as f64
-            } else {
-                (-((n - attack) as f64 / rate) / SYNTH_DECAY_TAU_SECS).exp()
-            };
-            ((std::f64::consts::TAU * freq * t).sin() * envelope * volume) as f32
-        })
-        .collect()
 }
 
 /// Renders the waveform for one click sound role. Fields resolve per-field:
@@ -463,6 +428,7 @@ impl SampleSource for MetronomeSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::metronome::ClaveKind;
 
     const RATE: u32 = 48_000;
 
@@ -776,20 +742,6 @@ mod tests {
         assert!(events.iter().any(|e| e.sample_pos == 0));
         // Beats before the offset have negative positions.
         assert!(events.iter().any(|e| e.sample_pos < 0));
-    }
-
-    #[test]
-    fn synthesized_click_shape() {
-        let click = synthesize_click(1000.0, 1.0, RATE);
-        assert_eq!(click.len(), (RATE as f64 * SYNTH_CLICK_SECS) as usize);
-        let peak = click.iter().fold(0.0f32, |max, s| max.max(s.abs()));
-        assert!(
-            peak > 0.5,
-            "click should have audible amplitude, got {peak}"
-        );
-        // Decays towards silence at the end.
-        let tail = click[click.len() - 1].abs();
-        assert!(tail < 0.05, "click should decay, tail was {tail}");
     }
 
     #[test]

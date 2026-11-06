@@ -420,19 +420,22 @@
   }
 
   /** Signature of the bar a position is in, as the player's tempo map has
-   * it; 4/4 while the tempo block makes no map. */
+   * it; the player's default metre while the tempo block makes no map. */
   function sigAt(measure: number, beat: number): [number, number] {
     const at = tempo
       ? rules.tempo_query({ config: tempo }, { measure, beat })
       : undefined;
-    return at?.sig ?? [4, 4];
+    return at?.sig ?? rules.tempo_defaults().time_signature;
   }
 
   /** One marker per position, merging tempo changes with metronome feel
    * changes at the same measure. */
   let tempoMarkers = $derived.by(() => {
     if (!tempo) return [];
-    const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
+    const baseParts = [
+      `${tempo.bpm}`,
+      tempo.time_signature ?? rules.tempo_defaults().time_signature.join("/"),
+    ];
     if (metronome?.accents?.length) {
       // The base pattern as the renderer sizes it to the metre the block
       // sets at bar 1 (`sig_set`: the one the pads are for).
@@ -549,7 +552,7 @@
    * block is written to — a formatting choice for the new marker's value,
    * not a rule; the base tempo while the tempo block makes no map. */
   function effectiveBpmAt(measure: number): number {
-    if (!tempo) return 120;
+    if (!tempo) return rules.tempo_defaults().bpm;
     const bpm = rules.tempo_query({ config: tempo }, { measure, beat: 1 })?.bpm;
     return bpm === undefined ? tempo.bpm : Math.round(bpm * 100) / 100;
   }
@@ -571,7 +574,8 @@
   function handleTempoEmptyClick(ms: number) {
     if (!tempo) {
       // No tempo map yet — create one and open its editor right away.
-      ontempochange?.({ bpm: 120, time_signature: "4/4" });
+      const { bpm, time_signature } = rules.tempo_defaults();
+      ontempochange?.({ bpm, time_signature: time_signature.join("/") });
       tempoDialogTarget = "start";
       return;
     }

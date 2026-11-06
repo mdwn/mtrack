@@ -57,9 +57,8 @@
   import SamplesSection, {
     type SampleBrowseTarget,
   } from "../components/config/SamplesSection.svelte";
-  import MetronomeSection, {
-    type MetronomeSoundRole,
-  } from "../components/config/MetronomeSection.svelte";
+  import MetronomeSection from "../components/config/MetronomeSection.svelte";
+  import type { SoundRole } from "../lib/metronomePresets";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import Tooltip from "../components/config/Tooltip.svelte";
 
@@ -598,7 +597,7 @@
   }
 
   // Metronome sound file browser state
-  let metronomeBrowseRole = $state<MetronomeSoundRole | null>(null);
+  let metronomeBrowseRole = $state<SoundRole | null>(null);
   let metronomeRef: MetronomeSection | undefined = $state();
 
   function onMetronomeBrowseSelect(paths: string[]) {

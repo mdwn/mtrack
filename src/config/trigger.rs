@@ -42,7 +42,7 @@ fn default_gain() -> f32 {
     1.0
 }
 
-fn default_fixed_velocity() -> u8 {
+pub(super) fn default_fixed_velocity() -> u8 {
     127
 }
 

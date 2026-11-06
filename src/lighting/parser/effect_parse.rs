@@ -72,6 +72,151 @@ fn clean_string_value(value: &str) -> String {
     value.trim_matches('"').trim().to_lowercase()
 }
 
+/// Each cycle direction and its keyword, as the grammar writes it.
+pub(crate) const CYCLE_DIRECTIONS: [(CycleDirection, &str); 3] = [
+    (CycleDirection::Forward, "forward"),
+    (CycleDirection::Backward, "backward"),
+    (CycleDirection::PingPong, "pingpong"),
+];
+
+/// Each chase pattern and its keyword.
+pub(crate) const CHASE_PATTERNS: [(ChasePattern, &str); 3] = [
+    (ChasePattern::Linear, "linear"),
+    (ChasePattern::Snake, "snake"),
+    (ChasePattern::Random, "random"),
+];
+
+/// Each chase direction and its keyword.
+pub(crate) const CHASE_DIRECTIONS: [(ChaseDirection, &str); 6] = [
+    (ChaseDirection::LeftToRight, "left_to_right"),
+    (ChaseDirection::RightToLeft, "right_to_left"),
+    (ChaseDirection::TopToBottom, "top_to_bottom"),
+    (ChaseDirection::BottomToTop, "bottom_to_top"),
+    (ChaseDirection::Clockwise, "clockwise"),
+    (ChaseDirection::CounterClockwise, "counter_clockwise"),
+];
+
+/// Each dimmer curve and its keyword.
+pub(crate) const DIMMER_CURVES: [(DimmerCurve, &str); 5] = [
+    (DimmerCurve::Linear, "linear"),
+    (DimmerCurve::Exponential, "exponential"),
+    (DimmerCurve::Logarithmic, "logarithmic"),
+    (DimmerCurve::Sine, "sine"),
+    (DimmerCurve::Cosine, "cosine"),
+];
+
+/// Each move easing and its keyword, the default first.
+pub(crate) const EASINGS: [(Easing, &str); 2] =
+    [(Easing::Smooth, "smooth"), (Easing::Linear, "linear")];
+
+/// The parameters each effect reads, beyond the ones every effect takes
+/// ([`COMMON_PARAMS`]): what the editor offers and keeps when an effect
+/// changes kind. A test holds the parser's arms to it.
+const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
+    (
+        EffectKind::Static,
+        &[
+            "dimmer",
+            "intensity",
+            "red",
+            "green",
+            "blue",
+            "white",
+            "color",
+            "duration",
+        ],
+    ),
+    (
+        EffectKind::Cycle,
+        &[
+            "speed",
+            "direction",
+            "transition",
+            "color",
+            "spread",
+            "duration",
+        ],
+    ),
+    (EffectKind::Strobe, &["frequency", "duration"]),
+    (
+        EffectKind::Pulse,
+        &[
+            "base_level",
+            "pulse_amplitude",
+            "intensity",
+            "frequency",
+            "duration",
+        ],
+    ),
+    (
+        EffectKind::Chase,
+        &["pattern", "speed", "direction", "transition", "duration"],
+    ),
+    (
+        EffectKind::Dimmer,
+        &["start_level", "end_level", "curve", "duration"],
+    ),
+    (
+        EffectKind::Rainbow,
+        &["speed", "saturation", "brightness", "spread", "duration"],
+    ),
+    (
+        EffectKind::Move,
+        &[
+            "focus",
+            "to",
+            "from",
+            "from_pan",
+            "from_tilt",
+            "pan",
+            "tilt",
+            "easing",
+            "duration",
+        ],
+    ),
+];
+
+/// The parameters `parse_effect_definition` reads for every effect.
+pub(crate) const COMMON_PARAMS: [&str; 6] = [
+    "layer",
+    "blend_mode",
+    "up_time",
+    "hold_time",
+    "down_time",
+    "per",
+];
+
+impl EffectKind {
+    /// The parameters the effect reads, beyond [`COMMON_PARAMS`].
+    pub fn params(self) -> &'static [&'static str] {
+        EFFECT_PARAMS
+            .iter()
+            .find(|(kind, _)| *kind == self)
+            .map(|(_, params)| *params)
+            .expect("every effect has its parameters")
+    }
+}
+
+/// The value `table` names `keyword` by, or an error naming `what` and
+/// what it may be.
+fn keyword_value<T: Clone>(
+    table: &[(T, &str)],
+    keyword: &str,
+    what: &str,
+) -> Result<T, Box<dyn Error>> {
+    match table.iter().find(|(_, k)| *k == keyword) {
+        Some((value, _)) => Ok(value.clone()),
+        None => {
+            let expected: Vec<&str> = table.iter().map(|(_, k)| *k).collect();
+            Err(format!(
+                "Invalid {what}: '{keyword}' (expected: {})",
+                expected.join(", ")
+            )
+            .into())
+        }
+    }
+}
+
 /// Parses one effect line. An error names the line it is on, so a bad value
 /// in a long show can be found (#538).
 pub(crate) fn parse_effect_definition(
@@ -369,12 +514,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "direction" => {
-                        *direction = match clean_string_value(value).as_str() {
-                            "forward" => CycleDirection::Forward,
-                            "backward" => CycleDirection::Backward,
-                            "pingpong" => CycleDirection::PingPong,
-                            other => return Err(format!("Invalid cycle direction: '{}' (expected: forward, backward, pingpong)", other).into()),
-                        };
+                        *direction = keyword_value(
+                            &CYCLE_DIRECTIONS,
+                            &clean_string_value(value),
+                            "cycle direction",
+                        )?;
                     }
                     "transition" => {
                         *transition = match clean_string_value(value).as_str() {
@@ -453,18 +597,11 @@ pub(crate) fn apply_parameters_to_effect_type(
             for (key, value) in parameters {
                 match key.as_str() {
                     "pattern" => {
-                        *pattern = match clean_string_value(value).as_str() {
-                            "linear" => ChasePattern::Linear,
-                            "snake" => ChasePattern::Snake,
-                            "random" => ChasePattern::Random,
-                            other => {
-                                return Err(format!(
-                                    "Invalid chase pattern: '{}' (expected: linear, snake, random)",
-                                    other
-                                )
-                                .into())
-                            }
-                        };
+                        *pattern = keyword_value(
+                            &CHASE_PATTERNS,
+                            &clean_string_value(value),
+                            "chase pattern",
+                        )?;
                     }
                     "speed" => match parse_speed_string(value, tempo_map) {
                         Ok(val) => *speed = val,
@@ -473,15 +610,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "direction" => {
-                        *direction = match clean_string_value(value).as_str() {
-                            "left_to_right" => ChaseDirection::LeftToRight,
-                            "right_to_left" => ChaseDirection::RightToLeft,
-                            "top_to_bottom" => ChaseDirection::TopToBottom,
-                            "bottom_to_top" => ChaseDirection::BottomToTop,
-                            "clockwise" => ChaseDirection::Clockwise,
-                            "counter_clockwise" => ChaseDirection::CounterClockwise,
-                            other => return Err(format!("Invalid chase direction: '{}' (expected: left_to_right, right_to_left, top_to_bottom, bottom_to_top, clockwise, counter_clockwise)", other).into()),
-                        };
+                        *direction = keyword_value(
+                            &CHASE_DIRECTIONS,
+                            &clean_string_value(value),
+                            "chase direction",
+                        )?;
                     }
                     "transition" => {
                         *transition = match clean_string_value(value).as_str() {
@@ -518,16 +651,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *end_level = val;
                     }
                     "duration" => *duration = ctx.duration(value)?,
-                    "curve" => {
-                        *curve = match value.as_str() {
-                            "linear" => DimmerCurve::Linear,
-                            "exponential" => DimmerCurve::Exponential,
-                            "logarithmic" => DimmerCurve::Logarithmic,
-                            "sine" => DimmerCurve::Sine,
-                            "cosine" => DimmerCurve::Cosine,
-                            other => return Err(format!("Invalid dimmer curve: '{}' (expected: linear, exponential, logarithmic, sine, cosine)", other).into()),
-                        };
-                    }
+                    "curve" => *curve = keyword_value(&DIMMER_CURVES, value, "dimmer curve")?,
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -552,18 +676,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                     "from" => from_focus = Some(unquoted(value).to_string()),
                     "from_pan" => from_pan = Some(parse_degrees(value)?),
                     "from_tilt" => from_tilt = Some(parse_degrees(value)?),
-                    "easing" => {
-                        *easing = match value.as_str() {
-                            "linear" => Easing::Linear,
-                            "smooth" => Easing::Smooth,
-                            other => {
-                                return Err(format!(
-                                    "Invalid easing '{other}' (expected: linear, smooth)"
-                                )
-                                .into())
-                            }
-                        }
-                    }
+                    "easing" => *easing = keyword_value(&EASINGS, value, "easing")?,
                     "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }

@@ -12,6 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+import { rules } from "../rules";
+
 /**
  * The venue editor's rows: a name and an address for a new one, and what
  * stops a save. A row the user added is never dropped without a word — a
@@ -30,7 +32,7 @@ export function nextFixtureName(names: string[], base = "Fixture"): string {
 /** Where the editor puts a fixture added after `previous` (the last row,
  *  not the highest address): the same universe, straight after it — its
  *  address plus its footprint, or plus one when that is not known. A
- *  fixture that would run past 512 starts the next universe. The first
+ *  fixture that would run past its universe starts the next one. The first
  *  fixture of a venue goes at 1:1. */
 export function nextPatch(
   previous: {
@@ -45,7 +47,7 @@ export function nextPatch(
     previous.footprint && previous.footprint > 0 ? previous.footprint : 1;
   const own = footprint && footprint > 0 ? footprint : 1;
   const address = previous.address + step;
-  if (address + own - 1 > 512)
+  if (address + own - 1 > rules.limits().universe_size)
     return { universe: previous.universe + 1, address: 1 };
   return { universe: previous.universe, address };
 }

@@ -185,14 +185,14 @@
           class="seg-btn"
           class:active={(hint.align ?? "end") === "end"}
           onclick={() => onchange({ align: "end" })}
-          >{$t("pilot.alignEnd")}</button
+          >{$t("pilot.aligns.end")}</button
         >
         <button
           type="button"
           class="seg-btn"
           class:active={hint.align === "start"}
           onclick={() => onchange({ align: "start" })}
-          >{$t("pilot.alignStart")}</button
+          >{$t("pilot.aligns.start")}</button
         >
       </div>
     {:else}

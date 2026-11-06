@@ -30,6 +30,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { playbackStore } from "../../lib/ws/stores";
+  import { rules } from "../../lib/rules";
   import { statusStore } from "../../lib/ws/status";
   import { setLocked } from "../../lib/api/config";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -458,7 +459,7 @@
             class="input ftest__address"
             type="number"
             min="1"
-            max="512"
+            max={rules.limits().universe_size}
             value={address}
             data-testid="ftest-address"
             onchange={(e) => {
