@@ -47,7 +47,6 @@ pub struct TestMode {
     /// `null` for a hand-written type, which has one way of being driven.
     pub name: Option<String>,
     pub drivable: bool,
-    /// Why the mode cannot be driven.
     pub error: Option<String>,
     /// `null` when the mode cannot be driven; so are `controls`.
     pub footprint: Option<u16>,
@@ -63,7 +62,6 @@ pub struct TestChannel {
     pub name: String,
 }
 
-/// A universe of the running profile.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TestUniverse {

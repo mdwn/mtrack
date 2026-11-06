@@ -20,7 +20,6 @@ use serde::Serialize;
 
 use crate::lighting::findings::{LibraryFinding, VenueError, Warning};
 
-/// The readiness facts for the player's running profile.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Readiness {
@@ -43,7 +42,6 @@ pub struct Readiness {
     pub output: ReadinessOutput,
 }
 
-/// The current venue's size.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessVenue {
@@ -74,14 +72,12 @@ pub struct UnresolvedFixture {
     pub reason: String,
 }
 
-/// A group the shows target.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ReadinessGroup {
     pub name: String,
     /// How many fixtures it finds in the current venue.
     pub fixtures: usize,
-    /// The songs whose shows use it.
     pub songs: Vec<String>,
 }
 

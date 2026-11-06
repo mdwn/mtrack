@@ -38,7 +38,6 @@ pub struct AudioProbe {
     pub health: Option<Option<AudioOutputHealth>>,
 }
 
-/// What a probe found.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

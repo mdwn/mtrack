@@ -28,7 +28,6 @@ pub struct Status {
     pub locked: bool,
 }
 
-/// The running binary's build.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BuildInfo {

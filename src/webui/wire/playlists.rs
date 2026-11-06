@@ -41,7 +41,6 @@ pub struct PlaylistDetail {
     /// Each entry's auto play: `true` for at once, a gap, or `null` for
     /// none.
     pub auto_play: Vec<Option<AutoPlayConfig>>,
-    /// Each entry's fades.
     pub fades: Vec<EntryFades>,
     /// The playlist's ambient light: `null` for the profile's, `false` for
     /// none, or settings of its own.

@@ -29,7 +29,6 @@ pub struct SongList {
     pub failures: Vec<SongFailure>,
 }
 
-/// A song as the songs list shows it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongInfo {
@@ -50,9 +49,7 @@ pub struct SongInfo {
     pub midi_dmx_files: Vec<String>,
     /// From the explicit tempo map or click track analysis.
     pub beat_grid: Option<BeatGrid>,
-    /// Whether the song has an explicit tempo map configured.
     pub has_tempo_map: bool,
-    /// Whether the song loops when it finishes playing.
     pub loop_playback: bool,
     /// The resolved loop crossfade, when the song has one.
     pub loop_crossfade_ms: Option<u64>,
@@ -60,7 +57,6 @@ pub struct SongInfo {
     pub sections: Vec<Section>,
 }
 
-/// A song that failed to load, and why.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SongFailure {

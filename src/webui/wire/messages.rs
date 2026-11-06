@@ -67,7 +67,6 @@ pub struct Playback {
     /// its reply named. What each device then does is the hardware
     /// status's to say.
     pub hardware_reload_started: u64,
-    /// The recent deferred hardware reloads refused, with why.
     pub hardware_reload_refused: Vec<RefusedReload>,
     /// Which process the generations are this one's: a restart counts from
     /// none again. A string, as it is more than a JSON number holds
@@ -77,11 +76,9 @@ pub struct Playback {
     pub available_sections: Vec<Section>,
     pub active_section: Option<ActiveSection>,
     pub looping: bool,
-    /// The reactive section-loop state machine.
     pub reactive_loop_state: LoopState,
     /// Start position for the next play, set by seeking while stopped.
     pub pending_start_ms: Option<u64>,
-    /// Pilot hints resolved to song times.
     pub pilot_hints: Vec<ResolvedPilotHint>,
     /// The tempo and metre from the song's tempo map, at the playhead.
     pub tempo: Option<PlaybackTempo>,
@@ -112,7 +109,6 @@ pub struct TrackInfo {
     pub muted: bool,
 }
 
-/// A deferred hardware reload refused, and why.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RefusedReload {
@@ -133,7 +129,6 @@ pub struct PlaybackGrid {
     pub accent_levels: Option<Vec<u8>>,
 }
 
-/// The section loop in force, in song time.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActiveSection {
@@ -154,7 +149,6 @@ pub enum LoopState {
     BreakRequested { section_name: String },
 }
 
-/// A pilot hint resolved to song times.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ResolvedPilotHint {
@@ -174,7 +168,6 @@ pub struct PlaybackTempo {
     pub time_signature: (u32, u32),
 }
 
-/// A song about to start by itself.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AutoPlay {
@@ -182,7 +175,6 @@ pub struct AutoPlay {
     pub starts_in_ms: u64,
 }
 
-/// A looping song fading out after a stop.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Ending {
@@ -236,7 +228,6 @@ pub struct NextUp {
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct StageValues {
-    /// Channel bytes by fixture.
     pub fixtures: BTreeMap<String, HashMap<String, u8>>,
     /// Where each mover points.
     pub poses: BTreeMap<String, PoseSnapshot>,
@@ -341,7 +332,6 @@ pub struct StageVenue {
     pub scenery_error: Option<String>,
 }
 
-/// A line of the player's log.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LogLine {
@@ -358,7 +348,6 @@ pub struct Waveform {
     pub tracks: Vec<TrackPeaks>,
 }
 
-/// A track's waveform peaks.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TrackPeaks {
@@ -366,7 +355,6 @@ pub struct TrackPeaks {
     pub peaks: Vec<f32>,
 }
 
-/// A light show reload's outcome.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]

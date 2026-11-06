@@ -74,7 +74,6 @@ pub struct FixtureTypeEntry {
 pub struct GdtfSummary {
     pub fixture: String,
     pub manufacturer: String,
-    /// How many modes the archive has.
     pub modes: usize,
     /// The drawn mode's first beam, as far as the archive states it.
     pub beam: Option<BeamBrief>,
@@ -86,7 +85,6 @@ pub struct GdtfSummary {
     pub in_use: Vec<ModeUse>,
 }
 
-/// A beam's kind and angle.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct BeamBrief {
@@ -136,7 +134,6 @@ pub struct GdtfMode {
     pub refused: Option<String>,
 }
 
-/// A strobe channel's rate range, in hertz.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct StrobeRange {
@@ -232,7 +229,6 @@ pub struct StrobeTable {
     pub automatic: StrobeCurve,
 }
 
-/// The body of a settings plan or save.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(missing_as_null, hashmap_as_object))]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -275,7 +271,6 @@ pub struct Rename {
     pub lines: usize,
 }
 
-/// A venue's lines that name a renamed type.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RenamedLines {

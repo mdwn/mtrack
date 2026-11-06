@@ -30,7 +30,6 @@ pub struct VenuePatch {
     pub overruns: Vec<PatchOverrun>,
 }
 
-/// A fixture's addresses.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct PatchedFixture {
@@ -54,7 +53,6 @@ pub struct VenueSaved {
     pub name: String,
     /// Whether it was the running engine's venue, and so re-read.
     pub reloaded: bool,
-    /// The file's new version.
     pub version: String,
     /// The venue's load failure, when the save left the current venue
     /// failing.

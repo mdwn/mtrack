@@ -59,6 +59,5 @@ pub struct PreviewEffect {
     pub elapsed: f64,
     /// The effect's authored length, seconds.
     pub duration: f64,
-    /// The fixtures the groups resolved to.
     pub fixtures: Vec<String>,
 }
