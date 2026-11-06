@@ -110,8 +110,10 @@ pub(crate) const EASINGS: [(Easing, &str); 2] =
     [(Easing::Linear, "linear"), (Easing::Smooth, "smooth")];
 
 /// The parameters each effect reads, beyond the ones every effect takes
-/// ([`COMMON_PARAMS`]): what the editor offers and keeps when an effect
-/// changes kind. A test holds the parser's arms to it.
+/// ([`COMMON_PARAMS`]): the rule `apply_parameters_to_effect_type` reads
+/// (any other is reported unused, or on a `static` read as a channel
+/// level), and what the editor offers and keeps when an effect changes
+/// kind. A cycle's colours are read with the common parameters.
 const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
     (
         EffectKind::Static,
@@ -128,16 +130,9 @@ const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
     ),
     (
         EffectKind::Cycle,
-        &[
-            "speed",
-            "direction",
-            "transition",
-            "color",
-            "spread",
-            "duration",
-        ],
+        &["speed", "direction", "transition", "color", "duration"],
     ),
-    (EffectKind::Strobe, &["frequency", "duration"]),
+    (EffectKind::Strobe, &["frequency", "rate", "duration"]),
     (
         EffectKind::Pulse,
         &[
@@ -154,11 +149,18 @@ const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
     ),
     (
         EffectKind::Dimmer,
-        &["start_level", "end_level", "curve", "duration"],
+        &[
+            "start",
+            "start_level",
+            "end",
+            "end_level",
+            "curve",
+            "duration",
+        ],
     ),
     (
         EffectKind::Rainbow,
-        &["speed", "saturation", "brightness", "spread", "duration"],
+        &["speed", "saturation", "brightness", "duration"],
     ),
     (
         EffectKind::Move,
@@ -176,14 +178,16 @@ const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
     ),
 ];
 
-/// The parameters `parse_effect_definition` reads for every effect.
-pub(crate) const COMMON_PARAMS: [&str; 6] = [
+/// The parameters `parse_effect_definition` reads for every effect
+/// (`spread` does something on a cycle or a rainbow alone, which lint says).
+pub(crate) const COMMON_PARAMS: [&str; 7] = [
     "layer",
     "blend_mode",
     "up_time",
     "hold_time",
     "down_time",
     "per",
+    "spread",
 ];
 
 impl EffectKind {
@@ -443,6 +447,21 @@ pub(crate) fn apply_parameters_to_effect_type(
     ctx: &ParseContext,
 ) -> Result<(EffectType, Vec<String>), Box<dyn Error>> {
     let mut ignored: Vec<String> = Vec::new();
+    // The effect reads the parameters its table names; a `static` also
+    // takes any other as a channel level, which its arm decides.
+    let kind = EffectKind::of(&effect_type);
+    let parameters: HashMap<&String, &String> = parameters
+        .iter()
+        .filter(|(key, _)| {
+            let read = kind == EffectKind::Static || kind.params().contains(&key.as_str());
+            if !read {
+                ignored.push(key.to_string());
+            }
+            read
+        })
+        .collect();
+    // A name the table gives an effect whose arm does not read it.
+    let unread = |name: &str| format!("`{name}` is in {kind:?}'s parameters but is not read");
     let tempo_map = &ctx.tempo_map;
     match &mut effect_type {
         EffectType::Static {
@@ -531,7 +550,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         };
                     }
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
@@ -550,7 +569,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
@@ -579,7 +598,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
@@ -626,7 +645,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         };
                     }
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
@@ -650,7 +669,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                     "curve" => {
                         *curve = keyword_value(&DIMMER_CURVES, value, "Invalid dimmer curve:")?
                     }
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
@@ -676,7 +695,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                     "from_tilt" => from_tilt = Some(parse_degrees(value)?),
                     "easing" => *easing = keyword_value(&EASINGS, value, "Invalid easing")?,
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
             *to = match (to_focus, to_pan, to_tilt) {
@@ -723,7 +742,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *brightness = val;
                     }
                     "duration" => *duration = ctx.duration(value)?,
-                    other => ignored.push(other.to_string()),
+                    other => return Err(unread(other).into()),
                 }
             }
         }
