@@ -68,7 +68,16 @@ fn apply_thread_priority() {
 pub fn songs(path: &str, init: bool) -> Result<(), Box<dyn Error>> {
     if init {
         info!("Initializing songs");
-        songs::initialize_songs(Path::new(path))?;
+        let report = songs::initialize_songs(Path::new(path))?;
+        for dir in &report.created {
+            println!("Created {}", dir.join("song.yaml").display());
+        }
+        for dir in &report.skipped {
+            println!(
+                "Skipped {}: it has a song.yaml already, which is left as it is",
+                dir.display()
+            );
+        }
     } else {
         info!("Not initializing songs");
     }

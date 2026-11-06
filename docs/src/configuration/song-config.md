@@ -482,8 +482,13 @@ Song configurations can be generated using the `songs` command:
 $ mtrack songs --init /mnt/song-storage
 ```
 
-This creates a `song.yaml` in each subfolder of `/mnt/song-storage`. The name of the
-subfolder determines the song's name. Audio files are used as tracks (stereo and multichannel
+This creates a `song.yaml` in each song directory under `/mnt/song-storage`: a directory that
+holds audio, MIDI or a `song.yaml`, at any depth below directories that hold none
+(`artist/album/song/` works), never inside a hidden directory. The web UI's bulk import finds the
+same directories. A directory that already has a `song.yaml` is skipped and listed as such, so
+running init again never overwrites a config you have edited. The name of the directory
+determines the song's name; when two song directories share a name (`SongA/stems` and
+`SongB/stems`), each is named by its path below `/mnt/song-storage` instead. Audio files are used as tracks (stereo and multichannel
 files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
 prefixed with `dmx_` are treated as MIDI DMX light shows. `.light` files are auto-detected as
 DSL lighting shows.

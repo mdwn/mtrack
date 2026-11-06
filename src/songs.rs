@@ -2032,16 +2032,95 @@ impl Songs {
     }
 }
 
-/// Create default song configurations in a repository of song directories
-pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
-    let mut num_songs_found = 0;
-    for song_directory in song_dirs(start_path)? {
-        let song_config = Song::initialize(&song_directory)?.get_config();
-        num_songs_found += 1;
-        song_config.save(song_directory.join("song.yaml").as_path())?
+/// What `songs --init` did with the song directories under a path.
+#[derive(Debug, Default)]
+pub struct InitReport {
+    /// The directories given a new `song.yaml`.
+    pub created: Vec<PathBuf>,
+    /// The directories left alone: each had a `song.yaml` already.
+    pub skipped: Vec<PathBuf>,
+}
+
+impl InitReport {
+    /// The song directories found: created and skipped.
+    pub fn len(&self) -> usize {
+        self.created.len() + self.skipped.len()
     }
-    info!("Found {num_songs_found} songs");
-    Ok(num_songs_found)
+
+    /// Whether no song directory was found.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Creates a default `song.yaml` in each song directory under `start_path`
+/// ([`named_song_dirs`], [`init_song_dir`]); one that has a `song.yaml`
+/// already is left as it is and reported as skipped.
+pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>> {
+    let mut report = InitReport::default();
+    for (song_directory, name) in named_song_dirs(start_path)? {
+        if init_song_dir(&song_directory, &name)? {
+            report.created.push(song_directory);
+        } else {
+            info!(
+                "Skipped {}: it has a song.yaml already",
+                song_directory.display()
+            );
+            report.skipped.push(song_directory);
+        }
+    }
+    info!(
+        "Found {} songs: {} created, {} skipped",
+        report.len(),
+        report.created.len(),
+        report.skipped.len()
+    );
+    Ok(report)
+}
+
+/// Writes a default `song.yaml` into the song directory `dir`, naming the
+/// song `name`, unless it has one already: a song's config is never
+/// overwritten. Returns whether one was written. `songs --init` and the web
+/// UI's bulk import both take this rule.
+pub fn init_song_dir(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
+    let config_path = dir.join("song.yaml");
+    if config_path.exists() {
+        return Ok(false);
+    }
+    let mut config = Song::initialize(&dir.to_path_buf())?.get_config();
+    config.set_name(name);
+    config.save(&config_path)?;
+    Ok(true)
+}
+
+/// The song directories under `root` ([`song_dirs`]), each with the name a
+/// new config gives its song: the directory's own name, unless another song
+/// directory found has that name too, when it is its path below `root`
+/// (`SongA/stems` and `SongB/stems`), so no two are named alike.
+pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
+    let dirs = song_dirs(root)?;
+    let own_name = |dir: &Path| filename_display(dir).to_string();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for dir in &dirs {
+        *counts.entry(own_name(dir)).or_default() += 1;
+    }
+    Ok(dirs
+        .into_iter()
+        .map(|dir| {
+            let name = own_name(&dir);
+            let name = if counts[&name] > 1 {
+                dir.strip_prefix(root)
+                    .unwrap_or(&dir)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            } else {
+                name
+            };
+            (dir, name)
+        })
+        .collect())
 }
 
 /// Whether a walk of the songs directory leaves the directory `path` out: a
@@ -2097,6 +2176,21 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
+/// Adds `song` to the songs found, under its name. Two songs of one name
+/// cannot both be played or put in a playlist: the later one found takes
+/// the name, and the earlier is named in a warning rather than dropped
+/// without a word.
+fn insert_song(songs: &mut HashMap<String, Arc<Song>>, song: Arc<Song>) {
+    let name = song.name().to_string();
+    if let Some(earlier) = songs.insert(name.clone(), song.clone()) {
+        warn!(
+            "Two songs are named \"{name}\": {} is loaded, {} is not",
+            song.config_path_or_default().display(),
+            earlier.config_path_or_default().display()
+        );
+    }
+}
+
 /// Recurse into the given path and return all valid songs found.
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     get_all_songs_with_defaults(path, false)
@@ -2125,7 +2219,7 @@ pub fn get_all_songs_with_defaults(
 
             let child = get_all_songs_with_defaults(path.as_path(), default_metronome)?;
             child.list().iter().for_each(|song| {
-                songs.insert(song.name().to_string(), song.clone());
+                insert_song(&mut songs, song.clone());
             });
             failures.extend(child.failures().iter().cloned());
         }
@@ -2167,7 +2261,7 @@ pub fn get_all_songs_with_defaults(
                                                 .unwrap_or_else(|_| path.to_path_buf()),
                                         );
                                         song.apply_metronome_default(default_metronome);
-                                        songs.insert(song.name().to_string(), Arc::new(song));
+                                        insert_song(&mut songs, Arc::new(song));
                                     }
                                     Err(e) => {
                                         warn!("Skipping song at {}: {}", path.display(), e);
@@ -2562,7 +2656,7 @@ mod test {
             0,
             "Expected no song in a newly created directory with one wav file."
         );
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir)?.len();
         assert_eq!(num_songs, 1, "Expected to find one song configuration.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.list();
@@ -2587,7 +2681,7 @@ mod test {
     }
 
     fn check_second_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir)?.len();
         assert_eq!(num_songs, 2, "Expected to find two song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -2604,7 +2698,7 @@ mod test {
     }
 
     fn check_third_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir)?.len();
         assert_eq!(num_songs, 3, "Expected to find three song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -2625,7 +2719,7 @@ mod test {
     }
 
     fn check_fourth_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir)?.len();
         assert_eq!(num_songs, 4, "Expected to find four song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -2645,7 +2739,7 @@ mod test {
     }
 
     fn check_fifth_song(temp_dir: &Path) -> Result<(), TestError> {
-        let num_songs = initialize_songs(temp_dir)?;
+        let num_songs = initialize_songs(temp_dir)?.len();
         assert_eq!(num_songs, 5, "Expected to find five song configurations.");
         let songs = get_all_songs(temp_dir)?;
         let songs_list = songs.sorted_list();
@@ -3983,11 +4077,52 @@ sections:
             super::song_dirs(root)?,
             vec![root.join("artist/album/song")]
         );
-        assert_eq!(initialize_songs(root)?, 1);
+        assert_eq!(initialize_songs(root)?.len(), 1);
         assert!(root.join("artist/album/song/song.yaml").exists());
         for dir in [".git", "lighting", "lighting/venues", "playlists", "artist"] {
             assert!(!root.join(dir).join("song.yaml").exists(), "{dir}");
         }
+        Ok(())
+    }
+
+    /// A hand-edited song.yaml is never rewritten by `songs --init`, run on
+    /// the project root or on the songs directory: a song whose media is in
+    /// `Foo/audio/` would get a config with no tracks.
+    #[test]
+    fn initialize_songs_keeps_an_existing_song_yaml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        let song = root.join("songs/Foo");
+        fs::create_dir_all(song.join("audio"))?;
+        crate::testutil::write_wav(song.join("audio/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        let config = "name: Foo\ntracks:\n  - name: t\n    file: audio/t.wav\n";
+        fs::write(song.join("song.yaml"), config)?;
+
+        for start in [root.to_path_buf(), root.join("songs")] {
+            let report = initialize_songs(&start)?;
+            assert!(report.created.is_empty(), "{report:?}");
+            assert_eq!(report.skipped, vec![song.clone()]);
+            assert_eq!(fs::read_to_string(song.join("song.yaml"))?, config);
+        }
+        Ok(())
+    }
+
+    /// Two song directories of one name below different ones are each
+    /// named by their path, so neither is lost to the other when loaded.
+    #[test]
+    fn initialize_songs_names_alike_dirs_by_path() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for song in ["SongA/stems", "SongB/stems", "Solo"] {
+            fs::create_dir_all(root.join(song))?;
+            crate::testutil::write_wav(root.join(song).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+
+        assert_eq!(initialize_songs(root)?.created.len(), 3);
+        let songs = get_all_songs(root)?;
+        let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["Solo", "SongA/stems", "SongB/stems"]);
         Ok(())
     }
 
@@ -3996,7 +4131,7 @@ sections:
         let tempdir = tempfile::tempdir()?;
         // Create a regular file at the top level (not a directory)
         fs::write(tempdir.path().join("readme.txt"), "hello")?;
-        let count = initialize_songs(tempdir.path())?;
+        let count = initialize_songs(tempdir.path())?.len();
         assert_eq!(count, 0);
         Ok(())
     }

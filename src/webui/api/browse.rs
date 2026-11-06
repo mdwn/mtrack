@@ -334,48 +334,29 @@ pub(super) async fn bulk_import(
         .into_response()
 }
 
-/// Imports each song directory under `root` (`songs::song_dirs`) that has
-/// no song.yaml yet; one with a song.yaml is skipped.
+/// Imports each song directory under `root` as `songs --init` does
+/// (`songs::named_song_dirs`, `songs::init_song_dir`): one with a song.yaml
+/// already is skipped.
 fn import_song_dirs(
     root: &std::path::Path,
     created: &mut Vec<String>,
     skipped: &mut Vec<String>,
     failed: &mut Vec<ImportFailure>,
 ) {
-    for dir in songs::song_dirs(root).unwrap_or_default() {
+    for (dir, name) in songs::named_song_dirs(root).unwrap_or_default() {
         // Relative display name for reporting
         let display_name = dir
             .strip_prefix(root)
             .unwrap_or(&dir)
             .to_string_lossy()
             .to_string();
-        if dir.join("song.yaml").exists() {
-            skipped.push(display_name);
-            continue;
-        }
-        let dir_name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        match songs::Song::initialize(&dir) {
-            Ok(song) => {
-                let mut config = song.get_config();
-                config.set_name(&dir_name);
-                match config.save(&dir.join("song.yaml")) {
-                    Ok(()) => created.push(display_name),
-                    Err(e) => failed.push(ImportFailure {
-                        name: display_name,
-                        error: format!("Failed to save: {}", e),
-                    }),
-                }
-            }
-            Err(e) => {
-                failed.push(ImportFailure {
-                    name: display_name,
-                    error: format!("{}", e),
-                });
-            }
+        match songs::init_song_dir(&dir, &name) {
+            Ok(true) => created.push(display_name),
+            Ok(false) => skipped.push(display_name),
+            Err(e) => failed.push(ImportFailure {
+                name: display_name,
+                error: format!("{}", e),
+            }),
         }
     }
 }
