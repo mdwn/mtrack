@@ -377,6 +377,24 @@ pub fn is_broken(declares: &Declares) -> bool {
     declares.is_err()
 }
 
+/// Sets aside each twin a save retired (the name's file in its other form),
+/// once the save is written, so the name always has a file: before the
+/// write, a reader (the engine's reload, a test) could find neither. Best
+/// effort: a twin left behind surfaces as a duplicate name at load. Returns
+/// where each one set aside went.
+pub fn retire_twins(twins: &[PathBuf]) -> Vec<PathBuf> {
+    twins
+        .iter()
+        .filter_map(|twin| match set_aside_broken(twin) {
+            Ok(backup) => Some(backup),
+            Err(e) => {
+                warn!(file = %twin.display(), error = %e, "could not set the retired twin aside");
+                None
+            }
+        })
+        .collect()
+}
+
 /// Sets a file aside before a save replaces it or a delete removes it (a
 /// broken file a person chose to replace, a venue file the MVR import must
 /// regenerate): renamed beside itself to `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC),

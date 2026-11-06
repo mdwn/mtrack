@@ -2064,23 +2064,25 @@ pub(super) async fn put_fixture_type(
     }
     // A broken file the person chose to replace is set aside, kept, before
     // the save writes (`set_aside_broken`), whether the save writes in its
-    // place or, in another form, beside it; so is each twin the save
-    // retires. (A twin declares the type, so reads, and is never broken.)
-    // A failed write puts them all back.
+    // place or, in another form, beside it; a failed write puts them back.
+    // Each twin the save retires is set aside too, once the save is written
+    // (`project_files::retire_twins`), so the type always has a file. (A
+    // twin declares the type, so reads, and is never broken.)
     let fp = file_path;
     let dsl_owned = dsl;
     let kept_root = resolved_dir.clone();
-    let mut retired = broken;
-    retired.extend(stale_twins);
     let kept = super::helpers::spawn_blocking_io("write fixture type", move || {
-        let set_aside = set_aside_all(&retired)?;
+        let set_aside = set_aside_all(&broken)?;
         if let Err(e) = config_io::staged_write(&fp, &dsl_owned) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
+        let retired = lighting::project_files::retire_twins(&stale_twins);
         Ok::<_, String>(
             set_aside
                 .iter()
-                .map(|(_, backup)| lighting::project_files::display_in(&kept_root, backup))
+                .map(|(_, backup)| backup)
+                .chain(&retired)
+                .map(|backup| lighting::project_files::display_in(&kept_root, backup))
                 .collect::<Vec<String>>(),
         )
     })
@@ -3106,17 +3108,20 @@ pub(super) async fn put_venue(
             Err(r) => return reply(r),
         };
         // A broken file the person chose to replace is set aside, kept
-        // (`set_aside_broken`), before the save writes; so is the `.light`
-        // twin the save retires. A failed write puts them all back.
-        let mut retired = broken;
-        retired.extend(stale_twin);
-        let set_aside = set_aside_all(&retired)?;
+        // (`set_aside_broken`), before the save writes, and put back if the
+        // write fails; the `.light` twin the save retires is set aside once
+        // the save is written (`project_files::retire_twins`), so the venue
+        // always has a file.
+        let set_aside = set_aside_all(&broken)?;
         if let Err(e) = config_io::staged_write(&file_path, &dsl) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
+        let retired = lighting::project_files::retire_twins(&Vec::from_iter(stale_twin));
         let kept: Vec<String> = set_aside
             .iter()
-            .map(|(_, backup)| lighting::project_files::display_in(&dir, backup))
+            .map(|(_, backup)| backup)
+            .chain(&retired)
+            .map(|backup| lighting::project_files::display_in(&dir, backup))
             .collect();
         Ok::<_, String>(Ok((content_version(dsl.as_bytes()), kept)))
     })
