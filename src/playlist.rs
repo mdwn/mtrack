@@ -14,7 +14,7 @@
 mod ambient_source;
 
 pub use ambient_source::AmbientSource;
-use tracing::{info, span, Level, Span};
+use tracing::{info, span, warn, Level, Span};
 
 use crate::config;
 use crate::songs::{Song, Songs};
@@ -569,11 +569,24 @@ pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
     if is_reserved_name(name) {
         return Err(ReservedName(name.to_string()));
     }
-    let mut candidates = PLAYLIST_EXTENSIONS
+    let existing: Vec<PathBuf> = PLAYLIST_EXTENSIONS
         .iter()
-        .map(|ext| dir.join(format!("{name}.{ext}")));
-    let new = dir.join(format!("{name}.{}", PLAYLIST_EXTENSIONS[0]));
-    Ok(candidates.find(|path| path.is_file()).unwrap_or(new))
+        .map(|ext| dir.join(format!("{name}.{ext}")))
+        .filter(|path| path.is_file())
+        .collect();
+    if let [file, others @ ..] = existing.as_slice() {
+        for other in others {
+            warn!(
+                "Playlist \"{name}\" has two files: {} is the playlist, {} is not read",
+                file.display(),
+                other.display()
+            );
+        }
+    }
+    Ok(existing
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| dir.join(format!("{name}.{}", PLAYLIST_EXTENSIONS[0]))))
 }
 
 /// Creates an alphabetized playlist from all available songs.
