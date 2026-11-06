@@ -327,8 +327,8 @@ controllers:
   # The following events will be used by mtrack to report the current
   # player status over OSC. If not specified, these below are the defaults.
 
-  # The current status of the player: whether it's stopped or playing, and the
-  # current elapsed time and the song duration. Contains a single string argument.
+  # Whether the player is playing: a single string argument, "Playing" or
+  # "Stopped". The elapsed time goes on playlist_current_song_elapsed.
   status: /mtrack/status
 
   # The audio output's health verdict, separate from the player status: "healthy",
