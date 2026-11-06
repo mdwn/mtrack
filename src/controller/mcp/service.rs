@@ -1371,7 +1371,7 @@ impl McpServer {
     )]
     async fn lighting_dsl_reference(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![ContentBlock::text(
-            include_str!("dsl_reference.md").to_string(),
+            super::dsl_reference::dsl_reference(),
         )]))
     }
 

@@ -338,6 +338,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
+  out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
+  (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
+  not, and `hold_time` stands in for it on the others), listed only the `linear` dimmer curve
+  (there are five) and left `white` off `static`. Its effects table -- each effect, the
+  parameters it reads and their defaults -- and every keyword list (units, named colours,
+  directions, patterns, transitions, curves, easings, layers, blend modes, layer commands) now
+  come from the parser's own tables, so they cannot drift. Its closing tip faded out with
+  `dimmer end_level: 0%`, which fades from 0% to 0%; it now writes `start_level: 100%`.
+
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.

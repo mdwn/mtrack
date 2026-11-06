@@ -69,7 +69,7 @@ pub enum DurationUnit {
 
 /// Each unit as the grammar spells it after a number, and after a count
 /// of one: the one table, read both ways.
-const UNITS: [(DurationUnit, &str, &str); 4] = [
+pub(crate) const UNITS: [(DurationUnit, &str, &str); 4] = [
     (DurationUnit::Ms, "ms", "ms"),
     (DurationUnit::S, "s", "s"),
     (DurationUnit::Beats, "beats", "beat"),

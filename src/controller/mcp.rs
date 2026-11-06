@@ -40,6 +40,7 @@ use tracing::{info, span, warn, Level};
 
 use crate::{config, player::Player};
 
+mod dsl_reference;
 mod service;
 
 #[cfg(test)]
