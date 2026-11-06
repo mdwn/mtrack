@@ -4244,10 +4244,7 @@ pub(crate) fn validate_lighting_dir_filename(
         crate::webui::safe_path::SafePath::validate_name(segment).map_err(safepath_err)?;
     }
     let extensions = kind.extensions();
-    let extension = std::path::Path::new(name)
-        .extension()
-        .and_then(|e| e.to_str());
-    if !extension.is_some_and(|e| extensions.contains(&e)) {
+    if !crate::songs::has_extension(std::path::Path::new(name), extensions) {
         return Err(McpError::invalid_params(
             format!(
                 "{} filename must end with {}",
@@ -4291,7 +4288,7 @@ fn refuse_rich_channels_in_light<'a>(
 
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    if !name.ends_with(".light") {
+    if crate::songs::FileKind::of(std::path::Path::new(name)) != crate::songs::FileKind::Lighting {
         return Err(McpError::invalid_params(
             "lighting filename must end with .light",
             None,

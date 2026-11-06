@@ -338,6 +338,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A light show file's extension is read in any case, and hidden directories are passed over**:
+  `Show.LIGHT` in a song directory was taken by `mtrack songs --init` but missing from the web UI's
+  lighting file list, and could not be deleted there ("Can only delete .light files") or edited
+  over MCP. The list, the delete and MCP's song lighting tools now read the extension in any case,
+  as do the venue and fixture type directories (`Club.VENUE`) and their MCP tools. The web UI's
+  lighting file list and the venue and fixture type loaders now leave out hidden directories
+  (`.git/`), as the song loader does, and the list passes over a directory it cannot read and
+  lists the rest (it answered 500 "Failed to scan for lighting files"). The trigger editor's fixed velocity field takes 1–127, the
+  velocities a hit plays at (it allowed 0).
 - **A quiet trigger hit plays**: with the `linear` velocity curve, a hit just over a low threshold
   (`threshold: 0.005`, peak 0.006) had velocity 0, which played nothing ("No sample file for
   velocity" for a layered sample). Every curve's velocity is now held to 1–127, as `logarithmic`'s

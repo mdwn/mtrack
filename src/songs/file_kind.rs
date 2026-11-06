@@ -28,6 +28,18 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// (playback, or a `dmx_` light show), lowercase.
 pub const MIDI_EXTENSIONS: &[&str] = &["mid"];
 
+/// The extensions of the DSL lighting show files the player finds in a song
+/// directory, lowercase.
+pub const LIGHTING_EXTENSIONS: &[&str] = &["light"];
+
+/// Whether `path`'s extension is one of `extensions` (lowercase), in any
+/// case.
+pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| extensions.contains(&e.to_lowercase().as_str()))
+}
+
 /// What a file is to the player, by its extension.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +65,7 @@ impl FileKind {
             FileKind::Audio
         } else if MIDI_EXTENSIONS.contains(&ext.as_str()) {
             FileKind::Midi
-        } else if ext == "light" {
+        } else if LIGHTING_EXTENSIONS.contains(&ext.as_str()) {
             FileKind::Lighting
         } else {
             FileKind::Other

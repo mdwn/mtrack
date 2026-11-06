@@ -37,8 +37,11 @@ pub const FIXTURE_TYPE_EXTENSIONS: &[&str] = &["fixture", "light"];
 /// forms of one stem could be meant, the first is preferred.
 pub const VENUE_EXTENSIONS: &[&str] = &["venue", "light"];
 
-/// Every file under `dir`, at any depth, with one of `extensions`, in path
-/// order. A missing directory has none.
+/// Every file under `dir`, at any depth, with one of `extensions` (lowercase,
+/// matched in any case: `songs::has_extension`), in path order, leaving out
+/// hidden directories as the song loader does (`songs::is_hidden`). A
+/// missing directory has none. The one walk for a project's lighting files:
+/// the venue and fixture type directories, and the songs' `.light` shows.
 pub fn files_under(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -48,12 +51,10 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
         };
         for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
             if path.is_dir() {
-                stack.push(path);
-            } else if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| extensions.contains(&e))
-            {
+                if !crate::songs::is_hidden(&path) {
+                    stack.push(path);
+                }
+            } else if crate::songs::has_extension(&path, extensions) {
                 out.push(path);
             }
         }

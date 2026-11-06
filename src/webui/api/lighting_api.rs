@@ -235,38 +235,30 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
     (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
-/// Recursively finds .light files under a directory.
+/// The `.light` files under `dir`, as the player knows them
+/// (`songs::LIGHTING_EXTENSIONS`, in any case), by the one walk of a
+/// project's lighting files (`project_files::files_under`), each with its
+/// path relative to `base`.
 pub(crate) fn find_light_files(
     base: &std::path::Path,
     dir: &std::path::Path,
     results: &mut Vec<LightFileInfo>,
 ) -> Result<(), std::io::Error> {
-    // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            find_light_files(base, &path, results)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("light") {
-            let relative = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            results.push(LightFileInfo {
-                name,
-                path: relative,
-            });
-        }
+    for path in lighting::project_files::files_under(dir, crate::songs::LIGHTING_EXTENSIONS) {
+        let relative = path
+            .strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        results.push(LightFileInfo {
+            name,
+            path: relative,
+        });
     }
     Ok(())
 }
@@ -400,7 +392,7 @@ pub(super) async fn delete_lighting_file(
         }
     };
 
-    if safe.as_path().extension().and_then(|e| e.to_str()) != Some("light") {
+    if crate::songs::FileKind::of(safe.as_path()) != crate::songs::FileKind::Lighting {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Can only delete .light files"})),
@@ -3439,6 +3431,29 @@ mod test {
         assert_eq!(paths, vec!["a_show.light", "m_show.light", "z_show.light"]);
     }
 
+    /// A `.LIGHT` file, listed and loaded as a light show, can be deleted.
+    #[tokio::test]
+    async fn delete_lighting_file_in_any_case() {
+        let (state, _dir) = test_state();
+        let file = state.songs_path().join("Show.LIGHT");
+        std::fs::write(&file, "light content").unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/lighting/Show.LIGHT")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!file.exists());
+    }
+
     #[tokio::test]
     async fn get_lighting_file_success() {
         let (state, _dir) = test_state();
@@ -3769,6 +3784,24 @@ show "test" {
         assert!(paths.contains(&"top.light"));
     }
 
+    /// `Show.LIGHT` is a light show to the listing as it is to `songs
+    /// --init` (`FileKind`), and a hidden directory is passed over as the
+    /// song loader passes it over.
+    #[test]
+    fn find_light_files_reads_the_extension_in_any_case_and_skips_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("song/.git")).unwrap();
+        std::fs::write(base.join("song/Show.LIGHT"), "content").unwrap();
+        std::fs::write(base.join("song/.git/old.light"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(base, base, &mut results).unwrap();
+
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, ["song/Show.LIGHT"]);
+    }
+
     #[test]
     fn find_light_files_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -3973,10 +4006,13 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_lighting_files_scan_error_returns_500() {
+    async fn get_lighting_files_passes_over_an_unreadable_directory() {
         use std::os::unix::fs::PermissionsExt;
 
+        // The one walk of lighting files passes over a directory it cannot
+        // read, as the venue and fixture type loaders do, and lists the rest.
         let (state, _dir) = test_state();
+        std::fs::write(state.songs_path().join("show.light"), "content").unwrap();
         let sub = state.songs_path().join("unreadable_dir");
         std::fs::create_dir(&sub).unwrap();
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -3994,13 +4030,16 @@ show "test" {
 
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
+        let paths: Vec<&str> = parsed["files"]
+            .as_array()
             .unwrap()
-            .contains("Failed to scan for lighting files"));
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["show.light"]);
     }
 
     // -----------------------------------------------------------------------

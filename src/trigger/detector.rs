@@ -22,7 +22,9 @@
 //! - **Lockout:** Waits `retrigger_time` samples, then returns to Idle.
 
 use super::filter::BiquadHighPass;
-use crate::config::trigger::{AudioTriggerInput, TriggerInputAction, VelocityCurve};
+use crate::config::trigger::{
+    AudioTriggerInput, TriggerInputAction, VelocityCurve, TRIGGER_VELOCITY,
+};
 use crate::samples::{TriggerAction, TriggerEvent};
 
 /// Internal state of the detector.
@@ -267,7 +269,10 @@ impl TriggerDetector {
             }
             VelocityCurve::Fixed => f32::from(self.fixed_velocity),
         };
-        velocity.clamp(1.0, 127.0) as u8
+        velocity.clamp(
+            f32::from(*TRIGGER_VELOCITY.start()),
+            f32::from(*TRIGGER_VELOCITY.end()),
+        ) as u8
     }
 
     /// Creates a TriggerAction from the detected peak amplitude.

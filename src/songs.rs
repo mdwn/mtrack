@@ -32,7 +32,9 @@ use crate::proto::player;
 use crate::util::{filename_display, FileStamp};
 
 mod file_kind;
-pub use file_kind::{FileKind, AUDIO_EXTENSIONS, MIDI_EXTENSIONS};
+pub use file_kind::{
+    has_extension, FileKind, AUDIO_EXTENSIONS, LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
+};
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 ///

@@ -126,8 +126,6 @@
     onchange();
   }
 
-  /** The range a MIDI velocity takes, as the player reads it. */
-  const velocities = rules.midi_event_shapes().ranges.velocity;
   const choices = rules.config_choices();
 
   // Expanded input index for showing advanced settings
@@ -843,14 +841,19 @@
                     <label for="trigger-fixvel-{i}"
                       >{$t("trigger.fixedVelocity")}
                       <Tooltip
-                        text={$t("tooltips.trigger.fixedVelocity")}
+                        text={$t("tooltips.trigger.fixedVelocity", {
+                          values: {
+                            min: choices.trigger_velocity[0],
+                            max: choices.trigger_velocity[1],
+                          },
+                        })}
                       /></label
                     >
                     <input
                       id="trigger-fixvel-{i}"
                       type="number"
-                      min="0"
-                      max={velocities[1]}
+                      min={choices.trigger_velocity[0]}
+                      max={choices.trigger_velocity[1]}
                       class="input"
                       value={input.fixed_velocity ?? choices.fixed_velocity}
                       onchange={(e) => {
