@@ -338,6 +338,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
+  answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
+  the song's `lighting:` block for the exact filename it references".
 - **One error for a config section body that is not the section**: MCP `update_audio`,
   `update_midi`, `update_dmx` and `update_controllers` and gRPC `UpdateAudio`, `UpdateMidi`,
   `UpdateDmx` and `UpdateControllers` parse the body in one place. A body that is not the

@@ -2160,16 +2160,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let song = self.song(&args.song)?;
         validate_lighting_filename(&args.file)?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}` — check the song's \
-                     `lighting:` block for the exact filename it references",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2315,15 +2306,7 @@ impl McpServer {
         // could be ones the song no longer has.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}`",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
 
         let config_path = song.config_path_or_default();
         let reference = path
@@ -2625,16 +2608,7 @@ impl McpServer {
         // against is the song's as a web save left it.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}` — check the song's \
-                     `lighting:` block for the exact filename it references",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,
@@ -3989,6 +3963,24 @@ pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpEr
 fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
         .map_err(safepath_err)
+}
+
+/// [`find_song_lighting_path`], or the one error every lighting-file tool
+/// gives for a file the song does not have.
+fn existing_song_lighting_path(
+    song: &crate::songs::Song,
+    song_name: &str,
+    file: &str,
+) -> Result<std::path::PathBuf, McpError> {
+    find_song_lighting_path(song, file).ok_or_else(|| {
+        McpError::invalid_params(
+            format!(
+                "song `{song_name}` has no lighting file named `{file}` — check the song's \
+                 `lighting:` block for the exact filename it references"
+            ),
+            None,
+        )
+    })
 }
 
 /// Resolves a lighting filename to its on-disk path, searching three
