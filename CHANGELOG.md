@@ -379,9 +379,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type's own `channel "pan" @ 1 fine 2` -- rather than fading each byte: a mirrored strobe or gobo
   switches at the midpoint (it faded); a mirrored pan or tilt holds where only one side points it
   (it faded from or to 0); and a mover's fine byte holds where one side does not point it (it faded
-  to 0). Where two fixtures are patched over one DMX channel, the crossfade crosses it the same way
-  every time and drops neither fixture's byte (a 16-bit value's fine byte could go out on neither
-  side).
+  to 0). Where two channels are patched over one DMX channel -- two fixtures', or one fixture's own
+  (`channels: { dimmer: 1, strobe: 1 }`) -- the crossfade crosses it the same way every time and
+  drops neither's byte: a 16-bit value's fine byte could go out on neither side, and the dimmer and
+  strobe above crossed 0 to 200 as 50 or as 0 a quarter of the way, by run; it fades.
 - **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
   other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
   mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
