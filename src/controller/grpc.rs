@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use crate::config::store::ConfigSection;
 use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
@@ -75,18 +76,81 @@ impl super::Driver for Driver {
                 info!("Starting gRPC server");
             }
 
-            let player_server = match player.config_store() {
-                Some(store) => PlayerServer::with_config_store(player, store),
-                None => PlayerServer::new(player),
-            };
-
             Server::builder()
                 .add_service(reflection_service)
-                .add_service(PlayerServiceServer::new(player_server))
+                .add_service(player_service(player))
                 .serve(addr)
                 .await
                 .map_err(io::Error::other)
         })
+    }
+}
+
+/// The player's gRPC service, behind the lock: what both the gRPC
+/// controller and the web UI's gRPC-Web route serve.
+pub(crate) fn player_service(player: Arc<Player>) -> LockGuard<PlayerServiceServer<PlayerServer>> {
+    let server = match player.config_store() {
+        Some(store) => PlayerServer::with_config_store(player.clone(), store),
+        None => PlayerServer::new(player.clone()),
+    };
+    LockGuard {
+        inner: PlayerServiceServer::new(server),
+        player,
+    }
+}
+
+/// Refuses every RPC the lock policy does not leave open while the player
+/// is locked, before it reaches its handler, as MCP's `call_tool` gate and
+/// the web UI's lock middleware do. A new RPC is refused while locked until
+/// [`crate::player::lock_policy::OPEN_WHILE_LOCKED`] lists it.
+#[derive(Clone)]
+pub(crate) struct LockGuard<S> {
+    inner: S,
+    player: Arc<Player>,
+}
+
+impl<S> tonic::server::NamedService for LockGuard<S>
+where
+    S: tonic::server::NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, B> tower::Service<http::Request<B>> for LockGuard<S>
+where
+    S: tower::Service<http::Request<B>, Response = http::Response<tonic::body::Body>>
+        + tonic::server::NamedService,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = futures_util::future::BoxFuture<'static, Result<S::Response, S::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        use futures_util::FutureExt;
+        // `/<service name>/<RPC>`: the RPC is what the lock policy names.
+        let path = request.uri().path();
+        let rpc = path
+            .strip_prefix('/')
+            .and_then(|path| path.strip_prefix(S::NAME))
+            .and_then(|path| path.strip_prefix('/'))
+            .unwrap_or(path);
+        if let Err(e) = self
+            .player
+            .check_lock(crate::player::lock_policy::Surface::Grpc, rpc)
+        {
+            let refused = Status::failed_precondition(e.to_string()).into_http();
+            return futures_util::future::ready(Ok(refused)).boxed();
+        }
+        self.inner.call(request).boxed()
     }
 }
 
@@ -153,6 +217,29 @@ impl PlayerServer {
         }))
     }
 
+    /// Saves `section` from its JSON (empty for `null`), as MCP's tools
+    /// and the store parse it, then applies it.
+    async fn update_section(
+        &self,
+        section: ConfigSection,
+        json: &str,
+        checksum: &str,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let body = if json.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(json).map_err(|e| {
+                Status::invalid_argument(format!("invalid {} JSON: {e}", section.name()))
+            })?
+        };
+        let snapshot = store
+            .update_section(section, body, checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        self.reload_and_respond(snapshot).await
+    }
+
     /// Applies a saved config change to the running hardware, then builds
     /// the response: the new checksum, and whether the change is applied.
     ///
@@ -173,15 +260,6 @@ impl PlayerServer {
     ) -> Result<Response<UpdateConfigResponse>, Status> {
         let outcome = self.player.apply_config_change().await;
         snapshot_to_update_response(snapshot, outcome)
-    }
-
-    /// Refuses a config write while the player is locked, the way the web
-    /// UI's lock middleware does. Playback controls never call this.
-    #[allow(clippy::result_large_err)]
-    fn require_unlocked(&self) -> Result<(), Status> {
-        self.player
-            .require_unlocked()
-            .map_err(|e| Status::failed_precondition(e.to_string()))
     }
 
     /// Returns a reference to the config store or a NOT_FOUND error.
@@ -215,19 +293,29 @@ fn position_arg(position: Option<prost_types::Duration>) -> Result<std::time::Du
 }
 
 /// Ambient light's mode and state, as the player's status read it: absent
-/// without a DMX engine, or with a read that did not answer in time.
+/// without a DMX engine; `available: false` with a read that did not answer.
 fn ambient_to_proto(
     ambient: Option<crate::player::DmxRead<crate::player::AmbientStatus>>,
 ) -> Option<AmbientStatus> {
-    match ambient? {
-        crate::player::DmxRead::Read(ambient) => Some(AmbientStatus {
-            mode: ambient.report.mode.as_str().to_string(),
-            state: ambient.report.state.to_string(),
-            show: ambient.report.show.map(|show| show.display().to_string()),
+    use crate::webui::wire::messages::AmbientState;
+    Some(match ambient?.view() {
+        AmbientState::Read(ambient) => AmbientStatus {
+            mode: ambient.mode.as_str().to_string(),
+            state: ambient.state,
+            show: ambient.show,
             source: ambient.source.map(|source| source.as_str().to_string()),
-        }),
-        _ => None,
-    }
+            available: None,
+            reason: None,
+        },
+        AmbientState::Unread(unread) => AmbientStatus {
+            mode: String::new(),
+            state: String::new(),
+            show: None,
+            source: None,
+            available: Some(unread.available),
+            reason: Some(unread.reason),
+        },
+    })
 }
 
 /// A fault as a gRPC status: the one table from [`FaultKind`] to a code.
@@ -443,10 +531,7 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<GetActiveEffectsRequest>,
     ) -> Result<Response<GetActiveEffectsResponse>, Status> {
-        let active_effects = self
-            .player
-            .format_active_effects()
-            .unwrap_or_else(|| "No DMX engine available".to_string());
+        let active_effects = self.player.active_effects_summary();
 
         Ok(Response::new(GetActiveEffectsResponse { active_effects }))
     }
@@ -472,89 +557,50 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateAudioRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let audio: Option<config::Audio> = if req.audio_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.audio_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid audio JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_audio(audio, &req.expected_checksum)
-            .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(
+            ConfigSection::Audio,
+            &req.audio_json,
+            &req.expected_checksum,
+        )
+        .await
     }
 
     async fn update_midi(
         &self,
         request: Request<UpdateMidiRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let midi: Option<config::Midi> = if req.midi_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.midi_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid MIDI JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_midi(midi, &req.expected_checksum)
+        self.update_section(ConfigSection::Midi, &req.midi_json, &req.expected_checksum)
             .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
     }
 
     async fn update_dmx(
         &self,
         request: Request<UpdateDmxRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let dmx: Option<config::Dmx> = if req.dmx_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(&req.dmx_json)
-                    .map_err(|e| Status::invalid_argument(format!("invalid DMX JSON: {}", e)))?,
-            )
-        };
-        let snapshot = store
-            .update_dmx(dmx, &req.expected_checksum)
+        self.update_section(ConfigSection::Dmx, &req.dmx_json, &req.expected_checksum)
             .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
     }
 
     async fn update_controllers(
         &self,
         request: Request<UpdateControllersRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
-        let store = self.require_config_store()?;
         let req = request.into_inner();
-        let controllers: Vec<config::Controller> = serde_json::from_str(&req.controllers_json)
-            .map_err(|e| Status::invalid_argument(format!("invalid controllers JSON: {}", e)))?;
-        let snapshot = store
-            .update_controllers(controllers, &req.expected_checksum)
-            .await
-            .map_err(config_error_to_status)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(
+            ConfigSection::Controllers,
+            &req.controllers_json,
+            &req.expected_checksum,
+        )
+        .await
     }
 
     async fn add_profile(
         &self,
         request: Request<AddProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let profile: config::Profile = serde_json::from_str(&req.profile_json)
@@ -570,7 +616,6 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<UpdateProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let body: serde_json::Value = serde_json::from_str(&req.profile_json)
@@ -591,7 +636,6 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<RemoveProfileRequest>,
     ) -> Result<Response<UpdateConfigResponse>, Status> {
-        self.require_unlocked()?;
         let store = self.require_config_store()?;
         let req = request.into_inner();
         let snapshot = store
@@ -640,15 +684,7 @@ impl PlayerService for PlayerServer {
         let applied = self
             .player
             .set_track_gain(&req.track, req.gain_db as f32)
-            .map_err(|e| match e {
-                crate::player::TrackGainError::NoAudioProfile => {
-                    Status::failed_precondition(e.to_string())
-                }
-                crate::player::TrackGainError::NonFinite(_)
-                | crate::player::TrackGainError::UnknownTrack(_) => {
-                    Status::invalid_argument(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SetTrackGainResponse {
             applied_gain_db: applied as f64,
         }))
@@ -662,15 +698,7 @@ impl PlayerService for PlayerServer {
         let muted = self
             .player
             .set_track_mute(&req.track, req.muted)
-            .map_err(|e| match e {
-                crate::player::TrackGainError::NoAudioProfile => {
-                    Status::failed_precondition(e.to_string())
-                }
-                crate::player::TrackGainError::NonFinite(_)
-                | crate::player::TrackGainError::UnknownTrack(_) => {
-                    Status::invalid_argument(e.to_string())
-                }
-            })?;
+            .map_err(|e| fault_status(e.kind(), e.to_string()))?;
         Ok(Response::new(SetTrackMuteResponse { muted }))
     }
 
@@ -679,11 +707,8 @@ impl PlayerService for PlayerServer {
         request: Request<SetAmbientModeRequest>,
     ) -> Result<Response<SetAmbientModeResponse>, Status> {
         let name = request.into_inner().mode;
-        let mode = crate::dmx::engine::AmbientMode::parse(&name).ok_or_else(|| {
-            Status::invalid_argument(format!(
-                "unknown ambient mode '{name}': use auto, on or off"
-            ))
-        })?;
+        let mode = crate::dmx::engine::AmbientMode::parse_or_error(&name)
+            .map_err(Status::invalid_argument)?;
         let player = self.player.clone();
         tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
             .await
@@ -1736,78 +1761,73 @@ mod test {
         Ok(())
     }
 
-    /// The RPCs that write the config, refused while the player is locked.
-    const LOCKED_RPCS: &[&str] = &[
-        "UpdateAudio",
-        "UpdateMidi",
-        "UpdateDmx",
-        "UpdateControllers",
-        "AddProfile",
-        "UpdateProfile",
-        "RemoveProfile",
-    ];
-
-    /// The RPCs that stay open while locked: reads and playback controls.
-    const OPEN_RPCS: &[&str] = &[
-        "Play",
-        "PlayFrom",
-        "PlaySongFrom",
-        "Seek",
-        "SeekToSection",
-        "Previous",
-        "Next",
-        "Stop",
-        "SwitchToPlaylist",
-        "Status",
-        "GetCues",
-        "GetActiveEffects",
-        "StopSamples",
-        "GetConfig",
-        "LoopSection",
-        "StopSectionLoop",
-        "SectionAck",
-        "SetTrackGain",
-        "SetTrackMute",
-        "SetAmbientMode",
-        "CancelAutoPlay",
-        "GetTrackGains",
-    ];
-
-    /// Every RPC in the proto is either refused or allowed while locked, so
-    /// a new one cannot slip past the lock unclassified.
-    #[test]
-    fn every_rpc_is_classified_for_the_lock() {
-        let proto = include_str!("../proto/player/v1/player.proto");
-        let rpcs: Vec<&str> = proto
+    /// The RPCs in the proto.
+    fn proto_rpcs() -> Vec<&'static str> {
+        include_str!("../proto/player/v1/player.proto")
             .lines()
             .filter_map(|l| l.trim().strip_prefix("rpc "))
             .filter_map(|l| l.split('(').next())
             .map(str::trim)
-            .collect();
+            .collect()
+    }
+
+    /// Every RPC the lock policy leaves open is in the proto.
+    #[test]
+    fn every_open_rpc_is_in_the_proto() {
+        let rpcs = proto_rpcs();
         assert!(!rpcs.is_empty());
-        for rpc in &rpcs {
-            assert!(
-                LOCKED_RPCS.contains(rpc) ^ OPEN_RPCS.contains(rpc),
-                "RPC {rpc} must be in exactly one of LOCKED_RPCS or OPEN_RPCS; \
-                 a config or file write belongs in LOCKED_RPCS and must call \
-                 require_unlocked()"
-            );
-        }
-        for rpc in LOCKED_RPCS.iter().chain(OPEN_RPCS) {
-            assert!(rpcs.contains(rpc), "{rpc} is not in the proto");
+        for rpc in crate::player::lock_policy::open_on(crate::player::lock_policy::Surface::Grpc) {
+            assert!(rpcs.contains(&rpc), "{rpc} is not in the proto");
         }
     }
 
-    /// A locked player refuses every config write as FAILED_PRECONDITION and
-    /// leaves the file alone, while reads and playback controls still work.
+    /// Every RPC in the proto the lock policy does not leave open is
+    /// refused by the service's lock guard while the player is locked,
+    /// before its handler runs, so a new RPC is locked out until listed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_lock_guard_refuses_every_rpc_not_left_open() -> Result<(), Box<dyn Error>> {
+        use tower::ServiceExt;
+        let (player, _client, _device) = setup_grpc().await?;
+        player.set_locked(true);
+        let open: Vec<&str> =
+            crate::player::lock_policy::open_on(crate::player::lock_policy::Surface::Grpc)
+                .collect();
+        let locked: Vec<&str> = proto_rpcs()
+            .into_iter()
+            .filter(|rpc| !open.contains(rpc))
+            .collect();
+        assert!(locked.contains(&"UpdateAudio"));
+        for rpc in locked {
+            use tonic::server::NamedService;
+            let service = <super::PlayerServiceServer<super::PlayerServer> as NamedService>::NAME;
+            let request = http::Request::post(format!("/{service}/{rpc}"))
+                .header("content-type", "application/grpc")
+                .body(tonic::body::Body::empty())?;
+            let response = super::player_service(player.clone())
+                .oneshot(request)
+                .await?;
+            let status = tonic::Status::from_header_map(response.headers()).expect(rpc);
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition, "{rpc}");
+            assert_eq!(
+                status.message(),
+                crate::player::LockedError.to_string(),
+                "{rpc}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A locked player, served over gRPC, refuses every config write as
+    /// FAILED_PRECONDITION and leaves the file alone, while reads and
+    /// playback controls still work.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_locked_player_refuses_config_writes() -> Result<(), Box<dyn Error>> {
         use crate::proto::player::v1::{
-            player_service_server::PlayerService, AddProfileRequest, GetConfigRequest,
-            RemoveProfileRequest, StopSamplesRequest, UpdateAudioRequest, UpdateControllersRequest,
-            UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
+            AddProfileRequest, GetConfigRequest, RemoveProfileRequest, StopSamplesRequest,
+            UpdateAudioRequest, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+            UpdateProfileRequest,
         };
-        use tonic::{Request, Status};
+        use tonic::Status;
 
         let (player, _client, device) = setup_grpc().await?;
         let dir = tempfile::tempdir()?;
@@ -1818,7 +1838,8 @@ mod test {
             path.clone(),
         ));
         player.set_config_store(store.clone());
-        let server = super::PlayerServer::with_config_store(player.clone(), store.clone());
+        // Served after the store is set, so the service has it.
+        let mut client = serve_grpc(player.clone()).await?;
         let before = std::fs::read_to_string(&path)?;
         let (_, checksum) = store.read_yaml().await?;
         player.set_locked(true);
@@ -1827,77 +1848,76 @@ mod test {
         let results: Vec<(&str, Result<(), Status>)> = vec![
             (
                 "UpdateAudio",
-                server
-                    .update_audio(Request::new(UpdateAudioRequest {
+                client
+                    .update_audio(UpdateAudioRequest {
                         audio_json: String::new(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "UpdateMidi",
-                server
-                    .update_midi(Request::new(UpdateMidiRequest {
+                client
+                    .update_midi(UpdateMidiRequest {
                         midi_json: String::new(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "UpdateDmx",
-                server
-                    .update_dmx(Request::new(UpdateDmxRequest {
+                client
+                    .update_dmx(UpdateDmxRequest {
                         dmx_json: String::new(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "UpdateControllers",
-                server
-                    .update_controllers(Request::new(UpdateControllersRequest {
+                client
+                    .update_controllers(UpdateControllersRequest {
                         controllers_json: "[]".to_string(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "AddProfile",
-                server
-                    .add_profile(Request::new(AddProfileRequest {
+                client
+                    .add_profile(AddProfileRequest {
                         profile_json: r#"{"hostname": "x"}"#.to_string(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "UpdateProfile",
-                server
-                    .update_profile(Request::new(UpdateProfileRequest {
+                client
+                    .update_profile(UpdateProfileRequest {
                         index: 0,
                         profile_json: "{}".to_string(),
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
             (
                 "RemoveProfile",
-                server
-                    .remove_profile(Request::new(RemoveProfileRequest {
+                client
+                    .remove_profile(RemoveProfileRequest {
                         index: 0,
                         expected_checksum: r(&checksum),
-                    }))
+                    })
                     .await
                     .map(|_| ()),
             ),
         ];
-        assert_eq!(results.len(), LOCKED_RPCS.len());
         for (rpc, result) in results {
             let status = result.expect_err(rpc);
             assert_eq!(status.code(), tonic::Code::FailedPrecondition, "{rpc}");
@@ -1906,19 +1926,15 @@ mod test {
         assert_eq!(std::fs::read_to_string(&path)?, before);
 
         // Reads and playback controls stay open.
-        server.get_config(Request::new(GetConfigRequest {})).await?;
-        server.status(Request::new(StatusRequest {})).await?;
-        server.play(Request::new(PlayRequest {})).await?;
+        client.get_config(GetConfigRequest {}).await?;
+        client.status(StatusRequest {}).await?;
+        client.play(PlayRequest {}).await?;
         eventually(|| device.is_playing(), "Song never started playing");
-        server.stop(Request::new(StopRequest {})).await?;
+        client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped playing");
-        server.next(Request::new(NextRequest {})).await?;
-        server
-            .stop_samples(Request::new(StopSamplesRequest {}))
-            .await?;
-        server
-            .stop_section_loop(Request::new(StopSectionLoopRequest {}))
-            .await?;
+        client.next(NextRequest {}).await?;
+        client.stop_samples(StopSamplesRequest {}).await?;
+        client.stop_section_loop(StopSectionLoopRequest {}).await?;
         assert!(player.is_locked());
         Ok(())
     }

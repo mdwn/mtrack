@@ -309,21 +309,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                     song: song.clone(),
                     remaining_ms: remaining.as_millis() as u64,
                 }),
-            // With a DMX engine, whatever the mode, so the card can show it;
-            // left out, as without one, when the read did not answer.
-            ambient: match &status.ambient {
-                Some(crate::player::DmxRead::Read(ambient)) => Some(wire::AmbientState {
-                    mode: ambient.report.mode,
-                    source: ambient.source,
-                    show: ambient
-                        .report
-                        .show
-                        .as_ref()
-                        .map(|show| show.display().to_string()),
-                    state: ambient.report.state.to_string(),
-                }),
-                _ => None,
-            },
+            // With a DMX engine, whatever the mode, so the card can show it,
+            // or that the read did not answer.
+            ambient: status.ambient.as_ref().map(crate::player::DmxRead::view),
             next: next_up(&playlist, is_playing),
         }));
 

@@ -1937,6 +1937,39 @@ pub struct MidiSheet {
     pub(crate) beat_clock: Option<crate::midi::playback::MidiTiming>,
 }
 
+/// Why [`Songs::get`] has no song for a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SongLookupError {
+    /// No song by that name.
+    NotFound(String),
+    /// The song is there but did not load; `error` says why.
+    FailedToLoad { name: String, error: String },
+}
+
+impl fmt::Display for SongLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SongLookupError::NotFound(name) => write!(f, "unable to find song {name}"),
+            SongLookupError::FailedToLoad { name, error } => {
+                write!(f, "song {name} failed to load: {error}")
+            }
+        }
+    }
+}
+
+impl Error for SongLookupError {}
+
+impl SongLookupError {
+    /// What kind of fault this is, for a transport's code: no such song,
+    /// or a song whose files the caller must fix.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SongLookupError::NotFound(_) => crate::util::FaultKind::NotFound,
+            SongLookupError::FailedToLoad { .. } => crate::util::FaultKind::Invalid,
+        }
+    }
+}
+
 /// A song that failed to load from disk.
 #[derive(Clone, Debug)]
 pub struct SongLoadFailure {
@@ -2008,12 +2041,19 @@ impl Songs {
         self.songs.is_empty()
     }
 
-    /// Gets a song from the song registry.
-    pub fn get(&self, name: &str) -> Result<Arc<Song>, Box<dyn Error>> {
-        match self.songs.get(name) {
-            Some(song) => Ok(Arc::clone(song)),
-            None => Err(format!("unable to find song {}", name).into()),
+    /// Gets a song from the song registry. A song whose files are there but
+    /// did not load says why.
+    pub fn get(&self, name: &str) -> Result<Arc<Song>, SongLookupError> {
+        if let Some(song) = self.songs.get(name) {
+            return Ok(Arc::clone(song));
         }
+        Err(match self.failure(name) {
+            Some(failure) => SongLookupError::FailedToLoad {
+                name: name.to_string(),
+                error: failure.error().to_string(),
+            },
+            None => SongLookupError::NotFound(name.to_string()),
+        })
     }
 
     /// Returns an unsorted list of songs in the song registry.
@@ -2039,6 +2079,21 @@ impl Songs {
     /// Returns the list of songs that failed to load.
     pub fn failures(&self) -> &[SongLoadFailure] {
         &self.failures
+    }
+
+    /// The load failure of the song by `name`, when it failed to load.
+    pub fn failure(&self, name: &str) -> Option<&SongLoadFailure> {
+        self.failures.iter().find(|f| f.name() == name)
+    }
+
+    /// The YAML file the song by `name` was read from, loaded or not:
+    /// where an edit of it is written back. `None` for a song the registry
+    /// has not seen.
+    pub fn config_path(&self, name: &str) -> Option<PathBuf> {
+        match self.get(name) {
+            Ok(song) => Some(song.config_path_or_default()),
+            Err(_) => self.failure(name).map(|f| f.config_path().to_path_buf()),
+        }
     }
 }
 
@@ -2929,6 +2984,25 @@ mod test {
         let songs = super::Songs::new(map);
         let song = songs.get("Song A").unwrap();
         assert_eq!(song.name(), "Song A");
+    }
+
+    #[test]
+    fn songs_get_says_why_a_song_did_not_load() {
+        let songs = super::Songs::with_failures(
+            std::collections::HashMap::new(),
+            vec![super::SongLoadFailure {
+                name: "Broken".to_string(),
+                base_path: std::path::PathBuf::from("/songs/Broken"),
+                config_path: std::path::PathBuf::from("/songs/Broken/song.yaml"),
+                error: "bad lighting".to_string(),
+            }],
+        );
+        let err = songs.get("Broken").err().expect("failed to load");
+        assert_eq!(err.to_string(), "song Broken failed to load: bad lighting");
+        assert_eq!(
+            songs.get("Missing").err().expect("missing").to_string(),
+            "unable to find song Missing"
+        );
     }
 
     #[test]

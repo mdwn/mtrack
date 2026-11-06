@@ -168,6 +168,14 @@ message AmbientStatus {
     // Source is whose settings the show plays, when there is one: "profile",
     // "playlist", or "entry" (the playlist entry the player waits on).
     optional string source = 4;
+
+    // Available is false when the status's read of the DMX engine did not
+    // answer in time, or failed; mode and state are then empty, and reason
+    // says why. Absent when the read answered.
+    optional bool available = 5;
+
+    // Reason is why there is nothing to report, when available is false.
+    optional string reason = 6;
 }
 
 // AutoPlayStatus is a song waiting to start by itself.
@@ -237,8 +245,9 @@ message AudioHealth {
 
 // PlayFromRequest is the message for requesting the player to play from a specific time.
 message PlayFromRequest {
-    // StartTime is the time to start playback from (e.g., "1:23.456" or "45.5s").
-    // If not provided or zero, plays from the beginning.
+    // StartTime is the time to start playback from, as a Duration (the CLI
+    // takes "1:23.456" or "45.5s" and sends it as one). If not provided or
+    // zero, plays from the beginning.
     google.protobuf.Duration start_time = 1;
 }
 
