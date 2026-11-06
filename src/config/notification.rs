@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// The kinds of notification, by the key each is overridden and looked up
 /// under: the one table the config, the default tones and the engine key by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 pub enum NotificationKind {
     SectionEntering,
     LoopArmed,
@@ -31,13 +31,9 @@ pub enum NotificationKind {
 }
 
 impl NotificationKind {
-    /// Every kind.
-    pub const ALL: [NotificationKind; 4] = [
-        NotificationKind::SectionEntering,
-        NotificationKind::LoopArmed,
-        NotificationKind::BreakRequested,
-        NotificationKind::LoopExited,
-    ];
+    /// Every kind (derived, so a new kind is in it).
+    pub const ALL: &'static [NotificationKind] =
+        <NotificationKind as strum::VariantArray>::VARIANTS;
 
     /// The kind's key, as the config names its override.
     pub fn key(self) -> &'static str {
@@ -97,8 +93,8 @@ impl NotificationConfig {
     /// Returns a map of event key → file path for the configured overrides.
     pub fn event_overrides(&self) -> HashMap<String, String> {
         NotificationKind::ALL
-            .into_iter()
-            .filter_map(|kind| {
+            .iter()
+            .filter_map(|&kind| {
                 let path = match kind {
                     NotificationKind::SectionEntering => &self.section_entering,
                     NotificationKind::LoopArmed => &self.loop_armed,

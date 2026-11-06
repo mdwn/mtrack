@@ -27,7 +27,17 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// read only by tsify).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", serde(rename_all = "lowercase"))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    strum::IntoStaticStr,
+    strum::EnumString,
+    strum::VariantArray,
+)]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum AmbientMode {
     /// Between songs and under a song without lights, after its delay.
@@ -41,8 +51,9 @@ pub enum AmbientMode {
 }
 
 impl AmbientMode {
-    /// Every mode, in the order their names are listed.
-    pub const ALL: [AmbientMode; 3] = [AmbientMode::Auto, AmbientMode::On, AmbientMode::Off];
+    /// Every mode, in the order their names are listed (derived, so a new
+    /// mode is in it).
+    pub const ALL: &'static [AmbientMode] = <AmbientMode as strum::VariantArray>::VARIANTS;
 
     /// The modes' names as a sentence lists them: `auto, on or off`.
     pub fn names() -> String {
@@ -90,7 +101,7 @@ mod tests {
 
     #[test]
     fn every_mode_parses_from_its_name_and_is_listed() {
-        for mode in AmbientMode::ALL {
+        for &mode in AmbientMode::ALL {
             assert_eq!(AmbientMode::parse(mode.as_str()), Some(mode));
             assert_eq!(
                 AmbientMode::parse(&mode.as_str().to_ascii_uppercase()),
@@ -105,7 +116,7 @@ mod tests {
     /// takes `On` as gRPC does.
     #[test]
     fn serde_goes_through_the_names() {
-        for mode in AmbientMode::ALL {
+        for &mode in AmbientMode::ALL {
             assert_eq!(serde_json::to_value(mode).unwrap(), mode.as_str());
             let upper = serde_json::json!(format!(" {} ", mode.as_str().to_uppercase()));
             assert_eq!(serde_json::from_value::<AmbientMode>(upper).unwrap(), mode);

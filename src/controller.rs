@@ -32,7 +32,8 @@ pub trait Driver: Send + Sync + 'static {
 /// A transport command a controller's event maps to: what the OSC and MIDI
 /// controllers both take, and the one answer for what the player does on
 /// it. A failure is logged, as a controller has no reply to carry it in.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, strum::EnumDiscriminants)]
+#[strum_discriminants(name(TransportActionKind), derive(strum::VariantArray))]
 pub(crate) enum TransportAction {
     Play,
     Prev,
@@ -594,6 +595,40 @@ impl Controller {
 
 #[cfg(test)]
 mod test {
+    use super::{TransportAction, TransportActionKind};
+
+    /// [`TransportAction::ALL`] lists every action: each kind, and each
+    /// ambient mode, exactly once.
+    #[test]
+    fn all_lists_every_action_once() {
+        use strum::VariantArray;
+        for kind in TransportActionKind::VARIANTS {
+            match kind {
+                TransportActionKind::AmbientMode => {
+                    for &mode in crate::dmx::engine::AmbientMode::ALL {
+                        let action = TransportAction::AmbientMode(mode);
+                        assert_eq!(
+                            TransportAction::ALL
+                                .iter()
+                                .filter(|a| **a == action)
+                                .count(),
+                            1,
+                            "{action:?}"
+                        );
+                    }
+                }
+                _ => assert_eq!(
+                    TransportAction::ALL
+                        .iter()
+                        .filter(|a| TransportActionKind::from(**a) == *kind)
+                        .count(),
+                    1,
+                    "{kind:?}"
+                ),
+            }
+        }
+    }
+
     use std::{collections::HashMap, error::Error, io, path::Path, sync::Arc};
 
     use tokio::{

@@ -32,8 +32,8 @@ use crate::samples::loader::SampleLoader;
 /// Returns a map of event key → mono f32 PCM samples at the given sample rate.
 pub fn generate_default_tones(sample_rate: u32) -> HashMap<String, Arc<Vec<f32>>> {
     NotificationKind::ALL
-        .into_iter()
-        .map(|kind| {
+        .iter()
+        .map(|&kind| {
             let tone = match kind {
                 // Two short ascending tones (800Hz → 1200Hz).
                 NotificationKind::SectionEntering => {
