@@ -106,7 +106,9 @@ pub(crate) enum SequenceLoop {
     Loop, // Infinite loop
     PingPong,
     Random,
-    Count(usize), // Loop N times
+    /// Loop N times: a `u64` on every target, so the WebAssembly editor
+    /// and the player take the same counts.
+    Count(u64),
 }
 
 /// Each named loop mode and its keyword, as the grammar writes it.

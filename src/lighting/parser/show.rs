@@ -617,6 +617,12 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 /// How many passes a `loop` reference lays: a practical infinity.
 const LOOP_PASSES: usize = 10000;
 
+/// A count of passes as the passes laid: every count the rule takes, held
+/// to what a `usize` holds (more passes than that never end).
+fn passes_of(count: u64) -> usize {
+    usize::try_from(count).unwrap_or(usize::MAX)
+}
+
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
         Some(SequenceLoop::Once) => Ok(1),
@@ -627,7 +633,7 @@ fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<d
         Some(SequenceLoop::Random) => {
             Err("Random loop mode not yet implemented for sequences".into())
         }
-        Some(SequenceLoop::Count(n)) => Ok(n),
+        Some(SequenceLoop::Count(n)) => Ok(passes_of(n)),
         None => Ok(1), // Default to once if not specified
     }
 }
@@ -719,7 +725,7 @@ pub(super) fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box
     match token {
         numeric if !numeric.is_empty() => {
             // Try to parse as a number
-            let count: usize = numeric
+            let count: u64 = numeric
                 .parse()
                 .map_err(|_| format!("Invalid loop count: '{numeric}'. {}", expected()))?;
             if count == 0 {
@@ -918,7 +924,7 @@ fn place_inline_loop(
         .find(|p| p.as_rule() == Rule::number_value)
     {
         repeats = match parse_sequence_loop_param(count.as_str())? {
-            SequenceLoop::Count(n) => n,
+            SequenceLoop::Count(n) => passes_of(n),
             _ => unreachable!("a number_value is a count"),
         };
     }

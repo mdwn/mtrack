@@ -359,7 +359,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   denominator note); where beat 1 falls is still found by the dotted-quarter pulse.
 - **The editor takes as many sequence passes as the player**: setting a sequence's `loop` count
   in the timeline refused counts past 4,294,967,295 that the player reads; it now asks the
-  player's own rule.
+  player's own rule, which reads a count as a 64-bit number on every target (a 32-bit build, such
+  as the web UI's or a 32-bit Pi's, refused `loop: 5000000000`; it now plays as many passes as it
+  can hold).
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.
