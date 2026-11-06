@@ -109,6 +109,30 @@ pub(crate) const DIMMER_CURVES: [(DimmerCurve, &str); 5] = [
 pub(crate) const EASINGS: [(Easing, &str); 2] =
     [(Easing::Linear, "linear"), (Easing::Smooth, "smooth")];
 
+/// Each `per:` keyword, and whether it names cells (else fixtures).
+pub(crate) const PER_KEYWORDS: [(bool, &str); 4] = [
+    (false, "fixture"),
+    (false, "fixtures"),
+    (true, "cell"),
+    (true, "cells"),
+];
+
+/// Each cycle transition and its keyword (`crossfade` is `fade` by
+/// another name).
+pub(crate) const CYCLE_TRANSITIONS: [(CycleTransition, &str); 4] = [
+    (CycleTransition::Snap, "snap"),
+    (CycleTransition::Fade, "fade"),
+    (CycleTransition::Fade, "crossfade"),
+    (CycleTransition::Hue, "hue"),
+];
+
+/// Each chase transition and its keyword: a cycle's, less `hue`.
+pub(crate) const CHASE_TRANSITIONS: [(CycleTransition, &str); 3] = [
+    (CycleTransition::Snap, "snap"),
+    (CycleTransition::Fade, "fade"),
+    (CycleTransition::Fade, "crossfade"),
+];
+
 /// The parameters each effect reads, beyond the ones every effect takes
 /// ([`COMMON_PARAMS`]): the rule `apply_parameters_to_effect_type` reads
 /// (any other is reported unused, or on a `static` read as a channel
@@ -433,16 +457,15 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
                             "up_time" => up_time = Some(ctx.duration(&value)?),
                             "hold_time" => hold_time = Some(ctx.duration(&value)?),
                             "per" => {
-                                per_cell = match value.as_str() {
-                                    "cell" | "cells" => true,
-                                    "fixture" | "fixtures" => false,
-                                    other => {
-                                        return Err(format!(
-                                            "Invalid per: '{other}' (expected: fixture or cell)"
+                                per_cell = PER_KEYWORDS
+                                    .iter()
+                                    .find(|(_, k)| *k == value)
+                                    .map(|(cells, _)| *cells)
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Invalid per: '{value}' (expected: fixture or cell)"
                                         )
-                                        .into())
-                                    }
-                                };
+                                    })?;
                             }
                             "spread" => {
                                 spread = parse_degrees(&value)?;
@@ -510,7 +533,7 @@ fn parse_effect_line(pair: Pair<Rule>, ctx: &ParseContext) -> Result<Effect, Box
 
 /// The effect an author's keyword names, with every parameter at its
 /// default, or `None` for a word that names none.
-fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
+pub(super) fn effect_with_defaults(keyword: &str) -> Option<EffectType> {
     Some(match EffectKind::from_keyword(keyword)? {
         EffectKind::Static => EffectType::Static {
             parameters: HashMap::new(),
@@ -689,18 +712,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         )?;
                     }
                     "transition" => {
-                        *transition = match clean_string_value(value).as_str() {
-                            "snap" => CycleTransition::Snap,
-                            "fade" | "crossfade" => CycleTransition::Fade,
-                            "hue" => CycleTransition::Hue,
-                            other => {
-                                return Err(format!(
-                                "Invalid transition: '{}' (expected: snap, fade, crossfade, hue)",
-                                other
-                            )
-                                .into())
-                            }
-                        };
+                        *transition = keyword_value(
+                            &CYCLE_TRANSITIONS,
+                            &clean_string_value(value),
+                            "Invalid transition:",
+                        )?;
                     }
                     "duration" => *duration = ctx.duration(value)?,
                     other => return Err(unread(other).into()),
@@ -785,17 +801,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         )?;
                     }
                     "transition" => {
-                        *transition = match clean_string_value(value).as_str() {
-                            "snap" => CycleTransition::Snap,
-                            "fade" | "crossfade" => CycleTransition::Fade,
-                            other => {
-                                return Err(format!(
-                                    "Invalid transition: '{}' (expected: snap, fade, crossfade)",
-                                    other
-                                )
-                                .into())
-                            }
-                        };
+                        *transition = keyword_value(
+                            &CHASE_TRANSITIONS,
+                            &clean_string_value(value),
+                            "Invalid transition:",
+                        )?;
                     }
                     "duration" => *duration = ctx.duration(value)?,
                     other => return Err(unread(other).into()),

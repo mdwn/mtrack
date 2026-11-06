@@ -202,6 +202,41 @@ impl MidiEvent {
 mod tests {
     use super::*;
 
+    /// The MIDI events reference shows one example of each kind and no
+    /// other, and states the ranges the player reads.
+    #[test]
+    fn the_reference_shows_every_kind_and_its_ranges() {
+        let reference = include_str!("../../docs/src/reference/midi-events.md");
+        let mut documented: Vec<&str> = reference
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("type: "))
+            .collect();
+        documented.sort();
+        let shapes = MidiEventShapes::new();
+        let mut kinds: Vec<String> = shapes
+            .kinds
+            .iter()
+            .map(|k| {
+                serde_json::to_value(k).unwrap()["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        kinds.sort();
+        assert_eq!(documented, kinds);
+        let (low, high) = shapes.ranges["channel"];
+        assert!(reference.contains(&format!("channels are numbered\n{low}–{high}")));
+        let (low, high) = shapes.ranges["bend"];
+        assert!(reference.contains(&format!("except `bend`, which is {low}–{high}")));
+        for (field, range) in &shapes.ranges {
+            if field != "channel" && field != "bend" {
+                assert_eq!(*range, (0, 127), "{field}");
+            }
+        }
+        assert!(reference.contains("all other values are 0–127"));
+    }
+
     /// Every kind of `MidiEvent` is in `kinds`, each once. The match is
     /// exhaustive: a new kind does not compile until it has an index here,
     /// and then fails until `kinds` lists it.

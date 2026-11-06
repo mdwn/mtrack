@@ -32,6 +32,7 @@ mod show;
 mod tempo_parse;
 mod types;
 pub(crate) mod utils; // Make utils accessible for tests
+pub(crate) mod words;
 pub mod writer;
 
 #[cfg(test)]

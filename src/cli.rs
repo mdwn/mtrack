@@ -166,12 +166,12 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
         host_port: Option<String>,
-        /// Start playback from a specific time (e.g., "1:23.456" or "45.5s").
+        /// Start playback from a specific time (e.g., "1:23.456", "45.5s" or "90").
         #[arg(long)]
         from: Option<String>,
     },
-    /// Seeks within the current song to a time (e.g. "1:23.456" or "45.5s")
-    /// or to the start of a named section (e.g. "chorus").
+    /// Seeks within the current song to a time (e.g. "1:23.456", "45.5s" or
+    /// "90") or to the start of a named section (e.g. "chorus").
     Seek {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
@@ -601,6 +601,29 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// The CLI reference names every subcommand, and only those.
+    #[test]
+    fn the_cli_reference_names_every_command() {
+        use clap::CommandFactory;
+        let reference = include_str!("../docs/src/reference/cli.md");
+        let mut documented: Vec<&str> = reference
+            .split("`mtrack ")
+            .skip(1)
+            .filter_map(|rest| rest.split([' ', '`']).next())
+            .filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .filter(|word| !word.is_empty())
+            .collect();
+        documented.sort();
+        documented.dedup();
+        let mut commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+            .map(|c| c.get_name().to_string())
+            .collect();
+        commands.sort();
+        assert_eq!(documented, commands);
+    }
 
     mod format_device_list_tests {
         use super::*;

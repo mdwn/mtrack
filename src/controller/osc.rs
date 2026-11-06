@@ -685,6 +685,39 @@ fn build_broadcast_packets(
 }
 
 #[cfg(test)]
+mod docs_test {
+    use super::{STATUS_PLAYING, STATUS_STOPPED};
+
+    /// The docs name the two status strings the player sends, and nothing
+    /// else as the status message's argument.
+    #[test]
+    fn the_docs_state_the_status_strings() {
+        let osc = include_str!("../../docs/src/interfaces/osc.md");
+        let row = osc
+            .lines()
+            .find(|l| l.starts_with("| `status` |"))
+            .expect("osc.md documents status");
+        assert!(
+            row.ends_with(&format!(
+                "| `{STATUS_PLAYING}` or `{STATUS_STOPPED}` (`string`). |"
+            )),
+            "{row}"
+        );
+        let config = include_str!("../../docs/src/configuration/player-config.md");
+        let comment = config
+            .split("\n\n")
+            .find(|block| block.contains("status: /mtrack/status"))
+            .expect("player-config.md shows status");
+        assert!(
+            comment.contains(&format!(
+                "\"{STATUS_PLAYING}\" or\n  # \"{STATUS_STOPPED}\""
+            )),
+            "{comment}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod test {
     use std::{
         collections::HashMap, error::Error, net::SocketAddr, path::Path, sync::Arc, time::Duration,

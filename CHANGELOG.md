@@ -391,6 +391,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
+  out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
+  (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
+  not, and `hold_time` stands in for it on the others), listed only the `linear` dimmer curve
+  (there are five) and left `white` off `static`. Its effects table -- each effect, the
+  parameters it reads and their defaults -- and every keyword list (units, named colours,
+  directions, patterns, transitions, curves, easings, layers, blend modes, layer commands,
+  `per` values, the effects that read `color`) now come from the parser's own tables, so they
+  cannot drift. Its closing tip faded out with `dimmer end_level: 0%`, which fades from 0% to
+  0%; it now writes `start_level: 100%`.
+- **Position help names every form**: the MCP `play_from`, `play_song_from`, `seek` and
+  `evaluate_show` argument descriptions and the CLI's `play --from` and `seek` help now say a
+  bare number of seconds (`90`) is a position too, as it always was.
+- **Docs**: the OSC `status` message carries `Playing` or `Stopped` only (player configuration
+  said it carried the elapsed time and duration); a `tempo {}` block may sit anywhere in a show
+  or sequence body, the last one winning; `master`'s `speed` may go above 1; the lighting CLI
+  commands use `--fixture-types-dir`/`--venues-dir`, not the config's `directories`; `migrate`
+  takes a positional path; MIDI sample triggers match other event types exactly; MCP `status`'s
+  `ambient` has a `source`; the web UI page lists MP4 and `.aif`, the MIDI controller's ambient
+  and auto-play events, auto-play status events, and the audio stalled and reconnecting states;
+  Home and End skip only while stopped or paused; a `strobe` can be flashed through a dimmer or
+  colour channels. The docs' tables of effects, defaults, OSC addresses, trigger inputs, MIDI
+  event kinds and CLI commands are now tested against the code.
+
 - **A 6/8 MIDI tempo guess no longer warns of a poor fit**: the MIDI file's beats were scored
   against the click track's in dotted quarters, two to a 6/8 bar, while the click grid counts six
   eighths, so a correct 6/8 map from a click in eighths scored about 200 ms off (at 120 BPM) and the
