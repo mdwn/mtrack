@@ -115,9 +115,13 @@
     onchange();
   }
 
+  /** The range a MIDI velocity takes, as the player reads it. */
+  const [VELOCITY_MIN, VELOCITY_MAX] =
+    rules.midi_event_shapes().ranges.velocity;
+
   function addLayer(name: string) {
     const velocity = (samples[name].velocity ??= {});
-    (velocity.layers ??= []).push({ range: [1, 127], file: "" });
+    (velocity.layers ??= []).push({ range: [1, VELOCITY_MAX], file: "" });
     onchange();
   }
 
@@ -482,8 +486,8 @@
                         id="sample-vel-default-{name}"
                         class="input"
                         type="number"
-                        min="0"
-                        max="127"
+                        min={VELOCITY_MIN}
+                        max={VELOCITY_MAX}
                         placeholder="100"
                         value={def.velocity?.default ?? ""}
                         onchange={(e) => {
@@ -537,20 +541,20 @@
                         <div class="layer-row">
                           <span class="layer-label"
                             >Velocity {layer.range?.[0] ?? 0}-{layer
-                              .range?.[1] ?? 127}</span
+                              .range?.[1] ?? VELOCITY_MAX}</span
                           >
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Min"
                             value={layer.range?.[0] ?? ""}
                             onchange={(e) => {
                               layer.range[0] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 0;
+                                ) || VELOCITY_MIN;
                               onchange();
                             }}
                           />
@@ -558,15 +562,15 @@
                           <input
                             class="input layer-range"
                             type="number"
-                            min="0"
-                            max="127"
+                            min={VELOCITY_MIN}
+                            max={VELOCITY_MAX}
                             placeholder="Max"
                             value={layer.range?.[1] ?? ""}
                             onchange={(e) => {
                               layer.range[1] =
                                 parseInt(
                                   (e.target as HTMLInputElement).value,
-                                ) || 127;
+                                ) || VELOCITY_MAX;
                               onchange();
                             }}
                           />

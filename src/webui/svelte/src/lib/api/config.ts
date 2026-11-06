@@ -293,8 +293,11 @@ export async function cancelCalibration(): Promise<void> {
   await del("/calibrate");
 }
 
-/** The sample rates offered when the device does not say which it takes. */
+/** The sample rates and bit depths offered when the device does not say
+ *  which it takes. Suggestions, not a rule: the player takes any rate or
+ *  depth above zero (`Audio`'s validation) and the device decides. */
 export const COMMON_SAMPLE_RATES = [44100, 48000, 96000];
+export const COMMON_BIT_DEPTHS = [16, 24, 32];
 
 // Lighting fixture type & venue API
 

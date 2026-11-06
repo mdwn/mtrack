@@ -1162,6 +1162,22 @@ pub fn play_declined_key() -> String {
     play_declined::PLAY_DECLINED_KEY.to_string()
 }
 
+/// The levels the player's log lines carry, from the most detailed
+/// (`tracing::Level`, as a line names its own).
+#[wasm_bindgen]
+pub fn log_levels() -> Vec<String> {
+    use tracing::Level;
+    [
+        Level::TRACE,
+        Level::DEBUG,
+        Level::INFO,
+        Level::WARN,
+        Level::ERROR,
+    ]
+    .map(|level| level.as_str().to_string())
+    .to_vec()
+}
+
 // ── Positions ───────────────────────────────────────────────────────────────
 
 /// `secs` as minutes and seconds, `1:15`, to `decimals` places of a

@@ -17,6 +17,7 @@
   import type { Controller } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
+  import { rules } from "../../lib/rules";
   import MidiEventEditor, { newMidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
@@ -197,6 +198,9 @@
     ["ambient_auto", "controllers.midiAmbientAuto", false],
     ["cancel_auto_play", "controllers.midiCancelAutoPlay", false],
   ];
+
+  /** A 7-bit MIDI data byte's range, as the player reads one. */
+  const dataByte = rules.midi_event_shapes().ranges.value;
 
   function addMidiController() {
     const newCtrl: any = {
@@ -422,8 +426,8 @@
                     id="ms-custom-id-{i}"
                     type="number"
                     class="input"
-                    min="0"
-                    max="127"
+                    min={dataByte[0]}
+                    max={dataByte[1]}
                     value={getCustomModelId(ctrl)}
                     onchange={(e) =>
                       setCustomModelId(

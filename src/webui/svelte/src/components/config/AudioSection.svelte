@@ -22,6 +22,7 @@
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
   import {
+    COMMON_BIT_DEPTHS,
     COMMON_SAMPLE_RATES,
     channelsLabel,
     probeAudioDevice,
@@ -360,9 +361,9 @@
             <option value={String(bits)}>{bits}</option>
           {/each}
         {:else}
-          <option value="16">16</option>
-          <option value="24">24</option>
-          <option value="32">32</option>
+          {#each COMMON_BIT_DEPTHS as bits (bits)}
+            <option value={String(bits)}>{bits}</option>
+          {/each}
         {/if}
         {#if audio.bits_per_sample && !bitsPerSampleOptions.includes(audio.bits_per_sample) && bitsPerSampleOptions.length > 0}
           <option value={String(audio.bits_per_sample)}
