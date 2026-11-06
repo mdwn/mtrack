@@ -1050,6 +1050,27 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(std::fs::read_to_string(&new_song_path)?, new_song_yaml);
 
+    // A folder whose config is `song.yml` (for a song known by another
+    // name) is written through it, not given a `song.yaml` beside it.
+    let yml_dir = fixture.root.join("songs/yml-folder");
+    std::fs::create_dir_all(&yml_dir)?;
+    std::fs::write(
+        yml_dir.join("song.yml"),
+        new_song_yaml.replace("Brand New Song", "Elsewhere"),
+    )?;
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        17,
+        "write_song",
+        json!({"name": "yml-folder", "yaml": new_song_yaml.replace("Brand New Song", "Yml Folder")}),
+    )
+    .await;
+    assert!(!yml_dir.join("song.yaml").exists());
+    assert!(std::fs::read_to_string(yml_dir.join("song.yml"))?.contains("Yml Folder"));
+    std::fs::remove_dir_all(&yml_dir)?;
+
     // The player's in-memory song registry should now include the new song.
     // (Pre-reload behavior was: list_songs still returns the stale set until
     // mtrack restarts.)

@@ -395,7 +395,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such a song, creating a song in its directory from the web UI's file browser, or creating it
   under its name wrote (or refused only on) a `song.yaml`, so a generated config sat beside the
   user's and the song loaded twice. They now take the rule `songs --init` takes: a directory
-  holding a song config under any name keeps it (the browser's create answers 409).
+  holding a song config under any name keeps it (the browser's create answers 409). Saving a song
+  the player does not know by that name, from the web UI's song editor or MCP `write_song`,
+  writes its folder's `song.yml` when that is the folder's config, and is refused when the folder
+  holds another song's config; it wrote a `song.yaml` beside them.
 - **One rule for a file's kind by its extension**: a media, MIDI or lighting file's extension is
   read in any case (`Bass.WAV`, `Show.LIGHT`, `Club.VENUE`, `Par.FIXTURE`, and GDTF, MVR and GLB
   files as before), and a config's name stays lowercase: a song, playlist or profile config, and

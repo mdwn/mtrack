@@ -806,7 +806,9 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// direct path join. Returns an error response if the song isn't found.
 /// The YAML file a song is read from and written to: the one it was loaded
 /// from ([`songs::Song::config_path_or_default`], a failed load's likewise),
-/// or `song.yaml` in its folder for one the registry has not seen; within
+/// or for one the registry has not seen, its folder's own config
+/// (`songs::song_config_to_write`: its `song.yaml`, else its `song.yml`,
+/// else a new `song.yaml`; 409 beside another song config); within
 /// the verified song folder, which is within the songs root.
 fn song_config_path(
     player: &crate::player::Player,
@@ -814,11 +816,26 @@ fn song_config_path(
     name: &str,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
-    Ok(player
+    if let Some(path) = player
         .songs()
         .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
-        .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
+    {
+        return Ok(path);
+    }
+    // The folder's own config, by the rule MCP's `write_song` takes too:
+    // never a `song.yaml` beside a `song.yml` or another song's config.
+    songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
+        Box::new(
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": format!(
+                    "{name}'s folder holds another song config; edit that file instead"
+                )})),
+            )
+                .into_response(),
+        )
+    })
 }
 
 pub(super) fn resolve_song_dir(
@@ -1292,6 +1309,54 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// A folder whose config is `song.yml`, for a song the registry knows
+    /// by another name, is saved into that file, not a new `song.yaml`
+    /// beside it; one holding another song's config is refused.
+    #[tokio::test]
+    async fn put_song_writes_the_folders_own_config() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Foo");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let config =
+            |name: &str| format!("name: {name}\ntracks:\n  - name: track1\n    file: track1.wav\n");
+        std::fs::write(song_dir.join("song.yml"), config("Bar")).unwrap();
+        let album = state.songs_path().join("Album");
+        std::fs::create_dir(&album).unwrap();
+        std::fs::write(album.join("a.yaml"), format!("kind: song\n{}", config("A"))).unwrap();
+        state.player.reload_songs().await.unwrap();
+        let app = router().with_state(state);
+
+        let put = |uri: &'static str, body: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri(uri)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(put("/songs/Foo", config("Foo")).await, StatusCode::OK);
+        assert!(!song_dir.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config("Foo")
+        );
+
+        assert_eq!(
+            put("/songs/Album", config("Album")).await,
+            StatusCode::CONFLICT
+        );
+        assert!(!album.join("song.yaml").exists());
     }
 
     #[tokio::test]

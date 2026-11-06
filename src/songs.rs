@@ -2319,6 +2319,24 @@ pub fn has_song_config(dir: &Path) -> bool {
     })
 }
 
+/// The config file a writer of the song in `dir` writes when the registry
+/// has none for it: its existing `song.yaml`, else its `song.yml`; else,
+/// when the directory holds no song config ([`has_song_config`]), a new
+/// `song.yaml`. `None` when it holds some other config (`album.yaml`) or a
+/// `song.yaml` that is no file, which a writer must not add a second
+/// config beside. The web UI's song editor and MCP `write_song` take it.
+pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
+    let named = YAML_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("song.{ext}")))
+        .find(|path| path.is_file());
+    match named {
+        Some(path) => Some(path),
+        None if has_song_config(dir) => None,
+        None => Some(dir.join("song.yaml")),
+    }
+}
+
 /// Adds `song` to the songs found, under its name. Two songs of one name
 /// cannot both be played or put in a playlist: the later one found takes
 /// the name, and the earlier is named in a warning rather than dropped

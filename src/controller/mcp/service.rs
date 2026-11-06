@@ -1221,7 +1221,17 @@ impl McpServer {
                     &songs_root,
                 )
                 .map_err(safepath_err)?;
-                song_dir.join_filename("song.yaml")
+                // The folder's own config, as the web UI's song editor
+                // finds it: never a `song.yaml` beside a `song.yml`.
+                crate::songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
+                    McpError::invalid_params(
+                        format!(
+                            "{}'s folder holds another song config; write that song instead",
+                            args.name
+                        ),
+                        None,
+                    )
+                })?
             }
         };
         staged_write_string(&yaml_path, &args.yaml).await?;
