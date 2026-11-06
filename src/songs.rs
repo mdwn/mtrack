@@ -2034,25 +2034,67 @@ impl Songs {
 
 /// Create default song configurations in a repository of song directories
 pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
-    let song_directories = fs::read_dir(start_path)?;
     let mut num_songs_found = 0;
-    for song_directory in song_directories {
-        let entry = song_directory?;
-        let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let song_config = match Song::initialize(&entry.path()) {
-            Ok(song) => {
-                num_songs_found += 1;
-                song.get_config()
-            }
-            Err(error) => return Err(error),
-        };
-        song_config.save(entry.path().join("song.yaml").as_path())?
+    for song_directory in song_dirs(start_path)? {
+        let song_config = Song::initialize(&song_directory)?.get_config();
+        num_songs_found += 1;
+        song_config.save(song_directory.join("song.yaml").as_path())?
     }
     info!("Found {num_songs_found} songs");
     Ok(num_songs_found)
+}
+
+/// Whether a walk of the songs directory leaves the directory `path` out: a
+/// hidden one (`.git`, `.claude`, …).
+pub fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
+}
+
+/// The song directories under `root`, in name order: each directory below
+/// it that holds an audio track, a MIDI file or a `song.yaml`. The walk
+/// leaves out hidden directories and does not descend into a song
+/// directory, so a library laid out as `artist/album/song/` is found at any
+/// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
+/// (none of those files) are not songs. `root` itself is never one. A subdirectory that cannot be
+/// read is passed over.
+pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    /// A directory's visible subdirectories, and whether it is a song's.
+    fn read(dir: &Path) -> std::io::Result<(Vec<PathBuf>, bool)> {
+        let mut subdirs = Vec::new();
+        let mut is_song = false;
+        // codeql[rust/path-injection] dir is the songs directory or one below it.
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                if !is_hidden(&path) {
+                    subdirs.push(path);
+                }
+            } else if matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi)
+                || path.file_name().is_some_and(|n| n == "song.yaml")
+            {
+                is_song = true;
+            }
+        }
+        subdirs.sort();
+        Ok((subdirs, is_song))
+    }
+    fn walk(dirs: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
+        for dir in dirs {
+            let Ok((subdirs, is_song)) = read(&dir) else {
+                continue;
+            };
+            if is_song {
+                found.push(dir);
+            } else {
+                walk(subdirs, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(read(root)?.0, &mut found);
+    Ok(found)
 }
 
 /// Recurse into the given path and return all valid songs found.
@@ -2077,12 +2119,7 @@ pub fn get_all_songs_with_defaults(
         let path = entry.path();
 
         if path.is_dir() {
-            // Skip hidden directories (.git, .claude, etc.).
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.'))
-            {
+            if is_hidden(&path) {
                 continue;
             }
 
@@ -3915,6 +3952,42 @@ sections:
         );
         let song = super::Song::new(tempdir.path(), &song_config)?;
         assert_eq!(song.tracks.len(), 2);
+        Ok(())
+    }
+
+    /// `songs --init` on a project root writes a song.yaml only where a
+    /// song is: not in `.git/`, `lighting/` or `playlists/`, and at any
+    /// depth below a directory that holds none.
+    #[test]
+    fn initialize_songs_walks_song_dirs_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            ".git/objects",
+            "lighting/venues",
+            "playlists",
+            "artist/album/song",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        fs::write(root.join("lighting/venues/club.light"), "")?;
+        fs::write(root.join("playlists/set.yaml"), "songs: []\n")?;
+        crate::testutil::write_wav(root.join(".git/a.wav"), vec![vec![1_i32, 2]], 44100)?;
+        crate::testutil::write_wav(
+            root.join("artist/album/song/t.wav"),
+            vec![vec![1_i32, 2]],
+            44100,
+        )?;
+
+        assert_eq!(
+            super::song_dirs(root)?,
+            vec![root.join("artist/album/song")]
+        );
+        assert_eq!(initialize_songs(root)?, 1);
+        assert!(root.join("artist/album/song/song.yaml").exists());
+        for dir in [".git", "lighting", "lighting/venues", "playlists", "artist"] {
+            assert!(!root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
         Ok(())
     }
 

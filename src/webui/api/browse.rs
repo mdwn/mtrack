@@ -267,9 +267,9 @@ pub(super) struct CreateSongInDirRequest {
     name: Option<String>,
 }
 
-/// POST /api/browse/bulk-import — scans subdirectories of a parent directory and creates
-/// song.yaml in each one that contains audio files. Skips subdirectories that already
-/// have song.yaml. Returns a summary of created, skipped, and failed directories.
+/// POST /api/browse/bulk-import — creates a song.yaml in each song directory under a
+/// parent directory (`songs::song_dirs`: audio or MIDI files, at any depth). Skips those
+/// that already have song.yaml. Returns a summary of created, skipped, and failed directories.
 pub(super) async fn bulk_import(
     State(state): State<WebUiState>,
     Json(body): Json<BulkImportRequest>,
@@ -300,13 +300,7 @@ pub(super) async fn bulk_import(
         let mut failed: Vec<ImportFailure> = Vec::new();
         // codeql[rust/path-injection] dir_canonical is canonicalized and
         // verified via starts_with(root_canonical) above, preventing traversal.
-        bulk_import_recursive(
-            &dir_canonical,
-            &dir_canonical,
-            &mut created,
-            &mut skipped,
-            &mut failed,
-        );
+        import_song_dirs(&dir_canonical, &mut created, &mut skipped, &mut failed);
         (created, skipped, failed)
     })
     .await;
@@ -340,92 +334,49 @@ pub(super) async fn bulk_import(
         .into_response()
 }
 
-/// Recursively scans directories for song candidates. A directory is imported
-/// if it contains audio files (and no song.yaml yet). Directories without audio
-/// are recursed into, allowing structures like artist/album/song/.
-fn bulk_import_recursive(
-    dir: &std::path::Path,
+/// Imports each song directory under `root` (`songs::song_dirs`) that has
+/// no song.yaml yet; one with a song.yaml is skipped.
+fn import_song_dirs(
     root: &std::path::Path,
     created: &mut Vec<String>,
     skipped: &mut Vec<String>,
     failed: &mut Vec<ImportFailure>,
 ) {
-    let read_dir = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return,
-    };
-
-    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
-    let mut has_audio = false;
-
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
-                subdirs.push(path);
-            }
-        } else if FileKind::of(&path) == FileKind::Audio {
-            has_audio = true;
+    for dir in songs::song_dirs(root).unwrap_or_default() {
+        // Relative display name for reporting
+        let display_name = dir
+            .strip_prefix(root)
+            .unwrap_or(&dir)
+            .to_string_lossy()
+            .to_string();
+        if dir.join("song.yaml").exists() {
+            skipped.push(display_name);
+            continue;
         }
-    }
-    subdirs.sort();
-
-    // Relative display name for reporting
-    let display_name = dir
-        .strip_prefix(root)
-        .unwrap_or(dir)
-        .to_string_lossy()
-        .to_string();
-    let display_name = if display_name.is_empty() {
-        dir.file_name()
+        let dir_name = dir
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
-            .to_string()
-    } else {
-        display_name
-    };
-
-    if has_audio || dir != root {
-        // This directory is a song candidate (has audio, or is a subdirectory)
-        if dir == root {
-            // Don't try to import the root itself — recurse into subdirs
-        } else if dir.join("song.yaml").exists() {
-            skipped.push(display_name);
-            return;
-        } else if has_audio {
-            // Import this directory as a song
-            let dir_name = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            match songs::Song::initialize(&dir.to_path_buf()) {
-                Ok(song) => {
-                    let mut config = song.get_config();
-                    config.set_name(&dir_name);
-                    match config.save(&dir.join("song.yaml")) {
-                        Ok(()) => created.push(display_name),
-                        Err(e) => failed.push(ImportFailure {
-                            name: display_name,
-                            error: format!("Failed to save: {}", e),
-                        }),
-                    }
-                }
-                Err(e) => {
-                    failed.push(ImportFailure {
+            .to_string();
+        match songs::Song::initialize(&dir) {
+            Ok(song) => {
+                let mut config = song.get_config();
+                config.set_name(&dir_name);
+                match config.save(&dir.join("song.yaml")) {
+                    Ok(()) => created.push(display_name),
+                    Err(e) => failed.push(ImportFailure {
                         name: display_name,
-                        error: format!("{}", e),
-                    });
+                        error: format!("Failed to save: {}", e),
+                    }),
                 }
             }
-            return; // Don't recurse into song directories
+            Err(e) => {
+                failed.push(ImportFailure {
+                    name: display_name,
+                    error: format!("{}", e),
+                });
+            }
         }
-    }
-
-    // Recurse into subdirectories
-    for subdir in &subdirs {
-        bulk_import_recursive(subdir, root, created, skipped, failed);
     }
 }
 
@@ -825,7 +776,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn bulk_import_recursive_nested() {
+    async fn import_song_dirs_nested() {
         let (state, _dir) = test_state();
         let parent = _dir.path().join("music");
         std::fs::create_dir_all(&parent).unwrap();

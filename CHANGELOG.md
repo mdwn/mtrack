@@ -338,6 +338,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mtrack songs --init` writes song.yaml only where a song is**: it wrote one into every
+  directory directly under the songs path, so `mtrack songs --init .` in a project put a
+  `song.yaml` into `.git/`, `lighting/`, `playlists/` and `profiles/`, and the next load listed
+  `lighting` and the others as empty songs. It now takes the song directories the web UI's bulk
+  import takes: those holding audio, MIDI or a song.yaml, found at any depth (`artist/album/song/`)
+  below directories that hold none, and never inside a hidden directory. The bulk import now also
+  imports a directory that holds only MIDI files, as `songs --init` does.
 - **An audio file's extension is read in any case**: `Bass.WAV` in a song directory was listed
   as audio by the web UI but ignored by `mtrack songs --init` ("Unknown extension: WAV") and
   refused by the track and sample uploads (400 "Unsupported file type: .WAV"). All of them now
