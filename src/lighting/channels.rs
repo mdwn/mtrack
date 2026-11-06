@@ -230,8 +230,12 @@ struct Light {
 }
 
 impl Light {
-    /// Takes in a level channel's value, by its attribute.
+    /// Takes in a level channel's value, by its attribute: the one way a
+    /// level comes in, so every reading of it (its emitters, its colour,
+    /// its dimmer, its flags) sees the same number. A value that is not a
+    /// finite number (a page's NaN, an infinity) is no light: 0.
     fn add(&mut self, base: &str, value: f64) {
+        let value = if value.is_finite() { value } else { 0.0 };
         let level = self.levels.entry(base.to_string()).or_insert(value);
         *level = level.max(value);
     }
@@ -580,6 +584,36 @@ mod tests {
         }
     }
 
+    /// A level that is not a finite number is no light, in the colour and
+    /// in whether the fixture is lit alike.
+    #[test]
+    fn a_level_that_is_not_a_finite_number_is_no_light() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cases: [Case; 5] = [
+                (
+                    &[("red", bad), ("green", 255.0), ("dimmer", 255.0)],
+                    [0, 255, 0],
+                ),
+                (&[("red", bad), ("dimmer", 255.0)], [0, 0, 0]),
+                (&[("red", 255.0), ("dimmer", bad)], [0, 0, 0]),
+                (&[("amber", bad), ("uv", 255.0)], [102, 0, 255]),
+                (
+                    &[("cyan", bad), ("magenta", 255.0), ("yellow", 255.0)],
+                    [255, 0, 0],
+                ),
+            ];
+            for (channels, expected) in cases {
+                let shown = color(channels);
+                assert_eq!(shown, expected, "{channels:?}");
+                assert_eq!(
+                    shown != [0, 0, 0],
+                    is_lit(channels.iter().copied()),
+                    "{channels:?}"
+                );
+            }
+        }
+    }
+
     /// Shown is black exactly where the fixture is dark, for every emitter
     /// alone, beside a red, green and blue at 0, and under any dimmer.
     #[test]
@@ -589,7 +623,15 @@ mod tests {
             .map(|(name, _)| *name)
             .chain(["coloradd_unknown", "colorrgb_quality"]);
         for name in names {
-            for level in [0.0, 1.0, 128.0, 255.0] {
+            for level in [
+                0.0,
+                1.0,
+                128.0,
+                255.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
                 for dimmer in [None, Some(0.0), Some(1.0), Some(255.0)] {
                     for rgb in [false, true] {
                         let mut channels = vec![(name, level)];
@@ -599,12 +641,16 @@ mod tests {
                         }
                         let lit = is_lit(channels.iter().copied());
                         let shown = shown_color(channels.iter().copied());
+                        assert!(shown.iter().all(|c| c.is_finite()), "{channels:?}");
                         assert_eq!(
                             shown != [0.0; 3],
                             lit,
                             "{channels:?}: shown {shown:?}, lit {lit}"
                         );
-                        assert!(lit || level == 0.0 || dimmer == Some(0.0), "{channels:?}");
+                        assert!(
+                            lit || level == 0.0 || !level.is_finite() || dimmer == Some(0.0),
+                            "{channels:?}"
+                        );
                     }
                 }
             }
