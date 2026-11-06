@@ -2017,7 +2017,35 @@ pub struct Songs {
     failures: Vec<SongLoadFailure>,
 }
 
+/// The one rule for whether `path` is a light show file: a lighting
+/// extension in any case (`Show.LIGHT`), or a file a song's `lighting:`
+/// config names, whatever it is called (`show.dsl`), as the loader loads it
+/// ([`Songs::light_show_files`]). What the web UI lists, opens, validates,
+/// saves and deletes as a light show.
+pub fn is_light_show_file(path: &Path, named: &HashSet<PathBuf>) -> bool {
+    FileKind::of(path) == FileKind::Lighting
+        || named.contains(path)
+        || path.canonicalize().is_ok_and(|real| named.contains(&real))
+}
+
 impl Songs {
+    /// The light show files the songs' `lighting:` configs name, as the
+    /// loader resolved them ([`is_light_show_file`]).
+    pub fn light_show_files(&self) -> HashSet<PathBuf> {
+        self.list()
+            .iter()
+            .flat_map(|song| {
+                song.dsl_lighting_shows()
+                    .iter()
+                    .map(|show| {
+                        let path = show.file_path();
+                        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// Creates a new songs registry.
     pub fn new(songs: HashMap<String, Arc<Song>>) -> Songs {
         Songs {

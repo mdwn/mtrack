@@ -222,10 +222,35 @@ pub(super) async fn import_gdtf(
 /// GET /api/lighting — lists available .light files from the songs directory.
 pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl IntoResponse {
     let songs_path = state.songs_path().clone();
+    let named = state.player.songs().light_show_files();
     let mut light_files =
         match super::helpers::spawn_blocking_io("scan for lighting files", move || {
             let mut files = Vec::new();
             find_light_files(&songs_path, &songs_path, &mut files)?;
+            // And the shows songs name by another extension (`show.dsl`),
+            // inside the songs directory (`songs::is_light_show_file`).
+            let root = songs_path
+                .canonicalize()
+                .unwrap_or_else(|_| songs_path.clone());
+            for path in named {
+                let Ok(relative) = path.strip_prefix(&root) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().to_string();
+                if crate::songs::has_hidden_part(std::path::Path::new(&relative))
+                    || files.iter().any(|f: &LightFileInfo| f.path == relative)
+                {
+                    continue;
+                }
+                files.push(LightFileInfo {
+                    name: path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    path: relative,
+                });
+            }
             Ok::<_, std::io::Error>(files)
         })
         .await
@@ -309,8 +334,8 @@ pub(super) async fn get_lighting_file(
 /// Where the light show file `name` (a path below the songs root) is, or
 /// would be written: held inside the root by the one containment rule
 /// MCP's tools take (`SafePath::validate_relative`: no traversal, no linked
-/// way out, a link to nothing refused), and a lighting file by its
-/// extension (`FileKind`), as the delete takes it.
+/// way out, a link to nothing refused), not hidden, and a light show file
+/// (`songs::is_light_show_file`), as the delete and the listing take it.
 #[allow(clippy::result_large_err)]
 fn light_show_path(
     state: &WebUiState,
@@ -330,10 +355,13 @@ fn light_show_path(
             .into_response());
     }
     let path = SafePath::validate_relative(name, &root).map_err(|e| e.into_response())?;
-    if crate::songs::FileKind::of(&path) != crate::songs::FileKind::Lighting {
+    if !crate::songs::is_light_show_file(&path, &state.player.songs().light_show_files()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only write .light files"})),
+            Json(
+                json!({"error": "Can only write light show files (.light, or a file a song's \
+                                  lighting: names)"}),
+            ),
         )
             .into_response());
     }
@@ -401,10 +429,10 @@ pub(super) async fn delete_lighting_file(
         }
     };
 
-    if crate::songs::FileKind::of(safe.as_path()) != crate::songs::FileKind::Lighting {
+    if !crate::songs::is_light_show_file(safe.as_path(), &state.player.songs().light_show_files()) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete .light files"})),
+            Json(json!({"error": "Can only delete light show files"})),
         )
             .into_response();
     }
@@ -4180,7 +4208,62 @@ show "test" {
                 StatusCode::OK
             );
             assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+            // A link to nothing inside the root is refused by the rule for
+            // links to nothing, not by containment.
+            std::os::unix::fs::symlink(
+                state.songs_path().join("nothere.light"),
+                state.songs_path().join("inner.light"),
+            )
+            .unwrap();
+            let response = put("/lighting/inner.light").await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert!(!state.songs_path().join("nothere.light").exists());
         }
+    }
+
+    /// A show a song's `lighting:` names by another extension (`show.dsl`)
+    /// is a light show file, as the loader loads it: listed, validated and
+    /// saved; an unnamed `.dsl` beside it is not.
+    #[tokio::test]
+    async fn a_show_a_song_names_by_another_extension_is_a_light_show() {
+        let (state, _dir) = test_state();
+        let dir = state.songs_path().join("DslSong");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100).unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        std::fs::write(dir.join("show.dsl"), show).unwrap();
+        std::fs::write(
+            dir.join("song.yaml"),
+            "name: DslSong\ntracks:\n  - name: kick\n    file: kick.wav\n\
+             lighting:\n  - file: show.dsl\n",
+        )
+        .unwrap();
+        state.player.reload_songs().await.unwrap();
+        assert_eq!(state.player.songs().light_show_files().len(), 1);
+        let send = |method: &'static str, uri: &'static str| {
+            router().with_state(state.clone()).oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(show))
+                    .unwrap(),
+            )
+        };
+
+        let response = send("GET", "/lighting").await.unwrap();
+        let listed = response_body(response).await;
+        assert!(listed.contains("DslSong/show.dsl"), "{listed}");
+        for (method, uri) in [
+            ("PUT", "/lighting/DslSong%2Fshow.dsl"),
+            ("POST", "/lighting/validate?file=DslSong/show.dsl"),
+        ] {
+            let response = send(method, uri).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        }
+        let response = send("PUT", "/lighting/DslSong%2Fother.dsl").await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!dir.join("other.dsl").exists());
     }
 
     #[tokio::test]
