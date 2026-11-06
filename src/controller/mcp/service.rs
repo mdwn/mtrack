@@ -1193,7 +1193,7 @@ impl McpServer {
         Parameters(args): Parameters<WriteSongArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Validate the YAML parses as a song config before we touch disk.
-        let _: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
+        let saved: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
 
         // Taken turns with the song's other writers, here and in the web UI,
         // whose edits read the file first.
@@ -1222,17 +1222,15 @@ impl McpServer {
                     &songs_root,
                 )
                 .map_err(safepath_err)?;
-                // The folder's own config, as the web UI's song editor
-                // finds it: never a `song.yaml` beside a `song.yml`.
-                crate::songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
-                    McpError::invalid_params(
-                        format!(
-                            "{}'s folder holds another song config; write that song instead",
-                            args.name
-                        ),
-                        None,
-                    )
-                })?
+                // The folder's own config, by the one rule the web UI's
+                // song editor takes: never a `song.yaml` beside a
+                // `song.yml`, nor over another song's config.
+                crate::songs::folder_config_to_act_on(
+                    song_dir.as_path(),
+                    &args.name,
+                    crate::songs::SongConfigAct::Saving(Some(saved.name())),
+                )
+                .map_err(|e| McpError::invalid_params(e, None))?
             }
         };
         staged_write_string(&yaml_path, &args.yaml).await?;

@@ -1011,15 +1011,15 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(std::fs::read_to_string(&new_song_path)?, new_song_yaml);
 
-    // A folder whose config is `song.yml` (for a song known by another
-    // name) is written through it, not given a `song.yaml` beside it.
+    // A folder whose config is `song.yml` holding another song
+    // ("Elsewhere") is not overwritten by the folder's name, as the web UI
+    // refuses it (`songs::folder_config_to_act_on`); text naming that song
+    // is written through it, not given a `song.yaml` beside it.
     let yml_dir = fixture.root.join("songs/yml-folder");
     std::fs::create_dir_all(&yml_dir)?;
-    std::fs::write(
-        yml_dir.join("song.yml"),
-        new_song_yaml.replace("Brand New Song", "Elsewhere"),
-    )?;
-    let _ = call_tool(
+    let elsewhere = new_song_yaml.replace("Brand New Song", "Elsewhere");
+    std::fs::write(yml_dir.join("song.yml"), &elsewhere)?;
+    let refused = call_tool(
         &client,
         &url,
         &session,
@@ -1028,8 +1028,23 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         json!({"name": "yml-folder", "yaml": new_song_yaml.replace("Brand New Song", "Yml Folder")}),
     )
     .await;
+    assert!(refused.to_string().contains("holds the song"), "{refused}");
+    assert_eq!(
+        std::fs::read_to_string(yml_dir.join("song.yml"))?,
+        elsewhere
+    );
+    let edited = format!("# edited\n{elsewhere}");
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        18,
+        "write_song",
+        json!({"name": "yml-folder", "yaml": edited}),
+    )
+    .await;
     assert!(!yml_dir.join("song.yaml").exists());
-    assert!(std::fs::read_to_string(yml_dir.join("song.yml"))?.contains("Yml Folder"));
+    assert_eq!(std::fs::read_to_string(yml_dir.join("song.yml"))?, edited);
     std::fs::remove_dir_all(&yml_dir)?;
 
     // The player's in-memory song registry should now include the new song.

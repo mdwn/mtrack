@@ -2436,6 +2436,69 @@ pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// What a writer of a song does with its folder's config
+/// ([`folder_config_to_act_on`]).
+#[derive(Clone, Copy, Debug)]
+pub enum SongConfigAct<'a> {
+    Deleting,
+    /// Saving text that names the song this, when it reads (a rename in
+    /// the editor names the new name).
+    Saving(Option<&'a str>),
+}
+
+/// The config in the song folder `dir` a writer of the song `name` may act
+/// on when the registry has none for it, or why not: the one rule for the
+/// web UI's song editor and delete and MCP `write_song`.
+///
+/// - The folder's config is [`song_config_to_write`]'s; a folder holding
+///   another song config, under another name, is refused.
+/// - One already there is acted on only when it is this song's: it names
+///   `name`, or a save's text names the song it names (the folder's own song
+///   saved again after a rename). One naming another song is that song's,
+///   neither overwritten nor deleted by this name; one that does not read
+///   cannot say whose it is, so is not deleted.
+pub fn folder_config_to_act_on(
+    dir: &Path,
+    name: &str,
+    acting: SongConfigAct<'_>,
+) -> Result<PathBuf, String> {
+    let deleting = matches!(acting, SongConfigAct::Deleting);
+    let path = song_config_to_write(dir).ok_or_else(|| {
+        if deleting {
+            format!(
+                "{name}'s folder holds another song's config, so {name} cannot be deleted from \
+                 here; remove the files by hand"
+            )
+        } else {
+            format!("{name}'s folder holds another song config; edit that file instead")
+        }
+    })?;
+    if !path.is_file() {
+        return Ok(path);
+    }
+    let file = filename_display(&path);
+    match config::Song::deserialize(&path).map(|c| c.name().to_string()) {
+        Ok(declared) if declared == name => Ok(path),
+        Ok(declared) if matches!(acting, SongConfigAct::Saving(Some(saved)) if saved == declared) => {
+            Ok(path)
+        }
+        Ok(declared) => Err(format!(
+            "{file} in {name}'s folder holds the song \"{declared}\"; {} — edit or move that \
+             file by hand",
+            if deleting {
+                "it is not deleted"
+            } else {
+                "it is not overwritten"
+            }
+        )),
+        Err(e) if deleting => Err(format!(
+            "{file} in {name}'s folder does not read ({e}), so whose it is cannot be told; it is \
+             not deleted — remove it by hand"
+        )),
+        Err(_) => Ok(path),
+    }
+}
+
 /// Adds `song` to the songs found, under its name. Two songs of one name
 /// cannot both be played or put in a playlist: the later one found takes
 /// the name, and the earlier is named in a warning rather than dropped

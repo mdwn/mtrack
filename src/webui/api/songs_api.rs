@@ -328,11 +328,15 @@ pub(super) async fn delete_song(
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song's YAML through the registry with path verification.
-    let config_path =
-        match song_config_path(&state.player, &state.songs_path(), &name, Acting::Deleting) {
-            Ok(p) => p,
-            Err(e) => return *e,
-        };
+    let config_path = match song_config_path(
+        &state.player,
+        &state.songs_path(),
+        &name,
+        songs::SongConfigAct::Deleting,
+    ) {
+        Ok(p) => p,
+        Err(e) => return *e,
+    };
     if !config_path.exists() {
         return (
             StatusCode::NOT_FOUND,
@@ -639,7 +643,7 @@ pub(super) async fn put_song(
         &state.player,
         &state.songs_path(),
         &name,
-        Acting::Saving(saved.as_ref().ok().map(|song| song.name())),
+        songs::SongConfigAct::Saving(saved.as_ref().ok().map(|song| song.name())),
     ) {
         Ok(p) => p,
         Err(e) => return *e,
@@ -826,22 +830,12 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// (`songs::song_config_to_write`: its `song.yaml`, else its `song.yml`,
 /// else a new `song.yaml`; 409 beside another song config); within
 /// the verified song folder, which is within the songs root.
-/// What a request does with a song's config ([`song_config_path`]).
-#[derive(Clone, Copy)]
-enum Acting<'a> {
-    Deleting,
-    /// Saving text that names the song this, when it reads (a rename in
-    /// the editor names the new name).
-    Saving(Option<&'a str>),
-}
-
 fn song_config_path(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
-    acting: Acting<'_>,
+    acting: songs::SongConfigAct<'_>,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
-    let deleting = matches!(acting, Acting::Deleting);
     let song_dir = resolve_song_dir(player, songs_path, name)?;
     if let Some(path) = player
         .songs()
@@ -850,53 +844,11 @@ fn song_config_path(
     {
         return Ok(path);
     }
-    // The folder's own config, by the rule MCP's `write_song` takes too:
-    // never a `song.yaml` beside a `song.yml` or another song's config.
-    let conflict = |error: String| {
+    // The folder's own config, by the one rule MCP's `write_song` takes
+    // too (`songs::folder_config_to_act_on`).
+    songs::folder_config_to_act_on(song_dir.as_path(), name, acting).map_err(|error| {
         Box::new((StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response())
-    };
-    let path = songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
-        conflict(if deleting {
-            format!(
-                "{name}'s folder holds another song's config, so {name} cannot be deleted from \
-                 here; remove the files by hand"
-            )
-        } else {
-            format!("{name}'s folder holds another song config; edit that file instead")
-        })
-    })?;
-    // A config already there is acted on only when it is this song's: one
-    // naming another song is that song's, not to be overwritten or deleted
-    // by this name; one that does not read cannot say, so is not deleted.
-    // A save may write one naming the song the saved text names: the
-    // folder's own song saved again after a rename in the editor.
-    if path.is_file() {
-        let declared = crate::config::Song::deserialize(&path).map(|c| c.name().to_string());
-        let file = crate::util::filename_display(&path);
-        match declared {
-            Ok(declared) if declared == name => {}
-            Ok(declared) if matches!(acting, Acting::Saving(Some(saved)) if saved == declared) => {}
-            Ok(declared) => {
-                return Err(conflict(format!(
-                    "{file} in {name}'s folder holds the song \"{declared}\"; {} — edit or \
-                     move that file by hand",
-                    if deleting {
-                        "it is not deleted"
-                    } else {
-                        "it is not overwritten"
-                    }
-                )));
-            }
-            Err(e) if deleting => {
-                return Err(conflict(format!(
-                    "{file} in {name}'s folder does not read ({e}), so whose it is cannot be \
-                     told; it is not deleted — remove it by hand"
-                )));
-            }
-            Err(_) => {}
-        }
-    }
-    Ok(path)
+    })
 }
 
 pub(super) fn resolve_song_dir(
