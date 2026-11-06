@@ -338,6 +338,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
+  back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
+  the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's
+  log pane, as it is logged from a controller. An OSC address configured for both a transport
+  action and an OSC-only one (pause, stop samples, loop section, seek, seek section) is now
+  taken as the transport action.
 - **One lock refusal on every surface**: MCP refused a write while locked with the player's
   `Player is locked. Unlock to make changes.` followed by its own hint naming the tool. It now
   answers that sentence alone, as gRPC and the web UI do. Which operations stay open while

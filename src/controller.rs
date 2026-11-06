@@ -47,6 +47,24 @@ pub(crate) enum TransportAction {
 }
 
 impl TransportAction {
+    /// Every action a controller event can be configured as, in the order a
+    /// controller matches an event against them: the one table the MIDI and
+    /// OSC controllers both classify by.
+    pub(crate) const ALL: [TransportAction; 12] = [
+        TransportAction::Play,
+        TransportAction::Prev,
+        TransportAction::Next,
+        TransportAction::Stop,
+        TransportAction::AllSongs,
+        TransportAction::Playlist,
+        TransportAction::SectionAck,
+        TransportAction::StopSectionLoop,
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::On),
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::Off),
+        TransportAction::AmbientMode(crate::dmx::engine::AmbientMode::Auto),
+        TransportAction::CancelAutoPlay,
+    ];
+
     pub(crate) async fn run(self, player: &Player) {
         match self {
             TransportAction::Play => {
@@ -85,6 +103,45 @@ impl TransportAction {
                 player.cancel_waiting_auto_play();
             }
         }
+    }
+}
+
+/// A controller's configured event for each transport action, in
+/// [`TransportAction::ALL`]'s order, so classifying an event is one lookup
+/// on every controller.
+#[derive(Clone)]
+pub(crate) struct TransportBindings<E>(Vec<(E, TransportAction)>);
+
+impl<E> TransportBindings<E> {
+    /// The bindings `event_for` configures: the event for each action, or
+    /// `None` for an action with none.
+    pub(crate) fn new(
+        mut event_for: impl FnMut(TransportAction) -> Result<Option<E>, Box<dyn Error>>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut bindings = Vec::new();
+        for action in TransportAction::ALL {
+            if let Some(event) = event_for(action)? {
+                bindings.push((event, action));
+            }
+        }
+        Ok(TransportBindings(bindings))
+    }
+
+    /// The action of the first event `matches` accepts.
+    pub(crate) fn classify(&self, matches: impl Fn(&E) -> bool) -> Option<TransportAction> {
+        self.0
+            .iter()
+            .find(|(event, _)| matches(event))
+            .map(|(_, action)| *action)
+    }
+
+    /// The event bound to `action`, if any.
+    #[cfg(test)]
+    pub(crate) fn event(&self, action: TransportAction) -> Option<&E> {
+        self.0
+            .iter()
+            .find(|(_, bound)| *bound == action)
+            .map(|(event, _)| event)
     }
 }
 
