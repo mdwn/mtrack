@@ -343,22 +343,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under its name wrote (or refused only on) a `song.yaml`, so a generated config sat beside the
   user's and the song loaded twice. They now take the rule `songs --init` takes: a directory
   holding a song config under any name keeps it (the browser's create answers 409).
-- **File extensions are read in any case, by one rule**: a playlist kept as `Encore.YAML` was
-  passed over by the player; it now loads, and the web UI and MCP save and delete it in place.
-  A song config named `Album.YAML` or `song.YML` is now loaded as one, so a file once ignored for
-  its capitals (`Backup.YAML` in a song directory) is now a song's config. Of two files at one
-  name (`Set.yaml` and `Set.YAML`, `song.yaml` and a stale `song.YML`) the lowercase spelling is
-  the one read, as when it was the only one, then `.yaml` before `.yml`; a song directory loads
-  one config per name. Profiles take the same rule as playlists: `profiles/pi.YAML` is loaded,
-  listed, read, saved in place and deleted, where the config and the web UI's profile list passed
-  it over. A song's `song.YML` is hidden from its file list as `song.yml` was, and MCP takes a
-  song loaded from `song.yml` or `song.YAML` as one in its own directory, as it took `song.yaml`:
-  `write_song_lighting` refused it a new lighting file as "in flat layout". A config in TOML,
-  JSON, JSON5, INI or RON is read as that format whatever its extension's case (`Live.TOML` was
-  read as YAML). `mtrack start
-  ./Live.YAML` / `mtrack migrate ./Live.YAML` take it as the config file rather than a directory.
-  GDTF archives (`.GDTF`), MVR files (`.MVR`, also as an export name) and their `.GLB` meshes
-  were already matched in any case, and still are.
+- **One rule for a file's kind by its extension**: a media, MIDI or lighting file's extension is
+  read in any case (`Bass.WAV`, `Show.LIGHT`, `Club.VENUE`, `Par.FIXTURE`, and GDTF, MVR and GLB
+  files as before), and a config's name stays lowercase: a song, playlist or profile config, and
+  the config file `mtrack start` and `mtrack migrate` take, is a `.yaml` or `.yml` file as written,
+  as before (`Set.YAML` is no playlist). With both `<name>.yaml` and `<name>.yml`, the `.yaml` is
+  the one read and edited, as before. MCP takes a song loaded from `song.yml` as one in its own
+  directory, as it took `song.yaml`: `write_song_lighting` refused it a new lighting file as "in
+  flat layout".
 - **A light show file's extension is read in any case, and hidden directories are passed over**:
   `Show.LIGHT` in a song directory was taken by `mtrack songs --init` but missing from the web UI's
   lighting file list, and could not be deleted there ("Can only delete .light files") or edited
