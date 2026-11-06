@@ -468,7 +468,8 @@ mod tests {
         for count in [0.0, -1.0, 1.5, f64::NAN, f64::INFINITY, 1e30] {
             assert!(r.with_loop_count(count).is_none(), "{count}");
         }
-        // As many passes as the player takes, on every target: past `u32`.
+        // Every count the player takes, on every target: past `u32` (a
+        // count past 10,000 lays as many passes as `loop`).
         assert_eq!(
             r.with_loop_count(5e9).unwrap().loop_.as_deref(),
             Some("5000000000")

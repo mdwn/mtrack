@@ -367,11 +367,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   score now counts differently: 3/8 (three eighths a bar, where it was one dotted quarter), a
   whole-note denominator (one whole note, where it was a quarter) and denominators of 32 and above
   (one denominator note, where it was a quarter).
-- **The editor takes as many sequence passes as the player**: setting a sequence's `loop` count
-  in the timeline refused counts past 4,294,967,295 that the player reads; it now asks the
-  player's own rule, which reads a count as a 64-bit number on every target (a 32-bit build, such
-  as the web UI's or a 32-bit Pi's, refused `loop: 5000000000`; it now plays as many passes as it
-  can hold).
+- **The editor takes as many sequence passes as the player, and a huge count no longer hangs**:
+  setting a sequence's `loop` count in the timeline refused counts past 4,294,967,295 that the
+  player reads; it now asks the player's own rule, which reads a count as a 64-bit number on every
+  target (the web UI and a 32-bit Pi refused `loop: 5000000000`). A sequence count above 10,000
+  (`loop: 5000000000`, or an inline loop's `repeats:`) plays 10,000 passes, the same as `loop`; it
+  used to lay out every pass, which could hang the player and the web editor (`loop: 100000000`
+  did).
 - **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
   not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
   song came from; it now writes the file the song was read from, as the web UI's song editor

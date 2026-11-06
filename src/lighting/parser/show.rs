@@ -617,10 +617,11 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 /// How many passes a `loop` reference lays: a practical infinity.
 const LOOP_PASSES: usize = 10000;
 
-/// A count of passes as the passes laid: every count the rule takes, held
-/// to what a `usize` holds (more passes than that never end).
+/// A count of passes as the passes laid, on every target: as written, up
+/// to [`LOOP_PASSES`]; a count above it plays as `loop` does, as many passes
+/// as a practical infinity lays, rather than laying out every pass.
 fn passes_of(count: u64) -> usize {
-    usize::try_from(count).unwrap_or(usize::MAX)
+    usize::try_from(count).map_or(LOOP_PASSES, |count| count.min(LOOP_PASSES))
 }
 
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
@@ -1317,6 +1318,15 @@ mod tests {
             determine_loop_count(Some(SequenceLoop::Count(5))).unwrap(),
             5
         );
+    }
+
+    #[test]
+    fn loop_count_past_loops_passes_lays_loops_passes() {
+        let laid = |n| determine_loop_count(Some(SequenceLoop::Count(n))).unwrap();
+        assert_eq!(laid(10_000), LOOP_PASSES);
+        assert_eq!(laid(10_001), LOOP_PASSES);
+        assert_eq!(laid(5_000_000_000), LOOP_PASSES);
+        assert_eq!(laid(u64::MAX), LOOP_PASSES);
     }
 
     #[test]
