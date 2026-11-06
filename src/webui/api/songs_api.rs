@@ -328,7 +328,7 @@ pub(super) async fn delete_song(
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song's YAML through the registry with path verification.
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, true) {
         Ok(p) => p,
         Err(e) => return *e,
     };
@@ -631,7 +631,7 @@ pub(super) async fn put_song(
     let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual YAML (handles
     // nested folders and flat `<name>.yaml` songs).
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, false) {
         Ok(p) => p,
         Err(e) => return *e,
     };
@@ -814,6 +814,7 @@ fn song_config_path(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
+    deleting: bool,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
     if let Some(path) = player
@@ -826,15 +827,15 @@ fn song_config_path(
     // The folder's own config, by the rule MCP's `write_song` takes too:
     // never a `song.yaml` beside a `song.yml` or another song's config.
     songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
-        Box::new(
-            (
-                StatusCode::CONFLICT,
-                Json(json!({"error": format!(
-                    "{name}'s folder holds another song config; edit that file instead"
-                )})),
+        let error = if deleting {
+            format!(
+                "{name}'s folder holds another song's config, so {name} cannot be deleted from \
+                 here; remove the files by hand"
             )
-                .into_response(),
-        )
+        } else {
+            format!("{name}'s folder holds another song config; edit that file instead")
+        };
+        Box::new((StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response())
     })
 }
 
@@ -1357,6 +1358,23 @@ mod test {
             StatusCode::CONFLICT
         );
         assert!(!album.join("song.yaml").exists());
+
+        // A delete is refused there too, in its own words.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/songs/Album")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(body.contains("cannot be deleted"), "{body}");
+        assert!(album.join("a.yaml").exists());
     }
 
     #[tokio::test]
