@@ -815,7 +815,7 @@ impl StrobeMap<'_> {
                 // GDTF declares it:
                 // DMX = start + (hz − min)/(max − min) × (255 − start).
                 let fraction = (hz.clamp(min, max) - min) / (max - min);
-                (offset + fraction * (1.0 - offset)).clamp(0.0, 1.0)
+                crate::lighting::channels::lerp(offset, 1.0, fraction).clamp(0.0, 1.0)
             }
             StrobeMap::Period { min, max, offset } => {
                 // Interpolate in period-space: many fixtures map DMX
@@ -829,7 +829,7 @@ impl StrobeMap<'_> {
                 } else {
                     (max_period - desired_period) / period_range
                 };
-                (offset + period_fraction * (1.0 - offset)).clamp(0.0, 1.0)
+                crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
             }
             StrobeMap::Ratio { max } => (hz / max).min(1.0),
         }
