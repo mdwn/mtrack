@@ -642,7 +642,7 @@ impl Player {
         let resolved_active = if playlists.contains_key(&active_playlist) {
             active_playlist
         } else {
-            "all_songs".to_string()
+            playlist::ALL_SONGS.to_string()
         };
 
         Ok(Player {
@@ -652,7 +652,7 @@ impl Player {
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
             playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
-                if resolved_active == "all_songs" {
+                if resolved_active == playlist::ALL_SONGS {
                     "playlist".to_string()
                 } else {
                     resolved_active
@@ -1481,32 +1481,34 @@ pub fn load_playlists(
 
     // Always create all_songs.
     playlists.insert(
-        "all_songs".to_string(),
+        playlist::ALL_SONGS.to_string(),
         playlist::from_songs(songs.clone())?,
     );
 
     // Load playlists from directory.
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)?
+            // Each name once: with both `<name>.yaml` and `<name>.yml`, the
+            // file the name resolves to is the playlist.
+            let names: std::collections::BTreeSet<String> = std::fs::read_dir(dir)?
                 .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().is_file()
-                        && e.path()
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+                .map(|e| e.path())
+                .filter(|path| {
+                    path.is_file()
+                        && path.extension().is_some_and(|ext| {
+                            playlist::PLAYLIST_EXTENSIONS
+                                .iter()
+                                .any(|known| ext == *known)
+                        })
                 })
+                .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
                 .collect();
-            entries.sort_by_key(|e| e.file_name());
 
-            for entry in entries {
-                let path = entry.path();
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                if name.is_empty() || name == "all_songs" {
+            for name in names {
+                let Ok(path) = playlist::playlist_file(dir, &name) else {
+                    continue;
+                };
+                if name.is_empty() {
                     continue;
                 }
                 match config::Playlist::deserialize(&path) {
@@ -4419,10 +4421,19 @@ mod test {
         let temp_dir = tempfile::tempdir()?;
         let pl_dir = temp_dir.path();
         fs::write(pl_dir.join("my_set.yaml"), "songs:\n- Song 1\n- Song 3\n")?;
-        let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs.clone())?;
         assert!(playlists.contains_key("all_songs"));
         assert!(playlists.contains_key("my_set"));
         assert_eq!(playlists["my_set"].songs().len(), 2);
+
+        // With `.yaml` and `.yml` both there, the playlist is the file its
+        // name resolves to (`playlist::playlist_file`), the `.yaml`; no file
+        // takes the player's own `all_songs`.
+        fs::write(pl_dir.join("my_set.yml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("all_songs.yaml"), "songs:\n- Song 1\n")?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
+        assert_eq!(playlists["my_set"].songs().len(), 2);
+        assert!(playlists["all_songs"].songs().len() > 1);
 
         Ok(())
     }

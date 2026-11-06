@@ -20,6 +20,7 @@ use crate::config;
 use crate::songs::{Song, Songs};
 use core::fmt;
 use parking_lot::RwLock;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -540,6 +541,41 @@ pub fn validate_for_write(
     Ok(())
 }
 
+/// The name of the playlist of every song ([`from_songs`]), which the player
+/// makes itself: no playlist file takes it.
+pub const ALL_SONGS: &str = "all_songs";
+
+/// Whether `name` is reserved for a playlist the player makes, so no file
+/// in the playlists directory holds it.
+pub fn is_reserved_name(name: &str) -> bool {
+    name == ALL_SONGS
+}
+
+/// A playlist file's extensions, the one a new file takes first.
+pub const PLAYLIST_EXTENSIONS: &[&str] = &["yaml", "yml"];
+
+/// The name of a playlist was the player's own ([`is_reserved_name`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("'{0}' is the player's own playlist and has no file")]
+pub struct ReservedName(pub String);
+
+/// The file in `dir` that holds the playlist `name`: the existing
+/// `<name>.yaml`, else the existing `<name>.yml`, else a new `<name>.yaml`.
+/// The loader reads this file for the name, and every write and delete goes
+/// to it, so an edit to a `.yml` playlist is not lost to a new `.yaml`
+/// beside it. The reserved name has no file. `name` is not checked for
+/// path safety here; the callers check it as they read it.
+pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
+    if is_reserved_name(name) {
+        return Err(ReservedName(name.to_string()));
+    }
+    let mut candidates = PLAYLIST_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("{name}.{ext}")));
+    let new = dir.join(format!("{name}.{}", PLAYLIST_EXTENSIONS[0]));
+    Ok(candidates.find(|path| path.is_file()).unwrap_or(new))
+}
+
 /// Creates an alphabetized playlist from all available songs.
 pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
@@ -552,11 +588,32 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
             .into_iter()
             .map(|song| song.name().to_string()),
     );
-    Playlist::new("all_songs", &config::Playlist::new(&sorted), songs)
+    Playlist::new(ALL_SONGS, &config::Playlist::new(&sorted), songs)
 }
 
 #[cfg(test)]
 mod test {
+
+    #[test]
+    fn playlist_file_prefers_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(
+            super::playlist_file(dir, "set").unwrap(),
+            dir.join("set.yaml")
+        );
+        std::fs::write(dir.join("set.yml"), "songs: []\n").unwrap();
+        assert_eq!(
+            super::playlist_file(dir, "set").unwrap(),
+            dir.join("set.yml")
+        );
+        std::fs::write(dir.join("set.yaml"), "songs: []\n").unwrap();
+        assert_eq!(
+            super::playlist_file(dir, "set").unwrap(),
+            dir.join("set.yaml")
+        );
+        assert!(super::playlist_file(dir, super::ALL_SONGS).is_err());
+    }
     use std::path::Path;
     use std::sync::Arc;
 

@@ -64,7 +64,7 @@ impl TransportAction {
                 player.stop().await;
             }
             TransportAction::AllSongs => {
-                if let Err(e) = player.switch_to_playlist("all_songs").await {
+                if let Err(e) = player.switch_to_playlist(crate::playlist::ALL_SONGS).await {
                     tracing::error!("Failed to switch to all_songs: {}", e);
                 }
             }

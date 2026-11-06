@@ -153,7 +153,10 @@ impl App {
                 Action::None
             }
             KeyCode::Char('a') => {
-                let _ = self.player.switch_to_playlist("all_songs").await;
+                let _ = self
+                    .player
+                    .switch_to_playlist(crate::playlist::ALL_SONGS)
+                    .await;
                 Action::None
             }
             KeyCode::Char('l') => {

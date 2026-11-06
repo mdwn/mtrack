@@ -338,6 +338,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `.yml` playlist is edited in place**: saving a playlist kept as `setlist.yml` from the web
+  UI, or with MCP `write_playlist` / `read_playlist`, went to `setlist.yaml` (dropping the file's
+  transitions and auto play in the web UI's case), and on reload `setlist.yml` won, so the edit had
+  no effect. Every reader and writer now takes the same file for a name: the existing `.yaml`, else
+  the existing `.yml`, else a new `.yaml`. With both files present, the player now loads the
+  `.yaml` one (it loaded the `.yml`). MCP `write_playlist{name: "all_songs"}` is now refused, as
+  the web UI refuses it; it wrote a file the player never read.
 - **`mtrack songs --init` writes song.yaml only where a song is**: it wrote one into every
   directory directly under the songs path, so `mtrack songs --init .` in a project put a
   `song.yaml` into `.git/`, `lighting/`, `playlists/` and `profiles/`, and the next load listed

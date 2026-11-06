@@ -1284,7 +1284,7 @@ impl McpServer {
 
     #[tool(description = "Read a playlist YAML file. With no `name`, reads the \
         top-level `playlist:` file from the mtrack config. With a `name`, reads \
-        `<playlists_dir>/<name>.yaml`.")]
+        `<playlists_dir>/<name>.yaml`, or its `.yml` if that is the file there.")]
     async fn read_playlist(
         &self,
         Parameters(args): Parameters<PlaylistNameArgs>,
@@ -1301,8 +1301,9 @@ impl McpServer {
         description = "Write a playlist YAML file. Validates the YAML against \
         `config::Playlist`, and its transitions against the songs, before \
         writing. With no `name`, writes the top-level playlist file. With a \
-        `name`, writes `<playlists_dir>/<name>.yaml` and creates the file if \
-        missing. Each `songs:` entry is a song name, or a map with `song:` and \
+        `name`, writes `<playlists_dir>/<name>.yaml` (or its existing `.yml`) \
+        and creates the file if missing; `all_songs` is the player's own and \
+        cannot be written. Each `songs:` entry is a song name, or a map with `song:` and \
         its own transitions: `fade_out` (how a looping song fades out under the \
         next song when play/next/previous breaks its loop) and `fade_in` (how \
         the song fades in when it starts under such a fade-out). Each is a \
@@ -4012,7 +4013,9 @@ impl McpServer {
 
     /// Resolves a playlist file path. With `None`, returns the top-level
     /// `playlist:` file referenced from the config. With `Some(name)`, returns
-    /// `<playlists_dir>/<name>.yaml` (after validating `name`).
+    /// the file in the playlists directory that holds it
+    /// (`playlist::playlist_file`: its `.yaml` or `.yml`, else a new `.yaml`),
+    /// after validating `name`; the player's own `all_songs` has none.
     pub(crate) async fn resolve_playlist_path(
         &self,
         name: Option<&str>,
@@ -4035,7 +4038,8 @@ impl McpServer {
                 let dir = sources
                     .playlists_dir
                     .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
-                Ok(dir.join(format!("{n}.yaml")))
+                crate::playlist::playlist_file(&dir, n)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))
             }
             None => sources.legacy_playlist.ok_or_else(|| {
                 McpError::invalid_params("no top-level playlist file configured", None)
