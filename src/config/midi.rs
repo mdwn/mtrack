@@ -245,7 +245,7 @@ impl ToMidiEvent for PitchBend {
 
 /// Parses a channel from the config. Input is expected to be [1, 16].
 fn parse_channel(channel: u8) -> Result<u4, Box<dyn Error>> {
-    match u4::try_from(channel - 1) {
+    match channel.checked_sub(1).and_then(u4::try_from) {
         Some(val) => Ok(val),
         None => Err(format!("error parsing channel: {} is invalid", channel).into()),
     }
@@ -278,6 +278,38 @@ mod test {
     };
 
     use crate::config::midi::ToMidiEvent;
+
+    /// The ranges the web UI's editor bounds each field by are the ones
+    /// this parsing takes: both ends of each read, one past either refused.
+    #[test]
+    fn the_editors_ranges_are_what_parsing_takes() {
+        use super::super::midi_event::MidiEventShapes;
+        let shapes = MidiEventShapes::new();
+        assert_eq!(shapes.kinds.len(), 7);
+        for kind in &shapes.kinds {
+            let json = serde_json::to_value(kind).unwrap();
+            for field in json.as_object().unwrap().keys().filter(|k| *k != "type") {
+                let (lo, hi) = shapes.ranges[field.as_str()];
+                let with = |v: i64| -> Option<Result<(), String>> {
+                    let mut json = json.clone();
+                    json[field.as_str()] = v.into();
+                    let event: super::Event = serde_json::from_value(json).ok()?;
+                    Some(event.to_midi_event().map(|_| ()).map_err(|e| e.to_string()))
+                };
+                assert_eq!(with(lo.into()), Some(Ok(())), "{field} at {lo}");
+                assert_eq!(with(hi.into()), Some(Ok(())), "{field} at {hi}");
+                if let Some(result) = with(i64::from(hi) + 1) {
+                    assert!(result.is_err(), "{field} at {}", hi + 1);
+                }
+                if lo > 0 {
+                    assert!(
+                        with(i64::from(lo) - 1).unwrap().is_err(),
+                        "{field} below {lo}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn note_off() -> Result<(), Box<dyn Error>> {

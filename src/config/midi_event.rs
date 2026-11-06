@@ -16,6 +16,8 @@
 //! light, so the web UI's WebAssembly module compiles them as they are.
 //! Turning one into the bytes sent is `midi`'s.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// MIDI events that can be parsed from YAML. `midi::Event` in the player;
@@ -116,19 +118,35 @@ pub struct PitchBend {
 }
 
 /// What a config's MIDI events may hold: one of each kind, every field at
-/// its lowest. The web UI's event editor offers what this says, so a new
-/// kind reaches it.
+/// its lowest, and the range each field takes as the player reads it
+/// (`midi`'s parsing, which a test holds to these). The web UI's event
+/// editor offers what this says, so a new kind reaches it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
-#[cfg_attr(feature = "tsify", tsify(into_wasm_abi))]
+#[cfg_attr(feature = "tsify", tsify(into_wasm_abi, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct MidiEventShapes {
     pub kinds: Vec<MidiEvent>,
+    /// `[lowest, highest]`, by field name.
+    pub ranges: BTreeMap<String, (u16, u16)>,
 }
 
 impl MidiEventShapes {
     pub fn new() -> Self {
         let kinds: Vec<MidiEvent> = (0..).map_while(MidiEvent::kind_at).collect();
-        MidiEventShapes { kinds }
+        let seven_bit = (0, 127);
+        let ranges = [
+            ("channel", (1, 16)),
+            ("key", seven_bit),
+            ("velocity", seven_bit),
+            ("controller", seven_bit),
+            ("value", seven_bit),
+            ("program", seven_bit),
+            ("bend", (0, 16383)),
+        ]
+        .into_iter()
+        .map(|(name, range)| (name.to_string(), range))
+        .collect();
+        MidiEventShapes { kinds, ranges }
     }
 }
 

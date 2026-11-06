@@ -126,7 +126,8 @@
     onchange();
   }
 
-  /** The MIDI events a config can name: the editor offers every kind. */
+  /** The MIDI events a config can name, and the range each field takes,
+   *  as the player reads them: the editor offers every kind. */
   const midi = rules.midi_event_shapes();
 
   /** An event's fields other than its type, with their values. */
@@ -148,9 +149,13 @@
     onchange();
   }
 
-  /** A field of a MIDI input's event. */
+  /** A field of a MIDI input's event, held to the range the player reads. */
   function setMidiField(input: MidiTriggerInput, field: string, raw: string) {
-    Object.assign(input.event, { [field]: Math.round(Number(raw)) || 0 });
+    const [lowest, highest] = midi.ranges[field];
+    const value = Math.round(Number(raw)) || lowest;
+    Object.assign(input.event, {
+      [field]: Math.min(highest, Math.max(lowest, value)),
+    });
     onchange();
   }
 
@@ -917,6 +922,7 @@
                 </select>
               </div>
               {#each midiFields(input.event) as [field, value] (field)}
+                {@const [lowest, highest] = midi.ranges[field]}
                 <div class="field">
                   <label for="trigger-midi-{field}-{i}"
                     >{$t(`trigger.midiField.${field}`)}</label
@@ -924,6 +930,8 @@
                   <input
                     id="trigger-midi-{field}-{i}"
                     type="number"
+                    min={lowest}
+                    max={highest}
                     class="input"
                     {value}
                     onchange={(e) =>

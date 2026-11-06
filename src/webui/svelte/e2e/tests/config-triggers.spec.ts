@@ -182,3 +182,29 @@ samples: {}
     program: 7,
   });
 });
+
+test("a MIDI field is held to the range the player reads", async ({ page }) => {
+  await page.goto("/#/config");
+  await page.locator(".profile-row", { hasText: "test-host" }).click();
+  await page.locator(".tab", { hasText: "Triggers" }).click();
+  await page.getByRole("button", { name: "Enable Triggers" }).click();
+  await page.getByRole("button", { name: "+ MIDI" }).click();
+  await page
+    .locator('[id^="trigger-midi-type-"]')
+    .selectOption("control_change");
+  await page.locator('[id^="trigger-midi-value-"]').fill("200");
+  await page.locator('[id^="trigger-midi-value-"]').blur();
+  await page.locator('[id^="trigger-midi-channel-"]').fill("0");
+  await page.locator('[id^="trigger-midi-channel-"]').blur();
+
+  const saved = page.waitForRequest(
+    (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  expect((await saved).postDataJSON().profile.trigger.inputs[0].event).toEqual({
+    type: "control_change",
+    channel: 1,
+    controller: 0,
+    value: 127,
+  });
+});
