@@ -65,6 +65,16 @@ pub(crate) fn is_position_channel(channel: &str) -> bool {
     matches!(CrossKind::of(channel), CrossKind::Position)
 }
 
+/// The byte a DMX value (0 to 255) goes out as: rounded to the nearest,
+/// within a byte's reach, and 0 for not a number. The one rule every
+/// level becomes a byte by: a light show's on an 8-bit channel (its 0..1
+/// level times 255), a colour's, a snapshot's for any channel, and MIDI
+/// DMX's.
+pub fn dmx_byte(value: f64) -> u8 {
+    // `as` saturates, and takes not a number to 0.
+    value.round() as u8
+}
+
 /// The value `t` of the way (0.0 to 1.0) from `a` to `b`: exactly `a` at
 /// 0 and exactly `b` at 1, and exactly `a` throughout when the two are
 /// equal.
@@ -296,7 +306,8 @@ fn lamps<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> Vec<Lamp> {
             .unwrap_or(false)
     };
     // Each part's emitter and colour; `None` for a part with no emitter.
-    let emitted: BTreeMap<(&str, &str), Option<(f64, [f64; 3])>> = parts
+    type Emitted = Option<(f64, [f64; 3])>;
+    let emitted: BTreeMap<(&str, &str), Emitted> = parts
         .iter()
         .map(|(&key, light)| {
             let flag = |name: &str| {
@@ -307,8 +318,8 @@ fn lamps<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> Vec<Lamp> {
                     .unwrap_or(0.0)
             };
             let subtractive = subtractive(key);
-            let emitted = light.emitted(subtractive, &flag);
-            let color = emitted.map(|emitted| light.color(subtractive, &flag, emitted));
+            let emitted = light.emitted(subtractive, flag);
+            let color = emitted.map(|emitted| light.color(subtractive, flag, emitted));
             (key, emitted.zip(color))
         })
         .collect();
@@ -365,7 +376,8 @@ mod tests {
     /// where `is_lit` has it dark.
     #[test]
     fn a_fixture_shows_its_colour_times_its_dimmer() {
-        let cases: &[(&[(&str, f64)], [u8; 3])] = &[
+        type Case<'a> = (&'a [(&'a str, f64)], [u8; 3]);
+        let cases: &[Case] = &[
             (&[("red", 255.0), ("dimmer", 0.0)], [0, 0, 0]),
             (&[("red", 255.0), ("dimmer", 51.0)], [51, 0, 0]),
             (&[("red", 255.0), ("green", 128.0)], [255, 128, 0]),

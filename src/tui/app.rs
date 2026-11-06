@@ -177,7 +177,7 @@ fn fixture_colors_from_snapshot(fixtures: &[FixtureSnapshot]) -> Vec<FixtureColo
                     .iter()
                     .map(|(name, &value)| (name.as_str(), f64::from(value))),
             )
-            .map(|c| crate::lighting::effects::dmx_byte(c * 255.0));
+            .map(|c| crate::lighting::channels::dmx_byte(c * 255.0));
             FixtureColor {
                 name: f.name.clone(),
                 r,

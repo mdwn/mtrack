@@ -801,7 +801,7 @@ impl StrobeMap<'_> {
     }
 
     /// The normalized (0..1) value the strobe channel is driven to for
-    /// `hz`, which [`dmx_byte`](super::dmx_byte) rounds to the byte. A
+    /// `hz`, which [`dmx_byte`](crate::lighting::channels::dmx_byte) rounds to the byte. A
     /// tabled map lands on its byte exactly.
     pub fn normalized(&self, hz: f64) -> f64 {
         match *self {

@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use super::types::EffectLayer;
+use crate::lighting::channels::dmx_byte;
 use crate::lighting::types::{ChannelDef, PhysicalUnit};
 
 /// The full 16-bit DMX scale a resolved value is expressed on.
@@ -140,15 +141,6 @@ fn spread(def: &ChannelDef, high: u8, low: Option<u8>) -> impl Iterator<Item = (
 pub fn fanout(def: &ChannelDef, value16: u16) -> impl Iterator<Item = (u16, u8)> + '_ {
     let [high, low] = value16.to_be_bytes();
     spread(def, high, Some(low))
-}
-
-/// The byte a DMX value (0 to 255) goes out as: rounded to the nearest,
-/// within a byte's reach, and 0 for not a number. The one rule every
-/// level becomes a byte by: a light show's on an 8-bit channel (its 0..1
-/// level times 255), a snapshot's for any channel, and MIDI DMX's.
-pub fn dmx_byte(value: f64) -> u8 {
-    // `as` saturates, and takes not a number to 0.
-    value.round() as u8
 }
 
 /// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use tracing::error;
 
 use crate::config;
-use crate::lighting::effects::dmx_byte;
+use crate::lighting::channels::dmx_byte;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
