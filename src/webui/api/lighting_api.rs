@@ -576,6 +576,7 @@ fn require_declares(
                     .map(|r| BrokenLightingFile {
                         file: r.file.clone(),
                         parse_error: r.parse_error.clone().unwrap_or_default(),
+                        also_mentions: r.also_mentions.clone(),
                     })
                     .collect(),
             },
@@ -7305,41 +7306,82 @@ show "test" {
             .contains("\"Club (Main)\""));
     }
 
-    /// A broken stem file that opens blocks only for another name is that
-    /// name's: "Club Main" beside a broken `club_main.light` holding only
-    /// "Club (Main)" gets a file of its own, and a delete finds nothing.
+    /// A broken file at a name's stem is the name's to replace, whatever it
+    /// seems to hold: "Club Main" beside a broken `club_main.light` that
+    /// seems to hold only "Club (Main)" is a 409 offering to replace it,
+    /// listing what it may hold, and a confirmed save keeps it aside.
     #[tokio::test]
-    async fn a_broken_stem_file_holding_only_others_is_named_past() {
+    async fn a_broken_stem_file_is_offered_for_replacing_whatever_it_seems_to_hold() {
         let (state, _dir) = test_state();
         let dir = _dir.path().join("v_broken_stem");
         std::fs::create_dir(&dir).unwrap();
         let broken = "venue \"Club (Main)\" {\n";
         std::fs::write(dir.join("club_main.light"), broken).unwrap();
-        let (status, parsed) = fixture_type_request(
-            state.clone(),
-            "DELETE",
-            "/lighting/venues/Club%20Main?dir=v_broken_stem".to_string(),
-            "text/plain",
-            Body::empty(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{parsed}");
-        let (status, parsed) = fixture_type_request(
-            state,
-            "PUT",
-            "/lighting/venues/Club%20Main?dir=v_broken_stem".to_string(),
-            "text/plain",
-            Body::from(sample_venue_dsl("Club Main")),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let uri = "/lighting/venues/Club%20Main?dir=v_broken_stem";
+        let put = |query: &'static str| {
+            fixture_type_request(
+                state.clone(),
+                "PUT",
+                format!("{uri}{query}"),
+                "text/plain",
+                Body::from(sample_venue_dsl("Club Main")),
+            )
+        };
+        let (status, parsed) = put("").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "club_main.light");
         assert_eq!(
-            std::fs::read_to_string(dir.join("club_main.light")).unwrap(),
-            broken
+            parsed["broken_files"][0]["also_mentions"],
+            json!(["venue Club (Main)"])
         );
-        assert!(std::fs::read_to_string(dir.join("club_main_2.light"))
+        let (status, parsed) = put("&replace_broken=club_main.light").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let kept = parsed["kept"][0].as_str().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), broken);
+        assert!(std::fs::read_to_string(dir.join("club_main.light"))
             .unwrap()
             .contains("\"Club Main\""));
+    }
+
+    /// However a broken file confuses the block scan (an unclosed quote, a
+    /// `\"` the grammar does not have, a name that is not quoted, a TODO
+    /// naming a block keyword, a word like `show-par`), it is offered for
+    /// replacing, and kept aside when replaced.
+    #[tokio::test]
+    async fn any_broken_file_is_offered_and_kept() {
+        let (state, _dir) = test_state();
+        for (n, text) in [
+            "venue \"Club\" {\n  label: \"oops\n}\nvenue \"Arena\" {\n",
+            "venue \"Club\" {\n  label: \"a \\\" b\"\n}\nvenue \"Arena\" {\n",
+            "venue Club {\n",
+            "venue \"Club\" {\n  // TODO: move this to the show\n",
+            "venue \"Club\" {\n  fixture \"P\" show-par @ 1:1\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let rel = format!("v_scan_{n}");
+            let dir = _dir.path().join(&rel);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("club.light"), text).unwrap();
+            let send = |query: String| {
+                fixture_type_request(
+                    state.clone(),
+                    "PUT",
+                    format!("/lighting/venues/Club?dir={rel}{query}"),
+                    "text/plain",
+                    Body::from(sample_venue_dsl("Club")),
+                )
+            };
+            let (status, parsed) = send(String::new()).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{text:?}: {parsed}");
+            assert_eq!(parsed["broken"], true, "{text:?}: {parsed}");
+            assert_eq!(parsed["broken_files"][0]["file"], "club.light", "{text:?}");
+            let (status, parsed) = send("&replace_broken=club.light".to_string()).await;
+            assert_eq!(status, StatusCode::OK, "{text:?}: {parsed}");
+            let kept = parsed["kept"][0].as_str().unwrap();
+            assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), *text);
+        }
     }
 
     /// No file is written under a hidden name, which the loaders pass over.
@@ -7387,11 +7429,12 @@ show "test" {
     }
 
     /// The one rule for a file a save or delete acts on: only one that
-    /// declares the name. A file at the stem (any case) that holds another
-    /// venue or type, whether it reads (a venue's) or not (a broken fixture
-    /// type file opening only Spot's block), is not the name's: a save writes
-    /// a file of its own past it, a delete acts on that one, and the file at
-    /// the stem is left as it is.
+    /// declares the name. A venue file at the stem (any case) that reads and
+    /// holds another venue is not the venue's: a save writes a file of its
+    /// own past it, a delete acts on that one, and the file at the stem is
+    /// left as it is. A broken fixture type file at the stem is the type's,
+    /// whatever it seems to hold: refused with 409 by the raw save, the form
+    /// save and the delete (each offering to replace it), and left as it is.
     #[tokio::test]
     async fn saves_and_deletes_refuse_a_file_not_holding_the_name() {
         let (state, _dir) = test_state();
@@ -7464,7 +7507,7 @@ show "test" {
                 .await;
                 assert_eq!(
                     status,
-                    StatusCode::OK,
+                    StatusCode::CONFLICT,
                     "{file} {method} {content_type}: {parsed}"
                 );
             }
@@ -7614,27 +7657,22 @@ show "test" {
             std::fs::read_to_string(dir.join(kept)).unwrap(),
             "venue \"Club\" {\n"
         );
-        // A broken file that opens another venue's block too is never
-        // removed: the refusal names what it holds, and offers nothing.
-        std::fs::write(
-            dir.join("club.light"),
-            "venue \"Club\" {\n}\nvenue \"Arena\" {\n",
-        )
-        .unwrap();
+        // A broken file that seems to open another venue's block too is
+        // offered for removing, listing what it may hold, and kept aside
+        // with both blocks when removed.
+        let both = "venue \"Club\" {\n}\nvenue \"Arena\" {\n";
+        std::fs::write(dir.join("club.light"), both).unwrap();
         let (status, parsed) = request(
             "DELETE",
-            "/lighting/venues/Club?dir=v_rb&replace_broken=club.light".into(),
+            "/lighting/venues/Club?dir=v_rb".into(),
             String::new(),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert_eq!(parsed["broken"], false, "{parsed}");
-        assert!(
-            parsed["error"]
-                .as_str()
-                .unwrap()
-                .contains("venue \"Arena\""),
-            "{parsed}"
+        assert_eq!(parsed["broken"], true, "{parsed}");
+        assert_eq!(
+            parsed["broken_files"][0]["also_mentions"],
+            json!(["venue Arena"])
         );
         assert!(
             parsed["error"]
@@ -7643,6 +7681,15 @@ show "test" {
                 .contains("would be removed"),
             "{parsed}"
         );
+        let (status, parsed) = request(
+            "DELETE",
+            "/lighting/venues/Club?dir=v_rb&replace_broken=club.light".into(),
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let kept = parsed["kept"][0].as_str().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), both);
     }
 
     /// "Replace it" works for each shape a save comes in: a venue saved as
@@ -7784,54 +7831,53 @@ show "test" {
         assert_eq!(parsed["file"], "robe_esprite.fixture");
         assert!(!dir.join("robe-esprite.fixture").exists());
 
-        // A broken file that opens blocks for other names too is never
-        // replaced: a venue's (`tour/all.light`: Club and Arena), and a
-        // fixture type's (`show.light`: fixture type Par and venue Club).
-        let dir = _dir.path().join("v_multi");
-        std::fs::create_dir_all(dir.join("tour")).unwrap();
-        let all = "venue \"Club\" {\n}\nvenue \"Arena\" {\n";
-        std::fs::write(dir.join("tour/all.light"), all).unwrap();
-        let (status, parsed) = send(
-            "PUT",
-            "/lighting/venues/Club?dir=v_multi&replace_broken=tour/all.light".into(),
-            "text/plain",
-            sample_venue_dsl("Club"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert_eq!(parsed["broken"], false, "{parsed}");
-        assert!(
-            parsed["error"]
-                .as_str()
-                .unwrap()
-                .contains("venue \"Arena\""),
-            "{parsed}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("tour/all.light")).unwrap(),
-            all
-        );
-
-        let dir = _dir.path().join("ft_multi");
-        std::fs::create_dir(&dir).unwrap();
-        let show = "fixture_type \"Par\" {\n}\nvenue \"Club\" {\n";
-        std::fs::write(dir.join("show.light"), show).unwrap();
-        let (status, parsed) = send(
-            "PUT",
-            "/lighting/fixture-types/Par?dir=ft_multi&replace_broken=show.light".into(),
-            "text/plain",
-            sample_fixture_type_dsl("Par"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert!(
-            parsed["error"].as_str().unwrap().contains("venue \"Club\""),
-            "{parsed}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("show.light")).unwrap(),
-            show
-        );
+        // A broken file that seems to open blocks for other names too is
+        // offered for replacing all the same, listing them, and kept aside
+        // with every block when replaced: a venue's (`tour/all.light`: Club
+        // and Arena), and a fixture type's (`show.light`: fixture type Par
+        // and venue Club).
+        for (rel, file, uri, body, also, text) in [
+            (
+                "v_multi",
+                "tour/all.light",
+                "/lighting/venues/Club",
+                sample_venue_dsl("Club"),
+                "venue Arena",
+                "venue \"Club\" {\n}\nvenue \"Arena\" {\n",
+            ),
+            (
+                "ft_multi",
+                "show.light",
+                "/lighting/fixture-types/Par",
+                sample_fixture_type_dsl("Par"),
+                "venue Club",
+                "fixture_type \"Par\" {\n}\nvenue \"Club\" {\n",
+            ),
+        ] {
+            let dir = _dir.path().join(rel);
+            std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(file), text).unwrap();
+            let (status, parsed) = send(
+                "PUT",
+                format!("{uri}?dir={rel}"),
+                "text/plain",
+                body.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+            assert_eq!(parsed["broken_files"][0]["file"], file, "{parsed}");
+            assert_eq!(parsed["broken_files"][0]["also_mentions"], json!([also]));
+            let (status, parsed) = send(
+                "PUT",
+                format!("{uri}?dir={rel}&replace_broken={file}"),
+                "text/plain",
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{parsed}");
+            let kept = parsed["kept"][0].as_str().unwrap();
+            assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), text);
+        }
 
         // A file named with a comma is named back as written.
         let dir = _dir.path().join("v_comma");

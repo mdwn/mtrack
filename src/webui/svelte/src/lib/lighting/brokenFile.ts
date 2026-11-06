@@ -51,17 +51,25 @@ export async function offeringToReplaceBroken(
   if (broken.length === 0) return res;
   const tr = get(t);
   const [first] = broken;
+  // What the files may also hold, as far as a file that does not parse can
+  // be read: said when anything was found, nothing extra when not.
+  const blocks = [...new Set(broken.flatMap((f) => f.also_mentions))];
+  const also =
+    blocks.length > 0
+      ? tr("lighting.brokenFileAlso", { values: { blocks: blocks.join(", ") } })
+      : "";
   const question =
     broken.length === 1
       ? tr(
           acting === "save"
             ? "lighting.brokenFileReplace"
             : "lighting.brokenFileRemove",
-          { values: { file: first.file, error: first.parse_error } },
+          { values: { file: first.file, error: first.parse_error, also } },
         )
       : tr("lighting.brokenFilesReplace", {
           values: {
             files: broken.map((f) => `${f.file} (${f.parse_error})`).join("; "),
+            also,
           },
         });
   const confirmed = await showConfirm(question, {

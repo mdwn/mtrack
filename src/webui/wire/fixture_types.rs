@@ -229,6 +229,10 @@ pub struct LightingFileRefusal {
 pub struct BrokenLightingFile {
     pub file: String,
     pub parse_error: String,
+    /// Other named blocks the file seems to hold (`venue Arena`), as far as
+    /// a file that does not parse can be read: for the person to weigh, as
+    /// it is kept aside if replaced either way.
+    pub also_mentions: Vec<String>,
 }
 
 /// A deleted fixture type, and what became of its archive.

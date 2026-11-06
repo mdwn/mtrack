@@ -142,8 +142,16 @@ test.describe("Venues Management", () => {
           broken: true,
           parse_error: "line 1: expected }",
           broken_files: [
-            { file: "a/club.light", parse_error: "line 1: expected }" },
-            { file: "club.venue", parse_error: "line 4: unknown fixture" },
+            {
+              file: "a/club.light",
+              parse_error: "line 1: expected }",
+              also_mentions: ["venue Arena"],
+            },
+            {
+              file: "club.venue",
+              parse_error: "line 4: unknown fixture",
+              also_mentions: [],
+            },
           ],
         } satisfies LightingFileRefusal),
       });
@@ -156,7 +164,7 @@ test.describe("Venues Management", () => {
       .click();
     const dialog = page.locator(".dialog-overlay");
     await expect(dialog).toContainText(
-      "These files don't read: a/club.light (line 1: expected }); club.venue (line 4: unknown fixture). Replace them?",
+      "These files don't read: a/club.light (line 1: expected }); club.venue (line 4: unknown fixture). It may also hold: venue Arena. The old file is kept as a backup either way. Replace them?",
     );
     await dialog.getByRole("button", { name: "Replace it" }).click();
     await expect.poll(() => puts.length).toBe(2);

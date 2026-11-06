@@ -148,12 +148,13 @@ pub fn new_file_stem(
         .expect("some suffix is free")
 }
 
-/// Why a lighting file does not read, and the blocks it opens all the same
-/// (`venue "Club"`, `fixture_type "Par"`), by their header lines.
+/// Why a lighting file does not read, and the named blocks it seems to
+/// open all the same (`venue "Club"`, `fixture_type "Par"`): information to
+/// show, and to find a half-edited file by the name it opens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Unread {
     pub error: String,
-    /// Each block header: its keyword and the name it opens.
+    /// Each named block header found: its keyword and the name.
     pub blocks: Vec<(String, String)>,
 }
 
@@ -166,56 +167,28 @@ impl std::fmt::Display for Unread {
 /// What a lighting file declares, or why it does not read.
 pub type Declares = Result<Vec<String>, Unread>;
 
-/// The keywords that open a top-level block of a lighting file, read from
-/// the grammar's own `file` rule (`include | fixture_type | venue | …`),
-/// each rule's opening literal: `include`, `fixture_type`, `venue`, `show`,
-/// `sequence`, `tempo`. What the grammar adds, this counts.
-fn block_keywords() -> &'static [String] {
-    static KEYWORDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    KEYWORDS.get_or_init(|| {
-        let grammar = include_str!("grammar.pest");
-        let rule_body = |rule: &str| {
-            grammar.lines().find_map(|line| {
-                let (name, body) = line.split_once('=')?;
-                (name.trim() == rule).then(|| body.to_string())
-            })
-        };
-        let file = rule_body("file").expect("the grammar has a `file` rule");
-        let alternatives = file
-            .split_once('(')
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(alts, _)| alts)
-            .expect("`file` lists its blocks in parentheses");
-        alternatives
-            .split('|')
-            .filter_map(|rule| {
-                let body = rule_body(rule.trim())?;
-                let (_, rest) = body.split_once('"')?;
-                Some(rest.split_once('"')?.0.to_string())
-            })
-            .collect()
-    })
-}
+/// The keywords of the blocks a file can name (`venue "Club"`): what a
+/// broken file is said to "maybe hold".
+const NAMED_BLOCKS: &[&str] = &["venue", "fixture_type", "show", "sequence"];
 
-/// The blocks `text` opens, as the person wrote them: each block keyword
-/// ([`block_keywords`]) as a whole word anywhere outside strings and
-/// comments, at any depth (a broken file's braces may not balance), with the
-/// name that follows it past any whitespace or comments (`venue  "Arena"`,
-/// `venue\n"Arena"`, `venue"Arena"`, several on one line); a block with no
-/// name (`tempo { … }`) has an empty one. Read loosely on purpose: it is
-/// what a file that does not parse would lose if replaced, so it errs
-/// toward finding a block.
+/// The named blocks `text` seems to open, as information only, never a
+/// decision: a file that does not parse cannot be read exactly. Each of
+/// [`NAMED_BLOCKS`] as a whole word (letters, digits, `_` and `-`, as the
+/// grammar's names run) outside strings and comments, followed past any
+/// whitespace or comments by a quoted name, which as in the grammar has no
+/// escapes; a block keyword with no quoted name is passed over.
 fn block_headers(text: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = text.chars().collect();
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    let is_comment = |i: usize| {
+        chars.get(i) == Some(&'#') || (chars.get(i) == Some(&'/') && chars.get(i + 1) == Some(&'/'))
+    };
     // Past whitespace and comments from `i`.
     let skip = |mut i: usize| loop {
         while i < chars.len() && chars[i].is_whitespace() {
             i += 1;
         }
-        let comment = chars.get(i) == Some(&'#')
-            || (chars.get(i) == Some(&'/') && chars.get(i + 1) == Some(&'/'));
-        if !comment {
+        if !is_comment(i) {
             return i;
         }
         while i < chars.len() && chars[i] != '\n' {
@@ -224,16 +197,10 @@ fn block_headers(text: &str) -> Vec<(String, String)> {
     };
     // The string opening at `i` (a quote), and the index past it.
     let string_at = |i: usize| {
-        let mut out = String::new();
-        let mut j = i + 1;
-        while j < chars.len() && chars[j] != '"' {
-            if chars[j] == '\\' && j + 1 < chars.len() {
-                j += 1;
-            }
-            out.push(chars[j]);
-            j += 1;
-        }
-        (out, j + 1)
+        let end = (i + 1..chars.len())
+            .find(|&j| chars[j] == '"')
+            .unwrap_or(chars.len());
+        (chars[i + 1..end].iter().collect::<String>(), end + 1)
     };
     let mut out = Vec::new();
     let mut i = 0;
@@ -241,23 +208,23 @@ fn block_headers(text: &str) -> Vec<(String, String)> {
         let c = chars[i];
         if c == '"' {
             i = string_at(i).1;
-        } else if c == '#' || (c == '/' && chars.get(i + 1) == Some(&'/')) {
+        } else if is_comment(i) {
             i = skip(i);
         } else if is_word(c) && (i == 0 || !is_word(chars[i - 1])) {
             let end = (i..chars.len())
                 .find(|&j| !is_word(chars[j]))
                 .unwrap_or(chars.len());
             let word: String = chars[i..end].iter().collect();
-            if block_keywords().contains(&word) {
-                let next = skip(end);
-                let name = if chars.get(next) == Some(&'"') {
-                    string_at(next).0
-                } else {
-                    String::new()
-                };
-                out.push((word, name));
+            let next = skip(end);
+            if NAMED_BLOCKS.contains(&word.as_str()) && chars.get(next) == Some(&'"') {
+                let (name, past) = string_at(next);
+                if !name.is_empty() {
+                    out.push((word, name));
+                }
+                i = past;
+            } else {
+                i = end;
             }
-            i = end;
         } else {
             i += 1;
         }
@@ -311,9 +278,12 @@ pub struct Refusal {
     pub file: String,
     /// What is wrong with it: `it holds "Other"`, `it does not read: …`.
     pub why: String,
-    /// Its parse error, when it does not read and holds nothing but the
-    /// name: the one case a person may choose to replace it.
+    /// Its parse error, when it does not read: the one case a person may
+    /// choose to replace it (the file kept aside either way).
     pub parse_error: Option<String>,
+    /// The other named blocks a file that does not read seems to open
+    /// (`venue "Arena"`), for the person to weigh: information only.
+    pub also_mentions: Vec<String>,
 }
 
 /// The one rule for a venue or fixture type file that a save or delete of
@@ -323,12 +293,10 @@ pub struct Refusal {
 ///
 /// - A file that declares `name` may be acted on.
 /// - One that reads and holds only other names is refused.
-/// - One that does not read but opens blocks for other names (a broken
-///   `all.light` holding Club and Arena) is refused too, naming them:
-///   replacing it would lose them.
-/// - One that does not read and opens no block but this one's is refused,
-///   unless `replace_broken` names exactly that file (a person who was shown
-///   its parse error and chose to replace it).
+/// - One that does not read is refused, unless `replace_broken` names
+///   exactly that file: a person who was shown its parse error, and the
+///   other blocks it seems to hold, chose to replace it. It is kept aside
+///   either way, so nothing it held is lost.
 ///
 /// `shown` is the file as the person sees it: its path in its directory
 /// ([`display_in`]), so one of two alike-named files in two subdirectories
@@ -340,52 +308,36 @@ pub fn may_act_on(
     declares: &Declares,
     replace_broken: &[String],
 ) -> Result<(), Refusal> {
-    let listed = |mut items: Vec<String>| {
-        items.sort();
-        items.dedup();
-        items.join(", ")
-    };
-    let (why, parse_error) = match declares {
+    let (why, parse_error, also_mentions) = match declares {
         Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
-        Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None),
-        Ok(names) => (
-            format!(
-                "it holds {}",
-                listed(names.iter().map(|n| format!("\"{n}\"")).collect())
-            ),
-            None,
-        ),
+        Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None, Vec::new()),
+        Ok(names) => {
+            let mut names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+            names.sort();
+            (format!("it holds {}", names.join(", ")), None, Vec::new())
+        }
+        Err(_) if replace_broken.iter().any(|f| f == shown) => return Ok(()),
         Err(unread) => {
-            let others: Vec<String> = unread
+            let mut also: Vec<String> = unread
                 .blocks
                 .iter()
                 .filter(|(k, n)| !(k == keyword && n == name))
-                .map(|(k, n)| format!("{k} \"{n}\""))
+                .map(|(k, n)| format!("{k} {n}"))
                 .collect();
-            if !others.is_empty() {
-                (
-                    format!(
-                        "it does not read ({}), and it also holds {}, which replacing it would \
-                         lose",
-                        unread.error,
-                        listed(others)
-                    ),
-                    None,
-                )
-            } else if replace_broken.iter().any(|f| f == shown) {
-                return Ok(());
-            } else {
-                (
-                    format!("it does not read: {}", unread.error),
-                    Some(unread.error.clone()),
-                )
-            }
+            also.sort();
+            also.dedup();
+            (
+                format!("it does not read: {}", unread.error),
+                Some(unread.error.clone()),
+                also,
+            )
         }
     };
     Err(Refusal {
         file: shown.to_string(),
         why,
         parse_error,
+        also_mentions,
     })
 }
 
@@ -400,11 +352,10 @@ pub struct Located {
 /// The one rule for the file a name lives in, in a lighting directory: the
 /// first file at any depth that declares it (as the lighting system loads
 /// it); else a file at the name's stem ([`name_stem`], in any case) that
-/// does not read, unless the blocks it opens are all other names'; else a
-/// file elsewhere that does not read but opens a block for the name (one an
-/// older stem named, half-edited). A stem file that holds other names,
-/// whether it reads or not, is not the name's: a new file is named past it
-/// ([`new_file_stem`]). `None` is a name no file holds or claims.
+/// does not read; else a file elsewhere that does not read but seems to open
+/// a block for the name (one an older stem named, half-edited). A stem file
+/// that reads and holds other names is not the name's: a new file is named
+/// past it ([`new_file_stem`]). `None` is a name no file holds or claims.
 fn locate(
     dir: &Path,
     name: &str,
@@ -430,13 +381,7 @@ fn locate(
     }
     for path in crate::util::files_at_stem(dir, &name_stem(name), extensions) {
         let declares = declared(&path);
-        // A broken stem file that opens blocks only for other names is
-        // theirs, as one that reads would be: a new file is named past it.
-        let others_only = declares.as_ref().err().is_some_and(|unread| {
-            !unread.blocks.is_empty()
-                && !unread.blocks.iter().any(|(k, n)| k == keyword && n == name)
-        });
-        if declares.is_err() && !others_only {
+        if declares.is_err() {
             return Ok(Some(Located { path, declares }));
         }
     }
@@ -654,12 +599,12 @@ mod tests {
             new_file_stem(d, "Club-2", VENUE_EXTENSIONS, &|_| false),
             "club-2_2"
         );
-        // Nor is a broken one opening only another venue's block; a broken
-        // one opening nothing but this name's, or no block at all, is.
+        // A broken one is, whatever it seems to hold: the scan of a file
+        // that does not parse decides nothing.
         write(d, "club-2.venue", "venue \"Other\" {\n");
         assert_eq!(
             locate_venue(d, "Club-2").unwrap().unwrap().path,
-            d.join("club_2.venue")
+            d.join("club-2.venue")
         );
         write(d, "club-2.venue", "{{{\n");
         assert_eq!(
@@ -686,10 +631,12 @@ mod tests {
         assert!(locate_venue(d, "Nowhere").unwrap().is_none());
     }
 
-    /// The block scan finds a block however its header is written, and
-    /// every block keyword the grammar's `file` rule allows.
+    /// The block scan, information only, reads names as the grammar does:
+    /// a quoted name past any whitespace or comments, no escapes, and only
+    /// the blocks a file names (`venue`, `fixture_type`, `show`,
+    /// `sequence`); a bare keyword word (`show-par`, a TODO) is no block.
     #[test]
-    fn block_headers_read_any_spacing_and_every_block() {
+    fn block_headers_read_named_blocks_as_the_grammar_does() {
         let names = |text: &str| block_headers(text);
         let arena = ("venue".to_string(), "Arena".to_string());
         for text in [
@@ -701,28 +648,22 @@ mod tests {
         ] {
             assert_eq!(names(text), std::slice::from_ref(&arena), "{text:?}");
         }
-        let one_line = names("venue \"Club\" {} venue \"Arena\" {");
-        assert_eq!(one_line.len(), 2, "{one_line:?}");
+        assert_eq!(names("venue \"Club\" {} venue \"Arena\" {").len(), 2);
         let kinds: Vec<String> = names(
             "sequence \"strike\" {}\nshow \"Song\" {}\ntempo {}\ninclude \"x.light\"\n\
-             fixture_type \"Par\" {\n  label: \"venue \\\"Not\\\"\" // venue \"Nope\"\n",
+             fixture_type \"Par\" {\n  label: \"a venue\" // venue \"Nope\"\n",
         )
         .into_iter()
         .map(|(k, _)| k)
         .collect();
-        assert_eq!(
-            kinds,
-            ["sequence", "show", "tempo", "include", "fixture_type"]
-        );
-        for keyword in [
-            "include",
-            "fixture_type",
-            "venue",
-            "show",
-            "sequence",
-            "tempo",
+        assert_eq!(kinds, ["sequence", "show", "fixture_type"]);
+        for nothing in [
+            "// TODO: move this to the show\n",
+            "fixture show-par {",
+            "venue Club {",
+            "venue \"\" {",
         ] {
-            assert!(block_keywords().iter().any(|k| k == keyword), "{keyword}");
+            assert!(names(nothing).is_empty(), "{nothing:?}");
         }
     }
 
@@ -785,12 +726,14 @@ mod tests {
         let refused = act(&foreign, &["a/Par.light"]).unwrap_err();
         assert_eq!(refused.parse_error, None);
         assert!(refused.why.contains("\"Spot\""), "{refused:?}");
-        // A broken file that also opens another name's block is not
-        // replaced, flag or no flag, and says what it would lose.
+        // A broken file that seems to open another name's block too may be
+        // replaced all the same (it is kept aside); the refusal lists what
+        // it seems to hold, for the person to weigh.
         let shared = Err(unread(&[("fixture_type", "Par"), ("venue", "Club")]));
-        let refused = act(&shared, &["a/Par.light"]).unwrap_err();
-        assert_eq!(refused.parse_error, None);
-        assert!(refused.why.contains("venue \"Club\""), "{refused:?}");
+        let refused = act(&shared, &[]).unwrap_err();
+        assert!(refused.parse_error.is_some());
+        assert_eq!(refused.also_mentions, ["venue Club"]);
+        assert!(act(&shared, &["a/Par.light"]).is_ok());
     }
 
     /// A link is followed to what is inside the directory only: one out of
