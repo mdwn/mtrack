@@ -30,6 +30,7 @@ import type {
   MvrImportAnswer,
   FixtureSettingsData,
   FixtureTypeEntry,
+  FixtureTypeList,
   FixtureTypeGdtf,
   GdtfImport,
   GdtfInspection,
@@ -384,7 +385,7 @@ app.get("/api/lighting/fixture-types", (_req, res) => {
       { ...entry, dsl: undefined },
     ]),
   );
-  res.json({ fixture_types });
+  res.json({ fixture_types, errors: [] } satisfies FixtureTypeList);
 });
 
 app.get("/api/lighting/fixture-types/:name", (req, res) => {
