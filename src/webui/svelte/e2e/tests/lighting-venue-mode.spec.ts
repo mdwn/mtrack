@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import type { GdtfMode } from "../../src/gen/rules/mtrack_rules";
+import { sendWs } from "../support/ws";
 
 // The venue inspector's mode select and patch strip (venue-exchange design
 // §21). Every test routes its own venue file, fixture types, archive and
@@ -88,12 +89,6 @@ function rig(): VenueBody {
 }
 
 let counter = 0;
-
-async function sendWs(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Serves one venue and everything the inspector asks about it; collects
  *  the PUTs. */

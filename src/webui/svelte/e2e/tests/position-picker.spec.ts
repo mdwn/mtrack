@@ -18,6 +18,8 @@
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
+import { playbackState } from "../support/playback";
 
 const SONG = "Test Song Beta";
 const ENC = encodeURIComponent(SONG);
@@ -53,27 +55,17 @@ async function openWithPlayhead(page: Page, yaml = SONG_YAML): Promise<void> {
   await routes(page, yaml);
   await page.goto(`/?wsId=${wsId}#/songs/${ENC}/sections`);
   await expect(page.locator(".section-timeline-editor")).toBeVisible();
-  const res = await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: {
-      type: "playback",
-      is_playing: false,
+  await sendWs(
+    page,
+    wsId,
+    playbackState({
       elapsed_ms: 5000,
       song_name: SONG,
       song_duration_ms: 34000,
-      playlist_name: "setlist",
-      playlist_position: 1,
-      playlist_at_first: false,
-      playlist_at_last: true,
       playlist_songs: [SONG],
-      tracks: [],
       available_playlists: ["setlist"],
-      persisted_playlist_name: "setlist",
-      locked: false,
-      available_sections: [],
-      _wsId: wsId,
-    },
-  });
-  expect((await res.json()).sent).toBe(1);
+    }),
+  );
   await expect(page.locator(".playhead-info__pos")).toHaveText("m3.3");
 }
 

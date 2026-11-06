@@ -614,13 +614,7 @@ mod tests {
         port
     }
 
-    fn dead_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
+    use crate::testutil::net::free_tcp_port as dead_port;
 
     fn write_project(root: &FsPath, venue: Option<&str>) {
         std::fs::create_dir_all(root.join("lighting/fixture_types")).unwrap();
@@ -629,10 +623,7 @@ mod tests {
         std::fs::write(root.join("lighting/fixture_types/par.light"), PAR).unwrap();
         std::fs::write(
             root.join("lighting/library/synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf(),
         )
         .unwrap();
         if let Some(venue) = venue {

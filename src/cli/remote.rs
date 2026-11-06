@@ -271,10 +271,7 @@ mod tests {
 
     /// Returns an address with an OS-assigned ephemeral port that nothing is listening on.
     fn unused_addr() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        addr.to_string()
+        format!("127.0.0.1:{}", crate::testutil::net::free_tcp_port())
     }
 
     mod connect_tests {

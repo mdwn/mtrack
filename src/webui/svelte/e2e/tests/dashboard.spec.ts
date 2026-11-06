@@ -13,6 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
 import { DashboardPage } from "../pages/dashboard.page.js";
 
 test.describe("Dashboard", () => {
@@ -86,16 +87,7 @@ test.describe("Dashboard", () => {
   });
 
   test("play button triggers gRPC call", async ({ page }) => {
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/grpc-web+proto",
-          "grpc-status": "0",
-        },
-        body: Buffer.alloc(0),
-      });
-    });
+    await stubPlayerService(page);
 
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("player.v1.PlayerService"),

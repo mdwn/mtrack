@@ -703,10 +703,7 @@ mod test {
 </ChildList></Layer></Layers></Scene></GeneralSceneDescription>"#;
 
     fn synthetic_mvr(with_deck: bool) -> Vec<u8> {
-        let gdtf = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let glb = crate::lighting::import::scene_view::test_glb([-3.0, 0.0, -4.0], [3.0, 0.5, 0.0]);
         let scene = if with_deck {
             SYNTH_SCENE.to_string()

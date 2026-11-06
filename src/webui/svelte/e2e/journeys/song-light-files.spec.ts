@@ -14,6 +14,7 @@
 
 import type { Page } from "@playwright/test";
 import { api, expect, test } from "./harness";
+import { silentWav } from "../support/wav";
 
 // A song's lighting files live in the song's folder and song.yaml names
 // them from there. The editor addresses files under the songs root, which
@@ -30,24 +31,6 @@ const HOUSE = `venue "house" {
   fixture "Par 1" Par @ 1:1
 }
 `;
-
-function silentWav(samples: number): Buffer {
-  const data = samples * 2;
-  const wav = Buffer.alloc(44 + data);
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + data, 4);
-  wav.write("WAVEfmt ", 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(44100, 24);
-  wav.writeUInt32LE(88200, 28);
-  wav.writeUInt16LE(2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(data, 40);
-  return wav;
-}
 
 interface Songs {
   songs: { name: string; lighting_files: string[] }[];

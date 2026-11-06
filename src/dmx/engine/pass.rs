@@ -29,6 +29,46 @@ use crate::lighting::{
     EffectEngine,
 };
 
+/// The wall clock loop breaks' fades run on: [`Instant::now`], except on a
+/// test's thread that has set its own ([`TestClock`]) and moves it on by
+/// hand, so a fade's every frame is at a time the test chose (#654).
+pub(super) fn wall_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = TEST_CLOCK.with(std::cell::Cell::get) {
+        return now;
+    }
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// A test's own wall clock for loop breaks' fades, on this thread, until it
+/// is dropped: it stands still between [`TestClock::advance`]s.
+#[cfg(test)]
+pub(crate) struct TestClock;
+
+#[cfg(test)]
+impl TestClock {
+    pub(crate) fn start() -> TestClock {
+        TEST_CLOCK.with(|clock| clock.set(Some(Instant::now())));
+        TestClock
+    }
+
+    pub(crate) fn advance(&self, by: Duration) {
+        TEST_CLOCK.with(|clock| clock.set(clock.get().map(|now| now + by)));
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestClock {
+    fn drop(&mut self) {
+        TEST_CLOCK.with(|clock| clock.set(None));
+    }
+}
+
 /// The pass of a crossfading song loop that the lights are fading out of: the
 /// effects engine and timeline the last pass ran in, moved aside whole when
 /// the next pass began, so it plays on exactly as it was -- its remaining
@@ -128,13 +168,16 @@ impl Crossing {
         let (into, time) = match self.clock {
             PassClock::Song { lead, start } => (song_time.saturating_sub(start), song_time + lead),
             PassClock::Wall { started, from } => {
-                let elapsed = started.elapsed();
+                let elapsed = wall_now().saturating_duration_since(started);
                 (elapsed, from + elapsed)
             }
         };
         let t = match self.hurry {
             Some(Hurry { at, from, over }) => {
-                let progress = crate::section_loop::crossfade_progress(at.elapsed(), over);
+                let progress = crate::section_loop::crossfade_progress(
+                    wall_now().saturating_duration_since(at),
+                    over,
+                );
                 crate::lighting::channels::lerp(from, 1.0, progress)
             }
             None => crate::section_loop::crossfade_progress(into, self.overlap),
@@ -300,7 +343,7 @@ impl OutgoingPass {
         };
         if let PassClock::Song { lead, start } = crossing.clock {
             let into = song_time.saturating_sub(start);
-            let now = Instant::now();
+            let now = wall_now();
             let started = now.checked_sub(into).unwrap_or(now);
             crossing.clock = PassClock::Wall {
                 started,
@@ -340,12 +383,14 @@ impl OutgoingPass {
             return;
         }
         let left = match crossing.hurry {
-            Some(Hurry { at, over, .. }) => over.saturating_sub(at.elapsed()),
+            Some(Hurry { at, over, .. }) => {
+                over.saturating_sub(wall_now().saturating_duration_since(at))
+            }
             None => crossing.overlap.mul_f64(1.0 - t),
         };
         if fade < left {
             crossing.hurry = Some(Hurry {
-                at: Instant::now(),
+                at: wall_now(),
                 from: t,
                 over: fade,
             });

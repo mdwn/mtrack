@@ -1590,7 +1590,10 @@ mod test {
         config,
         playlist::Playlist,
         songs,
-        testutil::{eventually, eventually_async},
+        testutil::{
+            eventually, eventually_async,
+            player::{assets_player, assets_player_with_devices, no_devices},
+        },
     };
 
     use super::*;
@@ -1611,25 +1614,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -1826,29 +1811,6 @@ mod test {
         Ok(())
     }
 
-    /// Flexible helper to create a player with the standard test assets and
-    /// optional subsystem configs. Waits for hardware init to complete.
-    async fn make_test_player_with_config(
-        audio: Option<config::Audio>,
-        midi: Option<config::Midi>,
-        dmx: Option<config::Dmx>,
-    ) -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
-            None,
-        )?;
-        player.await_hardware_ready().await;
-        Ok(player)
-    }
-
     /// Waits until the player reports an elapsed position, and returns it.
     ///
     /// `play_start_time` is set inside `play_files` just after `clock.start()`,
@@ -1871,12 +1833,7 @@ mod test {
 
     /// Helper to create a player with the standard test assets (audio + MIDI).
     async fn make_test_player() -> Result<Arc<Player>, Box<dyn Error>> {
-        make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await
+        assets_player().midi("mock-midi-device").ready().await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2457,9 +2414,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_audio_only_no_midi() -> Result<(), Box<dyn Error>> {
-        let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
-                .await?;
+        let player = assets_player().ready().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -2491,12 +2446,11 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_midi_only_no_audio() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(
-            None,
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player()
+            .audio(None)
+            .midi("mock-midi-device")
+            .ready()
+            .await?;
 
         assert!(
             player.audio_device().is_none(),
@@ -2522,26 +2476,7 @@ mod test {
     async fn test_no_subsystems_completes_immediately() -> Result<(), Box<dyn Error>> {
         // Build a Player directly with no subsystems to exercise the
         // num_barriers == 0 early-return in play_files().
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+        let player = assets_player_with_devices(no_devices())?;
 
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
@@ -2591,12 +2526,7 @@ mod test {
             vec![config::Universe::new(1, "test".to_string())],
             None,
         );
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            None,
-            Some(dmx_config),
-        )
-        .await?;
+        let player = assets_player().dmx(Some(dmx_config)).ready().await?;
 
         assert!(
             player.dmx_engine().is_some(),
@@ -3101,27 +3031,7 @@ mod test {
 
     /// A test player on the assets' songs, with the playlist `yaml`.
     async fn make_test_player_with_playlist(yaml: &str) -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let config: config::Playlist = ::config::Config::builder()
-            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
-            .build()?
-            .try_deserialize()?;
-        let playlist = Playlist::new("playlist", &config, songs.clone())?;
-        let player = Player::new(
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
-        Ok(player)
+        assets_player().playlist_yaml(yaml).ready().await
     }
 
     async fn current_name(player: &Player) -> String {
@@ -3315,12 +3225,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn status_reporting_ends_with_its_init_round() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player().midi("mock-midi").ready().await?;
         let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
         let config: config::StatusEvents = ::config::Config::builder()
             .add_source(::config::File::from_str(
@@ -3351,12 +3256,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn status_reporting_cancelled_while_waiting_emits_nothing() -> Result<(), Box<dyn Error>>
     {
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            Some(config::Midi::new("mock-midi", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player().midi("mock-midi").ready().await?;
         let midi = player.midi_device().expect("MIDI device").to_mock()?;
         let cc = "[{ type: control_change, channel: 16, controller: 2, value: 0 }]";
         let config: config::StatusEvents = ::config::Config::builder()
@@ -3517,12 +3417,7 @@ mod test {
             vec![config::Universe::new(1, "test".to_string())],
             None,
         );
-        let player = make_test_player_with_config(
-            Some(config::Audio::new("mock-device")),
-            None,
-            Some(dmx_config),
-        )
-        .await?;
+        let player = assets_player().dmx(Some(dmx_config)).ready().await?;
 
         // get_cues() with DMX engine present (no timeline loaded → empty)
         let cues = player.get_cues();
@@ -3563,12 +3458,11 @@ mod test {
         );
 
         // Player without audio → track_mappings is None
-        let player = make_test_player_with_config(
-            None,
-            Some(config::Midi::new("mock-midi-device", None)),
-            None,
-        )
-        .await?;
+        let player = assets_player()
+            .audio(None)
+            .midi("mock-midi-device")
+            .ready()
+            .await?;
         assert!(
             player.track_mappings().is_none(),
             "track_mappings should be None without audio"
@@ -3622,40 +3516,16 @@ mod test {
         assert!(result.is_none());
     }
 
-    /// Helper to create a player with no subsystems via new_with_devices.
-    fn make_bare_player() -> Result<Player, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn test_process_sample_trigger_no_engine() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         player.process_sample_trigger(&[0x90, 60, 127]);
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stop_samples_no_engine() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         player.stop_samples();
         Ok(())
     }
@@ -3684,7 +3554,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn emit_song_change_no_device() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let song = Song::new_for_test("test", &[]);
         // Should not panic when no MIDI device is configured.
         player.emit_song_change(&song);
@@ -3723,7 +3593,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_navigate_no_midi() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
 
         player.next().await;
         let song = player.prev().await.unwrap();
@@ -3739,14 +3609,7 @@ mod test {
             &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
         )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
+        let devices = no_devices();
         let player = Player::new_with_devices(
             devices,
             test_playlists(playlist, songs),
@@ -3790,26 +3653,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_no_subsystem_player_play_and_navigate() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+        let player = assets_player_with_devices(no_devices())?;
 
         player.process_sample_trigger(&[0x90, 60, 127]);
         player.stop_samples();
@@ -3835,9 +3679,7 @@ mod test {
         let player = make_test_player().await?;
         assert!(player.midi_device().is_some());
 
-        let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
-                .await?;
+        let player = assets_player().ready().await?;
         assert!(player.midi_device().is_none());
         Ok(())
     }
@@ -4159,7 +4001,7 @@ mod test {
         }
         let path = dir.path().join("mtrack.yaml");
         fs::write(&path, "songs: songs_a\n")?;
-        let player = Arc::new(make_bare_player()?);
+        let player = Arc::new(assets_player_with_devices(no_devices())?);
         player.set_config_store(Arc::new(config::ConfigStore::new(
             config::Player::deserialize(&path)?,
             path.clone(),
@@ -4253,7 +4095,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_hardware_status_no_devices() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let status = player.hardware_status();
 
         assert!(status.init_done);
@@ -4326,7 +4168,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_reload_songs() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         let initial_count = player.songs().len();
 
         // Create a temp directory that mirrors assets/ layout with an extra song.
@@ -4378,7 +4220,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reload_that_cannot_rescan_says_so_and_keeps_the_songs() -> Result<(), Box<dyn Error>>
     {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         let before = player.songs().len();
         assert!(before > 0);
         let dir = tempfile::tempdir()?;
@@ -4400,7 +4242,7 @@ mod test {
     /// reload from, and says so.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reload_with_no_sources_says_so() -> Result<(), Box<dyn Error>> {
-        let player = make_bare_player()?;
+        let player = assets_player_with_devices(no_devices())?;
         assert!(matches!(
             player.reload_songs().await,
             Err(ReloadSongsError::NoSources)
@@ -4457,25 +4299,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_valid() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -4497,25 +4321,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_keeps_active_playlist() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -4568,25 +4374,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_not_found() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
 
         let result = player
@@ -4600,25 +4388,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn play_song_from_while_playing() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let player = Player::new(
-            test_playlists(playlist, songs.clone()),
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = assets_player().midi("mock-midi-device").build()?;
         player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
@@ -5845,30 +5615,14 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_track_gain_set_and_get() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
         let mappings: HashMap<String, Vec<u16>> = HashMap::from([
             ("click".to_string(), vec![1]),
             ("keys".to_string(), vec![2]),
         ]);
-        let devices = PlayerDevices {
-            audio: None,
+        let player = assets_player_with_devices(PlayerDevices {
             mappings: Some(Arc::new(mappings)),
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Player::new_with_devices(
-            devices,
-            test_playlists(playlist, songs),
-            "playlist".to_string(),
-            None,
-        )?;
+            ..no_devices()
+        })?;
 
         // All tracks start at unity.
         let gains = player.get_track_gains().unwrap();
@@ -6044,7 +5798,7 @@ mod test {
         // end then moved it on again.
         let mut doubled = 0;
         for _ in 0..200 {
-            let player = make_test_player_with_config(None, None, None).await?;
+            let player = assets_player().audio(None).ready().await?;
             let first = player.get_playlist().entry().unwrap();
             player.play().await?;
             let _ = player.seek_to(Duration::ZERO).await;
@@ -6094,7 +5848,7 @@ mod test {
     ) -> Result<(), Box<dyn Error>> {
         // The end's cleanup, behind the pause, moved the playlist on: the
         // next song inherited the paused position.
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let first = player.get_playlist().entry();
         let paused_at = Duration::from_millis(100);
         {
@@ -6121,7 +5875,7 @@ mod test {
     ) -> Result<(), Box<dyn Error>> {
         // The end's cleanup, behind the stop, moved the playlist on past the
         // song the stop stopped on.
-        let player = make_test_player_with_config(None, None, None).await?;
+        let player = assets_player().audio(None).ready().await?;
         let first = player.get_playlist().entry();
         {
             // As stop() does it, under the lock.

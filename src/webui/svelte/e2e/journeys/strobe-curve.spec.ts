@@ -13,6 +13,7 @@
 //
 
 import { CONFIG, expect, synthGdtf, test, type Project } from "./harness";
+import { silentWav } from "../support/wav";
 
 // The strobe curve, end to end on the real binary: the synthetic GDTF's
 // strobe function has only its endpoints (0.4–25 Hz over DMX 7–255), so by
@@ -21,25 +22,6 @@ import { CONFIG, expect, synthGdtf, test, type Project } from "./harness";
 // same show's strobe to 249 (248.95, rounded). Read through POST
 // /api/lighting/evaluate, the show preview's offline evaluation of the song
 // with the loaded venue.
-
-/** A mono 16-bit WAV of `samples` silent samples at 44.1 kHz. */
-function silentWav(samples: number): Buffer {
-  const data = samples * 2;
-  const wav = Buffer.alloc(44 + data);
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + data, 4);
-  wav.write("WAVEfmt ", 8);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(44100, 24);
-  wav.writeUInt32LE(88200, 28);
-  wav.writeUInt16LE(2, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(data, 40);
-  return wav;
-}
 
 test.use({
   config: `${CONFIG}    groups:

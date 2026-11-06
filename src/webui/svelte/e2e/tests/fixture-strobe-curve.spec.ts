@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { card } from "../support/locators";
 
 // The strobe curve on the fixture page's settings: shown only for a fixture
 // whose GDTF has a strobe rate, automatic (as the GDTF declares) until set,
@@ -42,10 +43,7 @@ async function settingsWith(
 
 async function openPixelbrick(page: Page) {
   await page.goto("/#/lighting/fixtures");
-  await page
-    .locator(".item-card")
-    .filter({ has: page.locator(".item-name", { hasText: /^pixelbrick$/ }) })
-    .click();
+  await card(page, "pixelbrick").click();
   await expect(page.getByTestId("ft-set-name")).toHaveValue("pixelbrick");
 }
 

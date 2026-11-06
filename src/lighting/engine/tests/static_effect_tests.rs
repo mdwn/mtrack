@@ -58,11 +58,7 @@ fn test_static_effect() {
 
 /// An RGB-only fixture (no dimmer), like a PixelBrick in RGBS mode.
 fn rgb_fixture(name: &str) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(name.to_string(), 1, 1, "RGB".to_string(), channels, None)
+    crate::testutil::lighting::rgb(name, 1)
 }
 
 fn color_static(

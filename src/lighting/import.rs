@@ -476,19 +476,12 @@ mod tests {
     use super::*;
 
     fn synthetic_bytes(name: &str) -> Vec<u8> {
-        crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", name)
-                .as_bytes(),
-        )])
+        crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Synth Brick", name),
+        )
     }
 
-    fn write_synthetic_gdtf(dir: &Path) -> PathBuf {
-        let path = dir.join("synth.gdtf");
-        std::fs::write(&path, synthetic_bytes("Synth Brick")).unwrap();
-        path
-    }
+    use crate::testutil::lighting::write_synthetic_gdtf;
 
     fn project(dir: &Path) -> PathBuf {
         let project = dir.join("project");
@@ -580,12 +573,10 @@ mod tests {
         let other = dir.path().join("a-brick-v2.gdtf");
         std::fs::write(
             &other,
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                    .replace("mtrack synthetic", "mtrack synthetic v2")
-                    .as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf_of(
+                &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                    .replace("mtrack synthetic", "mtrack synthetic v2"),
+            ),
         )
         .unwrap();
         let report = import_gdtf(&other, None, &project, TYPES).unwrap();

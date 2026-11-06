@@ -20,6 +20,7 @@ import type {
   Readiness,
 } from "../../src/gen/rules/mtrack_rules";
 import { READINESS } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 // Every test routes its own readiness answer with `page.route`, so no test
 // depends on state another one left in the shared mock server. The verdicts
@@ -637,13 +638,10 @@ test.describe("Lighting hub", () => {
 
     // The server re-broadcasts metadata after a venue or config reload.
     broken = true;
-    await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-      data: {
-        type: "metadata",
-        fixtures: {},
-        venue: { name: `venue-${wsId}`, dir: null, focus_points: {} },
-        _wsId: wsId,
-      },
+    await sendWs(page, wsId, {
+      type: "metadata",
+      fixtures: {},
+      venue: { name: `venue-${wsId}`, dir: null, focus_points: {} },
     });
     await expect(page.getByTestId("check-groups")).toHaveAttribute(
       "data-state",

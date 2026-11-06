@@ -17,6 +17,7 @@ import type {
   ControllerStatus,
   SubsystemStatus,
 } from "../../src/gen/rules/mtrack_rules";
+import { broadcastWs } from "../support/ws";
 
 function statusFixture(overrides: {
   audio?: SubsystemStatus;
@@ -151,11 +152,9 @@ test.describe("Logs row tinting", () => {
     level: "INFO" | "WARN" | "ERROR" | "DEBUG" | "TRACE",
     message: string,
   ) {
-    await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-      data: {
-        type: "logs",
-        lines: [{ level, target: "mtrack::test", message }],
-      },
+    await broadcastWs(page, {
+      type: "logs",
+      lines: [{ level, target: "mtrack::test", message }],
     });
   }
 

@@ -13,18 +13,13 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
+import { card } from "../support/locators";
 
 // The fixture page's settings form (lighting UI design §12.4): name and
 // movement limits, saved through a plan the user confirms. A fixture from a
 // GDTF has no default mode and no file to show. The mock's settings routes
 // are stateless; tests that need another answer route their own with
 // `page.route`.
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 /** Every settings POST the page makes, by `write`. */
 function settingsPosts(page: Page) {

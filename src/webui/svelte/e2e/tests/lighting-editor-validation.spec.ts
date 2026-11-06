@@ -12,16 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { card } from "../support/locators";
 
 // What a user typed is never thrown away without a word. Saves are caught
 // here with page.route, so the shared mock is untouched.
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 test("a fixture type's blank or repeated channel blocks the save", async ({
   page,

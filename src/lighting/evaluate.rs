@@ -440,30 +440,10 @@ mod tests {
     use super::*;
     use crate::lighting::parser::parse_light_shows;
 
-    fn rgb_fixture(name: &str, address: u16) -> FixtureInfo {
-        let mut channels = HashMap::new();
-        channels.insert("red".to_string(), 1);
-        channels.insert("green".to_string(), 2);
-        channels.insert("blue".to_string(), 3);
-        FixtureInfo::new(
-            name.to_string(),
-            1,
-            address,
-            "RGB".to_string(),
-            channels,
-            None,
-        )
-    }
+    use crate::testutil::lighting::rgb as rgb_fixture;
 
     /// Parses a source into shows, ordered so evaluation is deterministic.
-    fn shows(source: &str) -> Vec<LightShow> {
-        let mut parsed: Vec<_> = parse_light_shows(source)
-            .expect("test show should parse")
-            .into_values()
-            .collect();
-        parsed.sort_by(|a, b| a.name.cmp(&b.name));
-        parsed
-    }
+    use crate::testutil::lighting::sorted_shows as shows;
 
     fn eval(source: &str, fixtures: &[FixtureInfo], times: &[f64]) -> Vec<Evaluation> {
         let times: Vec<Duration> = times.iter().map(|&t| Duration::from_secs_f64(t)).collect();

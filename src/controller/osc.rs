@@ -719,9 +719,7 @@ mod docs_test {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap, error::Error, net::SocketAddr, path::Path, sync::Arc, time::Duration,
-    };
+    use std::{collections::HashMap, error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
     use rosc::{OscMessage, OscPacket, OscType};
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
@@ -730,9 +728,6 @@ mod test {
         config,
         controller::osc::{Driver, STATUS_PLAYING, STATUS_STOPPED},
         controller::TransportAction,
-        playlist,
-        playlist::Playlist,
-        songs,
         testutil::{eventually, eventually_async},
     };
 
@@ -740,31 +735,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -954,31 +927,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_client_tracking() -> Result<(), Box<dyn Error>> {
         // Set up a player (not used directly, but needed for Driver initialization)
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -1084,31 +1035,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_multiple_clients() -> Result<(), Box<dyn Error>> {
         // Test that multiple clients can connect and all receive broadcasts
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -1413,31 +1342,9 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_sets_gain() -> Result<(), Box<dyn Error>> {
-            let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-            let pl = Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs.clone(),
-            )?;
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone())?,
-            );
-            playlists.insert("playlist".to_string(), pl);
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    None,
-                    None,
-                    HashMap::from([("click".to_string(), vec![1])]),
-                    "assets/songs",
-                ),
-                None,
-            )?;
+            let player = crate::testutil::player::assets_player()
+                .track_mappings(HashMap::from([("click".to_string(), vec![1])]))
+                .build()?;
             player.await_hardware_ready().await;
 
             let events = Arc::new(make_default_osc_events());
@@ -1505,36 +1412,13 @@ mod test {
 
     mod handle_packet_tests {
         use super::*;
-        use std::{collections::HashMap, path::Path, sync::Arc};
+        use std::sync::Arc;
 
         async fn make_player() -> Arc<Player> {
-            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
-            let pl = Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml")).unwrap(),
-                songs.clone(),
-            )
-            .unwrap();
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone()).unwrap(),
-            );
-            playlists.insert("playlist".to_string(), pl);
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    Some(config::Midi::new("mock-midi-device", None)),
-                    None,
-                    HashMap::new(),
-                    "assets/songs",
-                ),
-                None,
-            )
-            .unwrap();
+            let player = crate::testutil::player::assets_player()
+                .midi("mock-midi-device")
+                .build()
+                .unwrap();
             player.await_hardware_ready().await;
             player
         }
@@ -1639,38 +1523,11 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_cancels_a_waiting_auto_play() {
-            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
-            let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n";
-            let playlist_config: config::Playlist = ::config::Config::builder()
-                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
-                .build()
-                .unwrap()
-                .try_deserialize()
+            let player = crate::testutil::player::assets_player()
+                .playlist_yaml("songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n")
+                .ready()
+                .await
                 .unwrap();
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone()).unwrap(),
-            );
-            playlists.insert(
-                "playlist".to_string(),
-                Playlist::new("playlist", &playlist_config, songs).unwrap(),
-            );
-            let player = Player::new(
-                playlists,
-                "playlist".to_string(),
-                &config::Player::new(
-                    vec![],
-                    Some(config::Audio::new("mock-device")),
-                    None,
-                    None,
-                    HashMap::new(),
-                    "assets/songs",
-                ),
-                None,
-            )
-            .unwrap();
-            player.await_hardware_ready().await;
             let events = Arc::new(make_default_osc_events());
 
             player.next().await;
@@ -1702,31 +1559,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -1734,9 +1569,7 @@ mod test {
         let device = binding.to_mock()?;
 
         // Find a free port by binding temporarily.
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
+        let port = crate::testutil::net::free_udp_port();
 
         // Construct a Driver directly with the free port.
         let driver = Arc::new(Driver {
@@ -1815,37 +1648,13 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_with_multicast() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
 
         // Find a free port.
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
+        let port = crate::testutil::net::free_udp_port();
 
         // Use a multicast address as a broadcast target to cover the multicast join path.
         let multicast_addr: SocketAddr = format!("224.0.0.1:{}", port + 1).parse()?;
@@ -1886,31 +1695,9 @@ mod test {
     }
 
     async fn make_monitor_player() -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         Ok(player)
     }
@@ -1920,9 +1707,7 @@ mod test {
     async fn start_driver_on_free_port(
         player: Arc<Player>,
     ) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, u16), Box<dyn Error>> {
-        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        let port = temp_socket.local_addr()?.port();
-        drop(temp_socket);
+        let port = crate::testutil::net::free_udp_port();
 
         let driver = Arc::new(Driver {
             player,
@@ -1976,35 +1761,13 @@ mod test {
         // broadcast of 4 status + timeline + 8 gains = 13 packets. Dropping
         // what does not fit would lose the same tail on every broadcast, so a
         // broadcast waits for the UDP task, here a late reader, to drain.
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
         let mappings: HashMap<String, Vec<u16>> = (1..=8)
             .map(|i| (format!("trk{i}"), vec![i as u16]))
             .collect();
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                mappings,
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
+        let player = crate::testutil::player::assets_player()
+            .track_mappings(mappings)
+            .ready()
+            .await?;
         let events = Arc::new(make_default_osc_events());
         let (tx_sender, mut tx_receiver) = mpsc::channel::<OscPacket>(10);
         for _ in 0..2 {

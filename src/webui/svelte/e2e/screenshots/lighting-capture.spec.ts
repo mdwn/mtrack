@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { FIT, STATUS } from "../mock-server/test-data";
 import type { GdtfMode, Readiness } from "../../src/gen/rules/mtrack_rules";
+import { sendWsUnchecked } from "../support/ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_IMAGES = path.resolve(
@@ -740,12 +741,6 @@ async function rig(page: Page, status: StatusExtras = {}) {
   });
 }
 
-async function pushWs(page: Page, wsId: string, msg: Record<string, unknown>) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
-
 let counter = 0;
 
 /** Opens `hash` on the rig with the venue's live state pushed. */
@@ -758,8 +753,8 @@ async function open(
   await page.goto(`/?wsId=${wsId}${hash}`);
   // The mock's own burst comes first; ours replaces it.
   await page.waitForTimeout(400);
-  await pushWs(page, wsId, METADATA);
-  await pushWs(page, wsId, state);
+  await sendWsUnchecked(page, wsId, METADATA);
+  await sendWsUnchecked(page, wsId, state);
   return wsId;
 }
 
@@ -990,8 +985,8 @@ async function openCells(page: Page, hash: string) {
   const wsId = `docs-cells-${++counter}-${Date.now()}`;
   await page.goto(`/?wsId=${wsId}${hash}`);
   await page.waitForTimeout(400);
-  await pushWs(page, wsId, CELLS_METADATA);
-  await pushWs(page, wsId, rainbowState());
+  await sendWsUnchecked(page, wsId, CELLS_METADATA);
+  await sendWsUnchecked(page, wsId, rainbowState());
 }
 
 test("stage-plot-cells", async ({ page }) => {
@@ -1061,8 +1056,8 @@ test("lighting-fit", async ({ page }) => {
   const wsId = `docs-fit-${Date.now()}`;
   await page.goto(`/?wsId=${wsId}#/lighting/fit?group=movers`);
   await page.waitForTimeout(400);
-  await pushWs(page, wsId, FIT_METADATA);
-  await pushWs(page, wsId, {
+  await sendWsUnchecked(page, wsId, FIT_METADATA);
+  await sendWsUnchecked(page, wsId, {
     type: "state",
     fixtures: {
       viper1: { red: 255, green: 255, blue: 255, dimmer: 180 },

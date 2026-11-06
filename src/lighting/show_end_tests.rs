@@ -17,28 +17,7 @@
 
 use super::*;
 use crate::lighting::parser::parse_light_shows;
-
-fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("parse")
-        .into_values()
-        .collect()
-}
-
-fn rgb(name: &str, address: u16) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(
-        name.to_string(),
-        1,
-        address,
-        "RGB".to_string(),
-        channels,
-        None,
-    )
-}
+use crate::testutil::lighting::{rgb, shows};
 
 /// Played through from 0 in 10 ms frames; the frame time from which no
 /// effect is active through `until_ms` (None if one still is then).
