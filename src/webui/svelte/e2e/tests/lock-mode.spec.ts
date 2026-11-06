@@ -14,6 +14,7 @@
 
 import { test, expect } from "@playwright/test";
 import { sendWs } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let lockTestCounter = 0;
 
@@ -62,7 +63,7 @@ test.describe("Lock Mode", () => {
 
     // Lock the player via WebSocket
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",
@@ -98,7 +99,7 @@ test.describe("Lock Mode", () => {
 
     // Send unlocked first so we can dirty the playlist, then lock it.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",
@@ -125,7 +126,7 @@ test.describe("Lock Mode", () => {
 
     // Now lock — the Save button should immediately become disabled.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",
@@ -149,7 +150,7 @@ test.describe("Lock Mode", () => {
     const wsId = `lock-stripe-${++lockTestCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/`);
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",

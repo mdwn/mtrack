@@ -15,6 +15,7 @@
 import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
 import { sendWs } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
 
@@ -49,7 +50,7 @@ test.describe("Playback State Transitions", () => {
 
     // Simulate server responding with playing state
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Alpha",
@@ -81,7 +82,7 @@ test.describe("Playback State Transitions", () => {
   test("progress bar updates during playback", async ({ page }) => {
     // Send playing state at 50% progress
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 90000,
       song_name: "Test Song Alpha",
@@ -115,7 +116,7 @@ test.describe("Playback State Transitions", () => {
 
     // Simulate server advancing to next song
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -142,7 +143,7 @@ test.describe("Playback State Transitions", () => {
   test("stop returns to stopped state", async ({ page }) => {
     // First put into playing state
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 5000,
       song_name: "Test Song Alpha",
@@ -163,7 +164,7 @@ test.describe("Playback State Transitions", () => {
 
     // Simulate server stopping
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",
@@ -187,7 +188,7 @@ test.describe("Playback State Transitions", () => {
 
   test("playing state updates page title with song name", async ({ page }) => {
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Alpha",
@@ -210,7 +211,7 @@ test.describe("Playback State Transitions", () => {
   test("playlist position highlights correct song", async ({ page }) => {
     // Move to second song
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -235,7 +236,7 @@ test.describe("Playback State Transitions", () => {
   }) => {
     // Send playing state with available_sections.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Beta",
@@ -269,7 +270,7 @@ test.describe("Playback State Transitions", () => {
     // Stopped state with sections — seek chips stay enabled (they set the
     // pending start position) but loop buttons are disabled.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -298,7 +299,7 @@ test.describe("Playback State Transitions", () => {
   }) => {
     // Send playing state with an active section loop.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 3000,
       song_name: "Test Song Beta",
@@ -329,7 +330,7 @@ test.describe("Playback State Transitions", () => {
   test("section chips hidden when no sections available", async ({ page }) => {
     // Playing but no sections.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Alpha",
@@ -362,7 +363,7 @@ test.describe("Playback State Transitions", () => {
     const measure_starts = [0, 4, 8, 12, 16, 20, 24, 28]; // every 4 beats
 
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Beta",
@@ -396,7 +397,7 @@ test.describe("Playback State Transitions", () => {
   test("section regions not rendered without beat grid", async ({ page }) => {
     // Sections present but no beat grid — regions should not render.
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Beta",
@@ -426,7 +427,7 @@ test.describe("Playback State Transitions", () => {
     const measure_starts = [0, 4, 8, 12, 16, 20, 24, 28];
 
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 3000,
       song_name: "Test Song Beta",
@@ -460,7 +461,7 @@ test.describe("Playback State Transitions", () => {
 
   test("elapsed time updates in progress display", async ({ page }) => {
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 65000,
       song_name: "Test Song Alpha",
