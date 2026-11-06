@@ -13,18 +13,9 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 let testCounter = 0;
-
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** A venue with one placed mover carrying a rig, one placed PAR without
  *  one, one unplaced fixture, and a focus point. */
@@ -68,7 +59,7 @@ test.describe("3D on the venue card", () => {
     await expect(page.locator(".stage-card")).toBeVisible();
     // No current venue yet: nothing to show in 3D.
     await expect(page.getByTestId("stage-view-3d")).toHaveCount(0);
-    await sendWsMessage(page, wsId, VENUE_METADATA);
+    await sendWs(page, wsId, VENUE_METADATA);
     await page.getByTestId("stage-view-3d").click();
     await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByTestId("stage-view-3d")).toHaveAttribute(
@@ -95,7 +86,7 @@ test.describe("3D on the venue card", () => {
     await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
     // A PAR hung pointing down, one on the floor aimed up at the band with
     // a diffuser's beam angle, and one waiting in the tray.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "metadata",
       fixtures: {
         top: { tags: [], type: "par", position: [0, 3, 4], rig: null },
@@ -122,13 +113,13 @@ test.describe("3D on the venue card", () => {
     // Nothing reported yet: every fixture is dark, and so is the deck.
     await expect(viewport).toHaveAttribute("data-deck-lights", "0");
     const on = { red: 255, green: 0, blue: 160, dimmer: 255, strobe: 0 };
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "state",
       fixtures: { top: on, floor: on, spare: on },
     });
     // The two on the stage; not the one in the tray.
     await expect(viewport).toHaveAttribute("data-deck-lights", "2");
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "state",
       fixtures: { top: on, floor: { ...on, dimmer: 0 }, spare: on },
     });
@@ -154,7 +145,7 @@ test.describe("3D on the venue card", () => {
       }
     });
     await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d`);
-    await sendWsMessage(page, wsId, VENUE_METADATA);
+    await sendWs(page, wsId, VENUE_METADATA);
     await expect(page.locator(".stage3d__viewport")).toBeVisible();
     // The renderer decides: WebGL, or the fallback message — never a blank.
     await expect(page.locator(".stage3d__viewport")).toHaveAttribute(

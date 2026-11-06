@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { SONGS } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 // The venue card's 3D Preview (lighting UI design, section 12.1), on the
 // current venue at `#/lighting/venues/<venue>?view=3d&mode=preview`. Every test
@@ -22,12 +23,6 @@ import { SONGS } from "../mock-server/test-data";
 // what the scene was handed (channels, poses, cells).
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 const SONG = "Test Song Alpha";
 
@@ -159,7 +154,7 @@ async function openCard(
   capabilities: string[] = ["pan_tilt", "dimmer"],
 ) {
   await page.goto(`/?wsId=${wsId}#/lighting/venues/test-venue?view=3d${query}`);
-  await sendWsMessage(page, wsId, METADATA(capabilities));
+  await sendWs(page, wsId, METADATA(capabilities));
 }
 
 const fed = async (page: Page) =>
@@ -257,7 +252,7 @@ test.describe("3D Preview on the venue card", () => {
     await page.getByRole("slider", { name: "Moment in the song" }).fill("30");
     await expect(page).toHaveURL(/&t=30$/);
     await page.reload();
-    await sendWsMessage(page, wsId, METADATA(["pan_tilt", "dimmer"]));
+    await sendWs(page, wsId, METADATA(["pan_tilt", "dimmer"]));
     await expect(page.getByTestId("preview-clock")).toHaveText("0:30.0 / 3:00");
     await expect(page.getByTestId("stage3d-mode-preview")).toHaveAttribute(
       "aria-pressed",
@@ -454,21 +449,13 @@ test.describe("3D Preview on the venue card", () => {
       await expect(page.getByTestId("preview-panel")).toBeVisible();
       await expect(page.getByTestId("caveat-wheel")).toHaveCount(0);
 
-      await sendWsMessage(
-        page,
-        wsId,
-        METADATA(["pan_tilt", "dimmer", "color_wheel"]),
-      );
+      await sendWs(page, wsId, METADATA(["pan_tilt", "dimmer", "color_wheel"]));
       await expect(page.getByTestId("caveat-wheel")).toHaveText(
         "1 fixture uses a colour wheel — shown white",
       );
 
       // A fixture that mixes colour has no wheel to worry about.
-      await sendWsMessage(
-        page,
-        wsId,
-        METADATA(["color", "color_wheel", "pan_tilt"]),
-      );
+      await sendWs(page, wsId, METADATA(["color", "color_wheel", "pan_tilt"]));
       await expect(page.getByTestId("caveat-wheel")).toHaveCount(0);
     });
 
@@ -505,7 +492,7 @@ test.describe("3D Preview on the venue card", () => {
       await routeSongs(page);
       await openCard(page, quiet);
       await expect(page.getByTestId("caveat-nostate")).toBeVisible();
-      await sendWsMessage(page, quiet, {
+      await sendWs(page, quiet, {
         type: "state",
         fixtures: { "mover-1": { red: 255 } },
         poses: {},

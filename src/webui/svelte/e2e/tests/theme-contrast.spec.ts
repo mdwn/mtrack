@@ -31,6 +31,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sendWsRetrying } from "../support/ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,15 +39,6 @@ let testCounter = 0;
 
 function freshWsId(label: string): string {
   return `theme-${label}-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
-}
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await expect(async () => {
-    const res = await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-      data: { ...msg, _wsId: wsId },
-    });
-    expect((await res.json()).sent).toBe(1);
-  }).toPass({ timeout: 10000 });
 }
 
 type Theme = "light" | "dark";
@@ -275,7 +267,7 @@ for (const theme of THEMES) {
       const wsId = freshWsId("pilot");
       await page.goto(`/?wsId=${wsId}#/`);
       await expect(page.locator(".playback-card__title")).toBeVisible();
-      await sendWsMessage(page, wsId, {
+      await sendWsRetrying(page, wsId, {
         ...PLAYBACK,
         song_duration_ms: 240000,
         elapsed_ms: 55500,
@@ -302,7 +294,7 @@ for (const theme of THEMES) {
       const wsId = freshWsId("ticks");
       await page.goto(`/?wsId=${wsId}#/`);
       await expect(page.locator(".playback-card__title")).toBeVisible();
-      await sendWsMessage(page, wsId, {
+      await sendWsRetrying(page, wsId, {
         ...PLAYBACK,
         song_duration_ms: 240000,
         elapsed_ms: 1000,
@@ -319,7 +311,7 @@ for (const theme of THEMES) {
     }) => {
       const wsId = freshWsId("playhead");
       await openTimeline(page, SONG_YAML, wsId);
-      await sendWsMessage(page, wsId, { ...PLAYBACK, elapsed_ms: 12000 });
+      await sendWsRetrying(page, wsId, { ...PLAYBACK, elapsed_ms: 12000 });
       await expect(page.locator(".playhead-info")).toBeVisible();
 
       const readout = await probe(page, ".playhead-info__pos");

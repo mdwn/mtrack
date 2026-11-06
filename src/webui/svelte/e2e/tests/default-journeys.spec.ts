@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page, type Request } from "@playwright/test";
+import { card } from "../support/locators";
 import { MVR_INSPECTION } from "../mock-server/test-data";
 
 // What a first-time user does in each Lighting editor: open it, press the
@@ -41,12 +42,6 @@ const json = (body: unknown, status = 200) => ({
   contentType: "application/json",
   body: JSON.stringify(body),
 });
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 /** Catches every PUT/POST/DELETE whose URL matches; GETs pass through. */
 async function catchWrites(page: Page, url: RegExp | string) {

@@ -12,17 +12,12 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { card } from "../support/locators";
 
 // A GDTF-referential type's details: what its archive holds, read from
 // GET /api/lighting/fixture-types/{name}/gdtf. Every test here only reads
 // the mock; nothing is saved, so no test sees another's state.
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 test.describe("Fixture type details (GDTF)", () => {
   test.beforeEach(async ({ page }) => {

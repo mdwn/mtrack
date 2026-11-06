@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { card } from "../support/locators";
 
 // The venue form: a save shows on the page at once, and each GDTF row
 // chooses its own mode. Every test serves its own venue directory from a
@@ -136,10 +137,6 @@ async function serve(page: Page, initial: Record<string, Fixture[]>) {
   return { puts, venues };
 }
 
-const card = (page: Page, name: string) =>
-  page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
 const rows = (page: Page) => page.getByTestId("venue-fixture-row");
 const save = (page: Page) =>
   page.locator(".editor-form").getByRole("button", { name: "Save" }).click();

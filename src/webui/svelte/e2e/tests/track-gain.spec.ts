@@ -13,20 +13,12 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
 import { DashboardPage } from "../pages/dashboard.page.js";
 import { PLAYBACK_STATE } from "../mock-server/test-data.js";
+import { sendWs } from "../support/ws";
 
 let testCounter = 0;
-
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 test.describe("Track Gain Sliders", () => {
   let dashboard: DashboardPage;
@@ -38,16 +30,7 @@ test.describe("Track Gain Sliders", () => {
     wsId = `gain-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
     // Stub the gRPC endpoint so gain changes succeed.
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/grpc-web+proto",
-          "grpc-status": "0",
-        },
-        body: Buffer.alloc(0),
-      });
-    });
+    await stubPlayerService(page);
 
     dashboard = new DashboardPage(page);
     await page.goto(`/?wsId=${wsId}#/`);
@@ -107,7 +90,7 @@ test.describe("Track Gain Sliders", () => {
 
     // Mute state is server-authoritative: the button reflects the next
     // WS frame, and the gain readout is untouched.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...PLAYBACK_STATE,
       tracks: [
         { name: "kick", output_channels: [0, 1], gain_db: 0, muted: true },
@@ -120,7 +103,7 @@ test.describe("Track Gain Sliders", () => {
   });
 
   test("server-pushed gain updates the slider when idle", async ({ page }) => {
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...PLAYBACK_STATE,
       tracks: [
         { name: "kick", output_channels: [0, 1], gain_db: 3 },
