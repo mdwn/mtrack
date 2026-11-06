@@ -54,26 +54,24 @@ pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf
     found.into_iter().map(|(_, path)| path).collect()
 }
 
-/// The YAML file in `dir` that holds `name` (a playlist, a profile): the
-/// first of the files at the name in either YAML extension
-/// ([`files_at_stem`]: `<name>.yaml`, else `<name>.yml`, the lowercase
-/// spelling before another), else a new `<name>.yaml`. The loaders read
-/// this file for the name, and every write and delete goes to it, so an
-/// edit to a `.yml` file is not lost to a new `.yaml` beside it. With two
-/// files at the name, `what` names the kind of thing in the warning that
-/// says which is read. `name` is not checked for path safety here.
-pub fn yaml_file_at(dir: &Path, name: &str, what: &str) -> PathBuf {
-    let existing = files_at_stem(dir, name, crate::songs::YAML_EXTENSIONS);
-    if let [file, others @ ..] = existing.as_slice() {
-        for other in others {
-            tracing::warn!(
-                "{what} \"{name}\" has two files: {} is read, {} is not",
-                file.display(),
-                other.display()
-            );
-        }
-    }
-    existing
+/// The YAML files in `dir` named for `name` (a playlist, a profile):
+/// `<name>.yaml`, then `<name>.yml`, as written (`songs::YAML_EXTENSIONS`;
+/// config names stay lowercase), those that are there. `name` is not checked
+/// for path safety here.
+pub fn yaml_files_at(dir: &Path, name: &str) -> Vec<PathBuf> {
+    crate::songs::YAML_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("{name}.{ext}")))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+/// The YAML file in `dir` that holds `name`: the first of
+/// [`yaml_files_at`] (`<name>.yaml`, else `<name>.yml`), else a new
+/// `<name>.yaml`. Every read, write and delete of the name goes to it, so an
+/// edit to a `.yml` file is not lost to a new `.yaml` beside it.
+pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
+    yaml_files_at(dir, name)
         .into_iter()
         .next()
         .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))

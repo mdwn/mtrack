@@ -50,7 +50,7 @@ pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError
             source,
         })?;
         let path = entry.path();
-        if path.is_file() && crate::songs::has_extension(&path, crate::songs::YAML_EXTENSIONS) {
+        if path.is_file() && crate::songs::is_yaml_config(&path) {
             yaml_paths.push(path);
         }
     }

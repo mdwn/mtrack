@@ -14,7 +14,7 @@
 mod ambient_source;
 
 pub use ambient_source::AmbientSource;
-use tracing::{info, span, Level, Span};
+use tracing::{info, span, warn, Level, Span};
 
 use crate::config;
 use crate::songs::{Song, Songs};
@@ -559,15 +559,26 @@ pub const PLAYLIST_EXTENSIONS: &[&str] = crate::songs::YAML_EXTENSIONS;
 #[error("'{0}' is the player's own playlist and has no file")]
 pub struct ReservedName(pub String);
 
-/// The file in `dir` that holds the playlist `name` (`util::yaml_file_at`):
-/// the loader reads it, and every write and delete goes to it. The reserved
-/// name has no file. `name` is not checked for path safety here; the
-/// callers check it as they read it.
+/// The file in `dir` that holds the playlist `name` (`util::yaml_file_at`:
+/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`): the loader
+/// reads it, and every write and delete goes to it. With both files there,
+/// the one not read is named in a warning. The reserved name has no file.
+/// `name` is not checked for path safety here; the callers check it as they
+/// read it.
 pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
     if is_reserved_name(name) {
         return Err(ReservedName(name.to_string()));
     }
-    Ok(crate::util::yaml_file_at(dir, name, "Playlist"))
+    if let [file, others @ ..] = crate::util::yaml_files_at(dir, name).as_slice() {
+        for other in others {
+            warn!(
+                "Playlist \"{name}\" has two files: {} is the playlist, {} is not read",
+                file.display(),
+                other.display()
+            );
+        }
+    }
+    Ok(crate::util::yaml_file_at(dir, name))
 }
 
 /// Creates an alphabetized playlist from all available songs.

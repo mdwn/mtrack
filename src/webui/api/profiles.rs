@@ -96,15 +96,15 @@ fn carry_unknown_keys(old_bytes: &[u8], new: &mut serde_json::Value) {
 }
 
 /// The file in `profiles_dir` that holds the profile `filename`
-/// (`util::yaml_file_at`: its `.yaml`, else its `.yml`, in any case, else a
-/// new `.yaml`), checked to be inside the directory: the file the config
-/// loads, and every read, save and delete here goes to.
+/// (`util::yaml_file_at`: its `.yaml`, else its `.yml`, else a new
+/// `.yaml`), checked to be inside the directory: every read, save and
+/// delete here goes to it.
 #[allow(clippy::result_large_err)]
 fn profile_path(
     profiles_dir: &std::path::Path,
     filename: &str,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
-    let file = crate::util::yaml_file_at(profiles_dir, filename, "Profile");
+    let file = crate::util::yaml_file_at(profiles_dir, filename);
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
     resolve_resource_path(profiles_dir, filename, ext)
 }
@@ -885,63 +885,32 @@ mod test {
             .contains("dev-b"));
     }
 
-    /// A profile kept as `host-a.YAML` is one profile file throughout: the
-    /// config loads it, the list shows it, and it is read, saved in place
-    /// and deleted.
+    /// Profile names stay lowercase: `host-a.YAML` is not a profile file,
+    /// to the config or the web UI's list.
     #[tokio::test]
-    async fn a_profile_with_a_capital_extension_is_one_file_throughout() {
+    async fn a_capital_extension_is_no_profile() {
         let (mut state, dir) = test_state();
         let profiles_dir = dir.path().join("profiles");
         std::fs::create_dir(&profiles_dir).unwrap();
         write_profile_file(&profiles_dir, "host-a.YAML", HOST_A);
         state.profiles_dir = Some(profiles_dir.clone());
         let app = router().with_state(state);
-        let file = profiles_dir.join("host-a.YAML");
 
-        assert_eq!(
-            crate::config::list_profile_files(&profiles_dir).unwrap(),
-            std::slice::from_ref(&file)
-        );
-        let get = |uri: &'static str| {
-            let app = app.clone();
-            async move {
-                let response = app
-                    .oneshot(
-                        http::Request::builder()
-                            .uri(uri)
-                            .body(Body::empty())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                (response.status(), response_body(response).await)
-            }
-        };
-        let (status, body) = get("/profiles").await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("\"host-a\""), "{body}");
-        let (status, body) = get("/profiles/host-a").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("host-a"), "{body}");
-
-        let (status, _) = put_host_a(&app, None, "dev-b").await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(!profiles_dir.join("host-a.yaml").exists());
-        assert!(std::fs::read_to_string(&file).unwrap().contains("dev-b"));
-
+        assert!(crate::config::list_profile_files(&profiles_dir)
+            .unwrap()
+            .is_empty());
         let response = app
-            .clone()
             .oneshot(
                 http::Request::builder()
-                    .method("DELETE")
-                    .uri("/profiles/host-a")
+                    .uri("/profiles")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(!file.exists());
+        let body = response_body(response).await;
+        assert!(!body.contains("host-a"), "{body}");
     }
 
     #[tokio::test]
