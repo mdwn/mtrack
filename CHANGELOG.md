@@ -348,7 +348,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed, read, saved in place and deleted, where the config and the web UI's profile list passed
   it over. A song's `song.YML` is hidden from its file list as `song.yml` was, and MCP takes a
   song loaded from `song.yml` or `song.YAML` as one in its own directory, as it took `song.yaml`:
-  `write_song_lighting` refused it a new lighting file as "in flat layout". `mtrack start
+  `write_song_lighting` refused it a new lighting file as "in flat layout". A config in TOML,
+  JSON, JSON5, INI or RON is read as that format whatever its extension's case (`Live.TOML` was
+  read as YAML). `mtrack start
   ./Live.YAML` / `mtrack migrate ./Live.YAML` take it as the config file rather than a directory.
   GDTF archives (`.GDTF`), MVR files (`.MVR`, also as an export name) and their `.GLB` meshes
   were already matched in any case, and still are.

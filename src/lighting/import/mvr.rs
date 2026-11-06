@@ -246,11 +246,7 @@ fn plan(
     let scenery_objects = scene.objects.len();
     let mut undrawn: BTreeMap<String, usize> = BTreeMap::new();
     for mesh in scene.objects.iter().flat_map(|o| &o.meshes) {
-        let ext = mesh
-            .file
-            .rsplit_once('.')
-            .map(|(_, e)| e.to_ascii_lowercase())
-            .unwrap_or_default();
+        let ext = crate::songs::extension_of(Path::new(&mesh.file)).unwrap_or_default();
         if ext != "glb" {
             *undrawn.entry(ext).or_default() += 1;
         }

@@ -77,10 +77,9 @@ fn scenery_transform(matrix: &Matrix, origin_mm: &[f64; 3]) -> [[f64; 4]; 4] {
 /// reduced to safe characters, made unique by a hash when two reduce alike.
 fn mesh_file_name(entry: &str, taken: &mut std::collections::HashSet<String>) -> String {
     let base = super::mvr::entry_basename(entry);
-    let (stem, ext) = match base.rsplit_once('.') {
-        Some((s, e)) => (s, e.to_ascii_lowercase()),
-        None => (base, String::new()),
-    };
+    let path = Path::new(base);
+    let ext = crate::songs::extension_of(path).unwrap_or_default();
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(base);
     let safe: String = stem
         .chars()
         .map(|c| {
@@ -382,11 +381,7 @@ impl DistillCache {
                 skipped: Vec::new(),
             };
             for mesh in &object.meshes {
-                let ext = mesh
-                    .file
-                    .rsplit_once('.')
-                    .map(|(_, e)| e.to_ascii_lowercase())
-                    .unwrap_or_default();
+                let ext = crate::songs::extension_of(Path::new(&mesh.file)).unwrap_or_default();
                 *model.formats.entry(ext.clone()).or_default() += 1;
                 if ext != "glb" {
                     out.skipped.push(mesh.file.clone());

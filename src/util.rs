@@ -351,7 +351,9 @@ pub fn yaml_source(
             format!("{}: {e}", path.display()),
         )))
     })?;
-    let format = match path.extension().and_then(|ext| ext.to_str()) {
+    // By the file's kind, its extension in any case (`songs::extension_of`):
+    // `Live.TOML` is TOML.
+    let format = match crate::songs::extension_of(path).as_deref() {
         Some("toml") => ::config::FileFormat::Toml,
         Some("json") => ::config::FileFormat::Json,
         Some("json5") => ::config::FileFormat::Json5,
@@ -1321,6 +1323,9 @@ mod test {
             ("c.yaml", "a: 1\n"),
             ("c.toml", "a = 1\n"),
             ("c.json", "{\"a\": 1}"),
+            // The extension in any case.
+            ("Live.TOML", "a = 1\n"),
+            ("Live.JSON", "{\"a\": 1}"),
         ] {
             let path = dir.path().join(name);
             std::fs::write(&path, text).unwrap();
