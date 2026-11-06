@@ -2039,7 +2039,8 @@ impl Songs {
 pub struct InitReport {
     /// The directories given a new `song.yaml`.
     pub created: Vec<PathBuf>,
-    /// The directories left alone: each had a `song.yaml` already.
+    /// The directories left alone: each had a song config already
+    /// ([`has_song_config`]).
     pub skipped: Vec<PathBuf>,
 }
 
@@ -2065,7 +2066,7 @@ pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>>
             report.created.push(song_directory);
         } else {
             info!(
-                "Skipped {}: it has a song.yaml already",
+                "Skipped {}: it has a song config already",
                 song_directory.display()
             );
             report.skipped.push(song_directory);
@@ -2081,12 +2082,13 @@ pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>>
 }
 
 /// Writes a default `song.yaml` into the song directory `dir`, naming the
-/// song `name`, unless it has one already: a song's config is never
-/// overwritten. Returns whether one was written. `songs --init` and the web
-/// UI's bulk import both take this rule.
+/// song `name`, unless it holds a song's config already, under any name
+/// ([`has_song_config`]): a song's config is never overwritten, nor given a
+/// second. Returns whether one was written. `songs --init` and the web UI's
+/// bulk import both take this rule.
 pub fn init_song_dir(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
     let config_path = dir.join("song.yaml");
-    if config_path.exists() {
+    if config_path.exists() || has_song_config(dir) {
         return Ok(false);
     }
     let mut config = Song::initialize(&dir.to_path_buf())?.get_config();
@@ -2134,7 +2136,8 @@ pub fn is_hidden(path: &Path) -> bool {
 }
 
 /// The song directories under `root`, in name order: each directory below
-/// it that holds an audio track, a MIDI file or a `song.yaml`. The walk
+/// it that holds an audio track, a MIDI file or a song's config, under any
+/// name ([`is_song_config`]). The walk
 /// leaves out hidden directories and does not descend into a song
 /// directory, so a library laid out as `artist/album/song/` is found at any
 /// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
@@ -2153,7 +2156,7 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
                     subdirs.push(path);
                 }
             } else if matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi)
-                || path.file_name().is_some_and(|n| n == "song.yaml")
+                || is_song_config(&path)
             {
                 is_song = true;
             }
@@ -2176,6 +2179,56 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     walk(read(root)?.0, &mut found);
     Ok(found)
+}
+
+/// How the song loader takes a file in the songs tree, by its `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SongYaml {
+    /// Not a song config: not YAML, or another kind (`kind: playlist`).
+    NotOne,
+    /// `kind: song`: a song's config, whether or not it reads.
+    Declared,
+    /// YAML with no `kind`: a song's config if it reads as one (the form
+    /// before `kind` existed).
+    Untyped,
+}
+
+/// What the song loader makes of `path` ([`SongYaml`]).
+fn song_yaml(path: &Path) -> SongYaml {
+    let is_yaml = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext == "yaml" || ext == "yml");
+    if !is_yaml {
+        return SongYaml::NotOne;
+    }
+    match config::peek_kind(path) {
+        Some(config::ConfigKind::Song) => SongYaml::Declared,
+        None => SongYaml::Untyped,
+        Some(_) => SongYaml::NotOne,
+    }
+}
+
+/// Whether `path` is a song's config to the song loader: `kind: song`, or
+/// no `kind` and it reads as a song. One rule for the loader, `songs
+/// --init` and the bulk import: a directory holding one is a song's, and
+/// is never given another.
+pub fn is_song_config(path: &Path) -> bool {
+    match song_yaml(path) {
+        SongYaml::Declared => true,
+        SongYaml::Untyped => config::Song::deserialize(path).is_ok(),
+        SongYaml::NotOne => false,
+    }
+}
+
+/// Whether the directory `dir` holds a song's config ([`is_song_config`]),
+/// whatever the file is called (`song.yaml`, `song.yml`, `album.yaml`).
+pub fn has_song_config(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .any(|path| path.is_file() && is_song_config(&path))
+    })
 }
 
 /// Adds `song` to the songs found, under its name. Two songs of one name
@@ -2226,21 +2279,13 @@ pub fn get_all_songs_with_defaults(
             failures.extend(child.failures().iter().cloned());
         }
 
-        // Only attempt to deserialize YAML files as song configs.
-        let is_yaml = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext == "yaml" || ext == "yml");
-        if is_yaml {
-            // Peek at the `kind` field to decide how to handle this file:
-            //   kind: song     → deserialize, record failure on error
-            //   kind absent    → deserialize (backward compat), skip silently on error
-            //   kind: playlist → skip (not a song config)
-            let peeked_kind = config::peek_kind(path.as_path());
-            let is_declared_song = peeked_kind.as_ref() == Some(&config::ConfigKind::Song);
-            let should_try = peeked_kind.is_none() || is_declared_song;
-
-            if should_try {
+        // Only attempt to deserialize YAML files as song configs
+        // ([`song_yaml`]): a declared song's failure is recorded, an
+        // untyped file's skipped silently.
+        let candidate = song_yaml(&path);
+        if candidate != SongYaml::NotOne {
+            let is_declared_song = candidate == SongYaml::Declared;
+            {
                 match config::Song::deserialize(path.as_path()) {
                     Ok(song_config) => match path.parent() {
                         Some(parent) => match parent.canonicalize() {
@@ -4106,6 +4151,43 @@ sections:
             assert_eq!(report.skipped, vec![song.clone()]);
             assert_eq!(fs::read_to_string(song.join("song.yaml"))?, config);
         }
+        Ok(())
+    }
+
+    /// A directory holding a song config under another name, as the loader
+    /// takes it, is a song's: init gives it no `song.yaml` and does not
+    /// look below it for songs.
+    #[test]
+    fn initialize_songs_takes_the_loaders_song_configs() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        let album = root.join("Album");
+        fs::create_dir_all(&album)?;
+        for name in ["a", "b"] {
+            crate::testutil::write_wav(
+                album.join(format!("{name}.wav")),
+                vec![vec![1_i32, 2]],
+                44100,
+            )?;
+            fs::write(
+                album.join(format!("{name}.yaml")),
+                format!("kind: song\nname: {name}\ntracks:\n  - name: t\n    file: {name}.wav\n"),
+            )?;
+        }
+        let foo = root.join("Foo");
+        fs::create_dir_all(foo.join("audio"))?;
+        crate::testutil::write_wav(foo.join("audio/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            foo.join("song.yml"),
+            "name: Foo\ntracks:\n  - name: t\n    file: audio/t.wav\n",
+        )?;
+
+        let report = initialize_songs(root)?;
+        assert!(report.created.is_empty(), "{report:?}");
+        assert_eq!(report.skipped, vec![album.clone(), foo.clone()]);
+        assert!(!album.join("song.yaml").exists());
+        assert!(!foo.join("song.yaml").exists());
+        assert!(!foo.join("audio/song.yaml").exists());
         Ok(())
     }
 

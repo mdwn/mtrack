@@ -393,9 +393,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imports a directory that holds only MIDI files, as `songs --init` does.
 - **`mtrack songs --init` no longer overwrites a song's `song.yaml`**: re-running it rewrote every
   song's config from its directory's files, losing hand edits (a song with its media in
-  `Foo/audio/` came out with no tracks). A directory that has a `song.yaml` is now left as it is
-  and listed as skipped, as the web UI's bulk import already did; re-running init no longer
-  regenerates existing configs. Two song directories of one name (`SongA/stems`, `SongB/stems`)
+  `Foo/audio/` came out with no tracks). A directory that holds a song config the player loads,
+  under any name (`song.yaml`, `Foo/song.yml`, `Album/a.yaml`), is now left as it is and listed as
+  skipped, and init does not look for songs below it (`Foo/audio/`); re-running init no longer
+  regenerates existing configs. The web UI's bulk import takes the same rule: it skipped only a
+  `song.yaml`, so `Album/{a,b}.yaml` beside audio got a third config. Two song directories of one name (`SongA/stems`, `SongB/stems`)
   are each named by their path below the directory init was run on, by init and the bulk import
   alike, and the loader warns when two songs share a name instead of dropping one silently.
 - **An audio file's extension is read in any case**: `Bass.WAV` in a song directory was listed

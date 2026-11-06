@@ -74,7 +74,7 @@ pub fn songs(path: &str, init: bool) -> Result<(), Box<dyn Error>> {
         }
         for dir in &report.skipped {
             println!(
-                "Skipped {}: it has a song.yaml already, which is left as it is",
+                "Skipped {}: it has a song config already, which is left as it is",
                 dir.display()
             );
         }
