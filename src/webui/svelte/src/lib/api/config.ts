@@ -42,6 +42,7 @@ import type {
   MvrImportAnswer,
   MvrInspection,
   MvrKeep,
+  MvrKept,
   NoiseFloor,
   PlaylistBody,
   PlaylistDetail,
@@ -473,8 +474,8 @@ export async function keepMvrExport(
     };
   }
   if (!res.ok) throw await apiError(res, "Failed to keep a copy of the export");
-  const body = await res.json();
-  return { status: "kept", path: String(body.kept) };
+  const body: MvrKept = await res.json();
+  return { status: "kept", path: body.kept };
 }
 
 /** Adds a focus point for each unlinked fixed fixture, where its rest beam

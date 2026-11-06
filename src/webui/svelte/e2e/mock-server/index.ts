@@ -22,6 +22,7 @@ import type {
   LightFiles,
   LightingGroups,
   LightingValidation,
+  MvrKept,
   SampleUploaded,
   SongFiles,
   ConfigReload,
@@ -691,7 +692,7 @@ app.post("/api/lighting/mvr/export/keep", (req, res) => {
     return;
   }
   keptExports.add(file);
-  res.json({ kept: `lighting/export/${file}` });
+  res.json({ kept: `lighting/export/${file}` } satisfies MvrKept);
 });
 
 app.post("/api/lighting/venues/:name/aim-points", (_req, res) => {
@@ -865,7 +866,6 @@ app.get("/api/lighting/groups", (_req, res) => {
       { name: "front_wash", fixtures: ["par1", "par2"] },
       { name: "back_wash", fixtures: ["par3"] },
     ],
-    resolved: true,
   } satisfies LightingGroups);
 });
 
