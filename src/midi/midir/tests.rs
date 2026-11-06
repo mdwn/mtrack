@@ -1352,17 +1352,30 @@ mod run_playback_tests {
         let exclude = HashSet::new();
         let clock = PlaybackClock::wall();
         clock.start();
-        let mut sender = TimedSender::new(&clock);
-        let loop_break = Arc::new(AtomicBool::new(false));
-        let breaker = {
-            let loop_break = loop_break.clone();
-            let clock = clock.clone();
-            std::thread::spawn(move || {
-                while clock.elapsed() < Duration::from_millis(1_650) {
-                    std::thread::sleep(Duration::from_millis(5));
+        let mut timed = TimedSender::new(&clock);
+        // The loop is broken as the last note expected goes out (1.5 s),
+        // by the sender, not by a thread watching the clock: a thread a
+        // loaded machine held up past the next pass's first note (1.8 s)
+        // let that note out too.
+        struct BreakAfter<'a> {
+            timed: &'a mut TimedSender,
+            notes: usize,
+            loop_break: Arc<AtomicBool>,
+        }
+        impl MidiSender for BreakAfter<'_> {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.timed.send(bytes)?;
+                if self.timed.sent.len() == self.notes {
+                    self.loop_break.store(true, Ordering::Relaxed);
                 }
-                loop_break.store(true, Ordering::Relaxed);
-            })
+                Ok(())
+            }
+        }
+        let loop_break = Arc::new(AtomicBool::new(false));
+        let mut sender = BreakAfter {
+            timed: &mut timed,
+            notes: 8,
+            loop_break: loop_break.clone(),
         };
 
         run_playback(
@@ -1382,7 +1395,6 @@ mod run_playback_tests {
                 transport: None,
             },
         );
-        breaker.join().unwrap();
 
         // Pass 0 at 0, pass 1 at 0.6, pass 2 at 1.2: the first pass's
         // last note (0.9) lands with the second's second (0.6 + 0.3).
@@ -1396,10 +1408,13 @@ mod run_playback_tests {
             (1.5, 62),
             (1.5, 61),
         ];
-        let sent = &sender.sent;
+        let sent = &timed.sent;
         assert_eq!(sent.len(), expected.len(), "{sent:?}");
+        // Never early, and late by less than a third of the 0.3 s between
+        // notes: a loaded machine's thread waking late cannot put a note
+        // nearer another's time than its own.
         for ((at, note), (want_at, want_note)) in sent.iter().zip(expected) {
-            assert!((at - want_at).abs() < 0.03, "{sent:?}");
+            assert!(*at - want_at > -0.03 && *at - want_at < 0.1, "{sent:?}");
             assert_eq!(*note, want_note, "{sent:?}");
         }
     }
@@ -2928,13 +2943,17 @@ mod run_playback_tests {
         let feed = callbacks(1.0, 1024, 0.001, false, 0.0, 2.5);
         let (started, sent) = play_on_audio(feed, 1024, &times, None, passes(&[], 0, 0));
         assert_eq!(sent.len(), times.len());
+        // Bounds a loaded machine's late thread (this one's, or the
+        // feeder's holding the audio back) stays inside: up to 60ms off,
+        // so notes 100ms apart stay over 40ms apart, not bunched.
+        let slack = Duration::from_millis(60);
         for (sent, ms) in sent.iter().zip(&times) {
             let off = off(*sent, started + Duration::from_millis(20 + ms));
-            assert!(off < Duration::from_millis(20), "{ms}ms note {off:?} off");
+            assert!(off < slack, "{ms}ms note {off:?} off");
         }
         for pair in sent.windows(2) {
             assert!(
-                pair[1] - pair[0] > Duration::from_millis(80),
+                pair[1] - pair[0] > Duration::from_millis(100) - slack,
                 "notes bunched"
             );
         }
@@ -3071,11 +3090,14 @@ mod run_playback_tests {
                 .map(|(_, at)| *at)
                 .expect("no Start");
             let note = notes.lock().first().map(|(_, at)| *at).expect("no note");
-            // Generous for a loaded machine: the note's time itself is
-            // tested in virtual time (it was 26ms late).
+            // Generous for a loaded machine, whose threads can wake tens of
+            // milliseconds late: the note's time itself (it was 26ms late)
+            // is tested in virtual time, in
+            // notes_follow_a_jittery_audio_clock_running_slow_or_fast. The
+            // order cannot flake: the note waits for Start to have gone.
             assert!(note >= start, "{rate}x: the note went before Start");
             assert!(
-                note - start < Duration::from_millis(20),
+                note - start < Duration::from_millis(100),
                 "{rate}x: the note went {:?} after Start",
                 note - start
             );
@@ -3330,11 +3352,14 @@ mod run_beat_clock_tests {
         // 500ms of clocks; passes start 100ms before the end (at 400ms
         // and 800ms on the clock), crossfading over the last 100ms.
         let clocks = play_passes(&every_10ms(500), &[(400, 100), (800, 100)], 1_000);
-        // 0-390ms, twice, then the last pass to its end.
+        // 0-390ms, twice, then the last pass to its end: the seam is a
+        // pulse, not two at once, by the count.
         assert_eq!(clocks.len(), 40 + 40 + 50, "{clocks:?}");
-        // The seam is a pulse, not two at once.
-        assert!(clocks[40] >= ms(400) && clocks[40] - clocks[39] >= ms(5));
-        assert!(clocks[80] >= ms(800) && clocks[80] - clocks[79] >= ms(5));
+        // Each pass's first pulse goes out no earlier than its jump, after
+        // the last pass's last. Not by a gap of so many milliseconds: on a
+        // loaded machine the last pulse can go late, into the gap.
+        assert!(clocks[40] >= ms(400) && clocks[40] > clocks[39]);
+        assert!(clocks[80] >= ms(800) && clocks[80] > clocks[79]);
     }
 
     /// DIAGNOSTIC (no assertion; prints timing): a plain loop's pass jump

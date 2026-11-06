@@ -711,7 +711,11 @@ mod test {
             // As the stream's error callback does.
             *error_notify.lock() = true;
             wake(&shutdown);
-            let deadline = Instant::now() + Duration::from_millis(200);
+            // The thread waits on the waker with no timeout: unwoken, it
+            // never rebuilds, so a deadline long enough for any loaded
+            // runner to schedule it still tells woken from not (#658). The
+            // wait ends as soon as it has.
+            let deadline = Instant::now() + Duration::from_secs(10);
             while builds.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -767,7 +771,9 @@ mod test {
             .unwrap();
             *error_notify.lock() = true;
             wake(&shutdown);
-            let deadline = Instant::now() + Duration::from_millis(500);
+            // Unwoken, the thread never tries: a deadline any loaded runner
+            // meets, ended as soon as it has (as above, #658).
+            let deadline = Instant::now() + Duration::from_secs(10);
             while attempts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
