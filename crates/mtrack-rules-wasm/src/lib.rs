@@ -1178,6 +1178,23 @@ pub fn log_levels() -> Vec<String> {
     .to_vec()
 }
 
+/// A fade length as written, as a reader is shown it
+/// (`LoopCrossfade::text`: `2 measures`, `4s`); `None` for text that is no
+/// length.
+#[wasm_bindgen]
+pub fn fade_length_text(text: &str) -> Option<String> {
+    config::length::parse_length("length", text)
+        .ok()
+        .map(|length| length.text())
+}
+
+/// Whether a fade length as written is none (`parse_length`: `0`, `0s`,
+/// `0ms`): a cut.
+#[wasm_bindgen]
+pub fn fade_is_cut(text: &str) -> bool {
+    config::length::parse_length("length", text).is_ok_and(|length| length.is_cut())
+}
+
 // ── Positions ───────────────────────────────────────────────────────────────
 
 /// `secs` as minutes and seconds, `1:15`, to `decimals` places of a

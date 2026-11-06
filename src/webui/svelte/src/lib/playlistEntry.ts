@@ -23,7 +23,8 @@ import type {
   FadeConfig,
 } from "../gen/rules/mtrack_rules";
 import type { AutoPlay, PlaylistAmbient } from "./api/config";
-import { formatFadeLength, isZeroLength } from "./util/format";
+import { formatFadeLength } from "./util/format";
+import { rules } from "./rules";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
 export type AmbientChoice = "inherit" | "off" | "custom";
@@ -76,7 +77,7 @@ export function entrySummary(
   const gap =
     typeof entry.autoPlay === "string" &&
     entry.autoPlay.trim() &&
-    !isZeroLength(entry.autoPlay)
+    !rules.fade_is_cut(entry.autoPlay)
       ? formatFadeLength(entry.autoPlay)
       : null;
   const ambient = entry.ambient ?? null;

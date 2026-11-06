@@ -20,6 +20,7 @@ mod error;
 mod fade;
 mod hostname;
 mod kind_data;
+mod length;
 pub mod lighting;
 pub mod metronome;
 #[cfg(test)]

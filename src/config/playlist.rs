@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
 pub use super::fade::{FadeCurve, FadeStatus};
+use super::length::{parse_length, LoopCrossfade};
 pub use super::playlist_settings::{AutoPlayConfig, EntryFades, FadeConfig};
-use super::song::LoopCrossfade;
 
 /// The configuration for a playlist.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -205,14 +205,6 @@ impl Fade {
             lights: self.lights.map(|l| l.to_string()),
         }
     }
-}
-
-/// A fade's length: as a loop crossfade, or zero for none.
-fn parse_length(field: &str, value: &str) -> Result<LoopCrossfade, String> {
-    if value.trim().trim_end_matches(['m', 's']).trim() == "0" {
-        return Ok(LoopCrossfade::Time(std::time::Duration::ZERO));
-    }
-    LoopCrossfade::parse_field(field, value)
 }
 
 impl Playlist {

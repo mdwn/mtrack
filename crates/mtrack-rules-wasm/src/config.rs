@@ -29,6 +29,8 @@ mod duration;
 mod fade;
 #[path = "../../../src/config/kind_data.rs"]
 mod kind_data;
+#[path = "../../../src/config/length.rs"]
+pub mod length;
 #[path = "../../../src/config/lighting.rs"]
 mod lighting;
 #[path = "../../../src/config/midi.rs"]

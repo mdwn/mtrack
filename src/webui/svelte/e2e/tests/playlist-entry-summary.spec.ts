@@ -22,6 +22,10 @@ import {
   withAmbientField,
 } from "../../src/lib/playlistEntry";
 import en from "../../src/lib/i18n/en.json" with { type: "json" };
+import { loadRules } from "./rules-node";
+
+// Lengths read by the player's own rule (`config::length`).
+test.beforeAll(loadRules);
 
 const strings = en as Record<string, string>;
 
@@ -47,6 +51,10 @@ test.describe("entrySummary", () => {
     expect(entrySummary({ autoPlay: "0s" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "0ms" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "2s" }, tr)).toBe("2s gap");
+    // `parse_length` takes `0m` for none too, which the page did not.
+    expect(entrySummary({ autoPlay: "0m" }, tr)).toBe("");
+    // A length shows as the player reads it.
+    expect(entrySummary({ autoPlay: "500ms" }, tr)).toBe("0.5s gap");
   });
 
   test("the ambient light: none, or its own", () => {

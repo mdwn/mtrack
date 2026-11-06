@@ -343,7 +343,7 @@ fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wir
     // A fade of no length is a cut, and is said as none.
     let status = |fade: &Option<crate::config::Fade>| {
         fade.as_ref()
-            .filter(|f| f.length != crate::config::LoopCrossfade::Time(std::time::Duration::ZERO))
+            .filter(|f| !f.length.is_cut())
             .map(crate::config::Fade::status)
     };
     let Some(position) = playlist.next_entry() else {
