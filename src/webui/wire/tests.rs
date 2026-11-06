@@ -33,3 +33,13 @@ fn a_stream_buffer_size_is_a_keyword_or_a_number() {
     assert_eq!(json!(StreamBufferSize::Min), json!("min"));
     assert_eq!(json!(StreamBufferSize::Fixed(256)), json!(256));
 }
+
+#[test]
+fn an_f32_is_sent_widened_as_the_json_always_carried_it() {
+    use super::messages::Waveform;
+    let waveform = Waveform::new("s".to_string(), [("t".to_string(), vec![0.9999695f32])]);
+    assert_eq!(
+        serde_json::to_string(&waveform).unwrap(),
+        r#"{"song_name":"s","tracks":[{"name":"t","peaks":[0.999969482421875]}]}"#
+    );
+}

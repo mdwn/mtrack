@@ -334,9 +334,9 @@ pub(super) async fn post_calibrate_start(
             noise_floor,
         ))) => {
             let response = NoiseFloor {
-                peak: noise_floor.peak,
-                rms: noise_floor.rms,
-                low_freq_energy: noise_floor.low_freq_energy,
+                peak: noise_floor.peak.into(),
+                rms: noise_floor.rms.into(),
+                low_freq_energy: noise_floor.low_freq_energy.into(),
                 channel: target_channel,
                 sample_rate,
                 device_channels: channels,

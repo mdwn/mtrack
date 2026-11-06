@@ -103,8 +103,9 @@ pub struct Playback {
 pub struct TrackInfo {
     pub name: String,
     pub output_channels: Vec<u16>,
-    /// Output gain in dB.
-    pub gain_db: f32,
+    /// Output gain in dB, widened from the mixer's f32 as the JSON has
+    /// always carried it.
+    pub gain_db: f64,
     /// Whether the track is muted (independently of the gain).
     pub muted: bool,
 }
@@ -348,11 +349,28 @@ pub struct Waveform {
     pub tracks: Vec<TrackPeaks>,
 }
 
+impl Waveform {
+    /// A song's waveform from its tracks' peaks, widened from f32 as the
+    /// JSON has always carried them.
+    pub fn new(song_name: String, peaks: impl IntoIterator<Item = (String, Vec<f32>)>) -> Self {
+        Waveform {
+            song_name,
+            tracks: peaks
+                .into_iter()
+                .map(|(name, peaks)| TrackPeaks {
+                    name,
+                    peaks: peaks.into_iter().map(f64::from).collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct TrackPeaks {
     pub name: String,
-    pub peaks: Vec<f32>,
+    pub peaks: Vec<f64>,
 }
 
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]

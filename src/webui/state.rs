@@ -179,7 +179,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                         .and_then(|m| m.get(&name))
                         .cloned()
                         .unwrap_or_default(),
-                    gain_db: track_gains.get(&name).copied().unwrap_or(0.0),
+                    gain_db: track_gains.get(&name).copied().map_or(0.0, f64::from),
                     muted: track_mutes.get(&name).copied().unwrap_or(false),
                     name,
                 })
@@ -617,16 +617,9 @@ pub async fn waveform_poller(
                 .await
                 .unwrap_or_default();
 
-        let tracks = track_peaks
-            .into_iter()
-            .chain(virtual_peaks)
-            .map(|(name, peaks)| wire::TrackPeaks { name, peaks })
-            .collect();
-
-        let _ = tx.send(to_json(&wire::SocketMessage::Waveform(wire::Waveform {
-            song_name,
-            tracks,
-        })));
+        let _ = tx.send(to_json(&wire::SocketMessage::Waveform(
+            wire::Waveform::new(song_name, track_peaks.into_iter().chain(virtual_peaks)),
+        )));
     }
 }
 

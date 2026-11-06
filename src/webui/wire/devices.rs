@@ -55,9 +55,10 @@ pub enum ProbeKind {
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct NoiseFloor {
-    pub peak: f32,
-    pub rms: f32,
-    pub low_freq_energy: f32,
+    /// The measurement's f32s widened, as the JSON has always carried them.
+    pub peak: f64,
+    pub rms: f64,
+    pub low_freq_energy: f64,
     pub channel: u16,
     pub sample_rate: u32,
     pub device_channels: u16,

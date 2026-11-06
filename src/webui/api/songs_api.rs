@@ -24,7 +24,7 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::super::state as ws_state;
-use crate::webui::wire::messages::{TrackPeaks, Waveform};
+use crate::webui::wire::messages::Waveform;
 use crate::webui::wire::songs::{SongFailure, SongInfo, SongList, TempoGuess, TempoGuessSource};
 use crate::{config, songs};
 
@@ -375,17 +375,6 @@ pub(super) async fn delete_song(
         .into_response()
 }
 
-/// A song's waveform, as the websocket's `waveform` message carries it.
-fn waveform(song_name: String, peaks: impl IntoIterator<Item = ws_state::TrackPeaks>) -> Waveform {
-    Waveform {
-        song_name,
-        tracks: peaks
-            .into_iter()
-            .map(|(name, peaks)| TrackPeaks { name, peaks })
-            .collect(),
-    }
-}
-
 /// GET /api/songs/:name/waveform — returns waveform peaks for a song.
 ///
 /// Uses the shared waveform cache; computes on demand if not cached.
@@ -418,7 +407,7 @@ pub(super) async fn get_song_waveform(
         .unwrap_or_default();
         return (
             StatusCode::OK,
-            Json(waveform(name, cached.into_iter().chain(virtual_peaks))),
+            Json(Waveform::new(name, cached.into_iter().chain(virtual_peaks))),
         )
             .into_response();
     }
@@ -449,7 +438,7 @@ pub(super) async fn get_song_waveform(
     .await;
 
     match peaks_result {
-        Ok(peaks) => (StatusCode::OK, Json(waveform(name, peaks))).into_response(),
+        Ok(peaks) => (StatusCode::OK, Json(Waveform::new(name, peaks))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to compute waveform: {}", e)})),
