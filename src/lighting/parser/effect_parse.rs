@@ -105,9 +105,9 @@ pub(crate) const DIMMER_CURVES: [(DimmerCurve, &str); 5] = [
     (DimmerCurve::Cosine, "cosine"),
 ];
 
-/// Each move easing and its keyword, the default first.
+/// Each move easing and its keyword.
 pub(crate) const EASINGS: [(Easing, &str); 2] =
-    [(Easing::Smooth, "smooth"), (Easing::Linear, "linear")];
+    [(Easing::Linear, "linear"), (Easing::Smooth, "smooth")];
 
 /// The parameters each effect reads, beyond the ones every effect takes
 /// ([`COMMON_PARAMS`]): what the editor offers and keeps when an effect
@@ -197,22 +197,18 @@ impl EffectKind {
     }
 }
 
-/// The value `table` names `keyword` by, or an error naming `what` and
-/// what it may be.
+/// The value `table` names `keyword` by, or an error: `lead`, the word,
+/// and what it may be.
 fn keyword_value<T: Clone>(
     table: &[(T, &str)],
     keyword: &str,
-    what: &str,
+    lead: &str,
 ) -> Result<T, Box<dyn Error>> {
     match table.iter().find(|(_, k)| *k == keyword) {
         Some((value, _)) => Ok(value.clone()),
         None => {
             let expected: Vec<&str> = table.iter().map(|(_, k)| *k).collect();
-            Err(format!(
-                "Invalid {what}: '{keyword}' (expected: {})",
-                expected.join(", ")
-            )
-            .into())
+            Err(format!("{lead} '{keyword}' (expected: {})", expected.join(", ")).into())
         }
     }
 }
@@ -517,7 +513,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *direction = keyword_value(
                             &CYCLE_DIRECTIONS,
                             &clean_string_value(value),
-                            "cycle direction",
+                            "Invalid cycle direction:",
                         )?;
                     }
                     "transition" => {
@@ -600,7 +596,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *pattern = keyword_value(
                             &CHASE_PATTERNS,
                             &clean_string_value(value),
-                            "chase pattern",
+                            "Invalid chase pattern:",
                         )?;
                     }
                     "speed" => match parse_speed_string(value, tempo_map) {
@@ -613,7 +609,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *direction = keyword_value(
                             &CHASE_DIRECTIONS,
                             &clean_string_value(value),
-                            "chase direction",
+                            "Invalid chase direction:",
                         )?;
                     }
                     "transition" => {
@@ -651,7 +647,9 @@ pub(crate) fn apply_parameters_to_effect_type(
                         *end_level = val;
                     }
                     "duration" => *duration = ctx.duration(value)?,
-                    "curve" => *curve = keyword_value(&DIMMER_CURVES, value, "dimmer curve")?,
+                    "curve" => {
+                        *curve = keyword_value(&DIMMER_CURVES, value, "Invalid dimmer curve:")?
+                    }
                     other => ignored.push(other.to_string()),
                 }
             }
@@ -676,7 +674,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                     "from" => from_focus = Some(unquoted(value).to_string()),
                     "from_pan" => from_pan = Some(parse_degrees(value)?),
                     "from_tilt" => from_tilt = Some(parse_degrees(value)?),
-                    "easing" => *easing = keyword_value(&EASINGS, value, "easing")?,
+                    "easing" => *easing = keyword_value(&EASINGS, value, "Invalid easing")?,
                     "duration" => *duration = ctx.duration(value)?,
                     other => ignored.push(other.to_string()),
                 }
