@@ -540,14 +540,19 @@ impl EffectEngine {
     /// How each DMX channel (universe, channel) of the patched fixtures
     /// crosses a crossfade: by its channel's kind, as a byte of its own or
     /// as the coarse or fine byte of a 16-bit value -- the channel's own
-    /// bytes and each mirror's.
+    /// bytes and each mirror's. Where patches overlap, the same whatever
+    /// order the fixtures come in ([`CrossPlace`]'s order), and a coarse or
+    /// fine byte whose partner another patch took crosses as a byte of its
+    /// own, so no channel either side drives is dropped.
     fn cross_places(&self) -> HashMap<(u16, u16), CrossPlace> {
-        let mut places = HashMap::new();
+        let mut places: HashMap<(u16, u16), CrossPlace> = HashMap::new();
         for fixture in self.fixtures.as_map().values() {
+            // The fixture's own: its channel definitions over its channels.
+            let mut own = HashMap::new();
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, &offset) in &fixture.channels {
                 if let Some(address) = at(offset) {
-                    places.insert(address, CrossPlace::Byte(CrossKind::of(name)));
+                    own.insert(address, CrossPlace::Byte(CrossKind::of(name)));
                 }
             }
             for (name, def) in &fixture.channel_defs {
@@ -560,16 +565,40 @@ impl EffectEngine {
                     };
                     match fine {
                         Some(fine) => {
-                            places.insert(coarse, CrossPlace::Coarse(kind, fine.1));
-                            places.insert(fine, CrossPlace::Fine(kind, coarse.1));
+                            own.insert(coarse, CrossPlace::Coarse(kind, fine.1));
+                            own.insert(fine, CrossPlace::Fine(kind, coarse.1));
                         }
                         None => {
-                            places.insert(coarse, CrossPlace::Byte(kind));
+                            own.insert(coarse, CrossPlace::Byte(kind));
                         }
                     }
                 }
             }
+            // Over another fixture's patch: by `CrossPlace`'s order.
+            for (address, place) in own {
+                places
+                    .entry(address)
+                    .and_modify(|held| *held = (*held).min(place))
+                    .or_insert(place);
+            }
         }
+        // A coarse or fine byte whose partner is not its own.
+        let partnered = |(universe, channel): (u16, u16), place: CrossPlace| match place {
+            CrossPlace::Coarse(_, fine) => {
+                matches!(places.get(&(universe, fine)), Some(CrossPlace::Fine(_, c)) if *c == channel)
+            }
+            CrossPlace::Fine(_, coarse) => matches!(
+                places.get(&(universe, coarse)),
+                Some(CrossPlace::Coarse(_, f)) if *f == channel
+            ),
+            CrossPlace::Byte(_) => true,
+        };
+        let alone: Vec<_> = places
+            .iter()
+            .filter(|&(&address, &place)| !partnered(address, place))
+            .map(|(&address, place)| (address, CrossPlace::Byte(place.kind())))
+            .collect();
+        places.extend(alone);
         places
     }
 
@@ -2008,16 +2037,28 @@ pub struct Prepared {
 }
 
 /// How a DMX channel crosses a crossfade ([`EffectEngine::crossfade_commands`]).
-#[derive(Clone, Copy)]
+/// Ordered by which of two patched over one channel takes it: a 16-bit
+/// value's byte before a byte of its own, then by kind and partner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CrossPlace {
-    /// A byte of its own.
-    Byte(CrossKind),
     /// The coarse byte of a 16-bit value, with the DMX channel of its fine
     /// byte.
     Coarse(CrossKind, u16),
     /// The fine byte of a 16-bit value, with the DMX channel of its coarse
     /// byte.
     Fine(CrossKind, u16),
+    /// A byte of its own.
+    Byte(CrossKind),
+}
+
+impl CrossPlace {
+    fn kind(self) -> CrossKind {
+        match self {
+            CrossPlace::Coarse(kind, _) | CrossPlace::Fine(kind, _) | CrossPlace::Byte(kind) => {
+                kind
+            }
+        }
+    }
 }
 
 /// How a replay from another engine's pose memory used it (see

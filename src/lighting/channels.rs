@@ -19,7 +19,7 @@
 
 /// How a channel crosses a crossfade between two engines: their fixture
 /// states and their frames' bytes alike ([`CrossKind::cross`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CrossKind {
     /// Intensity, colour, zoom, focus: fade.
     Fade,

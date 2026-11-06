@@ -428,3 +428,89 @@ fn the_dmx_of_a_crossfade_is_the_states_blend() {
         );
     }
 }
+
+/// A fixture `name` at universe 1, `address`, with these channels, each
+/// 16-bit where it names a fine offset.
+fn patched(name: &str, address: u16, channels: &[(&str, u16, Option<u16>)]) -> FixtureInfo {
+    use crate::lighting::types::ChannelDef;
+    let defs: HashMap<String, ChannelDef> = channels
+        .iter()
+        .map(|&(channel, offset, fine)| {
+            (
+                channel.to_string(),
+                ChannelDef {
+                    fine,
+                    ..ChannelDef::at(offset)
+                },
+            )
+        })
+        .collect();
+    let offsets = defs.iter().map(|(n, d)| (n.clone(), d.offset)).collect();
+    FixtureInfo::new(
+        name.to_string(),
+        1,
+        address,
+        "Head".to_string(),
+        offsets,
+        None,
+    )
+    .with_channel_defs(defs)
+}
+
+/// Where patches overlap, every channel either side drives still goes
+/// out, and the frame is the same whatever order the rig's maps hold the
+/// fixtures and channels in.
+#[test]
+fn overlapping_patches_cross_the_same_every_time_and_drop_nothing() {
+    let pan16 = [("pan", 1, Some(2))];
+    let rigs: [Vec<FixtureInfo>; 3] = [
+        // An 8-bit dimmer over the pan's coarse byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("par", 1, &[("dimmer", 1, None)]),
+        ],
+        // ...and over its fine byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("par", 2, &[("dimmer", 1, None)]),
+        ],
+        // A second head's 16-bit tilt over the pan's fine byte.
+        vec![
+            patched("mover", 1, &pan16),
+            patched("other", 2, &[("tilt", 1, Some(2))]),
+        ],
+    ];
+    let old = frame(&[(1, 0x00), (2, 0xFF), (3, 0x40)]);
+    let new = frame(&[(1, 0x01), (2, 0x00), (3, 0x80)]);
+    for rig in rigs {
+        let mut first: Option<Vec<Vec<(u16, u8)>>> = None;
+        for _ in 0..32 {
+            let mut engine = EffectEngine::new();
+            for fixture in &rig {
+                engine.register_fixture(fixture.clone());
+            }
+            let frames: Vec<Vec<(u16, u8)>> = [0.0, 0.25, 0.5, 0.75, 1.0]
+                .iter()
+                .map(|&t| {
+                    let mut out: Vec<(u16, u8)> = engine
+                        .crossfade_commands(&old, &new, t)
+                        .into_iter()
+                        .map(|c| (c.channel, c.value))
+                        .collect();
+                    out.sort();
+                    out
+                })
+                .collect();
+            for out in &frames {
+                let channels: Vec<u16> = out.iter().map(|&(c, _)| c).collect();
+                assert_eq!(channels, [1, 2, 3], "every channel goes out");
+            }
+            assert_eq!(frames[0], [(1, 0x00), (2, 0xFF), (3, 0x40)]);
+            assert_eq!(frames[4], [(1, 0x01), (2, 0x00), (3, 0x80)]);
+            match &first {
+                Some(first) => assert_eq!(&frames, first, "the same every time"),
+                None => first = Some(frames),
+            }
+        }
+    }
+}
