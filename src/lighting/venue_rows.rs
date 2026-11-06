@@ -10,7 +10,9 @@
 //
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
-////! What stops a venue editor's fixture rows, or a fixture type editor's
+//
+
+//! What stops a venue editor's fixture rows, or a fixture type editor's
 //! channel rows, from saving: the one check the save makes and the editor
 //! marks each row by. Light, so the web UI's WebAssembly module compiles it
 //! as it is.

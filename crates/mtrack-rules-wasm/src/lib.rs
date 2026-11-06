@@ -1121,8 +1121,9 @@ pub fn clave_half_beats(kind: ClaveKindJs) -> Option<ClaveHalfBeats> {
 pub struct ChannelValues(pub std::collections::HashMap<String, Option<f64>>);
 
 /// Whether a fixture with these channel values is lit, as the engine has
-/// it (`channels::is_lit`: some level channel above 0): what every stage
-/// view draws a lit fixture by. `false` for a value that is not channels.
+/// it (`channels::is_lit`: the light it emits, any part's brightest emitter
+/// times its dimmer, is above 0): what every stage view draws a lit fixture
+/// by. `false` for a value that is not channels.
 #[wasm_bindgen]
 pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
     read::<ChannelValues>(JsValue::from(channels)).is_some_and(|ChannelValues(values)| {
