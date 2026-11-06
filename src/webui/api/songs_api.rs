@@ -890,9 +890,7 @@ fn remove_song_from_playlists(
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file()
-                        && crate::songs::has_extension(&path, crate::playlist::PLAYLIST_EXTENSIONS)
-                    {
+                    if path.is_file() && crate::songs::is_yaml_config(&path) {
                         files_to_check.push(path);
                     }
                 }

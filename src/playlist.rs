@@ -551,9 +551,6 @@ pub fn is_reserved_name(name: &str) -> bool {
     name == ALL_SONGS
 }
 
-/// A playlist file's extensions, the one a new file takes first.
-pub const PLAYLIST_EXTENSIONS: &[&str] = crate::songs::YAML_EXTENSIONS;
-
 /// The name of a playlist was the player's own ([`is_reserved_name`]).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("'{0}' is the player's own playlist and has no file")]

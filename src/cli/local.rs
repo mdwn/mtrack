@@ -152,12 +152,11 @@ pub async fn start(
     // Resolve path: if it's a file or has a YAML extension, use it directly (legacy).
     // Otherwise treat it as a project directory and look for mtrack.yaml inside.
     let input = Path::new(path);
-    let player_path =
-        &if input.is_file() || crate::songs::has_extension(input, crate::songs::YAML_EXTENSIONS) {
-            input.to_path_buf()
-        } else {
-            input.join("mtrack.yaml")
-        };
+    let player_path = &if input.is_file() || crate::songs::is_yaml_config(input) {
+        input.to_path_buf()
+    } else {
+        input.join("mtrack.yaml")
+    };
 
     // Load or create config
     let player_config = match config::Player::deserialize(player_path) {

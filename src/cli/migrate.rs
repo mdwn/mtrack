@@ -22,7 +22,7 @@ use crate::config;
 /// Otherwise treat it as a project directory and look for mtrack.yaml inside.
 fn resolve_config_path(path: &str) -> PathBuf {
     let input = Path::new(path);
-    if input.is_file() || crate::songs::has_extension(input, crate::songs::YAML_EXTENSIONS) {
+    if input.is_file() || crate::songs::is_yaml_config(input) {
         input.to_path_buf()
     } else {
         input.join("mtrack.yaml")
