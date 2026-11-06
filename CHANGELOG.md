@@ -392,18 +392,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A venue or fixture type save or delete acts only on a file holding its name**: one rule
-  decides which file a save or delete of a venue or fixture type may act on, in the web UI and the
-  MVR import alike: only one that declares the name. A file at the name's stem (in any case) that
-  holds another venue or type is refused with 409 and left as it is: a venue saved as text over a
-  `club.venue` holding `Other` replaced it, and a delete removed it. A file that does not read (a
-  half-edited `par.light`) is refused too, and the web UI says so, "par.light doesn't read: ...
-  Replace it?" (or "Remove it?" for a delete); confirmed, the request is sent again with
-  `?replace_broken=par.light`, which lets the save replace, or the delete remove, exactly that one
-  broken file, never one that reads. A fixture type save checks the file found for the name as a
-  venue save does, whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got
-  a `Par.fixture` beside it with 200. A refused delete says the file "would be removed". The MVR
-  import names a new venue's file as the web UI does: "Club-2" is `club-2.venue` (it was
-  `club_2.venue`), and its re-import finds and refuses the same file at the name's stem.
+  finds the file a venue or fixture type lives in, or would be written to, and one rule decides
+  whether a save or delete may act on it, in the web UI and the MVR and GDTF imports alike. The
+  file is the one at any depth that declares the name, else the one at the name's stem (in any
+  case), else a file that does not read but opens a block for the name (as an older file name
+  left it: `club_2.venue` for "Club-2"). It may be acted on only when it declares the name. A file
+  that holds another venue or type is refused with 409 and left as it is: a venue saved as text
+  over a `club.venue` holding `Other` replaced it, and a delete removed it. A file that does not
+  read (a half-edited `par.light`) is refused too, and the web UI says so, "par.light doesn't
+  read: ... Replace it?" (or "Remove it?" for a delete), naming each broken file the request would
+  act on by its path in the directory (`a/club.light`); confirmed, the request is sent again with
+  `?replace_broken=a/club.light` (comma-separated for several), which lets the save replace, or
+  the delete remove, exactly those broken files, never one that reads, nor a namesake in another
+  subdirectory. A fixture type save checks the file found for the name as a venue save does,
+  whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got a `Par.fixture`
+  beside it with 200. A refused delete says the file "would be removed". The imports name a new
+  file as the web UI does, and the web UI folds a run of other characters into one `_`: the MVR
+  import writes "Club-2" as `club-2.venue` (it was `club_2.venue`), the GDTF import "Robe-Esprite"
+  as `robe-esprite.fixture` (it was `robe_esprite.fixture`), and the web UI "Club (Main)" as
+  `club_main` (it was `club__main_`). An import over a broken file found for the name is refused,
+  rather than writing a twin beside it.
 - **A song kept as `song.yml` gets no `song.yaml` beside it**: uploading a track or a sample to
   such a song, creating a song in its directory from the web UI's file browser, or creating it
   under its name wrote (or refused only on) a `song.yaml`, so a generated config sat beside the
