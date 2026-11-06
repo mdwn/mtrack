@@ -404,7 +404,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files as before), and a config's name stays lowercase: a song, playlist or profile config, and
   the config file `mtrack start` and `mtrack migrate` take, is a `.yaml` or `.yml` file as written,
   as before (`Set.YAML` is no playlist). With both `<name>.yaml` and `<name>.yml`, the `.yaml` is
-  the one read and edited, as before. MCP takes a song loaded from `song.yml` as one in its own
+  the one read and edited (for a playlist, the player loaded the `.yml`; see the `.yml` playlist
+  entry). A venue's or fixture type's file is found at its name's stem in any case (`Club.venue`
+  for `club`), and a save or delete acts on it only when it declares that name (see the fixture
+  type entry). MCP takes a song loaded from `song.yml` as one in its own
   directory, as it took `song.yaml`: `write_song_lighting` refused it a new lighting file as "in
   flat layout".
 - **A light show file's extension is read in any case, and hidden directories are passed over**:
