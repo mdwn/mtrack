@@ -290,6 +290,8 @@ pub(super) async fn bulk_import(
             .into_response();
     }
     let dir_canonical = dir_safe.as_path().to_path_buf();
+    // The songs directory the new songs are named among, when there is one.
+    let songs_root = state.songs_path().canonicalize().ok();
 
     // `Song::initialize` decodes and analyses each candidate's click track, so
     // a first import of a large library is minutes of blocking CPU and file
@@ -300,7 +302,13 @@ pub(super) async fn bulk_import(
         let mut failed: Vec<ImportFailure> = Vec::new();
         // codeql[rust/path-injection] dir_canonical is canonicalized and
         // verified via starts_with(root_canonical) above, preventing traversal.
-        import_song_dirs(&dir_canonical, &mut created, &mut skipped, &mut failed);
+        import_song_dirs(
+            &dir_canonical,
+            songs_root.as_deref(),
+            &mut created,
+            &mut skipped,
+            &mut failed,
+        );
         (created, skipped, failed)
     })
     .await;
@@ -339,13 +347,14 @@ pub(super) async fn bulk_import(
 /// already is skipped.
 fn import_song_dirs(
     root: &std::path::Path,
+    songs_root: Option<&std::path::Path>,
     created: &mut Vec<String>,
     skipped: &mut Vec<String>,
     failed: &mut Vec<ImportFailure>,
 ) {
     // A tree that cannot be read is reported, not taken for one with no
     // songs: a name it holds could not be counted as taken.
-    let dirs = match songs::named_song_dirs(root) {
+    let dirs = match songs::named_song_dirs(root, songs_root) {
         Ok(dirs) => dirs,
         Err(e) => {
             failed.push(ImportFailure {
@@ -766,6 +775,41 @@ mod test {
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(parsed["created"].as_array().unwrap().is_empty());
+    }
+
+    /// A bulk import names its songs past every song the songs directory
+    /// has, not only those under the imported folder: `music/Intro/` beside
+    /// a configured `songs/Live` naming "Intro" is "Intro (2)".
+    #[tokio::test]
+    async fn bulk_import_names_past_the_songs_directory() {
+        let (state, _dir) = test_state();
+        let live = state.songs_path().join("Live");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("t.wav"), create_test_wav()).unwrap();
+        std::fs::write(
+            live.join("song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: t.wav\n",
+        )
+        .unwrap();
+        let intro = _dir.path().join("music/Intro");
+        std::fs::create_dir_all(&intro).unwrap();
+        std::fs::write(intro.join("t.wav"), create_test_wav()).unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/music"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = std::fs::read_to_string(intro.join("song.yaml")).unwrap();
+        assert!(config.contains("name: Intro (2)"), "{config}");
     }
 
     #[tokio::test]

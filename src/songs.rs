@@ -2150,7 +2150,7 @@ impl InitReport {
 /// already is left as it is and reported as skipped.
 pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>> {
     let mut report = InitReport::default();
-    for (song_directory, name) in named_song_dirs(start_path)? {
+    for (song_directory, name) in named_song_dirs(start_path, None)? {
         if init_song_dir(&song_directory, &name)? {
             report.created.push(song_directory);
         } else {
@@ -2188,21 +2188,30 @@ pub fn init_song_dir(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
 
 /// The song directories under `root` ([`song_dirs`]), each with the name a
 /// new config gives its song: the directory's own name, unless another song
-/// directory found has that name too, or a song config already under `root`
-/// gives a song that name (`Live/song.yaml` naming "Intro" beside a new
+/// directory found has that name too, or a song configured under `root` or
+/// under `songs_root` (the player's songs directory, when `root` is an
+/// import from elsewhere in it or beside it) has it, loaded or failed
+/// ([`configured_song_names`]: `Live/song.yaml` naming "Intro" beside a new
 /// `Intro/`), when it is its path below `root` (`SongA/stems` and
 /// `SongB/stems`); one still taken gets the first free ` (2)`, ` (3)`, …,
-/// so no two songs are named alike.
-pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
+/// so no new song is named as one of these, or as another new one.
+pub fn named_song_dirs(
+    root: &Path,
+    songs_root: Option<&Path>,
+) -> std::io::Result<Vec<(PathBuf, String)>> {
     let dirs = song_dirs(root)?;
     let own_name = |dir: &Path| filename_display(dir).to_string();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for dir in &dirs {
         *counts.entry(own_name(dir)).or_default() += 1;
     }
-    // The names the songs already configured under `root` have, loaded or
-    // failed, as the loader reads them (without loading the songs).
+    // The names the songs already configured have, loaded or failed, as
+    // the loader reads them (without loading the songs): under `root`, and
+    // under the songs directory it is imported into.
     let mut taken = configured_song_names(root)?;
+    if let Some(songs_root) = songs_root.filter(|songs_root| *songs_root != root) {
+        taken.extend(configured_song_names(songs_root)?);
+    }
     Ok(dirs
         .into_iter()
         .map(|dir| {
@@ -2231,10 +2240,11 @@ pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
 }
 
 /// Whether `path` is hidden: its name starts with a dot (`.git`,
-/// `.draft.light`, `._Show.light`). The one hidden rule: the song loader,
-/// `songs --init` and the song file listing and browser pass such a file or
-/// directory over, the lighting files walk (`project_files::files_under`)
-/// too, and no save writes one ([`has_hidden_part`]).
+/// `.draft.light`, `._Show.light`). The one hidden rule for discovery:
+/// `songs --init`, the song file listing and browser and the lighting files
+/// walk (`project_files::files_under`) pass such a file or directory over,
+/// the songs tree's walk its directories ([`walk_passes_over`]), and no save
+/// writes one ([`has_hidden_part`]) unless a song's `lighting:` names it.
 pub fn is_hidden(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -2250,23 +2260,54 @@ pub fn has_hidden_part(relative: &Path) -> bool {
         .any(|part| part != "." && part != ".." && is_hidden(Path::new(part)))
 }
 
+/// Whether `path` is an AppleDouble file (`._song.yaml`, `._Show.light`):
+/// the resource fork macOS writes beside a file on a disk it does not own.
+/// Binary, so never a song's config, track or show.
+fn is_apple_double(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("._"))
+}
+
+/// Whether the walk of the songs tree passes `path` over: a hidden
+/// directory (`.git/`, [`is_hidden`]) or an AppleDouble file
+/// ([`is_apple_double`]). Another hidden file is read (`Foo/.song.yaml` is a
+/// song). The one rule for the loader, [`song_dirs`] and
+/// [`has_song_config`], so they agree on what is a song's.
+fn walk_passes_over(path: &Path) -> bool {
+    is_apple_double(path) || (is_hidden(path) && path.is_dir())
+}
+
+/// The entries of the directory `dir` in the songs tree, for a walk below
+/// the root: one that cannot be read is passed over with a warning, as
+/// having none, so one unreadable folder does not hide every other song.
+fn walk_entries(dir: &Path) -> Vec<PathBuf> {
+    // codeql[rust/path-injection] dir is the songs directory or one below it.
+    match fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(e) => {
+            warn!(dir = %dir.display(), error = %e, "Cannot read a directory in the songs tree; passing over it");
+            Vec::new()
+        }
+    }
+}
+
 /// The song directories under `root`, in name order: each directory below
 /// it that holds an audio track, a MIDI file or a song's config, under any
 /// name, or a `song.yaml` that does not read ([`marks_a_song_dir`]). The walk
-/// leaves out hidden directories and files and does not descend into a song
+/// ([`walk_passes_over`], [`walk_entries`]) leaves out hidden directories
+/// and AppleDouble files and does not descend into a song
 /// directory, so a library laid out as `artist/album/song/` is found at any
 /// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
 /// (none of those files) are not songs. `root` itself is never one. A subdirectory that cannot be
 /// read is passed over.
 pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     /// A directory's visible subdirectories, and whether it is a song's.
-    fn read(dir: &Path) -> std::io::Result<(Vec<PathBuf>, bool)> {
+    fn read(paths: Vec<PathBuf>) -> (Vec<PathBuf>, bool) {
         let mut subdirs = Vec::new();
         let mut is_song = false;
-        // codeql[rust/path-injection] dir is the songs directory or one below it.
-        for entry in fs::read_dir(dir)? {
-            let path = entry?.path();
-            if is_hidden(&path) {
+        for path in paths {
+            if walk_passes_over(&path) {
                 continue;
             }
             if path.is_dir() {
@@ -2278,13 +2319,11 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
             }
         }
         subdirs.sort();
-        Ok((subdirs, is_song))
+        (subdirs, is_song)
     }
     fn walk(dirs: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
         for dir in dirs {
-            let Ok((subdirs, is_song)) = read(&dir) else {
-                continue;
-            };
+            let (subdirs, is_song) = read(walk_entries(&dir));
             if is_song {
                 found.push(dir);
             } else {
@@ -2293,7 +2332,11 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
         }
     }
     let mut found = Vec::new();
-    walk(read(root)?.0, &mut found);
+    // codeql[rust/path-injection] root is the songs directory.
+    let top = fs::read_dir(root)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    walk(read(top).0, &mut found);
     Ok(found)
 }
 
@@ -2375,7 +2418,7 @@ pub fn has_song_config(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|entries| {
         entries
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .any(|path| !is_hidden(&path) && marks_a_song_dir(&path))
+            .any(|path| !walk_passes_over(&path) && marks_a_song_dir(&path))
     })
 }
 
@@ -2408,24 +2451,32 @@ fn insert_song(songs: &mut HashMap<String, Arc<Song>>, song: Arc<Song>) {
     }
 }
 
-/// Every file under `dir` the song loader takes up as a song config
+/// Every file under `root` the song loader takes up as a song config
 /// ([`song_yaml`]), in the order it reads them: each directory's entries in
-/// turn, a subdirectory's files where it stands. Hidden files and
-/// directories are passed over (`._song.yaml`, `.git/`).
-fn song_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    // codeql[rust/path-injection] dir is the songs directory configured at startup, or one below it.
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if is_hidden(&path) {
-            continue;
-        }
-        if path.is_dir() {
-            found.extend(song_config_files(&path)?);
-        } else if song_yaml(&path) != SongYaml::NotOne {
-            found.push(path);
+/// turn, a subdirectory's files where it stands. The walk is
+/// [`song_dirs`]'s ([`walk_passes_over`], [`walk_entries`]): a hidden
+/// directory or an AppleDouble file is passed over, and a subdirectory that
+/// cannot be read is passed over with a warning; only an unreadable `root`
+/// is an error.
+fn song_config_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(paths: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
+        for path in paths {
+            if walk_passes_over(&path) {
+                continue;
+            }
+            if path.is_dir() {
+                walk(walk_entries(&path), found);
+            } else if song_yaml(&path) != SongYaml::NotOne {
+                found.push(path);
+            }
         }
     }
+    let mut found = Vec::new();
+    // codeql[rust/path-injection] root is the songs directory configured at startup.
+    let top = fs::read_dir(root)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    walk(top, &mut found);
     Ok(found)
 }
 
@@ -4497,12 +4548,65 @@ sections:
         assert!(names.contains("Intro"), "{names:?}");
         assert!(names.contains("Broken"), "{names:?}");
 
-        let named = super::named_song_dirs(root)?;
+        let named = super::named_song_dirs(root, None)?;
         let intro = named
             .iter()
             .find(|(dir, _)| dir.ends_with("Intro"))
             .unwrap();
         assert_eq!(intro.1, "Intro (2)");
+        Ok(())
+    }
+
+    /// A hidden config (`Foo/.song.yaml`) is a song's, as on main; an
+    /// AppleDouble one (`._song.yaml`) and a hidden directory are passed
+    /// over, by the loader and `has_song_config` alike.
+    #[test]
+    fn the_walk_reads_hidden_configs_but_not_appledouble_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Foo", "Bar", ".git/Baz"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        let config = |name: &str| format!("name: {name}\ntracks:\n  - name: t\n    file: t.wav\n");
+        fs::write(root.join("Foo/.song.yaml"), config("Foo"))?;
+        fs::write(root.join("Bar/._song.yaml"), config("Bar"))?;
+        fs::write(root.join(".git/Baz/song.yaml"), config("Baz"))?;
+
+        let songs = get_all_songs(root)?;
+        let names: Vec<String> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        assert_eq!(names, ["Foo"]);
+        assert!(super::has_song_config(&root.join("Foo")));
+        assert!(!super::has_song_config(&root.join("Bar")));
+        Ok(())
+    }
+
+    /// A subdirectory that cannot be read is passed over, with a warning,
+    /// by the loader, `song_dirs` and the names init counts as taken: one
+    /// rule; only an unreadable root is an error.
+    #[cfg(unix)]
+    #[test]
+    fn the_walk_passes_over_an_unreadable_subdirectory() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Foo", "Locked/Bar"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+            fs::write(
+                root.join(dir).join("song.yaml"),
+                "name: X\ntracks:\n  - name: t\n    file: t.wav\n".replace('X', dir),
+            )?;
+        }
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000))?;
+        let names = super::configured_song_names(root);
+        let dirs = super::song_dirs(root);
+        let songs = get_all_songs(root);
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+        assert_eq!(names?, ["Foo".to_string()].into_iter().collect());
+        assert_eq!(dirs?, [root.join("Foo")]);
+        assert_eq!(songs?.list().len(), 1);
+        assert!(super::configured_song_names(&root.join("missing")).is_err());
         Ok(())
     }
 
