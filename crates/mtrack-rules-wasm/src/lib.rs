@@ -1297,6 +1297,9 @@ pub struct Limits {
     /// denominators (`tempo::SONG_MAX_NUMERATOR`, `SONG_DENOMINATORS`).
     pub signature_numerator_max: u32,
     pub signature_denominators: Vec<u32>,
+    /// The widest beam angle a venue fixture is given, in degrees
+    /// (`fixture_data::MAX_BEAM_ANGLE`).
+    pub beam_angle_max: f64,
 }
 
 /// [`Limits`], for the web UI.
@@ -1307,7 +1310,15 @@ pub fn limits() -> Limits {
         gain_db: (track_gains::MIN_GAIN_DB, track_gains::MAX_GAIN_DB),
         signature_numerator_max: tempo::SONG_MAX_NUMERATOR,
         signature_denominators: tempo::SONG_DENOMINATORS.to_vec(),
+        beam_angle_max: lighting::fixture_data::MAX_BEAM_ANGLE,
     }
+}
+
+/// Whether `degrees` is a venue fixture's beam angle
+/// (`fixture_data::beam_angle_valid`).
+#[wasm_bindgen]
+pub fn beam_angle_valid(degrees: f64) -> bool {
+    lighting::fixture_data::beam_angle_valid(degrees)
 }
 
 // ── DMX patch ───────────────────────────────────────────────────────────────

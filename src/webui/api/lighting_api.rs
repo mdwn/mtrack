@@ -3198,11 +3198,12 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             Some(value) => Some(
                 value
                     .as_f64()
-                    .filter(|v| *v > 0.0 && *v <= 180.0)
+                    .filter(|v| lighting::fixture_data::beam_angle_valid(*v))
                     .ok_or_else(|| {
                         format!(
                             "Fixture '{fix_name}': 'beam_angle' must be a number of degrees, \
-                             greater than 0 and at most 180, or null"
+                             greater than 0 and at most {}, or null",
+                            lighting::fixture_data::MAX_BEAM_ANGLE
                         )
                     })?,
             ),
