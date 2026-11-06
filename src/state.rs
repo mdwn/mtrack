@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::effects::{coarse_byte, is_multiplier_channel, FixtureState};
+use crate::lighting::effects::{dmx_byte, is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
 /// Pre-computed fixture display state: all non-multiplier channels at 0-255.
@@ -458,7 +458,7 @@ pub(crate) fn compute_fixture_snapshots(
                     channel_state,
                     has_dedicated_dimmer,
                 );
-                channels.insert(channel_name.clone(), coarse_byte(value));
+                channels.insert(channel_name.clone(), dmx_byte(value * 255.0));
             }
 
             FixtureSnapshot {
@@ -645,7 +645,7 @@ pub(crate) fn attach_cell_snapshots(
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
-                .map(|(name, value)| (name, coarse_byte(value)))
+                .map(|(name, value)| (name, dmx_byte(value * 255.0)))
                 .collect();
             cells.insert(cell.name.clone(), values);
         }

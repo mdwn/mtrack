@@ -393,18 +393,25 @@ fn a_sixteen_bit_channel_crosses_as_one_value() {
 #[test]
 fn the_dmx_of_a_crossfade_is_the_states_blend() {
     let mut outgoing = sixteen_bit_engine();
-    // Levels exactly on the 16-bit scale, so each side's bytes are its
-    // state's.
+    // Levels exactly on the 16-bit scale (and red's on the 8-bit one), so
+    // each side's bytes are its state's, and the blends land off the
+    // halfway points either could round either way.
     let full = f64::from(u16::MAX);
     lit(
         &mut outgoing,
-        &[("dimmer", 1.0), ("pan", 255.0 / full), ("gobo", 0.2)],
+        &[
+            ("dimmer", 1.0),
+            ("red", 1.0),
+            ("pan", 255.0 / full),
+            ("gobo", 0.2),
+        ],
     );
     let mut incoming = outgoing.sibling();
     lit(
         &mut incoming,
         &[
             ("dimmer", 25535.0 / full),
+            ("red", 175.0 / 255.0),
             ("pan", 256.0 / full),
             ("gobo", 0.6),
         ],

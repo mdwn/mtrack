@@ -142,20 +142,21 @@ pub fn fanout(def: &ChannelDef, value16: u16) -> impl Iterator<Item = (u16, u8)>
     spread(def, high, Some(low))
 }
 
-/// The byte a normalized 0..1 level is on an 8-bit channel -- exactly the
-/// byte the engine always wrote -- and the one a snapshot shows for any
-/// channel.
-pub fn coarse_byte(value: f64) -> u8 {
-    (value * 255.0) as u8
+/// The byte a DMX value (0 to 255) goes out as: rounded to the nearest,
+/// within a byte's reach, and 0 for not a number. The one rule every
+/// level becomes a byte by: a light show's on an 8-bit channel (its 0..1
+/// level times 255), a snapshot's for any channel, and MIDI DMX's.
+pub fn dmx_byte(value: f64) -> u8 {
+    // `as` saturates, and takes not a number to 0.
+    value.round() as u8
 }
 
 /// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets
-/// [`coarse_byte`]; a 16-bit channel gets the value rounded on the 16-bit
-/// scale, coarse and fine (the coarse byte can be the one above a
-/// truncated `coarse_byte`), which the engine used to leave untouched.
+/// [`dmx_byte`] of it; a 16-bit channel gets the value rounded on the
+/// 16-bit scale, coarse and fine.
 pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = (u16, u8)> + '_ {
     match def.fine {
-        None => spread(def, coarse_byte(value), None),
+        None => spread(def, dmx_byte(value * 255.0), None),
         Some(_) => {
             let [high, low] =
                 ((value.clamp(0.0, 1.0) * FULL_SCALE_16).round() as u16).to_be_bytes();
@@ -304,12 +305,12 @@ mod tests {
     }
 
     #[test]
-    fn eight_bit_normalized_is_the_byte_the_engine_always_wrote() {
+    fn eight_bit_normalized_is_the_level_rounded_to_a_byte() {
         let def = ChannelDef::at(3);
-        for value in [0.0, 0.25, 0.5, 0.999, 1.0] {
+        for (value, byte) in [(0.0, 0), (0.25, 64), (0.5, 128), (0.999, 255), (1.0, 255)] {
             assert_eq!(
                 resolve_normalized(&def, value).collect::<Vec<_>>(),
-                vec![(3, (value * 255.0) as u8)]
+                vec![(3, byte)]
             );
         }
     }

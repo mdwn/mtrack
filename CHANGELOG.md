@@ -152,6 +152,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to
+  its byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI
+  DMX. Both now round to the nearest by one rule, so a show's 8-bit channel may go out one count
+  higher than before: `dimmer: 50%` is 128 (was 127), `0.999` is 255 (was 254), and a colour byte
+  or a crossfade's level likewise. 16-bit channels are as they were. The fixture snapshot (the
+  web UI's stage views, the TUI, MCP `get_fixture_state`) shows the same rounded byte. A strobe
+  rate on a fixture without a step table may go out one count higher too, and the rate the player
+  reports for a strobe byte is read at the byte rather than half a byte above it; a step table's
+  bytes are as they were. A MIDI DMX value that is not a number goes out as 0 (was 255).
+
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes

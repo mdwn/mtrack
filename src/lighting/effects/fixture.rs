@@ -801,16 +801,14 @@ impl StrobeMap<'_> {
     }
 
     /// The normalized (0..1) value the strobe channel is driven to for
-    /// `hz`, which [`coarse_byte`](super::coarse_byte) truncates to the
-    /// byte. A tabled map lands on the centre of its byte, so the
-    /// truncation lands on it.
+    /// `hz`, which [`dmx_byte`](super::dmx_byte) rounds to the byte. A
+    /// tabled map lands on its byte exactly.
     pub fn normalized(&self, hz: f64) -> f64 {
         match *self {
             StrobeMap::Declared(_) | StrobeMap::Endpoints(_) => {
-                // The step the rate falls in, linear inside it; the centre
-                // of the byte, so the cast to DMX lands on it.
+                // The step the rate falls in, linear inside it, on its byte.
                 let dmx = declared_dmx(self.steps(), hz).round();
-                ((dmx + 0.5) / 255.0).clamp(0.0, 1.0)
+                (dmx / 255.0).clamp(0.0, 1.0)
             }
             StrobeMap::LinearHz { min, max, offset } => {
                 // Linear in hertz across the function's DMX range, as a
@@ -840,14 +838,14 @@ impl StrobeMap<'_> {
     /// The rate `byte` on the channel means, the inverse of
     /// [`Self::normalized`]: for a tabled map the step's value at the byte
     /// itself (`None` outside every step — byte 0 included, unless a step
-    /// starts there); for the others the value at the centre of the byte,
-    /// the bucket the truncating cast fills (`None` below the map's first
+    /// starts there); for the others the value at the byte itself, the
+    /// centre of the levels that round to it (`None` below the map's first
     /// byte, and at byte 0, which no function declares a rate at: it is
     /// what the engine writes for off).
     pub fn hz(&self, byte: u8) -> Option<f64> {
         let byte = f64::from(byte);
         let from_fraction = |offset: f64| {
-            let fraction = ((byte + 0.5) / 255.0 - offset) / (1.0 - offset);
+            let fraction = (byte / 255.0 - offset) / (1.0 - offset);
             (byte > 0.0 && byte >= offset * 255.0).then_some(fraction.clamp(0.0, 1.0))
         };
         match *self {
@@ -872,7 +870,7 @@ impl StrobeMap<'_> {
                 let period = max_period - from_fraction(offset)? * (max_period - min_period);
                 Some(1.0 / period)
             }
-            StrobeMap::Ratio { max } => (byte > 0.0).then(|| ((byte + 0.5) / 255.0 * max).min(max)),
+            StrobeMap::Ratio { max } => (byte > 0.0).then(|| (byte / 255.0 * max).min(max)),
         }
     }
 }
