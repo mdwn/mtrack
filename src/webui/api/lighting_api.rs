@@ -2090,7 +2090,12 @@ pub(super) async fn evaluate_lighting(
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,
-        None => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
+        None => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                crate::lighting::evaluate::EvaluateError::TimeOutOfRange.to_string(),
+            )
+        }
     };
     let lighting_system = state
         .player
