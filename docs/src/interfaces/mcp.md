@@ -64,8 +64,8 @@ About 65 tools are available. They fall into a few groups:
   [ambient light](../lighting/configuration.md#ambient-light) (`ambient: {mode, show, source, state}`,
   where `mode` is `auto`, `on` or `off`, `source` is whose settings the show plays (`profile`,
   `playlist` or `entry`; `null` with no show), and `state` is `pending` while its delay runs,
-  `playing`, `off`, or `unavailable` when `on` has no show to play; `null` without a DMX
-  engine) and a song about to [auto play](../getting-started/playlists.md#auto-play)
+  `playing`, `off`, or `unavailable` when `on` has no show to play; `{available: false,
+  reason}` when its state could not be read; `null` without a DMX engine) and a song about to [auto play](../getting-started/playlists.md#auto-play)
   (`auto_play: {song, starts_in_seconds}`, `null` when there is none).
 - **Playback control** — play, stop, next/previous, play-from-a-time, play-a-named-song-from-a-time,
   seek within the current song (to a time or a named section), switch playlist, stop triggered
