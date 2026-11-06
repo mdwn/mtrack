@@ -54,6 +54,31 @@ pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf
     found.into_iter().map(|(_, path)| path).collect()
 }
 
+/// The YAML file in `dir` that holds `name` (a playlist, a profile): the
+/// first of the files at the name in either YAML extension
+/// ([`files_at_stem`]: `<name>.yaml`, else `<name>.yml`, the lowercase
+/// spelling before another), else a new `<name>.yaml`. The loaders read
+/// this file for the name, and every write and delete goes to it, so an
+/// edit to a `.yml` file is not lost to a new `.yaml` beside it. With two
+/// files at the name, `what` names the kind of thing in the warning that
+/// says which is read. `name` is not checked for path safety here.
+pub fn yaml_file_at(dir: &Path, name: &str, what: &str) -> PathBuf {
+    let existing = files_at_stem(dir, name, crate::songs::YAML_EXTENSIONS);
+    if let [file, others @ ..] = existing.as_slice() {
+        for other in others {
+            tracing::warn!(
+                "{what} \"{name}\" has two files: {} is read, {} is not",
+                file.display(),
+                other.display()
+            );
+        }
+    }
+    existing
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
+}
+
 pub fn filename_display(path: &Path) -> &str {
     path.file_name()
         .and_then(|f| f.to_str())

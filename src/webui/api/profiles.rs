@@ -95,13 +95,25 @@ fn carry_unknown_keys(old_bytes: &[u8], new: &mut serde_json::Value) {
     carry(&raw, &typed, new);
 }
 
-/// The profile currently in `filename` (`.yaml`, else `.yml`), if there is
-/// one and it parses.
+/// The file in `profiles_dir` that holds the profile `filename`
+/// (`util::yaml_file_at`: its `.yaml`, else its `.yml`, in any case, else a
+/// new `.yaml`), checked to be inside the directory: the file the config
+/// loads, and every read, save and delete here goes to.
+#[allow(clippy::result_large_err)]
+fn profile_path(
+    profiles_dir: &std::path::Path,
+    filename: &str,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let file = crate::util::yaml_file_at(profiles_dir, filename, "Profile");
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
+    resolve_resource_path(profiles_dir, filename, ext)
+}
+
+/// The profile currently in `filename`, if there is one and it parses.
 async fn existing_profile(profiles_dir: &std::path::Path, filename: &str) -> Option<Profile> {
-    let path = ["yaml", "yml"]
-        .iter()
-        .filter_map(|ext| resolve_resource_path(profiles_dir, filename, ext).ok())
-        .find(|p| p.is_file())?;
+    let path = profile_path(profiles_dir, filename)
+        .ok()
+        .filter(|p| p.is_file())?;
     tokio::task::spawn_blocking(move || {
         Config::builder()
             .add_source(crate::util::yaml_source(&path).ok()?)
@@ -152,21 +164,9 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
 
     // codeql[rust/path-injection] profiles_dir comes from server config, not user input.
     let result = spawn_blocking_io("read profiles dir", move || {
-        let entries = std::fs::read_dir(&profiles_dir)?;
+        // The profile files the config loads, as it lists them.
         let mut items: Vec<ProfileFileInfo> = Vec::new();
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "yaml" && ext != "yml" {
-                continue;
-            }
+        for path in crate::config::list_profile_files(&profiles_dir)? {
             let filename = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -197,7 +197,7 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
             });
         }
         items.sort_by(|a, b| a.filename.cmp(&b.filename));
-        Ok::<_, std::io::Error>(items)
+        Ok::<_, crate::config::ConfigError>(items)
     })
     .await?;
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(result)).into_response())
@@ -215,24 +215,14 @@ pub(super) async fn get_profile(
         StatusCode::SERVICE_UNAVAILABLE,
     )?;
 
-    // Try .yaml then .yml.
-    let file_path = {
-        let yaml_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
-        if yaml_path.is_file() {
-            yaml_path
-        } else {
-            let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
-            if yml_path.is_file() {
-                yml_path
-            } else {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"error": format!("Profile '{}' not found", filename)})),
-                )
-                    .into_response());
-            }
-        }
-    };
+    let file_path = profile_path(&profiles_dir, &filename)?;
+    if !file_path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Profile '{}' not found", filename)})),
+        )
+            .into_response());
+    }
 
     // codeql[rust/path-injection] file_path is validated via resolve_resource_path.
     let fp = file_path.clone();
@@ -324,20 +314,10 @@ pub(super) async fn put_profile(
     // elsewhere is the operator's to set up.
     let profiles_dir = super::helpers::ensure_configured_dir(&profiles_dir, &state).await?;
 
-    // The file the profile already lives in (`.yaml`, else `.yml`, as the
-    // read does), so a save never leaves two files for one profile.
+    // The file the profile already lives in, as the read finds it, so a
+    // save never leaves two files for one profile.
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
-    let yaml_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
-    let file_path = if yaml_path.is_file() {
-        yaml_path
-    } else {
-        let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
-        if yml_path.is_file() {
-            yml_path
-        } else {
-            yaml_path
-        }
-    };
+    let file_path = profile_path(&profiles_dir, &filename)?;
     validate_resource_name_to_write(&filename, "profile", file_path.is_file())?;
 
     // Write the file off the async runtime. The version check and the write
@@ -441,20 +421,14 @@ pub(super) async fn delete_profile_file(
     };
 
     // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
-    let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
-    let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
-
-    let target = if file_path.is_file() {
-        file_path
-    } else if yml_path.is_file() {
-        yml_path
-    } else {
+    let target = profile_path(&profiles_dir, &filename)?;
+    if !target.is_file() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Profile '{}' not found", filename)})),
         )
             .into_response());
-    };
+    }
     spawn_blocking_io("delete profile", move || std::fs::remove_file(&target)).await?;
 
     // The store's copy is what the reload re-initialises from, and writing the
@@ -909,6 +883,65 @@ mod test {
         assert!(std::fs::read_to_string(profiles_dir.join("host-a.yml"))
             .unwrap()
             .contains("dev-b"));
+    }
+
+    /// A profile kept as `host-a.YAML` is one profile file throughout: the
+    /// config loads it, the list shows it, and it is read, saved in place
+    /// and deleted.
+    #[tokio::test]
+    async fn a_profile_with_a_capital_extension_is_one_file_throughout() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(&profiles_dir, "host-a.YAML", HOST_A);
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+        let file = profiles_dir.join("host-a.YAML");
+
+        assert_eq!(
+            crate::config::list_profile_files(&profiles_dir).unwrap(),
+            std::slice::from_ref(&file)
+        );
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        http::Request::builder()
+                            .uri(uri)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), response_body(response).await)
+            }
+        };
+        let (status, body) = get("/profiles").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"host-a\""), "{body}");
+        let (status, body) = get("/profiles/host-a").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("host-a"), "{body}");
+
+        let (status, _) = put_host_a(&app, None, "dev-b").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!profiles_dir.join("host-a.yaml").exists());
+        assert!(std::fs::read_to_string(&file).unwrap().contains("dev-b"));
+
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/profiles/host-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!file.exists());
     }
 
     #[tokio::test]
