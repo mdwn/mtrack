@@ -967,7 +967,7 @@ impl McpServer {
     #[tool(
         description = "Replace the entire `controllers` list. Pass an array of \
         controller definitions, each tagged with a `kind` discriminator \
-        (`grpc`, `mcp`, `osc`, `midi`)."
+        (`grpc`, `mcp`, `midi`, `multi`, `osc`)."
     )]
     async fn update_controllers(
         &self,
@@ -4282,6 +4282,47 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+#[cfg(test)]
+mod update_controllers_description_tests {
+    use crate::config::Controller;
+
+    /// The kind each controller is tagged with. Exhaustive, so a new kind
+    /// fails to compile here until it is named, and then the test below
+    /// fails until the tool's description names it too.
+    fn kind(controller: &Controller) -> &'static str {
+        match controller {
+            Controller::Grpc(_) => "grpc",
+            Controller::Mcp(_) => "mcp",
+            Controller::Midi(_) => "midi",
+            Controller::Multi(_) => "multi",
+            Controller::Osc(_) => "osc",
+        }
+    }
+
+    #[test]
+    fn the_description_names_every_controller_kind() {
+        let router = super::McpServer::tool_router();
+        let description = router
+            .get("update_controllers")
+            .and_then(|tool| tool.description.clone())
+            .expect("update_controllers has a description");
+        let samples = [
+            Controller::Grpc(crate::config::GrpcController::new(1)),
+            Controller::Mcp(crate::config::McpController::new(1)),
+            Controller::Multi(Default::default()),
+            Controller::Osc(Box::default()),
+        ];
+        for controller in &samples {
+            // The name matches the tag serde writes.
+            let tagged = serde_json::to_value(controller).unwrap();
+            assert_eq!(tagged["kind"], kind(controller));
+        }
+        for name in ["grpc", "mcp", "midi", "multi", "osc"] {
+            assert!(description.contains(&format!("`{name}`")), "{name}");
+        }
+    }
 }
 
 #[cfg(test)]
