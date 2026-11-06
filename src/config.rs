@@ -79,7 +79,9 @@ pub use self::playlist::{
 // Sample types are exported for external configuration
 pub(crate) use self::duration::{parse_duration_string, parse_playback_delay};
 pub use self::hostname::resolve_hostname;
-pub use self::notification::{NotificationConfig, SongNotificationConfig};
+pub use self::notification::{
+    section_key, NotificationConfig, NotificationKind, SongNotificationConfig,
+};
 pub(crate) use self::player::list_profile_files;
 pub use self::profile::Profile;
 #[allow(unused_imports)]

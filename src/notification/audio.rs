@@ -24,39 +24,35 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::config::NotificationKind;
 use crate::samples::loader::SampleLoader;
 
 /// Generates the default tone PCM for each notification event type.
 ///
 /// Returns a map of event key → mono f32 PCM samples at the given sample rate.
 pub fn generate_default_tones(sample_rate: u32) -> HashMap<String, Arc<Vec<f32>>> {
-    let mut tones = HashMap::new();
-
-    // SectionEntering: two short ascending tones (800Hz → 1200Hz).
-    tones.insert(
-        "section_entering".to_string(),
-        Arc::new(generate_two_tone(sample_rate, 800.0, 1200.0, 30, 0.25)),
-    );
-
-    // LoopArmed: single confirmation tone (1kHz, 50ms) — matches existing behavior.
-    tones.insert(
-        "loop_armed".to_string(),
-        Arc::new(generate_sine_tone(sample_rate, 1000.0, 50, 0.25)),
-    );
-
-    // BreakRequested: two short descending tones (1200Hz → 800Hz).
-    tones.insert(
-        "break_requested".to_string(),
-        Arc::new(generate_two_tone(sample_rate, 1200.0, 800.0, 30, 0.25)),
-    );
-
-    // LoopExited: two descending tones (800Hz → 600Hz).
-    tones.insert(
-        "loop_exited".to_string(),
-        Arc::new(generate_two_tone(sample_rate, 800.0, 600.0, 30, 0.25)),
-    );
-
-    tones
+    NotificationKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let tone = match kind {
+                // Two short ascending tones (800Hz → 1200Hz).
+                NotificationKind::SectionEntering => {
+                    generate_two_tone(sample_rate, 800.0, 1200.0, 30, 0.25)
+                }
+                // A single confirmation tone (1kHz, 50ms).
+                NotificationKind::LoopArmed => generate_sine_tone(sample_rate, 1000.0, 50, 0.25),
+                // Two short descending tones (1200Hz → 800Hz).
+                NotificationKind::BreakRequested => {
+                    generate_two_tone(sample_rate, 1200.0, 800.0, 30, 0.25)
+                }
+                // Two descending tones (800Hz → 600Hz).
+                NotificationKind::LoopExited => {
+                    generate_two_tone(sample_rate, 800.0, 600.0, 30, 0.25)
+                }
+            };
+            (kind.key().to_string(), Arc::new(tone))
+        })
+        .collect()
 }
 
 /// Loads an audio file from disk into mono f32 PCM at the target sample rate.

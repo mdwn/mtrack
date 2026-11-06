@@ -1585,12 +1585,7 @@ dmx:
             )
             .unwrap();
             // Select no checks, so the track-mappings branch is skipped
-            assert!(verify(
-                config_path.to_str().unwrap(),
-                Some(vec![]),
-                None
-            )
-            .is_ok());
+            assert!(verify(config_path.to_str().unwrap(), Some(vec![]), None).is_ok());
         }
 
         #[test]
