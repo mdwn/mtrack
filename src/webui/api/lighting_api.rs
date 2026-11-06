@@ -244,7 +244,7 @@ pub(crate) fn find_light_files(
     dir: &std::path::Path,
     results: &mut Vec<LightFileInfo>,
 ) -> Result<(), std::io::Error> {
-    for path in lighting::project_files::files_under(dir, crate::songs::LIGHTING_EXTENSIONS) {
+    for path in lighting::project_files::files_under(dir, crate::songs::LIGHTING_EXTENSIONS)? {
         let relative = path
             .strip_prefix(base)
             .unwrap_or(&path)
@@ -641,7 +641,8 @@ pub(super) fn locate_venue_file(
     let stem_file = existing_venue_file(dir, name);
     // Every venue file at any depth, in path order: the files the lighting
     // system loads ([`lighting::project_files::venues`]).
-    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
+    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
     let mut broken: Option<LocatedVenue> = None;
     for path in paths {
         let bytes = crate::util::read_file(&path)
@@ -3997,11 +3998,42 @@ show "test" {
     }
 
     #[tokio::test]
+    async fn get_lighting_files_scan_error_returns_500() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // An unreadable songs directory is an error, not an empty list.
+        let (state, _dir) = test_state();
+        let songs = state.songs_path();
+        std::fs::set_permissions(&songs, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::fs::set_permissions(&songs, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to scan for lighting files"));
+    }
+
+    #[tokio::test]
     async fn get_lighting_files_passes_over_an_unreadable_directory() {
         use std::os::unix::fs::PermissionsExt;
 
-        // The one walk of lighting files passes over a directory it cannot
-        // read, as the venue and fixture type loaders do, and lists the rest.
+        // The one walk of lighting files passes over a subdirectory it
+        // cannot read, with a warning, and lists the rest.
         let (state, _dir) = test_state();
         std::fs::write(state.songs_path().join("show.light"), "content").unwrap();
         let sub = state.songs_path().join("unreadable_dir");

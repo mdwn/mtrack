@@ -620,6 +620,7 @@ fn add_aim_points_blocking(
     // The venue files the lighting system loads, subdirectories included.
     for path in
         lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
+            .map_err(|e| format!("cannot read {venues_dir}: {e}"))?
     {
         let Ok(content) = crate::util::read_to_string(&path) else {
             continue;

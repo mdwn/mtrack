@@ -25,6 +25,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use tracing::warn;
+
 use super::library::Library;
 use super::types::{FixtureType, Venue};
 
@@ -38,21 +40,53 @@ pub const FIXTURE_TYPE_EXTENSIONS: &[&str] = &["fixture", "light"];
 pub const VENUE_EXTENSIONS: &[&str] = &["venue", "light"];
 
 /// Every file under `dir`, at any depth, with one of `extensions` (lowercase,
-/// matched in any case: `songs::has_extension`), in path order, leaving out
-/// hidden directories as the song loader does (`songs::is_hidden`). A
-/// missing directory has none. The one walk for a project's lighting files:
-/// the venue and fixture type directories, and the songs' `.light` shows.
-pub fn files_under(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
+/// matched in any case: `songs::has_extension`), in path order: the one walk
+/// for a project's lighting files (the venue and fixture type directories,
+/// and the songs' `.light` shows).
+///
+/// - Hidden directories are left out, as the song loader leaves them out
+///   (`songs::is_hidden`).
+/// - A link is followed only to what is inside `dir`, by the web UI's
+///   containment rule (`SafePath::resolve`): one leading out of it, or to
+///   nothing, is left out, so nothing listed here is a file the tools that
+///   read it would refuse.
+/// - A missing `dir` has none; one that cannot be read is an error, as the
+///   song loader's is. A subdirectory that cannot be read is passed over,
+///   with a warning.
+pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+    use crate::webui::safe_path::{SafePath, VerifiedRoot};
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(dir)?;
+    let root = VerifiedRoot::new(dir).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the directory cannot be resolved",
+        )
+    })?;
+    let inside = |path: &Path| {
+        let is_link = path
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink());
+        !is_link || SafePath::resolve(path, &root).is_ok()
+    };
     let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+    let mut pending = vec![entries];
+    while let Some(entries) = pending.pop() {
         for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            if !inside(&path) {
+                continue;
+            }
             if path.is_dir() {
-                if !crate::songs::is_hidden(&path) {
-                    stack.push(path);
+                if crate::songs::is_hidden(&path) {
+                    continue;
+                }
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => pending.push(entries),
+                    Err(e) => {
+                        warn!(dir = %path.display(), error = %e, "Cannot read a directory of lighting files; passing over it")
+                    }
                 }
             } else if crate::songs::has_extension(&path, extensions) {
                 out.push(path);
@@ -60,7 +94,7 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The files directly in `dir` named `<stem>.<extension>` for one of
@@ -151,7 +185,17 @@ fn declarations<T>(
     let mut out = Declarations::default();
     let mut duplicates = Vec::new();
     let mut taken: HashMap<String, PathBuf> = HashMap::new();
-    for file in files_under(dir, extensions) {
+    let files = match files_under(dir, extensions) {
+        Ok(files) => files,
+        Err(e) => {
+            out.problems.push(FileProblem {
+                file: dir.to_path_buf(),
+                error: format!("cannot read the directory: {e}"),
+            });
+            return out;
+        }
+    };
+    for file in files {
         let parsed = crate::util::read_to_string(&file)
             .map_err(|e| e.to_string())
             .and_then(|text| parse(&text).map_err(|e| e.to_string()));
@@ -218,7 +262,8 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
     // A record set aside as a duplicate still points at its archive.
     let mut archives: HashSet<PathBuf> = HashSet::new();
     for file in types_dir
-        .map(|dir| files_under(dir, FIXTURE_TYPE_EXTENSIONS))
+        // A directory that cannot be read is a problem of `files` already.
+        .and_then(|dir| files_under(dir, FIXTURE_TYPE_EXTENSIONS).ok())
         .unwrap_or_default()
     {
         let Ok(text) = crate::util::read_to_string(&file) else {
@@ -242,6 +287,51 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link is followed to what is inside the directory only: one out of
+    /// it, or to nothing, is not listed, as the tools reading the listed
+    /// files would refuse it.
+    #[cfg(unix)]
+    #[test]
+    fn files_under_does_not_follow_a_link_out_of_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.venue"), "").unwrap();
+        std::fs::create_dir(dir.path().join("club")).unwrap();
+        std::fs::write(dir.path().join("club/main.venue"), "").unwrap();
+        let link =
+            |to: &Path, at: &str| std::os::unix::fs::symlink(to, dir.path().join(at)).unwrap();
+        link(outside.path(), "linked");
+        link(&outside.path().join("secret.venue"), "out.venue");
+        link(&dir.path().join("club"), "alias");
+        link(&dir.path().join("gone.venue"), "dead.venue");
+
+        let found = files_under(dir.path(), VENUE_EXTENSIONS).unwrap();
+        let relative: Vec<_> = found.iter().map(|p| display_in(dir.path(), p)).collect();
+        assert_eq!(relative, ["alias/main.venue", "club/main.venue"]);
+    }
+
+    /// A directory that cannot be read is an error; one below it that
+    /// cannot be read is passed over; one that is not there has none.
+    #[cfg(unix)]
+    #[test]
+    fn files_under_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.venue"), "").unwrap();
+        let sub = dir.path().join("locked");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let below = files_under(dir.path(), VENUE_EXTENSIONS);
+        let root = files_under(&sub, VENUE_EXTENSIONS);
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(below.unwrap(), [dir.path().join("a.venue")]);
+        assert!(root.is_err());
+        assert!(files_under(&dir.path().join("none"), VENUE_EXTENSIONS)
+            .unwrap()
+            .is_empty());
+    }
 
     const PAR: &str =
         "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";

@@ -1219,6 +1219,14 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret.venue"), nested_dsl).unwrap();
         std::os::unix::fs::symlink(outside.path(), venues_dir.join("linked")).unwrap();
+        // Not listed, so not offered to the tools that would refuse it.
+        let listed = tool_json(
+            &call_tool(&client, &url, &session, 230, "list_venue_files", json!({})).await,
+        );
+        assert!(
+            !listed.to_string().contains("secret.venue"),
+            "a venue outside the directory was listed: {listed}"
+        );
         for (id, tool, args) in [
             (224, "read_venue", json!({"file": "linked/secret.venue"})),
             (

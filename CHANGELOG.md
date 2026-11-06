@@ -348,8 +348,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (and is listed with `extension: "fixture"`), a save writes it back as `Par.FIXTURE` rather than
   a new `Par.fixture` beside it, and `include "Looks.LIGHT"` is accepted. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
-  (`.git/`), as the song loader does, and the list passes over a directory it cannot read and
-  lists the rest (it answered 500 "Failed to scan for lighting files"). The trigger editor's fixed velocity field takes 1–127, the
+  (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
+  warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
+  directory it cannot read is still that 500. A link in these directories is followed only to
+  what is inside the directory: a linked subdirectory or file leading out of it, or a link to
+  nothing, is no longer listed (MCP `list_venue_files` showed `linked/secret.venue`, which its
+  read refused) nor loaded as venues or fixture types. The trigger editor's fixed velocity field takes 1–127, the
   velocities a hit plays at (it allowed 0).
 - **A quiet trigger hit plays**: with the `linear` velocity curve, a hit just over a low threshold
   (`threshold: 0.005`, peak 0.006) had velocity 0, which played nothing ("No sample file for

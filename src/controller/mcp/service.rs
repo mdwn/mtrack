@@ -4447,21 +4447,26 @@ pub(crate) async fn list_light_files(
     kind: LightingDirKind,
 ) -> Result<Vec<String>, McpError> {
     let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        crate::lighting::project_files::files_under(&dir, kind.extensions())
-            .iter()
-            .filter_map(|path| path.strip_prefix(&dir).ok())
-            .map(|relative| {
-                relative
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/")
-            })
-            .collect()
+    let files = tokio::task::spawn_blocking({
+        let dir = dir.clone();
+        move || crate::lighting::project_files::files_under(&dir, kind.extensions())
     })
     .await
-    .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))
+    .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+    .map_err(|e| {
+        McpError::internal_error(format!("failed to list {}: {e}", dir.display()), None)
+    })?;
+    Ok(files
+        .iter()
+        .filter_map(|path| path.strip_prefix(&dir).ok())
+        .map(|relative| {
+            relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect())
 }
 
 /// Writes a string to `path` the same way the config store does, preserving the

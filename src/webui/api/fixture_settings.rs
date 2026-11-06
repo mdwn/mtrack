@@ -199,6 +199,12 @@ type Refusal = (StatusCode, String);
 /// with its text; one that cannot be read is an error naming it.
 fn venue_files(dir: &FsPath) -> Result<Vec<(PathBuf, String)>, Refusal> {
     crate::lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
+        .map_err(|e| {
+            (
+                StatusCode::CONFLICT,
+                format!("the venues directory cannot be read ({e}); nothing was written"),
+            )
+        })?
         .into_iter()
         .map(|p| {
             crate::util::read_to_string(&p)
