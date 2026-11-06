@@ -24,6 +24,7 @@
     VelocityCurve,
   } from "../../gen/rules/mtrack_rules";
   import {
+    COMMON_SAMPLE_RATES,
     startCalibration,
     startCapture,
     stopCapture,
@@ -286,9 +287,9 @@
             <option value={String(rate)}>{rate}</option>
           {/each}
         {:else}
-          <option value="44100">44100</option>
-          <option value="48000">48000</option>
-          <option value="96000">96000</option>
+          {#each COMMON_SAMPLE_RATES as rate (rate)}
+            <option value={String(rate)}>{rate}</option>
+          {/each}
         {/if}
         {#if trigger.sample_rate && !sampleRateOptions.includes(trigger.sample_rate) && sampleRateOptions.length > 0}
           <option value={String(trigger.sample_rate)}

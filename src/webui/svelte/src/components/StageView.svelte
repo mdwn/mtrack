@@ -55,6 +55,7 @@
     beamEnd,
     cellBar,
     drawBeam,
+    drawFixture,
     fitFrame,
     hasGeometry,
     nextFocusName,
@@ -641,45 +642,13 @@
       const state = fixtureStates[name];
       const strobeHz = strobeRates[name];
       const look = beamLook(state, strobeHz, now);
-      const strobeVisible = look.strobeOn;
-      const [finalR, finalG, finalB] = look.rgb.map((c) =>
-        strobeVisible ? Math.round(c * 255) : 0,
-      );
-      const intensity = look.intensity;
-
-      // Glow
-      if (look.lit) {
-        const gradient = ctx.createRadialGradient(
-          pos.x,
-          pos.y,
-          radius,
-          pos.x,
-          pos.y,
-          glow,
-        );
-        gradient.addColorStop(
-          0,
-          `rgba(${finalR},${finalG},${finalB},${intensity * 0.5})`,
-        );
-        gradient.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, glow, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Fixture body — dashed when the venue has not placed it yet. A
-      // pixel fixture is a disc of wedges, one per cell in the
-      // manufacturer's order, each in its own colour when a per-cell
-      // effect drives it (design §17.4), else the fixture's.
-      ctx.strokeStyle = fixtureStroke;
-      ctx.lineWidth = 1.5;
-      if (isUnplaced) ctx.setLineDash([4, 3]);
+      // A pixel fixture's body is its cells, each in its own colour when
+      // a per-cell effect drives it (design §17.4), else the fixture's.
       const cells = meta.cells ?? [];
       const cellState = cellStates[name];
-      const cellColor = (cell: { name: string }) => {
+      const cellColor = (cell: { name: string }, color: string) => {
         const own = cellState?.[cell.name];
-        if (!own) return `rgb(${finalR},${finalG},${finalB})`;
+        if (!own) return color;
         // A cell without a dimmer of its own takes the fixture's, and
         // every cell flashes with the fixture.
         return beamCss(
@@ -687,55 +656,70 @@
         );
       };
       const bar = cells.length > 1 ? cellBar(cells, meta.rotation) : null;
-      if (bar) {
-        // Cells along a line: a bar of segments in that direction on the
-        // plot, seen from the audience.
-        const len = radius * 2.6;
-        const thick = radius * 0.9;
-        const seg = len / cells.length;
-        ctx.save();
-        ctx.translate(pos.x, pos.y);
-        ctx.rotate(bar.angle);
-        for (const [i, cell] of bar.ordered.entries()) {
-          ctx.fillStyle = cellColor(cell);
-          ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
-        }
-        ctx.strokeRect(-len / 2, -thick / 2, len, thick);
-        ctx.restore();
-      } else if (cells.length > 1) {
-        // Cells that do not line up: a disc of wedges, one per cell in
-        // the manufacturer's order.
-        const step = (Math.PI * 2) / cells.length;
-        for (const [i, cell] of cells.entries()) {
-          ctx.fillStyle = cellColor(cell);
+      const cellBody = (ctx: CanvasRenderingContext2D, color: string) => {
+        if (bar) {
+          // Cells along a line: a bar of segments in that direction on the
+          // plot, seen from the audience.
+          const len = radius * 2.6;
+          const thick = radius * 0.9;
+          const seg = len / cells.length;
+          ctx.save();
+          ctx.translate(pos.x, pos.y);
+          ctx.rotate(bar.angle);
+          for (const [i, cell] of bar.ordered.entries()) {
+            ctx.fillStyle = cellColor(cell, color);
+            ctx.fillRect(-len / 2 + i * seg, -thick / 2, seg, thick);
+          }
+          ctx.strokeRect(-len / 2, -thick / 2, len, thick);
+          ctx.restore();
+        } else if (cells.length > 1) {
+          // Cells that do not line up: a disc of wedges, one per cell in
+          // the manufacturer's order.
+          const step = (Math.PI * 2) / cells.length;
+          for (const [i, cell] of cells.entries()) {
+            ctx.fillStyle = cellColor(cell, color);
+            ctx.beginPath();
+            ctx.moveTo(pos.x, pos.y);
+            ctx.arc(
+              pos.x,
+              pos.y,
+              radius,
+              -Math.PI / 2 + i * step,
+              -Math.PI / 2 + (i + 1) * step,
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
           ctx.beginPath();
-          ctx.moveTo(pos.x, pos.y);
-          ctx.arc(
-            pos.x,
-            pos.y,
-            radius,
-            -Math.PI / 2 + i * step,
-            -Math.PI / 2 + (i + 1) * step,
-          );
-          ctx.closePath();
+          ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          // One cell: the disc shows its colour when a per-cell effect
+          // drives it, else the fixture's.
+          ctx.fillStyle = cellColor(cells[0], color);
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
           ctx.fill();
+          ctx.stroke();
         }
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      } else {
-        // One cell (or none): the disc shows that cell's colour when a
-        // per-cell effect drives it, else the fixture's.
-        ctx.fillStyle =
-          cells.length === 1
-            ? cellColor(cells[0])
-            : `rgb(${finalR},${finalG},${finalB})`;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
+      };
+      drawFixture(
+        ctx,
+        pos,
+        name,
+        look,
+        {
+          radius,
+          glow,
+          lineWidth: 1.5,
+          unplacedDash: [4, 3],
+          stroke: fixtureStroke,
+          font: "11px monospace",
+          labelFill: fixtureLabel,
+          labelGap: 14,
+        },
+        { unplaced: isUnplaced, body: cells.length > 0 ? cellBody : undefined },
+      );
 
       // Rings for the Fit shows page: solid for a group's members, dashed
       // and wider for the pending selection. (The page also lists both as
@@ -756,12 +740,6 @@
         ctx.stroke();
         ctx.setLineDash([]);
       }
-
-      // Label
-      ctx.fillStyle = fixtureLabel;
-      ctx.font = "11px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + radius + 14);
 
       // A fixture test drives it: an amber ring and a "test" badge, so
       // the plot says why it shows what the show does not.

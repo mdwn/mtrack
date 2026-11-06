@@ -310,15 +310,6 @@
       : 0,
   );
 
-  const SECTION_COLORS = [
-    "94, 202, 234",
-    "239, 96, 163",
-    "242, 181, 68",
-    "77, 192, 138",
-    "139, 92, 246",
-    "249, 115, 22",
-  ];
-
   let sectionRegions = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     const dur = $playbackStore.song_duration_ms;
@@ -338,12 +329,13 @@
       const startPct = (ms(s.start_measure, s.start_beat ?? 1) / dur) * 100;
       const endPct = (ms(s.end_measure, s.end_beat ?? 1) / dur) * 100;
       const isActive = active?.name === s.name;
-      const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
+      // The editor's colour for it: its own, or the palette's.
+      const color = sectionColor(s.color ?? undefined, i);
       return {
         name: s.name,
         startPct,
         widthPct: endPct - startPct,
-        rgb,
+        color,
         isActive,
       };
     });
@@ -607,7 +599,7 @@
             class:scrub__region--active={region.isActive}
             style:left="{region.startPct}%"
             style:width="{region.widthPct}%"
-            style:--section-rgb={region.rgb}
+            style:--section-color={region.color}
             title={region.name}
           ></div>
         {/each}
@@ -938,14 +930,24 @@
     top: 0;
     height: 100%;
     z-index: 1;
-    background: rgba(var(--section-rgb), 0.18);
-    border-left: 1px solid rgba(var(--section-rgb), 0.4);
-    border-right: 1px solid rgba(var(--section-rgb), 0.4);
+    background: color-mix(in srgb, var(--section-color) 18%, transparent);
+    border-left: 1px solid
+      color-mix(in srgb, var(--section-color) 40%, transparent);
+    border-right: 1px solid
+      color-mix(in srgb, var(--section-color) 40%, transparent);
   }
   .scrub__region--active {
-    background: rgba(var(--section-rgb), 0.4);
-    border-left-color: rgba(var(--section-rgb), 0.7);
-    border-right-color: rgba(var(--section-rgb), 0.7);
+    background: color-mix(in srgb, var(--section-color) 40%, transparent);
+    border-left-color: color-mix(
+      in srgb,
+      var(--section-color) 70%,
+      transparent
+    );
+    border-right-color: color-mix(
+      in srgb,
+      var(--section-color) 70%,
+      transparent
+    );
   }
   .scrub--seekable {
     cursor: pointer;

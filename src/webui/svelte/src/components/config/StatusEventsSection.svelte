@@ -16,7 +16,7 @@
   import type { MidiEvent, StatusEvents } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import MidiEventEditor from "./MidiEventEditor.svelte";
+  import MidiEventEditor, { newMidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
     statusEvents: StatusEvents;
@@ -44,16 +44,12 @@
     ],
   ];
 
-  function defaultEvent(): MidiEvent {
-    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
-  }
-
   function getEvents(key: keyof StatusEvents): MidiEvent[] {
     return statusEvents[key] ?? [];
   }
 
   function addEvent(key: keyof StatusEvents) {
-    statusEvents[key] = [...getEvents(key), defaultEvent()];
+    statusEvents[key] = [...getEvents(key), newMidiEvent()];
     onchange();
   }
 

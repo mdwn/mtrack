@@ -12,8 +12,17 @@
      * this program. If not, see <https://www.gnu.org/licenses/>.
      *
      * -->
-<script lang="ts">
+<script lang="ts" module>
   import type { MidiEvent } from "../../gen/rules/mtrack_rules";
+
+  /** The event a new MIDI binding starts at: middle C, full velocity, on
+   *  channel 1. */
+  export function newMidiEvent(): MidiEvent {
+    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
+  }
+</script>
+
+<script lang="ts">
   import { t } from "svelte-i18n";
   import { rules } from "../../lib/rules";
 

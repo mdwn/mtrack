@@ -13,9 +13,8 @@
      *
      * -->
 <script lang="ts">
-  import type { TempoConfig, TempoChangeConfig } from "../../lib/api/songs";
-  import type { TempoSection } from "../../lib/lighting/types";
-  import { configToSection, transitionOf } from "../../lib/tempoConvert";
+  import type { TempoConfig } from "../../lib/api/songs";
+  import { configToSection, sectionToConfig } from "../../lib/tempoConvert";
   import { rules } from "../../lib/rules";
   import TempoEditor from "../lighting/TempoEditor.svelte";
 
@@ -36,48 +35,6 @@
     hasMidi = false,
   }: Props = $props();
 
-  /** The lighting TempoEditor's data model -> song.yaml tempo config. */
-  function sectionToConfig(section: TempoSection): TempoConfig {
-    const startSecs =
-      section.start.unit === "ms"
-        ? section.start.value / 1000
-        : section.start.value;
-    const config: TempoConfig = {
-      bpm: section.bpm,
-      time_signature: `${section.time_signature[0]}/${section.time_signature[1]}`,
-    };
-    if (startSecs > 0) {
-      config.start = startSecs;
-    }
-    const changes = section.changes
-      // The config format is measure-based; the editor is locked to
-      // measure/beat mode so this filter is only a safety net.
-      .filter((c) => c.timestamp.type === "measure_beat")
-      .map((c) => {
-        const change: TempoChangeConfig = {
-          measure: c.timestamp.measure ?? 1,
-        };
-        if (c.timestamp.beat !== undefined && c.timestamp.beat !== 1) {
-          change.beat = c.timestamp.beat;
-        }
-        if (c.bpm !== undefined) {
-          change.bpm = c.bpm;
-        }
-        if (c.time_signature) {
-          change.time_signature = `${c.time_signature[0]}/${c.time_signature[1]}`;
-        }
-        const transition = transitionOf(c.transition);
-        if (transition) {
-          change.transition = transition;
-        }
-        return change;
-      });
-    if (changes.length > 0) {
-      config.changes = changes;
-    }
-    return config;
-  }
-
   let section = $derived(tempo ? configToSection(tempo) : undefined);
   /** Why this tempo map cannot be saved, as the player says it. */
   let verdict = $derived(tempo ? rules.tempo_validate(tempo) : undefined);
@@ -92,7 +49,9 @@
   {hasBeatGrid}
   {hasMidi}
   measureOnly
-  onchange={(updated) => onchange(updated ? sectionToConfig(updated) : null)}
+  onchange={(updated) =>
+    // The editor is measure-locked, so no change is time-anchored.
+    onchange(updated ? sectionToConfig(updated, null).config : null)}
 />
 
 <style>

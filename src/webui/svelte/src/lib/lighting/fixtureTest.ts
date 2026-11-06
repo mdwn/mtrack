@@ -28,6 +28,7 @@ import type {
   TestRequest,
 } from "../../gen/rules/mtrack_rules";
 import { rules } from "../rules";
+import { dirParams } from "../api/config";
 
 /** The controls the panel holds, whatever the mode can take of them. */
 export interface TestControls {
@@ -117,13 +118,6 @@ export function frameChannels(frame: FrameChannel[]): Record<string, number> {
   return out;
 }
 
-function dirParams(dir?: string, venuesDir?: string): URLSearchParams {
-  const params = new URLSearchParams();
-  if (dir) params.set("dir", dir);
-  if (venuesDir) params.set("venues_dir", venuesDir);
-  return params;
-}
-
 async function refusal(res: Response, fallback: string): Promise<TestRefused> {
   const body: { error?: string; reason?: string } = await res
     .json()
@@ -140,9 +134,8 @@ export async function fetchTestOptions(
   dir?: string,
   venuesDir?: string,
 ): Promise<TestOptions> {
-  const params = dirParams(dir, venuesDir);
-  params.set("fixture_type", fixtureType);
-  const res = await fetch(`${BASE}/options?${params}`);
+  const query = dirParams(dir, venuesDir, { fixture_type: fixtureType });
+  const res = await fetch(`${BASE}/options${query}`);
   if (!res.ok) throw await refusal(res, "Failed to read the test options");
   return res.json();
 }
@@ -152,8 +145,7 @@ export async function sendTest(
   dir?: string,
   venuesDir?: string,
 ): Promise<TestAnswer> {
-  const query = dirParams(dir, venuesDir).toString();
-  const res = await fetch(query ? `${BASE}?${query}` : BASE, {
+  const res = await fetch(`${BASE}${dirParams(dir, venuesDir)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

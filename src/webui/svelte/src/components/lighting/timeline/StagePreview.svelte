@@ -32,6 +32,7 @@
   import {
     beamEnd,
     drawBeam,
+    drawFixture,
     fitFrame,
     hasGeometry,
     positionalLayout,
@@ -200,52 +201,23 @@
       const pos = layoutPositions[name];
       if (!pos) continue;
 
-      const look = beamLook(fixtureStates[name], strobeRates[name], now);
-      const strobeVisible = look.strobeOn;
-      const [finalR, finalG, finalB] = look.rgb.map((c) =>
-        strobeVisible ? Math.round(c * 255) : 0,
+      drawFixture(
+        ctx,
+        pos,
+        name,
+        beamLook(fixtureStates[name], strobeRates[name], now),
+        {
+          radius: FIXTURE_RADIUS,
+          glow: GLOW_RADIUS,
+          lineWidth: 1,
+          unplacedDash: [3, 2],
+          stroke: fixtureStroke,
+          font: "9px monospace",
+          labelFill,
+          labelGap: 10,
+        },
+        { unplaced: !!frame && $metadataStore[name]?.position == null },
       );
-      const intensity = look.intensity;
-
-      // Glow
-      if (look.lit) {
-        const gradient = ctx.createRadialGradient(
-          pos.x,
-          pos.y,
-          FIXTURE_RADIUS,
-          pos.x,
-          pos.y,
-          GLOW_RADIUS,
-        );
-        gradient.addColorStop(
-          0,
-          `rgba(${finalR},${finalG},${finalB},${intensity * 0.5})`,
-        );
-        gradient.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, GLOW_RADIUS, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Fixture body — dashed when the venue has not placed it yet.
-      ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
-      ctx.strokeStyle = fixtureStroke;
-      ctx.lineWidth = 1;
-      if (frame && $metadataStore[name]?.position == null) {
-        ctx.setLineDash([3, 2]);
-      }
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Label
-      ctx.fillStyle = labelFill;
-      ctx.font = "9px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
     }
 
     // Beams of placed movers, ending at their footprint on the deck.

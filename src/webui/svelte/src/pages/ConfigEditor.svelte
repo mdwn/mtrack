@@ -325,7 +325,7 @@
     selectedIndex = 0;
     selectedFilename = name;
     fileVersion = null;
-    startDraft(name.replace(/\.\w+$/, ""));
+    startDraft(fileProfileName(name));
   }
 
   async function saveFileProfile() {
@@ -731,7 +731,7 @@
     if (profilesDir) {
       // File-based: match by filename (without extension)
       const match = profileFiles.find(
-        (f) => f.filename.replace(/\.\w+$/, "") === routeProfile,
+        (f) => fileProfileName(f.filename) === routeProfile,
       );
       if (match && selectedFilename !== match.filename) {
         selectFileProfile(match.filename, routeSection);
@@ -876,7 +876,10 @@
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
-          updateConfigUrl(selectedFilename?.replace(/\.\w+$/, ""), section)}
+          updateConfigUrl(
+            selectedFilename ? fileProfileName(selectedFilename) : undefined,
+            section,
+          )}
         onnotifbrowse={onNotifBrowse}
         onnotifupload={onNotifUpload}
         {notifUploadMsg}

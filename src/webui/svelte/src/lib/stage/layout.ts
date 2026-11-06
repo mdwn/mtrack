@@ -245,6 +245,78 @@ export function beamEnd(
   ];
 }
 
+/** How a plot draws its fixtures: the body's size, outline and glow, and
+ *  the label's font and its gap below the body. */
+export interface FixtureStyle {
+  radius: number;
+  glow: number;
+  lineWidth: number;
+  /** The outline of a fixture the venue has not placed. */
+  unplacedDash: number[];
+  stroke: string;
+  font: string;
+  labelFill: string;
+  labelGap: number;
+}
+
+/**
+ * Draws a fixture on a plot, the one way every 2D view does: its glow when
+ * it is lit, its body -- `body` when given (a pixel fixture's cells), else a
+ * disc in the colour it shows, black in a strobe's dark half -- outlined,
+ * dashed when unplaced, and its name under it.
+ */
+export function drawFixture(
+  ctx: CanvasRenderingContext2D,
+  pos: Pt,
+  name: string,
+  look: BeamLook,
+  style: FixtureStyle,
+  options: {
+    unplaced: boolean;
+    body?: (ctx: CanvasRenderingContext2D, color: string) => void;
+  },
+): void {
+  const [r, g, b] = look.rgb.map((c) =>
+    look.strobeOn ? Math.round(c * 255) : 0,
+  );
+  const color = `rgb(${r},${g},${b})`;
+  if (look.lit) {
+    const gradient = ctx.createRadialGradient(
+      pos.x,
+      pos.y,
+      style.radius,
+      pos.x,
+      pos.y,
+      style.glow,
+    );
+    gradient.addColorStop(0, `rgba(${r},${g},${b},${look.intensity * 0.5})`);
+    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, style.glow, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = style.stroke;
+  ctx.lineWidth = style.lineWidth;
+  if (options.unplaced) ctx.setLineDash(style.unplacedDash);
+  if (options.body) {
+    options.body(ctx, color);
+  } else {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, style.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = style.labelFill;
+  ctx.font = style.font;
+  ctx.textAlign = "center";
+  ctx.fillText(name, pos.x, pos.y + style.radius + style.labelGap);
+}
+
 /**
  * Draws a mover's beam on a canvas: from the fixture to `end` in the color
  * the fixture is showing (its {@link beamLook}: the one reading of a

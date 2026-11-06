@@ -70,19 +70,14 @@ export interface SnappedImport {
   duplicates: number;
 }
 
-/** The lighting TempoEditor's data model -> song.yaml tempo config.
- * Measure-anchored changes convert directly; time-anchored ones snap to
- * the nearest measure/beat on the grid (the song format is measure-based).
- *
- * The result is ordered and free of repeated positions, because a light show
- * is under no obligation to be either: its changes are sorted at playback,
- * and two of them may share a position (or arrive at one by snapping). The
- * song format is stricter — `to_tempo_map` refuses both — so the result goes
- * through the player's `tempo_normalize` before it can reach a save. */
-export function sectionToConfigSnapped(
+/** The lighting TempoEditor's data model -> song.yaml tempo config, as
+ * written. Measure-anchored changes convert directly; time-anchored ones
+ * snap to the nearest measure/beat on the grid (the song format is
+ * measure-based), or are dropped without one. */
+export function sectionToConfig(
   section: TempoSection,
   beatGrid: BeatGrid | null | undefined,
-): SnappedImport {
+): Omit<SnappedImport, "duplicates"> {
   const startSecs =
     section.start.unit === "ms"
       ? section.start.value / 1000
@@ -138,6 +133,20 @@ export function sectionToConfigSnapped(
   if (changes.length > 0) {
     config.changes = changes;
   }
+  return { config, snapped, dropped };
+}
+
+/** {@link sectionToConfig}, ordered and free of repeated positions, because
+ * a light show is under no obligation to be either: its changes are sorted
+ * at playback, and two of them may share a position (or arrive at one by
+ * snapping). The song format is stricter — `to_tempo_map` refuses both — so
+ * the result goes through the player's `tempo_normalize` before it can
+ * reach a save. */
+export function sectionToConfigSnapped(
+  section: TempoSection,
+  beatGrid: BeatGrid | null | undefined,
+): SnappedImport {
+  const { config, snapped, dropped } = sectionToConfig(section, beatGrid);
   const ordered = rules.tempo_normalize(config);
   return {
     config: ordered?.config ?? config,

@@ -293,13 +293,21 @@ export async function cancelCalibration(): Promise<void> {
   await del("/calibrate");
 }
 
+/** The sample rates offered when the device does not say which it takes. */
+export const COMMON_SAMPLE_RATES = [44100, 48000, 96000];
+
 // Lighting fixture type & venue API
 
-/** `?dir=…&venues_dir=…`, each only when given. */
-function dirParams(dir?: string, venuesDir?: string): string {
+/** `?dir=…&venues_dir=…`, each only when given, then `more`. */
+export function dirParams(
+  dir?: string,
+  venuesDir?: string,
+  more: Record<string, string> = {},
+): string {
   const params = new URLSearchParams();
   if (dir) params.set("dir", dir);
   if (venuesDir) params.set("venues_dir", venuesDir);
+  for (const [key, value] of Object.entries(more)) params.set(key, value);
   const query = params.toString();
   return query ? `?${query}` : "";
 }

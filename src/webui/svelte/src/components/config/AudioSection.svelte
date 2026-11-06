@@ -21,7 +21,11 @@
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
-  import { channelsLabel, probeAudioDevice } from "../../lib/api/config";
+  import {
+    COMMON_SAMPLE_RATES,
+    channelsLabel,
+    probeAudioDevice,
+  } from "../../lib/api/config";
   import { rules } from "../../lib/rules";
 
   const choices = rules.config_choices();
@@ -292,9 +296,9 @@
             <option value={String(rate)}>{rate}</option>
           {/each}
         {:else}
-          <option value="44100">44100</option>
-          <option value="48000">48000</option>
-          <option value="96000">96000</option>
+          {#each COMMON_SAMPLE_RATES as rate (rate)}
+            <option value={String(rate)}>{rate}</option>
+          {/each}
         {/if}
         {#if audio.sample_rate && !sampleRateOptions.includes(audio.sample_rate) && sampleRateOptions.length > 0}
           <option value={String(audio.sample_rate)}>{audio.sample_rate}</option>
