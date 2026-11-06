@@ -1489,10 +1489,7 @@ mod test {
                 .unwrap()
             }
         };
-        let put = |body: String| {
-            let send = send.clone();
-            async move { send(body).await.status() }
-        };
+        let put = |body: String| async move { send(body).await.status() };
         // The reply names the song as it is known now, for the editor.
         let response = send(config("Bar")).await;
         assert_eq!(response.status(), StatusCode::OK);
