@@ -3300,7 +3300,30 @@ mod run_beat_clock_tests {
     /// Plays `ticks` following the pass jumps of a looping song given in
     /// a closed log; the clocks that went out, on the playback clock.
     fn play_passes(ticks: &[Duration], jumps: &[(u64, u64)], break_after: usize) -> Vec<Duration> {
-        let clock = PlaybackClock::wall();
+        play_passes_on(ticks, jumps, break_after, true)
+    }
+
+    /// As [`play_passes`], in virtual time (`virtual_time`: a clock that
+    /// moves only as the schedule waits, so every pulse goes out exactly
+    /// when due, however loaded the machine) or on the wall clock.
+    fn play_passes_on(
+        ticks: &[Duration],
+        jumps: &[(u64, u64)],
+        break_after: usize,
+        virtual_time: bool,
+    ) -> Vec<Duration> {
+        let mut _pauses = None;
+        let clock = if virtual_time {
+            // Nanoseconds.
+            let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let advance = counter.clone();
+            _pauses = Some(TestPauses::set(move |length| {
+                advance.fetch_add(length.as_nanos() as u64, Ordering::Relaxed);
+            }));
+            PlaybackClock::from_sample_counter(counter, 1_000_000_000)
+        } else {
+            PlaybackClock::wall()
+        };
         clock.start();
         let log = Arc::new(crate::playsync::SectionJumpLog::default());
         for &(at, overlap) in jumps {
@@ -3354,11 +3377,14 @@ mod run_beat_clock_tests {
         // 0-390ms, twice, then the last pass to its end: the seam is a
         // pulse, not two at once, by the count.
         assert_eq!(clocks.len(), 40 + 40 + 50, "{clocks:?}");
-        // Each pass's first pulse goes out no earlier than its jump, after
-        // the last pass's last. Not by a gap of so many milliseconds: on a
-        // loaded machine the last pulse can go late, into the gap.
-        assert!(clocks[40] >= ms(400) && clocks[40] > clocks[39]);
-        assert!(clocks[80] >= ms(800) && clocks[80] > clocks[79]);
+        // Each pass's first pulse goes out at its jump, a whole pulse after
+        // the last pass's last. In virtual time (see play_passes), so a
+        // loaded machine cannot put the last pulse late, into the gap.
+        let near = |a: Duration, b: Duration| a.abs_diff(b) < Duration::from_micros(1);
+        assert!(near(clocks[40], ms(400)), "{clocks:?}");
+        assert!(near(clocks[40] - clocks[39], ms(10)), "{clocks:?}");
+        assert!(near(clocks[80], ms(800)), "{clocks:?}");
+        assert!(near(clocks[80] - clocks[79], ms(10)), "{clocks:?}");
     }
 
     /// DIAGNOSTIC (no assertion; prints timing): a plain loop's pass jump
@@ -3373,7 +3399,7 @@ mod run_beat_clock_tests {
             .map(|i| Duration::from_nanos(i * 500_000_000 / 24))
             .collect();
         let jumps: Vec<(u64, u64)> = (1..=10).map(|k| (k * 500, 0)).collect();
-        let clocks = play_passes(&ticks, &jumps, 24 * 11);
+        let clocks = play_passes_on(&ticks, &jumps, 24 * 11, false);
         let late: Vec<Duration> = (1..=10)
             .map(|k| clocks[24 * k].saturating_sub(ms(500 * k as u64)))
             .collect();
