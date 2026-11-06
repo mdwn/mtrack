@@ -2155,8 +2155,11 @@ pub fn init_song_dir(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
 
 /// The song directories under `root` ([`song_dirs`]), each with the name a
 /// new config gives its song: the directory's own name, unless another song
-/// directory found has that name too, when it is its path below `root`
-/// (`SongA/stems` and `SongB/stems`), so no two are named alike.
+/// directory found has that name too, or a song config already under `root`
+/// gives a song that name (`Live/song.yaml` naming "Intro" beside a new
+/// `Intro/`), when it is its path below `root` (`SongA/stems` and
+/// `SongB/stems`); one still taken gets the first free ` (2)`, ` (3)`, …,
+/// so no two songs are named alike.
 pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
     let dirs = song_dirs(root)?;
     let own_name = |dir: &Path| filename_display(dir).to_string();
@@ -2164,20 +2167,33 @@ pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
     for dir in &dirs {
         *counts.entry(own_name(dir)).or_default() += 1;
     }
+    // The names the songs already configured under `root` have, as the
+    // loader reads them.
+    let mut taken: HashSet<String> = get_all_songs(root)
+        .map(|songs| songs.list().iter().map(|s| s.name().to_string()).collect())
+        .unwrap_or_default();
     Ok(dirs
         .into_iter()
         .map(|dir| {
             let name = own_name(&dir);
-            let name = if counts[&name] > 1 {
-                dir.strip_prefix(root)
+            let name = if counts[&name] > 1 || taken.contains(&name) {
+                let relative = dir
+                    .strip_prefix(root)
                     .unwrap_or(&dir)
                     .components()
                     .map(|c| c.as_os_str().to_string_lossy())
                     .collect::<Vec<_>>()
-                    .join("/")
+                    .join("/");
+                std::iter::once(relative.clone())
+                    .chain((2..).map(|n| format!("{relative} ({n})")))
+                    .find(|name| !taken.contains(name))
+                    .expect("some suffix is free")
             } else {
                 name
             };
+            if !has_song_config(&dir) {
+                taken.insert(name.clone());
+            }
             (dir, name)
         })
         .collect())
@@ -2326,11 +2342,7 @@ pub fn has_song_config(dir: &Path) -> bool {
 /// `song.yaml` that is no file, which a writer must not add a second
 /// config beside. The web UI's song editor and MCP `write_song` take it.
 pub fn song_config_to_write(dir: &Path) -> Option<PathBuf> {
-    let named = YAML_EXTENSIONS
-        .iter()
-        .map(|ext| dir.join(format!("song.{ext}")))
-        .find(|path| path.is_file());
-    match named {
+    match crate::util::yaml_files_at(dir, "song").into_iter().next() {
         Some(path) => Some(path),
         None if has_song_config(dir) => None,
         None => Some(dir.join("song.yaml")),
@@ -4375,6 +4387,31 @@ sections:
         let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
         names.sort();
         assert_eq!(names, ["Solo", "SongA/stems", "SongB/stems"]);
+        Ok(())
+    }
+
+    /// A new song directory whose name a song already configured has is
+    /// named past it: `Live/song.yaml` naming "Intro" beside a new `Intro/`
+    /// and `Set/Intro/` gives "Intro (2)" and "Set/Intro", not a second
+    /// "Intro".
+    #[test]
+    fn initialize_songs_names_past_a_configured_songs_name() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for song in ["Live", "Intro", "Set/Intro"] {
+            fs::create_dir_all(root.join(song))?;
+            crate::testutil::write_wav(root.join(song).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Live/song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+
+        assert_eq!(initialize_songs(root)?.created.len(), 2);
+        let songs = get_all_songs(root)?;
+        let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["Intro", "Intro (2)", "Set/Intro"]);
         Ok(())
     }
 
