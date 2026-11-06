@@ -346,7 +346,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is still the version marker in any case: rich channel syntax in `Par.LIGHT` is refused by the
   loader and MCP as in `par.light`, a `Par.FIXTURE` type is not saved from the channel-map form
   (and is listed with `extension: "fixture"`), a save writes it back as `Par.FIXTURE` rather than
-  a new `Par.fixture` beside it, and `include "Looks.LIGHT"` is accepted. The web UI's
+  a new `Par.fixture` beside it, and `include "Looks.LIGHT"` is accepted. A fixture type save
+  retires only the type's own files in its other form: saving `Par` from `Par.light` as a
+  `.fixture` removed whatever other file sat at the stem, so a `Par.LIGHT` holding `Spot` was
+  deleted; it now stays. A save in a form already at the stem in another spelling (`Par.FIXTURE`)
+  writes that file, and one holding other types is refused with 409 rather than overwritten. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs

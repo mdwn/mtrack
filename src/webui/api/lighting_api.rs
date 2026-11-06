@@ -1746,22 +1746,47 @@ pub(super) async fn put_fixture_type(
         .as_ref()
         .and_then(|(path, _)| path.parent())
         .map_or(dir, std::path::Path::to_path_buf);
-    // A file already in this form is written in place, in its own case
-    // (`Par.FIXTURE`); a new form is spelled lowercase.
-    let file_path = located
+    // The files at the stem, by their kind (`songs::extension_of`), never by
+    // their spelling: on a filesystem that ignores case, `Par.fixture` and
+    // `Par.FIXTURE` are one file.
+    let at_stem = lighting::project_files::files_at_stem(&folder, &stem, FIXTURE_TYPE_EXTENSIONS);
+    let is_form =
+        |path: &std::path::Path| crate::songs::extension_of(path).as_deref() == Some(extension);
+    // The file of this form already at the stem, if any, is written in
+    // place, in its own spelling (the type's own file first); a new form is
+    // spelled lowercase. One holding other types is not this type's to
+    // overwrite.
+    let in_form = located
         .as_ref()
         .map(|(path, _)| path.clone())
-        .filter(|path| crate::songs::extension_of(path).as_deref() == Some(extension))
-        .unwrap_or_else(|| folder.join(format!("{stem}.{extension}")));
-    let stale_twin =
-        lighting::project_files::files_at_stem(&folder, &stem, FIXTURE_TYPE_EXTENSIONS)
-            .into_iter()
-            .find(|path| path != &file_path);
+        .filter(|path| is_form(path))
+        .or_else(|| at_stem.iter().find(|path| is_form(path)).cloned());
+    if let Some(path) = &in_form {
+        let mut others = declared_fixture_types(path);
+        others.retain(|n| n != &name);
+        if !others.is_empty() && located.as_ref().is_none_or(|(l, _)| l != path) {
+            others.sort();
+            return Err(shared_fixture_type_file_response(
+                &name,
+                path,
+                &others,
+                "saving this type in that form",
+            ));
+        }
+    }
+    let file_path = in_form.unwrap_or_else(|| folder.join(format!("{stem}.{extension}")));
+    // The other forms of this type are retired, or the loader would register
+    // the name twice: each file at the stem in another form that declares
+    // this type. A file declaring other types is left alone.
+    let stale_twins: Vec<std::path::PathBuf> = at_stem
+        .into_iter()
+        .filter(|path| !is_form(path) && declared_fixture_types(path).contains(&name))
+        .collect();
     let fp = file_path;
     let dsl_owned = dsl;
     super::helpers::spawn_blocking_io("write fixture type", move || {
         config_io::staged_write(&fp, &dsl_owned)?;
-        if let Some(twin) = stale_twin {
+        for twin in stale_twins {
             // Best effort: the save is durable already, and a leftover twin
             // surfaces as a duplicate fixture type name at load.
             if let Err(e) = std::fs::remove_file(&twin) {
@@ -6834,6 +6859,69 @@ show "test" {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(ft_dir.join("mover.fixture").exists());
         assert!(!ft_dir.join("mover.light").exists());
+    }
+
+    /// A file at the stem in the same form is not a twin, whatever its
+    /// case, and a twin declaring another type is not retired: saving Par
+    /// beside a `Par.LIGHT` holding Spot keeps Spot.
+    #[tokio::test]
+    async fn put_fixture_type_keeps_a_same_stem_file_of_another_type() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_case");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("Par.light"), sample_fixture_type_dsl("Par")).unwrap();
+        std::fs::write(ft_dir.join("Par.LIGHT"), sample_fixture_type_dsl("Spot")).unwrap();
+
+        for ext in ["light", "fixture"] {
+            let (status, parsed) = fixture_type_request(
+                state.clone(),
+                "PUT",
+                format!("/lighting/fixture-types/Par?dir=ft_case&ext={ext}"),
+                "text/plain",
+                Body::from(sample_fixture_type_dsl("Par")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{ext}: {parsed}");
+            assert_eq!(
+                std::fs::read_to_string(ft_dir.join("Par.LIGHT")).unwrap(),
+                sample_fixture_type_dsl("Spot"),
+                "{ext}"
+            );
+        }
+        // Saved as a `.fixture`, the type's `.light` form is retired.
+        assert!(ft_dir.join("Par.fixture").exists());
+        assert!(!ft_dir.join("Par.light").exists());
+    }
+
+    /// A form already at the stem in another spelling is written in place,
+    /// not beside it and then retired: on a filesystem that ignores case
+    /// `Par.fixture` would be that very file, and the save would be lost.
+    #[tokio::test]
+    async fn put_fixture_type_writes_a_form_in_its_own_spelling() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_spelling");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("Par.light"), sample_fixture_type_dsl("Par")).unwrap();
+        std::fs::write(ft_dir.join("Par.FIXTURE"), "// stray\n").unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/fixture-types/Par?dir=ft_spelling&ext=fixture".to_string(),
+            "text/plain",
+            Body::from(sample_rich_fixture_type_dsl("Par")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let names: Vec<String> = std::fs::read_dir(&ft_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Par.FIXTURE"]);
+        assert_eq!(
+            std::fs::read_to_string(ft_dir.join("Par.FIXTURE")).unwrap(),
+            sample_rich_fixture_type_dsl("Par")
+        );
     }
 
     #[tokio::test]
