@@ -2070,12 +2070,7 @@ pub(super) async fn evaluate_lighting(
         Ok(song) => song,
         // A song whose lighting fails to parse never loads: the registry
         // keeps its failure, and the message says why.
-        Err(crate::songs::SongLookupError::FailedToLoad { error: why, .. }) => {
-            return error(StatusCode::BAD_REQUEST, why)
-        }
-        Err(crate::songs::SongLookupError::NotFound(name)) => {
-            return error(StatusCode::NOT_FOUND, format!("unknown song: {name}"))
-        }
+        Err(e) => return super::helpers::song_lookup_response(e),
     };
     let shows = crate::lighting::evaluate::registered_shows(&song);
     if shows.is_empty() {

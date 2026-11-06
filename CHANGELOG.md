@@ -386,12 +386,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
   answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
   MCP's lighting resource already said.
-- **A song that failed to load says why on MCP and gRPC**: a song whose files are there but did
-  not load (a `.light` file that does not parse, say) was "unable to find song broken" to every
-  MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to gRPC
-  `PlaySongFrom`. They now answer `song broken failed to load: <the load error>`, as the web UI's
-  preview did. gRPC `PlaySongFrom` with an unknown name answers `unable to find song <name>`
-  rather than `Song '<name>' not found`.
+- **A song that failed to load says why on every surface**: a song whose files are there but
+  did not load (a `.light` file that does not parse, say) was "unable to find song broken" to
+  every MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to
+  gRPC `PlaySongFrom`, and 404 `Song not found: broken` to the web API's waveform, tempo guess
+  and files (`GET /api/songs/broken/waveform`, `/tempo-guess`, `/files`). They now answer
+  `song broken failed to load: <the load error>` (400 on the web API). An unknown song answers
+  `unable to find song <name>` everywhere: gRPC `PlaySongFrom` said `Song '<name>' not found`,
+  the web API (those three, `GET /api/songs/<name>`, and the song file uploads) `Song not found:
+  <name>`, and the web preview (`POST /api/lighting/evaluate`)
+  `unknown song: <name>`; the preview's failed-to-load answer gains the `song <name> failed to
+  load: ` prefix.
 - **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
   time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
   now refuses more than 64 times (`at most 64 times per request`) and a time past a week

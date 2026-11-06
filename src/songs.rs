@@ -1959,6 +1959,17 @@ impl fmt::Display for SongLookupError {
 
 impl Error for SongLookupError {}
 
+impl SongLookupError {
+    /// What kind of fault this is, for a transport's code: no such song,
+    /// or a song whose files the caller must fix.
+    pub fn kind(&self) -> crate::util::FaultKind {
+        match self {
+            SongLookupError::NotFound(_) => crate::util::FaultKind::NotFound,
+            SongLookupError::FailedToLoad { .. } => crate::util::FaultKind::Invalid,
+        }
+    }
+}
+
 /// A song that failed to load from disk.
 #[derive(Clone, Debug)]
 pub struct SongLoadFailure {
