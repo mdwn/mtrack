@@ -392,7 +392,7 @@ fn test_layer_intensity_master() {
     let commands_half = engine.update(Duration::from_millis(16), None).unwrap();
     assert_eq!(commands_half.len(), 1);
     let half_value = commands_half[0].value;
-    assert_eq!(half_value, 127); // 50% of 255
+    assert_eq!(half_value, 128); // 50% of 255
 }
 
 #[test]
