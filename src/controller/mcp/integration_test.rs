@@ -26,7 +26,6 @@
 //!    Drives the config / song / playlist / lighting *write* tools and asserts
 //!    the on-disk state matches what came back through MCP.
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,21 +36,13 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::{config, controller::Controller, player::Player, playlist, songs};
+use crate::{config, controller::Controller, player::Player, songs};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Picks a port that is currently unbound by binding/dropping a listener.
-/// Standard ephemeral-port trick — small TOCTOU race window, but adequate for
-/// in-process tests.
-fn pick_free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("local_addr").port();
-    drop(listener);
-    port
-}
+use crate::testutil::net::free_tcp_port as pick_free_port;
 
 /// Polls the MCP endpoint until it accepts a connection.
 async fn wait_until_listening(client: &Client, url: &str) {
@@ -230,31 +221,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Builds a `Player` against the `assets/` fixtures shipped with the repo.
 async fn build_assets_player() -> Result<Arc<Player>, Box<dyn Error>> {
-    let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-    let pl = playlist::Playlist::new(
-        "playlist",
-        &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-        songs.clone(),
-    )?;
-    let mut playlists = HashMap::new();
-    playlists.insert(
-        "all_songs".to_string(),
-        playlist::from_songs(songs.clone())?,
-    );
-    playlists.insert("playlist".to_string(), pl);
-    let player = Player::new(
-        playlists,
-        "playlist".to_string(),
-        &config::Player::new(
-            vec![],
-            Some(config::Audio::new("mock-device")),
-            None,
-            None,
-            HashMap::new(),
-            "assets/songs",
-        ),
-        None,
-    )?;
+    let player = crate::testutil::player::assets_player().build()?;
     player.await_hardware_ready().await;
     // Players start locked; these tests exercise the tools, not the lock.
     player.set_locked(false);
@@ -651,10 +618,7 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(fixture.root.join("incoming"))?;
     std::fs::write(
         fixture.root.join("incoming/synth.gdtf"),
-        crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]),
+        crate::testutil::lighting::synthetic_gdtf(),
     )?;
 
     let player = build_standalone_player(&fixture).await?;
@@ -751,10 +715,7 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
 
     // The venue emails its MVR; the agent drops it into the project.
-    let gdtf = crate::lighting::gdtf::build_zip(&[(
-        "description.xml",
-        crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-    )]);
+    let gdtf = crate::testutil::lighting::synthetic_gdtf();
     let scene = r#"<GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
 <Layer name="Front Truss"><ChildList>
 <Fixture name="Brick 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>
@@ -4352,10 +4313,7 @@ async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
     )?;
     std::fs::write(
         fixture.root.join("lighting/library/synth.gdtf"),
-        crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]),
+        crate::testutil::lighting::synthetic_gdtf(),
     )?;
     // A GDTF type: each fixture names its own mode.
     std::fs::write(
@@ -5435,44 +5393,18 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
 /// `cancel_auto_play` calls off a waiting auto play and nothing else.
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_ambient_mode_and_cancel_auto_play() -> Result<(), Box<dyn Error>> {
-    let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-    let playlist_config: config::Playlist = ::config::Config::builder()
-        .add_source(::config::File::from_str(
-            "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n",
-            ::config::FileFormat::Yaml,
-        ))
-        .build()?
-        .try_deserialize()?;
-    let mut playlists = HashMap::new();
-    playlists.insert(
-        "all_songs".to_string(),
-        playlist::from_songs(songs.clone())?,
-    );
-    playlists.insert(
-        "playlist".to_string(),
-        playlist::Playlist::new("playlist", &playlist_config, songs)?,
-    );
     // A DMX engine with no ambient show.
-    let player = Player::new(
-        playlists,
-        "playlist".to_string(),
-        &config::Player::new(
-            vec![],
-            Some(config::Audio::new("mock-device")),
+    let player = crate::testutil::player::assets_player()
+        .dmx(Some(config::Dmx::new(
             None,
-            Some(config::Dmx::new(
-                None,
-                None,
-                Some(9090),
-                vec![config::Universe::new(1, "test".to_string())],
-                None,
-            )),
-            HashMap::new(),
-            "assets/songs",
-        ),
-        None,
-    )?;
-    player.await_hardware_ready().await;
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            None,
+        )))
+        .playlist_yaml("songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n")
+        .ready()
+        .await?;
 
     let port = pick_free_port();
     let controller = Controller::new(
@@ -5604,10 +5536,7 @@ async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> 
     std::fs::create_dir_all(fixture.root.join("incoming"))?;
     std::fs::write(
         fixture.root.join("incoming/synth.gdtf"),
-        crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]),
+        crate::testutil::lighting::synthetic_gdtf(),
     )?;
     let player = build_standalone_player(&fixture).await?;
     let port = pick_free_port();
@@ -5655,10 +5584,7 @@ async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), B
     // #578: a re-import merges into the venue file, and wrote back its merge
     // of what it read, whatever the web UI's venue editor had saved since.
     let fixture = setup_standalone_fixture()?;
-    let gdtf = crate::lighting::gdtf::build_zip(&[(
-        "description.xml",
-        crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-    )]);
+    let gdtf = crate::testutil::lighting::synthetic_gdtf();
     let scene = r#"<GeneralSceneDescription verMajor="1" verMinor="6"><Scene><Layers>
 <Layer name="Front Truss"><ChildList>
 <Fixture name="Brick 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,3500,4200}</Matrix>

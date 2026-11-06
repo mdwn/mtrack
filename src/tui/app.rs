@@ -178,11 +178,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use crate::config;
-    use crate::player::PlayerDevices;
-    use crate::playlist;
-    use crate::songs::{Song, Songs};
-
     fn make_fixture(name: &str, channels: &[(&str, u8)]) -> FixtureSnapshot {
         let mut map = HashMap::new();
         for (k, v) in channels {
@@ -198,32 +193,7 @@ mod tests {
 
     /// Creates a test Player with no hardware devices.
     fn test_player(song_names: &[&str]) -> Arc<Player> {
-        let mut map = HashMap::new();
-        for name in song_names {
-            map.insert(
-                name.to_string(),
-                Arc::new(Song::new_for_test(name, &["track1"])),
-            );
-        }
-        let songs = Arc::new(Songs::new(map));
-        let playlist_config =
-            config::Playlist::new(&song_names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone()).unwrap(),
-        );
-        playlists.insert(pl.name().to_string(), pl);
-        Arc::new(Player::new_with_devices(devices, playlists, "test".to_string(), None).unwrap())
+        crate::testutil::player::memory_player(song_names).build()
     }
 
     fn test_app(song_names: &[&str]) -> App {

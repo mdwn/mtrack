@@ -16,64 +16,11 @@
 //! through against a seek, `evaluate_show` and the show's end.
 
 use super::*;
-use crate::lighting::parser::parse_light_shows;
-use crate::lighting::types::{ChannelDef, PhysicalRange, PhysicalUnit};
+use crate::testutil::lighting::{engine_with as fresh, rgb, shows};
 
+/// The mover at address 1.
 fn mover(name: &str) -> FixtureInfo {
-    let channels: HashMap<String, u16> = [("pan", 1), ("tilt", 3), ("dimmer", 5)]
-        .into_iter()
-        .map(|(n, o)| (n.to_string(), o))
-        .collect();
-    let mut info = FixtureInfo::new(name.to_string(), 1, 1, "Mover".to_string(), channels, None);
-    let mut defs = HashMap::new();
-    defs.insert(
-        "pan".to_string(),
-        ChannelDef {
-            offset: 1,
-            fine: Some(2),
-            range: Some(PhysicalRange {
-                from: -270.0,
-                to: 270.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert(
-        "tilt".to_string(),
-        ChannelDef {
-            offset: 3,
-            fine: Some(4),
-            range: Some(PhysicalRange {
-                from: -135.0,
-                to: 135.0,
-                unit: PhysicalUnit::Degrees,
-            }),
-            functions: Vec::new(),
-            mirrors: Vec::new(),
-        },
-    );
-    defs.insert("dimmer".to_string(), ChannelDef::at(5));
-    info = info.with_channel_defs(defs);
-    info.position = Some([0.0, 3.0, 0.0]);
-    info.rotation = Some([0.0, 0.0, 0.0]);
-    info
-}
-
-fn rgb(name: &str) -> FixtureInfo {
-    let mut channels = HashMap::new();
-    channels.insert("red".to_string(), 1);
-    channels.insert("green".to_string(), 2);
-    channels.insert("blue".to_string(), 3);
-    FixtureInfo::new(name.to_string(), 1, 10, "RGB".to_string(), channels, None)
-}
-
-fn shows(source: &str) -> Vec<LightShow> {
-    parse_light_shows(source)
-        .expect("parse")
-        .into_values()
-        .collect()
+    crate::testutil::lighting::mover(name, 1)
 }
 
 fn run_frames(tl: &mut LightingTimeline, engine: &mut EffectEngine, from_ms: u64, until_ms: u64) {
@@ -86,14 +33,6 @@ fn run_frames(tl: &mut LightingTimeline, engine: &mut EffectEngine, from_ms: u64
         let _ = engine.update(step, Some(t));
         ms += 10;
     }
-}
-
-fn fresh(fixtures: &[FixtureInfo]) -> EffectEngine {
-    let mut engine = EffectEngine::new();
-    for f in fixtures {
-        engine.register_fixture(f.clone());
-    }
-    engine
 }
 
 /// Played through from 0 in exact 10 ms frames, as the effects loop does.
@@ -191,7 +130,7 @@ fn compare_pan(name: &str, src: &str, pairs: &[(u64, u64)]) -> Vec<String> {
 }
 
 fn compare_blue(name: &str, src: &str, pairs: &[(u64, u64)]) -> Vec<String> {
-    let f = [rgb("w")];
+    let f = [rgb("w", 10)];
     let mut bad = Vec::new();
     for &(seek, at) in pairs {
         let l = played(src, &f, at);
@@ -383,7 +322,7 @@ fn move_seek_battery2() {
 fn move_seek_static_slow_down_seek_onto_it() {
     let src = "show \"s\" {\n    @00:02.000\n    w: static, color: \"blue\", duration: 2s\n    \
         @00:04.000\n    master(layer: background, speed: 0.5)\n}\n";
-    let f = [rgb("w")];
+    let f = [rgb("w", 10)];
     for (seek, at) in [(4000, 4000), (4000, 5000), (4500, 4500)] {
         let live = blue_of(&played(src, &f, at));
         let s = blue_of(&seek_play(src, &f, seek, at));
@@ -429,7 +368,7 @@ fn move_seek_show_end() {
         let f = if is_move {
             vec![mover("m")]
         } else {
-            vec![rgb("w")]
+            vec![rgb("w", 10)]
         };
         let live = live_end(&src, &f, 20000);
         let end = LightingTimeline::new(shows(&src)).show_end();
@@ -976,7 +915,7 @@ fn a_start_prepared_while_the_engine_renders_installs_the_same() {
          @1.000\n    freeze(layer: background)\n    @2.000\n    unfreeze(layer: background)\n{}",
         st("3.000", "3s")
     ));
-    let f = [mover("m"), rgb("w")];
+    let f = [mover("m"), rgb("w", 10)];
     let at = Duration::from_millis(3500);
     let at_once = seek_play(&src, &f, 3500, 4500);
 
@@ -1048,7 +987,7 @@ fn a_start_installed_at_a_swap_starts_from_the_poses_then() {
 /// beside the history's.
 #[test]
 fn an_install_beside_what_runs_keeps_it_as_it_was() {
-    let f = [mover("m"), rgb("w")];
+    let f = [mover("m"), rgb("w", 10)];
     let mut engine = fresh(&f);
     let src = show(st("0.000", "10s"));
     let mut tl = LightingTimeline::new(shows(&src));

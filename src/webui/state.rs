@@ -1147,42 +1147,12 @@ metronome: {}
         assert!(cache.lock().contains_key("Song B"));
     }
 
-    use crate::player::PlayerDevices;
     use crate::playlist;
     use crate::songs::{Song, Songs};
 
     /// Creates a test Player with no hardware devices.
     fn test_player(song_names: &[&str]) -> Arc<crate::player::Player> {
-        let mut map = std::collections::HashMap::new();
-        for name in song_names {
-            map.insert(
-                name.to_string(),
-                Arc::new(Song::new_for_test(name, &["track1"])),
-            );
-        }
-        let songs = Arc::new(Songs::new(map));
-        let playlist_config = crate::config::Playlist::new(
-            &song_names.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        );
-        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone()).unwrap(),
-        );
-        playlists.insert(pl.name().to_string(), pl);
-        Arc::new(
-            crate::player::Player::new_with_devices(devices, playlists, "test".to_string(), None)
-                .unwrap(),
-        )
+        crate::testutil::player::memory_player(song_names).build()
     }
 
     #[test]
@@ -1207,33 +1177,10 @@ metronome: {}
             crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
         )
         .unwrap();
-        let songs = Arc::new(Songs::new(HashMap::from([(
-            "Song A".to_string(),
-            Arc::new(Song::new_for_test("Song A", &["track1"])),
-        )])));
-        let pl = playlist::Playlist::new(
-            "test",
-            &crate::config::Playlist::new(&["Song A".to_string()]),
-            songs,
-        )
-        .unwrap();
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: Some(Arc::new(engine)),
-            sample_engine: None,
-            trigger_engine: None,
-        };
-        let player = Arc::new(
-            crate::player::Player::new_with_devices(
-                devices,
-                HashMap::from([("test".to_string(), pl)]),
-                "test".to_string(),
-                None,
-            )
-            .unwrap(),
-        );
+        let player = crate::testutil::player::memory_player(&["Song A"])
+            .without_all_songs()
+            .dmx_engine(Arc::new(engine))
+            .build();
         let (tx, mut rx) = broadcast::channel(16);
         let handle = tokio::spawn(playback_poller(player.clone(), tx));
         let mut next = async || -> serde_json::Value {

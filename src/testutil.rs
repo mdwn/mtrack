@@ -14,7 +14,11 @@
 
 mod audio;
 mod examples;
+pub mod lighting;
 pub mod markdown;
+pub mod mixer;
+pub mod net;
+pub mod player;
 mod polling;
 
 pub use audio::{audio_test_utils, write_wav, write_wav_with_bits};

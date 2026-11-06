@@ -1437,9 +1437,7 @@ mod test {
         use std::collections::HashMap;
 
         // Create DMX engine without lighting system
-        let config = create_test_config();
-        let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Engine::new(&config, None, None, ola_client)?;
+        let engine = create_test_engine()?;
 
         // Test that effects with unknown groups still work (graceful fallback)
         let mut parameters = HashMap::new();
@@ -1485,9 +1483,7 @@ mod test {
         let song = crate::songs::Song::new(temp_path, &song_config)?;
 
         // Create DMX engine
-        let config = create_test_config();
-        let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+        let engine = Arc::new(create_test_engine()?);
 
         // Test timeline setup
         let song_arc = Arc::new(song);
@@ -5612,9 +5608,7 @@ mod test {
 
         #[test]
         fn no_lighting_system_passes_through() -> Result<(), Box<dyn Error>> {
-            let config = create_test_config();
-            let ola_client = OlaClientFactory::create_mock_client();
-            let engine = Engine::new(&config, None, None, ola_client)?;
+            let engine = create_test_engine()?;
 
             let effect = EffectInstance::new(
                 "test".to_string(),

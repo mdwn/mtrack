@@ -758,7 +758,6 @@ mod test {
         collections::HashMap,
         error::Error,
         net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-        path::Path,
         sync::Arc,
         time::Duration,
     };
@@ -770,7 +769,6 @@ mod test {
         config,
         controller::{grpc::Driver, Driver as _},
         playlist,
-        playlist::Playlist,
         proto::player::v1::{
             player_service_client::PlayerServiceClient, LoopSectionRequest, NextRequest,
             PlayRequest, PreviousRequest, StatusRequest, StopRequest, StopSectionLoopRequest,
@@ -828,31 +826,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -1019,31 +995,10 @@ mod test {
         ),
         Box<dyn Error>,
     > {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                track_mappings,
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .track_mappings(track_mappings)
+            .build()?;
         player.await_hardware_ready().await;
         // Players start locked; these tests exercise the handlers, not the lock.
         player.set_locked(false);
@@ -1638,35 +1593,16 @@ mod test {
         use crate::proto::player::v1::SetAmbientModeRequest;
 
         // A DMX engine with no ambient show: on says it has none to play.
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
+        let player = crate::testutil::player::assets_player()
+            .dmx(Some(config::Dmx::new(
                 None,
-                Some(config::Dmx::new(
-                    None,
-                    None,
-                    Some(9090),
-                    vec![config::Universe::new(1, "test".to_string())],
-                    None,
-                )),
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
+                None,
+                Some(9090),
+                vec![config::Universe::new(1, "test".to_string())],
+                None,
+            )))
+            .ready()
+            .await?;
         let mut client = serve_grpc(player.clone()).await?;
 
         let ambient = client.status(StatusRequest {}).await?.into_inner().ambient;
@@ -1703,35 +1639,10 @@ mod test {
     async fn test_grpc_auto_play_status_and_cancel() -> Result<(), Box<dyn Error>> {
         use crate::proto::player::v1::CancelAutoPlayRequest;
 
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let yaml = "songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n";
-        let playlist_config: config::Playlist = ::config::Config::builder()
-            .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
-            .build()?
-            .try_deserialize()?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert(
-            "playlist".to_string(),
-            Playlist::new("playlist", &playlist_config, songs)?,
-        );
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
-        player.await_hardware_ready().await;
+        let player = crate::testutil::player::assets_player()
+            .playlist_yaml("songs:\n- Song 1\n- song: Song 3\n  auto_play: 2s\n")
+            .ready()
+            .await?;
         let mut client = serve_grpc(player.clone()).await?;
 
         let status = client.status(StatusRequest {}).await?.into_inner();

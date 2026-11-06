@@ -456,6 +456,21 @@ pub(super) mod test_helpers {
         audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
         dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
     ) -> (WebUiState, tempfile::TempDir) {
+        test_state_on_disk(playlists, active, audio, dmx_engine, "songs: []\n", true)
+    }
+
+    /// A WebUiState whose player has `playlists`, `active` playing, in a
+    /// temporary directory holding `mtrack.yaml`, an empty `songs/`, and
+    /// the legacy `playlist.yaml` holding `legacy_playlist`; the directory
+    /// the player's playlists directory too if `playlists_dir`.
+    pub(in crate::webui) fn test_state_on_disk(
+        playlists: std::collections::HashMap<String, std::sync::Arc<crate::playlist::Playlist>>,
+        active: &str,
+        audio: Option<std::sync::Arc<dyn crate::audio::Device>>,
+        dmx_engine: Option<std::sync::Arc<crate::dmx::engine::Engine>>,
+        legacy_playlist: &str,
+        playlists_dir: bool,
+    ) -> (WebUiState, tempfile::TempDir) {
         use crate::player::PlayerDevices;
         use tokio::sync::{broadcast, watch};
 
@@ -467,7 +482,7 @@ pub(super) mod test_helpers {
 
         // Create a minimal playlist file
         let playlist_path = dir.path().join("playlist.yaml");
-        std::fs::write(&playlist_path, "songs: []\n").unwrap();
+        std::fs::write(&playlist_path, legacy_playlist).unwrap();
 
         // Create songs directory
         let songs_path = dir.path().join("songs");
@@ -497,7 +512,7 @@ pub(super) mod test_helpers {
 
         player.set_song_sources(crate::player::SongSources {
             songs: songs_path,
-            playlists_dir: Some(dir.path().to_path_buf()),
+            playlists_dir: playlists_dir.then(|| dir.path().to_path_buf()),
             legacy_playlist: Some(playlist_path),
         });
         let state = WebUiState::new(super::super::server::WebUiStateParams {

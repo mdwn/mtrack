@@ -766,14 +766,9 @@ fn grid_measure_count(ctx: &LintContext) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::parser::{parse_light_shows, parse_light_shows_with_tempo};
+    use crate::lighting::parser::parse_light_shows_with_tempo;
 
-    fn shows(source: &str) -> Vec<LightShow> {
-        parse_light_shows(source)
-            .expect("test show should parse")
-            .into_values()
-            .collect()
-    }
+    use crate::testutil::lighting::shows;
 
     fn kinds(warnings: &[Warning]) -> Vec<&str> {
         warnings.iter().map(|w| w.kind).collect()

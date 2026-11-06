@@ -79,6 +79,80 @@ fn publish_jumps_for_test(
 use midly::num::u7;
 use midly::MidiMessage;
 
+/// Records what it is sent; or, made `failing`, fails every send.
+struct MockSender {
+    sent: parking_lot::Mutex<Vec<Vec<u8>>>,
+    should_fail: bool,
+}
+
+impl MockSender {
+    fn new() -> Self {
+        MockSender {
+            sent: parking_lot::Mutex::new(Vec::new()),
+            should_fail: false,
+        }
+    }
+
+    fn failing() -> Self {
+        MockSender {
+            sent: parking_lot::Mutex::new(Vec::new()),
+            should_fail: true,
+        }
+    }
+}
+
+impl MidiSender for MockSender {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        if self.should_fail {
+            return Err("mock send failure".into());
+        }
+        self.sent.lock().push(bytes.to_vec());
+        Ok(())
+    }
+}
+
+/// Sends nowhere.
+struct Null;
+
+impl MidiSender for Null {
+    fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
+/// Note-ons at `times_ms`, keys 60 up, on channel 0.
+fn make_events(times_ms: &[u64]) -> crate::midi::playback::PrecomputedMidi {
+    let events: Vec<crate::midi::playback::TimedMidiEvent> = times_ms
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| crate::midi::playback::TimedMidiEvent {
+            time: Duration::from_millis(t),
+            channel: 0,
+            message: midly::MidiMessage::NoteOn {
+                key: u7::new(60 + i as u8),
+                vel: u7::new(100),
+            },
+        })
+        .collect();
+    crate::midi::playback::PrecomputedMidi::from_events(events)
+}
+
+fn start_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Start)
+}
+
+fn continue_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Continue)
+}
+
+fn stop_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::Stop)
+}
+
+fn clock_bytes() -> Vec<u8> {
+    realtime_bytes(midly::live::SystemRealtime::TimingClock)
+}
+
 mod display {
     use super::*;
 
@@ -584,12 +658,6 @@ fn racing_reopens_stop_the_clock_actually_replaced() {
 #[test]
 fn the_fallback_tempo_is_read_after_the_old_clock_stops() {
     use crate::midi::Device as _;
-    struct Null;
-    impl MidiSender for Null {
-        fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-            Ok(())
-        }
-    }
     let (tx, rx) = mpsc::channel();
     let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
     let engine_tempo = tempo.clone();
@@ -632,12 +700,6 @@ fn the_fallback_tempo_is_read_after_the_old_clock_stops() {
 /// its thread, and would otherwise never return.
 #[test]
 fn stop_returns_while_a_schedule_waits_for_its_start() {
-    struct Null;
-    impl MidiSender for Null {
-        fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-            Ok(())
-        }
-    }
     let (tx, rx) = mpsc::channel();
     let tempo = Arc::new(Mutex::new(Some(Duration::from_millis(20))));
     let engine_tempo = tempo.clone();
@@ -963,53 +1025,6 @@ mod play_precomputed_tests {
     use super::*;
     use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
     use crate::playsync::CancelHandle;
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-        should_fail: bool,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-                should_fail: false,
-            }
-        }
-
-        fn failing() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-                should_fail: true,
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            if self.should_fail {
-                return Err("mock send failure".into());
-            }
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
-
-    fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
-        let events: Vec<TimedMidiEvent> = times_ms
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| TimedMidiEvent {
-                time: Duration::from_millis(t),
-                channel: 0,
-                message: midly::MidiMessage::NoteOn {
-                    key: u7::new(60 + i as u8),
-                    vel: u7::new(100),
-                },
-            })
-            .collect();
-        PrecomputedMidi::from_events(events)
-    }
-
     /// Helper: run play_streams with common defaults for tests.
     fn run_play(
         midi: &PrecomputedMidi,
@@ -1251,42 +1266,6 @@ mod run_playback_tests {
     use super::*;
     use crate::midi::playback::PrecomputedMidi;
     use crate::playsync::CancelHandle;
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
-
-    fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
-        use crate::midi::playback::TimedMidiEvent;
-        let events: Vec<TimedMidiEvent> = times_ms
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| TimedMidiEvent {
-                time: Duration::from_millis(t),
-                channel: 0,
-                message: midly::MidiMessage::NoteOn {
-                    key: u7::new(60 + i as u8),
-                    vel: u7::new(100),
-                },
-            })
-            .collect();
-        PrecomputedMidi::from_events(events)
-    }
-
     /// Records when on the clock each note was sent, and which; the
     /// note-offs apart.
     struct TimedSender {
@@ -3138,12 +3117,6 @@ mod run_playback_tests {
     /// Continue, not before.
     #[test]
     fn the_beat_clock_announces_its_start() {
-        struct Null;
-        impl MidiSender for Null {
-            fn send(&mut self, _: &[u8]) -> Result<(), Box<dyn Error>> {
-                Ok(())
-            }
-        }
         for transport_byte in [0xFA, 0xFB] {
             let transport = AtomicBool::new(false);
             let mut null = Null;
@@ -3164,37 +3137,6 @@ mod run_beat_clock_tests {
     use super::*;
     use crate::playsync::CancelHandle;
     use midly::live::SystemRealtime;
-    fn start_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Start)
-    }
-    fn continue_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Continue)
-    }
-    fn stop_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Stop)
-    }
-    fn clock_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::TimingClock)
-    }
-
-    struct MockSender {
-        sent: parking_lot::Mutex<Vec<Vec<u8>>>,
-    }
-
-    impl MockSender {
-        fn new() -> Self {
-            MockSender {
-                sent: parking_lot::Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl MidiSender for MockSender {
-        fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            self.sent.lock().push(bytes.to_vec());
-            Ok(())
-        }
-    }
 
     /// Records each message with when on `clock` it went out.
     struct StampedSender {
@@ -4428,19 +4370,9 @@ mod run_beat_clock_tests {
 mod beat_clock_engine_tests {
     use super::*;
     use crate::playsync::CancelHandle;
-    use midly::live::SystemRealtime;
+
     use std::sync::mpsc;
     use std::sync::Arc;
-
-    fn clock_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::TimingClock)
-    }
-    fn start_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Start)
-    }
-    fn stop_bytes() -> Vec<u8> {
-        realtime_bytes(SystemRealtime::Stop)
-    }
 
     /// A sender whose buffer can be inspected from another thread while the
     /// engine loop runs.

@@ -374,47 +374,12 @@ mod tests {
         use ratatui::Terminal;
 
         fn make_app() -> App {
-            use crate::config;
-            use crate::player::PlayerDevices;
-            use crate::playlist;
-            use crate::songs::{Song, Songs};
-            use std::collections::HashMap;
             use tokio::sync::watch;
 
-            let mut map = HashMap::new();
-            for name in &["Song A", "Song B"] {
-                map.insert(
-                    name.to_string(),
-                    std::sync::Arc::new(Song::new_for_test(name, &["kick", "snare"])),
-                );
-            }
-            let songs = std::sync::Arc::new(Songs::new(map));
-            let playlist_config =
-                config::Playlist::new(&["Song A".to_string(), "Song B".to_string()]);
-            let pl = playlist::Playlist::new("My Set", &playlist_config, songs.clone()).unwrap();
-            let devices = PlayerDevices {
-                audio: None,
-                mappings: None,
-                midi: None,
-                dmx_engine: None,
-                sample_engine: None,
-                trigger_engine: None,
-            };
-            let mut playlists = HashMap::new();
-            playlists.insert(
-                "all_songs".to_string(),
-                playlist::from_songs(songs.clone()).unwrap(),
-            );
-            playlists.insert(pl.name().to_string(), pl);
-            let player = std::sync::Arc::new(
-                crate::player::Player::new_with_devices(
-                    devices,
-                    playlists,
-                    "My Set".to_string(),
-                    None,
-                )
-                .unwrap(),
-            );
+            let player = crate::testutil::player::memory_player(&["Song A", "Song B"])
+                .tracks(&["kick", "snare"])
+                .playlist("My Set")
+                .build();
             let (_tx, state_rx) =
                 watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
             App::new(player, state_rx)

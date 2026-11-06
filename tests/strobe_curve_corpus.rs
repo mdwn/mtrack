@@ -28,6 +28,8 @@
 //! for every byte of every strobe rule — the example fixture types always,
 //! the corpus with `--ignored`.
 
+mod common;
+
 use std::collections::{BTreeMap, HashMap};
 
 use mtrack::lighting::channels::dmx_byte;
@@ -46,19 +48,6 @@ use mtrack::lighting::{gdtf, mvr};
 
 /// Every GDTF of both corpora, by (manufacturer, fixture name), first seen.
 fn corpus_gdtfs() -> BTreeMap<(String, String), gdtf::Description> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let files = |dir: &str, ext: &str| -> Vec<std::path::PathBuf> {
-        let mut files: Vec<_> = std::fs::read_dir(root.join(dir))
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|e| e == ext))
-                    .collect()
-            })
-            .unwrap_or_default();
-        files.sort();
-        files
-    };
     let mut out = BTreeMap::new();
     let mut add = |bytes: &[u8]| {
         if let Ok(description) = gdtf::parse_archive(bytes) {
@@ -66,10 +55,10 @@ fn corpus_gdtfs() -> BTreeMap<(String, String), gdtf::Description> {
                 .or_insert(description);
         }
     };
-    for path in files("gdtf-corpus", "gdtf") {
+    for path in common::corpus_files("gdtf-corpus", "gdtf", common::Listing::Lenient) {
         add(&std::fs::read(&path).expect("readable gdtf"));
     }
-    for path in files("mvr-corpus", "mvr") {
+    for path in common::corpus_files("mvr-corpus", "mvr", common::Listing::Lenient) {
         let bytes = std::fs::read(&path).expect("readable mvr");
         for entry in mvr::list_gdtf_entries(&bytes).expect("entry listing") {
             if let Ok(gdtf_bytes) = mvr::read_gdtf_entry(&bytes, &entry) {

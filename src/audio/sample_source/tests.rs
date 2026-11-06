@@ -762,15 +762,7 @@ mod sample_source_tests {
         );
     }
 
-    /// Calculate RMS (Root Mean Square) of a signal
-    fn calculate_rms(samples: &[f32]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-
-        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
-        (sum_squares / samples.len() as f32).sqrt()
-    }
+    use crate::testutil::audio_test_utils::calculate_rms;
 
     #[test]
     fn test_resampling_empty_input() {

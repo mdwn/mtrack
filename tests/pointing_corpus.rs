@@ -28,6 +28,8 @@
 //! fought. A rig whose geometry the calibration cannot reduce is printed
 //! with the reason; every other rig must agree to a hundredth of a degree.
 
+mod common;
+
 use std::collections::HashSet;
 
 use mtrack::lighting::effects::{AimCalibration, Pose};
@@ -35,26 +37,7 @@ use mtrack::lighting::gdtf;
 use mtrack::lighting::mvr;
 
 fn corpus_files() -> Vec<std::path::PathBuf> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mvr-corpus");
-    assert!(
-        dir.is_dir(),
-        "no corpus at {}: drop .mvr files in (see module docs)",
-        dir.display()
-    );
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("readable corpus dir")
-        .filter_map(|entry| {
-            let path = entry.expect("dir entry").path();
-            (path.extension().is_some_and(|e| e == "mvr")).then_some(path)
-        })
-        .collect();
-    files.sort();
-    assert!(
-        !files.is_empty(),
-        "corpus dir {} holds no .mvr files",
-        dir.display()
-    );
-    files
+    common::corpus_files("mvr-corpus", "mvr", common::Listing::NonEmpty)
 }
 
 /// The largest angle, in degrees, between the rig's beam and the math's

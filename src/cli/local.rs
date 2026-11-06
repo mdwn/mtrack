@@ -875,18 +875,7 @@ pub fn import_gdtf(
 mod import_gdtf_tests {
     use super::*;
 
-    fn write_synthetic_gdtf(dir: &Path) -> PathBuf {
-        let path = dir.join("synth.gdtf");
-        std::fs::write(
-            &path,
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
-        )
-        .unwrap();
-        path
-    }
+    use crate::testutil::lighting::write_synthetic_gdtf;
 
     #[test]
     fn listing_modes_writes_nothing() {

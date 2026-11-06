@@ -333,12 +333,9 @@ mod tests {
     use super::*;
 
     fn gdtf_named(name: &str) -> Vec<u8> {
-        gdtf::build_zip(&[(
-            "description.xml",
-            gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", name)
-                .as_bytes(),
-        )])
+        crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Synth Brick", name),
+        )
     }
 
     fn project_with(archives: &[(&str, Vec<u8>)]) -> tempfile::TempDir {
