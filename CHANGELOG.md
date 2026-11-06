@@ -482,7 +482,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file is found at its name in any case (`Par` beside a `Par.light`), so on a filesystem that
   ignores case such a save is refused rather than written into that file. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
-  (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
+  (`.git/`) and hidden files (`venues/.club.light`, which a save already refused to write), as the
+  song loader does. The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
   directory it cannot read or reach is still that 500. A link in these directories is followed only to
   what is inside the directory: a linked subdirectory or file leading out of it, or a link to

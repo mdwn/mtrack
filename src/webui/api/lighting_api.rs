@@ -4235,8 +4235,8 @@ show "test" {
     }
 
     /// `Show.LIGHT` is a light show to the listing as it is to `songs
-    /// --init` (`FileKind`), and a hidden directory is passed over as the
-    /// song loader passes it over.
+    /// --init` (`FileKind`), and a hidden directory or file is passed over
+    /// as the song loader passes it over.
     #[test]
     fn find_light_files_reads_the_extension_in_any_case_and_skips_hidden() {
         let dir = tempfile::tempdir().unwrap();
@@ -4244,6 +4244,7 @@ show "test" {
         std::fs::create_dir_all(base.join("song/.git")).unwrap();
         std::fs::write(base.join("song/Show.LIGHT"), "content").unwrap();
         std::fs::write(base.join("song/.git/old.light"), "content").unwrap();
+        std::fs::write(base.join("song/.draft.light"), "content").unwrap();
 
         let mut results = Vec::new();
         find_light_files(base, base, &mut results).unwrap();
@@ -7896,12 +7897,21 @@ show "test" {
         }
     }
 
-    /// No file is written under a hidden name, which the loaders pass over.
+    /// No file is written under a hidden name, which the loaders pass over
+    /// (`project_files::files_under`): `venues/.club.light` is neither
+    /// loaded nor written.
     #[test]
     fn a_hidden_file_name_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         assert!(lighting_write_path(dir.path(), &dir.path().join(".light")).is_err());
+        assert!(lighting_write_path(dir.path(), &dir.path().join(".club.light")).is_err());
         assert!(lighting_write_path(dir.path(), &dir.path().join("a.light")).is_ok());
+        std::fs::write(dir.path().join(".club.light"), sample_venue_dsl("Club")).unwrap();
+        std::fs::write(dir.path().join("a.light"), sample_venue_dsl("A")).unwrap();
+        assert_eq!(
+            lighting::project_files::files_under(dir.path(), VENUE_EXTENSIONS).unwrap(),
+            [dir.path().join("a.light")]
+        );
     }
 
     /// A form already at the stem in another spelling is written in place,

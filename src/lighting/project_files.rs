@@ -44,8 +44,8 @@ pub const VENUE_EXTENSIONS: &[&str] = &["venue", "light"];
 /// for a project's lighting files (the venue and fixture type directories,
 /// and the songs' `.light` shows).
 ///
-/// - Hidden directories are left out, as the song loader leaves them out
-///   (`songs::is_hidden`).
+/// - Hidden directories and files are left out, as the song loader leaves
+///   them out (`songs::is_hidden`), and as a save refuses to write one.
 /// - A link is followed only to what is inside `dir`, by the web UI's
 ///   containment rule (`SafePath::resolve`): one leading out of it, or to
 ///   nothing, is left out, so nothing listed here is a file the tools that
@@ -77,14 +77,14 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
     let mut pending = vec![entries];
     while let Some(entries) = pending.pop() {
         for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            if crate::songs::is_hidden(&path) {
+                continue;
+            }
             if !inside(&path) {
                 warn!(link = %path.display(), "A link among the lighting files leads out of their directory, or to nothing; passing over it");
                 continue;
             }
             if path.is_dir() {
-                if crate::songs::is_hidden(&path) {
-                    continue;
-                }
                 match std::fs::read_dir(&path) {
                     Ok(entries) => pending.push(entries),
                     Err(e) => {
