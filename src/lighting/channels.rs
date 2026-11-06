@@ -184,7 +184,6 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             continue;
         }
         let (channel, cell) = name.split_once('#').unwrap_or((name, ""));
-        let cell = coarse(cell);
         let (attribute, section) = channel_parts(channel);
         parts
             .entry((section, cell))
