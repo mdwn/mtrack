@@ -18,8 +18,9 @@ import { CONFIG, expect, synthGdtf, test, type Project } from "./harness";
 // strobe function has only its endpoints (0.4–25 Hz over DMX 7–255), so by
 // the GDTF rule a 10 Hz strobe is linear in Hz (~104). Setting the curve to
 // period on the fixture's page (as the Astera PixelBrick needs) moves the
-// same show's strobe to 248. Read through POST /api/lighting/evaluate, the
-// show preview's offline evaluation of the song with the loaded venue.
+// same show's strobe to 249 (248.95, rounded). Read through POST
+// /api/lighting/evaluate, the show preview's offline evaluation of the song
+// with the loaded venue.
 
 /** A mono 16-bit WAV of `samples` silent samples at 44.1 kHz. */
 function silentWav(samples: number): Buffer {
@@ -97,7 +98,7 @@ test("the strobe curve set on the fixture's page changes what a show sends", asy
       .read("lighting/fixture_types/synth_brick.fixture")
       .includes("strobe_curve: period"),
   ).toBe(true);
-  await expect.poll(() => strobeAt1s(project)).toBe(248);
+  await expect.poll(() => strobeAt1s(project)).toBe(249);
 
   // Back to automatic: the statement goes, and the strobe is linear again.
   await page.reload();
