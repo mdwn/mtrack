@@ -54,9 +54,33 @@ pub(crate) fn channel_parts(channel: &str) -> (&str, &str) {
     (coarse(base), coarse(section))
 }
 
+/// What a fine byte's name adds to its channel's.
+const FINE: &str = "_fine";
+
 /// A name without the `_fine` a fine byte's carries.
 fn coarse(name: &str) -> &str {
-    name.strip_suffix("_fine").unwrap_or(name)
+    name.strip_suffix(FINE).unwrap_or(name)
+}
+
+/// The name of `channel`'s fine byte: `dimmer_fine`.
+pub(crate) fn fine_name(channel: &str) -> String {
+    format!("{channel}{FINE}")
+}
+
+/// The name a snapshot gives mirror `n` of a ganged channel: `red#2`
+/// (`red_fine#2` for its fine byte's).
+pub(crate) fn mirror_name(channel: &str, n: usize) -> String {
+    format!("{channel}#{n}")
+}
+
+/// A snapshot name as its channel and the mirror it names, `""` for none:
+/// `red#2` is `red` and `2`, `red` is `red` and `""`. The inverse of
+/// [`mirror_name`]; a `#` not followed by a number is part of the name.
+pub(crate) fn split_mirror(name: &str) -> (&str, &str) {
+    match name.split_once('#') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => (base, n),
+        _ => (name, ""),
+    }
 }
 
 /// Whether a channel carries where a head points -- pan or tilt, a section
@@ -88,11 +112,7 @@ impl CrossKind {
 /// than where a head points, an optic or a setting. The channel's name is
 /// read under the `#n` a snapshot names a ganged channel's mirrors by.
 pub fn is_level_channel(name: &str) -> bool {
-    let base = match name.split_once('#') {
-        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
-        _ => name,
-    };
-    fades_to_dark(base)
+    fades_to_dark(split_mirror(name).0)
 }
 
 /// A channel's full value: what a DMX channel reaches.
@@ -183,7 +203,7 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
         if !is_level_channel(name) {
             continue;
         }
-        let (channel, cell) = name.split_once('#').unwrap_or((name, ""));
+        let (channel, cell) = split_mirror(name);
         let (attribute, section) = channel_parts(channel);
         parts
             .entry((section, cell))
