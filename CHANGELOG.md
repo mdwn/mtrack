@@ -397,7 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file is the one at any depth that declares the name, else a file at the name's stem (in any
   case) that does not read, else a file elsewhere that does not read but seems to open a block for
   the name (as an older file name left it: `club_2.venue` for "Club-2"). A file that reads and
-  holds other venues or types is never written over or removed: one at the stem is not the
+  holds only other venues or types is never written over or removed: one at the stem is not the
   name's, and a new venue or type is written to a file of its own past it (`club_2.light`), where
   a venue saved as text over a `club.venue` holding `Other` replaced it. Names that share a stem
   ("Club (Main)" and "Club Main") likewise get files of their own. A file that does not read (a
@@ -409,7 +409,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sent again with one `?replace_broken=a/club.light` parameter per file, as written, which lets the
   save replace, or the delete remove, exactly those broken files, never one that reads, nor a
   namesake in another subdirectory; and each is first moved aside beside itself as
-  `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC), which no loader reads, so nothing it held is lost. The
+  `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC), which no loader reads, so nothing it held is lost
+  (and put back if the write then fails). Every broken file that may be the name's (one at its stem,
+  and each elsewhere that seems to open its block) is named in the one 409 and acted on together,
+  so none comes back to declare the name once fixed; and a GDTF in the library is its fixture even
+  behind a broken stem file that does not seem to open its block. The
   reply and the web UI say "The old file was kept as …". An MVR import whose GDTFs share a file
   stem ("Par", "par a", "par_a") writes each record to a file of its own (`par`, `par_a`,
   `par_a_2`); the last overwrote another's. A name with no letters or digits (`!!!`, `★`) is
