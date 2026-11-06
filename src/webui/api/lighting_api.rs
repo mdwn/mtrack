@@ -18,6 +18,9 @@ use crate::webui::wire::fixture_types::{
     TypeVenue, TypeVenueFixture, VenueDetail, VenueList, VenueScene,
 };
 use crate::webui::wire::messages::FixturePlacement;
+use crate::webui::wire::preview::{
+    LightFileInfo, LightFiles, LightingGroup, LightingGroups, LightingValidation,
+};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -233,20 +236,15 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
             Ok(f) => f,
             Err(e) => return e,
         };
-    light_files.sort_by(|a, b| {
-        a.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("path").and_then(|v| v.as_str()).unwrap_or(""))
-    });
-    (StatusCode::OK, Json(json!({"files": light_files}))).into_response()
+    light_files.sort_by(|a, b| a.path.cmp(&b.path));
+    (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
 /// Recursively finds .light files under a directory.
 pub(crate) fn find_light_files(
     base: &std::path::Path,
     dir: &std::path::Path,
-    results: &mut Vec<serde_json::Value>,
+    results: &mut Vec<LightFileInfo>,
 ) -> Result<(), std::io::Error> {
     // codeql[rust/path-injection] dir is always state.songs_path(), set at startup.
     if !dir.is_dir() {
@@ -269,10 +267,10 @@ pub(crate) fn find_light_files(
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            results.push(json!({
-                "name": name,
-                "path": relative,
-            }));
+            results.push(LightFileInfo {
+                name,
+                path: relative,
+            });
         }
     }
     Ok(())
@@ -468,10 +466,20 @@ pub(super) async fn validate_lighting(
         Some(&state.songs_path()),
         tempo.as_ref(),
     ) {
-        Ok(()) => (StatusCode::OK, Json(json!({"valid": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(LightingValidation {
+                valid: true,
+                errors: None,
+            }),
+        )
+            .into_response(),
         Err(errors) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({"valid": false, "errors": errors})),
+            Json(LightingValidation {
+                valid: false,
+                errors: Some(errors),
+            }),
         )
             .into_response(),
     }
@@ -1962,20 +1970,24 @@ pub(super) async fn get_lighting_groups(State(state): State<WebUiState>) -> impl
             .logical_groups_iter()
             .map(|(n, _)| n.clone())
             .collect();
-        let mut out: Vec<serde_json::Value> = names
+        let mut out: Vec<LightingGroup> = names
             .into_iter()
-            .map(|name| {
-                let fixtures = guard.resolve_logical_group_graceful(&name);
-                json!({"name": name, "fixtures": fixtures})
+            .map(|name| LightingGroup {
+                fixtures: guard.resolve_logical_group_graceful(&name),
+                name,
             })
             .collect();
-        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     })
     .await;
 
     match groups {
-        Ok(groups) => Json(json!({"groups": groups})).into_response(),
+        Ok(groups) => Json(LightingGroups {
+            groups,
+            resolved: None,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to resolve groups: {e}")})),
@@ -2405,11 +2417,18 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         }
     };
 
-    let groups: Vec<serde_json::Value> = names
+    let groups = names
         .into_iter()
-        .map(|name| json!({"name": name, "fixtures": []}))
+        .map(|name| LightingGroup {
+            name,
+            fixtures: vec![],
+        })
         .collect();
-    Json(json!({"groups": groups, "resolved": false})).into_response()
+    Json(LightingGroups {
+        groups,
+        resolved: Some(false),
+    })
+    .into_response()
 }
 
 /// GET /api/lighting/venues — lists all venues from the directory.
@@ -3695,10 +3714,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 2);
-        let paths: Vec<&str> = results
-            .iter()
-            .map(|r| r["path"].as_str().unwrap())
-            .collect();
+        let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
         assert!(paths.contains(&"song1/show.light"));
         assert!(paths.contains(&"top.light"));
     }
@@ -3720,7 +3736,7 @@ show "test" {
         find_light_files(dir.path(), dir.path(), &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "my_show");
+        assert_eq!(results[0].name, "my_show");
     }
 
     #[test]
@@ -3736,7 +3752,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["path"].as_str().unwrap(), "a/b/c/deep.light");
+        assert_eq!(results[0].path, "a/b/c/deep.light");
     }
 
     #[test]
@@ -3765,7 +3781,7 @@ show "test" {
         find_light_files(base, base, &mut results).unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["name"].as_str().unwrap(), "show");
+        assert_eq!(results[0].name, "show");
     }
 
     #[tokio::test]

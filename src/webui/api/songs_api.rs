@@ -25,7 +25,9 @@ use super::super::config_io;
 use super::super::server::WebUiState;
 use super::super::state as ws_state;
 use crate::webui::wire::messages::Waveform;
-use crate::webui::wire::songs::{SongFailure, SongInfo, SongList, TempoGuess, TempoGuessSource};
+use crate::webui::wire::songs::{
+    FileKind, SongFailure, SongFile, SongFiles, SongInfo, SongList, TempoGuess, TempoGuessSource,
+};
 use crate::{config, songs};
 
 /// GET /api/songs — returns a list of all songs with metadata.
@@ -544,7 +546,7 @@ pub(super) async fn get_song_files(
     let song_dir = song.base_path().to_path_buf();
 
     let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
-        let mut files: Vec<serde_json::Value> = Vec::new();
+        let mut files: Vec<SongFile> = Vec::new();
         for entry in std::fs::read_dir(&song_dir)?.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -558,24 +560,10 @@ pub(super) async fn get_song_files(
             if filename == "song.yaml" || filename == "song.yml" {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let file_type = if songs::is_supported_audio_extension(&ext) {
-                "audio"
-            } else if ext == "mid" {
-                "midi"
-            } else if ext == "light" {
-                "lighting"
-            } else {
-                "other"
-            };
-            files.push(json!({
-                "name": filename,
-                "type": file_type,
-            }));
+            files.push(SongFile {
+                kind: file_kind(&path),
+                name: filename,
+            });
         }
         Ok::<_, std::io::Error>(files)
     })
@@ -585,14 +573,27 @@ pub(super) async fn get_song_files(
         Err(e) => return e,
     };
 
-    files.sort_by(|a, b| {
-        a.get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
-    });
+    files.sort_by(|a, b| a.name.cmp(&b.name));
 
-    (StatusCode::OK, Json(json!({"files": files}))).into_response()
+    (StatusCode::OK, Json(SongFiles { files })).into_response()
+}
+
+/// What a file is to the player, by its extension.
+pub(super) fn file_kind(path: &std::path::Path) -> FileKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if songs::is_supported_audio_extension(&ext) {
+        FileKind::Audio
+    } else if ext == "mid" {
+        FileKind::Midi
+    } else if ext == "light" {
+        FileKind::Lighting
+    } else {
+        FileKind::Other
+    }
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,

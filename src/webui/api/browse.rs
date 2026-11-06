@@ -23,6 +23,7 @@ use serde_json::json;
 use super::super::safe_path::{SafePath, VerifiedRoot};
 use super::super::server::WebUiState;
 use crate::songs;
+use crate::webui::wire::songs::{Browse, BrowseEntry, BulkImport, FileKind, ImportFailure};
 
 /// Resolves the project root (parent of config_path) as a VerifiedRoot.
 fn project_root(state: &WebUiState) -> Result<VerifiedRoot, Box<axum::response::Response>> {
@@ -108,7 +109,7 @@ pub(super) async fn browse_directory(
         }
     };
 
-    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut entries: Vec<BrowseEntry> = Vec::new();
     match std::fs::read_dir(&dir_canonical) {
         Ok(iter) => {
             for entry in iter.flatten() {
@@ -122,28 +123,16 @@ pub(super) async fn browse_directory(
                     continue;
                 }
                 let is_dir = path.is_dir();
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let file_type = if is_dir {
-                    "directory"
-                } else if songs::is_supported_audio_extension(&ext) {
-                    "audio"
-                } else if ext == "mid" {
-                    "midi"
-                } else if ext == "light" {
-                    "lighting"
-                } else {
-                    "other"
-                };
-                entries.push(json!({
-                    "name": name,
-                    "path": to_relative(&path),
-                    "type": file_type,
-                    "is_dir": is_dir,
-                }));
+                entries.push(BrowseEntry {
+                    kind: if is_dir {
+                        FileKind::Directory
+                    } else {
+                        super::songs_api::file_kind(&path)
+                    },
+                    path: to_relative(&path),
+                    name,
+                    is_dir,
+                });
             }
         }
         Err(e) => {
@@ -157,29 +146,18 @@ pub(super) async fn browse_directory(
 
     // Sort: directories first, then alphabetically by name
     entries.sort_by(|a, b| {
-        let a_dir = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-        let b_dir = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
-        b_dir.cmp(&a_dir).then_with(|| {
-            a.get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_lowercase()
-                .cmp(
-                    &b.get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_lowercase(),
-                )
-        })
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     (
         StatusCode::OK,
-        Json(json!({
-            "path": to_relative(&dir_canonical),
-            "root": root_canonical.to_string_lossy(),
-            "entries": entries,
-        })),
+        Json(Browse {
+            path: to_relative(&dir_canonical),
+            root: root_canonical.to_string_lossy().into_owned(),
+            entries,
+        }),
     )
         .into_response()
 }
@@ -319,7 +297,7 @@ pub(super) async fn bulk_import(
     let scan = tokio::task::spawn_blocking(move || {
         let mut created: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
-        let mut failed: Vec<serde_json::Value> = Vec::new();
+        let mut failed: Vec<ImportFailure> = Vec::new();
         // codeql[rust/path-injection] dir_canonical is canonicalized and
         // verified via starts_with(root_canonical) above, preventing traversal.
         bulk_import_recursive(
@@ -353,11 +331,11 @@ pub(super) async fn bulk_import(
 
     (
         StatusCode::OK,
-        Json(json!({
-            "created": created,
-            "skipped": skipped,
-            "failed": failed,
-        })),
+        Json(BulkImport {
+            created,
+            skipped,
+            failed,
+        }),
     )
         .into_response()
 }
@@ -370,7 +348,7 @@ fn bulk_import_recursive(
     root: &std::path::Path,
     created: &mut Vec<String>,
     skipped: &mut Vec<String>,
-    failed: &mut Vec<serde_json::Value>,
+    failed: &mut Vec<ImportFailure>,
 ) {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -430,17 +408,17 @@ fn bulk_import_recursive(
                     config.set_name(&dir_name);
                     match config.save(&dir.join("song.yaml")) {
                         Ok(()) => created.push(display_name),
-                        Err(e) => failed.push(json!({
-                            "name": display_name,
-                            "error": format!("Failed to save: {}", e),
-                        })),
+                        Err(e) => failed.push(ImportFailure {
+                            name: display_name,
+                            error: format!("Failed to save: {}", e),
+                        }),
                     }
                 }
                 Err(e) => {
-                    failed.push(json!({
-                        "name": display_name,
-                        "error": format!("{}", e),
-                    }));
+                    failed.push(ImportFailure {
+                        name: display_name,
+                        error: format!("{}", e),
+                    });
                 }
             }
             return; // Don't recurse into song directories

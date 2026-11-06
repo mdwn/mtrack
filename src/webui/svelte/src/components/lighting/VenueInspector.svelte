@@ -103,7 +103,7 @@
   $effect(() => {
     const dir = fixtureTypesDir;
     fetchFixtureTypes(dir || undefined)
-      .then((r) => (fixtureTypes = r.fixtureTypes))
+      .then((r) => (fixtureTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });

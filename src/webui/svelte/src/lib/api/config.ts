@@ -20,14 +20,21 @@ import type {
   ConfigReload,
   ConfigSaved,
   Controller,
+  FileSaved,
   FitReport,
   Fixture,
   FixtureSettingsData,
   FixtureType,
+  FixtureTypeDeleted,
   FixtureTypeEntry,
   FixtureTypeGdtf,
+  FixtureTypeList,
   GdtfImport,
-  LightingFileError,
+  LightFileInfo,
+  LightFiles,
+  LightingGroup,
+  LightingGroups,
+  LightingValidation,
   MetronomeSounds,
   MidiDeviceInfo,
   MovementLimits,
@@ -41,13 +48,18 @@ import type {
   PlaylistInfo,
   ProbeAudioRequest,
   Profile,
+  ProfileFile,
+  ProfileFileInfo,
   Readiness,
   SampleDefinition,
+  SampleUploaded,
   SettingsSaved,
   StoreSnapshot,
   Vec3,
   Venue,
+  VenueDetail,
   VenueError,
+  VenueList,
   VenuePatch,
   VenueSaved,
   VenueScene,
@@ -160,25 +172,13 @@ export async function deleteProfile(
 
 // ---- File-based Profiles API (profiles_dir) ----
 
-export interface ProfileFileInfo {
-  filename: string;
-  hostname: string | null;
-  has_audio: boolean;
-  has_midi: boolean;
-  has_dmx: boolean;
-  has_trigger: boolean;
-  has_controllers: boolean;
-}
-
 export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
   const res = await get("/profiles");
   if (!res.ok) throw new Error(`Failed to fetch profiles: ${res.status}`);
   return res.json();
 }
 
-export async function fetchProfileFile(
-  filename: string,
-): Promise<{ profile: Profile; yaml: string; version?: string }> {
+export async function fetchProfileFile(filename: string): Promise<ProfileFile> {
   const res = await get(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch profile");
   return res.json();
@@ -198,14 +198,14 @@ export async function saveProfileFile(
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save profile");
-  const body = await res.json().catch(() => ({}));
-  return { version: body?.version ?? null, reload: body ?? {} };
+  const body: Partial<FileSaved> = await res.json().catch(() => ({}));
+  return { version: body.version ?? null, reload: body };
 }
 
 /** Deletes a profile file. Returns what became of the hardware reload. */
 export async function deleteProfileFile(
   filename: string,
-): Promise<Partial<ConfigReload>> {
+): Promise<Partial<FileSaved>> {
   const res = await del(`/profiles/${encodeURIComponent(filename)}`);
   if (!res.ok) throw await apiError(res, "Failed to delete profile");
   return res.json().catch(() => ({}));
@@ -254,15 +254,7 @@ export async function updateMetronomeDefaults(
   return res.json();
 }
 
-export interface SampleUploadResult {
-  status: string;
-  file: string;
-  path: string;
-}
-
-export async function uploadSampleFile(
-  file: File,
-): Promise<SampleUploadResult> {
+export async function uploadSampleFile(file: File): Promise<SampleUploaded> {
   const res = await uploadFile(
     `/samples/upload/${encodeURIComponent(file.name)}`,
     file,
@@ -314,18 +306,11 @@ function dirParams(dir?: string, venuesDir?: string): string {
 export async function fetchFixtureTypes(
   dir?: string,
   venuesDir?: string,
-): Promise<{
-  fixtureTypes: Record<string, FixtureTypeEntry>;
-  errors: LightingFileError[];
-}> {
+): Promise<FixtureTypeList> {
   const params = dirParams(dir, venuesDir);
   const res = await get(`/lighting/fixture-types${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
-  const data = await res.json();
-  return {
-    fixtureTypes: data.fixture_types ?? {},
-    errors: data.errors ?? [],
-  };
+  return res.json();
 }
 
 /** Imports a GDTF in one step: the fixture is usable in a venue in any of
@@ -624,30 +609,24 @@ export async function saveFixtureTypeText(
 export async function deleteFixtureType(
   name: string,
   dir?: string,
-): Promise<{ archiveRemoved: string | null; archiveKept: boolean }> {
+): Promise<FixtureTypeDeleted> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await del(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
   if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
   fixtureTypesChanged();
-  const body = await res.json().catch(() => ({}));
-  return {
-    archiveRemoved: body?.archive_removed ?? null,
-    archiveKept: body?.archive_kept === true,
-  };
+  return res.json();
 }
 
 /// Group names a cue can target, with the fixtures each currently resolves to.
 /// These are the logical groups from `dmx.lighting.groups`; venues no longer
 /// define groups of their own.
-export async function fetchLightingGroups(): Promise<
-  { name: string; fixtures: string[] }[]
-> {
+export async function fetchLightingGroups(): Promise<LightingGroup[]> {
   const res = await get("/lighting/groups");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting groups");
-  const data = await res.json();
-  return data.groups ?? [];
+  const data: LightingGroups = await res.json();
+  return data.groups;
 }
 
 /** The facts behind the Lighting overview's five checks. */
@@ -681,27 +660,17 @@ export async function fetchLightingFit(): Promise<FitReport> {
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
-export async function fetchVenues(dir?: string): Promise<{
-  venues: Record<string, Venue>;
-  errors: LightingFileError[];
-  /** Each venue file's version, to save against. */
-  versions: Record<string, string>;
-}> {
+export async function fetchVenues(dir?: string): Promise<VenueList> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/venues${params}`);
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
-  const data = await res.json();
-  return {
-    venues: data.venues ?? {},
-    errors: data.errors ?? [],
-    versions: data.versions ?? {},
-  };
+  return res.json();
 }
 
 export async function fetchVenue(
   name: string,
   dir?: string,
-): Promise<{ venue: Venue; dsl: string; version?: string }> {
+): Promise<VenueDetail> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
@@ -844,15 +813,10 @@ export async function activatePlaylist(name: string): Promise<void> {
 
 // ---- Lighting Show Files ----
 
-export interface LightFileInfo {
-  path: string;
-  name: string;
-}
-
 export async function fetchLightingFiles(): Promise<LightFileInfo[]> {
   const res = await get("/lighting");
   if (!res.ok) throw new Error(`Failed to fetch lighting files: ${res.status}`);
-  const data = await res.json();
+  const data: LightFiles = await res.json();
   return data.files;
 }
 
@@ -885,7 +849,7 @@ export async function validateLighting(
   content: string,
   song?: string,
   file?: string,
-): Promise<{ valid: boolean; errors?: string[] }> {
+): Promise<LightingValidation> {
   const query = new URLSearchParams();
   if (song) query.set("song", song);
   if (file) query.set("file", file);

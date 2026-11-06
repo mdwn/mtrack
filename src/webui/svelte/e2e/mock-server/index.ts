@@ -15,7 +15,15 @@
 import type { saveVenue } from "../../src/lib/api/config";
 import type {
   AimPoints,
+  Browse,
+  BulkImport,
   ChannelCalibration,
+  FixtureTypeDeleted,
+  LightFiles,
+  LightingGroups,
+  LightingValidation,
+  SampleUploaded,
+  SongFiles,
   ConfigReload,
   ConfigSaved,
   MvrImportAnswer,
@@ -134,7 +142,7 @@ app.get("/api/songs/:name/files", (_req, res) => {
       { name: "snare.wav", type: "audio" },
       { name: "bass.wav", type: "audio" },
     ],
-  });
+  } satisfies SongFiles);
 });
 
 app.put("/api/songs/:name/tracks/:filename", (_req, res) => {
@@ -260,7 +268,7 @@ app.put("/api/samples/upload/:filename", (_req, res) => {
     status: "uploaded",
     file: "sample.wav",
     path: "/samples/sample.wav",
-  });
+  } satisfies SampleUploaded);
 });
 
 // --- Status ---
@@ -286,7 +294,9 @@ app.put("/api/lock", (req, res) => {
 // --- Lighting ---
 
 app.get("/api/lighting", (_req, res) => {
-  res.json({ files: [{ path: "show.light", name: "show.light" }] });
+  res.json({
+    files: [{ path: "show.light", name: "show.light" }],
+  } satisfies LightFiles);
 });
 
 app.get("/api/lighting/readiness", (_req, res) => {
@@ -302,7 +312,7 @@ app.get("/api/lighting/validate", (_req, res) => {
 });
 
 app.post("/api/lighting/validate", (_req, res) => {
-  res.json({ valid: true });
+  res.json({ valid: true } satisfies LightingValidation);
 });
 
 // The three forms a fixture type comes in: a v1 `.light` channel map, a
@@ -388,8 +398,13 @@ app.put("/api/lighting/fixture-types/:name", (_req, res) => {
   res.json({ status: "saved" });
 });
 
-app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({ status: "deleted", archive_removed: null, archive_kept: false });
+app.delete("/api/lighting/fixture-types/:name", (req, res) => {
+  res.json({
+    status: "deleted",
+    name: req.params.name,
+    archive_removed: null,
+    archive_kept: false,
+  } satisfies FixtureTypeDeleted);
 });
 
 // The PB15's modes, as the inspect endpoint and the details view answer them.
@@ -851,7 +866,7 @@ app.get("/api/lighting/groups", (_req, res) => {
       { name: "back_wash", fixtures: ["par3"] },
     ],
     resolved: true,
-  });
+  } satisfies LightingGroups);
 });
 
 app.get("/api/lighting/:name", (_req, res) => {
@@ -873,7 +888,7 @@ app.delete("/api/lighting/:name", (_req, res) => {
 // --- Browse ---
 
 app.get("/api/browse", (_req, res) => {
-  res.json({ path: "/songs", root: "/songs", entries: [] });
+  res.json({ path: "/songs", root: "/songs", entries: [] } satisfies Browse);
 });
 
 app.post("/api/browse/create-song", (_req, res) => {
@@ -881,7 +896,7 @@ app.post("/api/browse/create-song", (_req, res) => {
 });
 
 app.post("/api/browse/bulk-import", (_req, res) => {
-  res.json({ created: [], skipped: [], failed: [] });
+  res.json({ created: [], skipped: [], failed: [] } satisfies BulkImport);
 });
 
 // --- Calibration ---

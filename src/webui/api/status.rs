@@ -17,7 +17,7 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use crate::build_info;
-use crate::webui::wire::status::{BuildInfo, ControllersRestarted, Status};
+use crate::webui::wire::status::{BuildInfo, Status};
 
 /// GET /api/status — returns build info, hardware status, and controller status.
 pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResponse {
@@ -49,11 +49,12 @@ pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl
     }
     match state.player.reload_controllers().await {
         Ok(()) => {
-            let restarted = ControllersRestarted {
-                status: "restarted".to_string(),
-                controllers: state.player.controller_statuses(),
-            };
-            (axum::http::StatusCode::OK, Json(restarted)).into_response()
+            let statuses = state.player.controller_statuses();
+            (
+                axum::http::StatusCode::OK,
+                Json(json!({"status": "restarted", "controllers": statuses})),
+            )
+                .into_response()
         }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

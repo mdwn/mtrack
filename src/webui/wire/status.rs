@@ -37,12 +37,3 @@ pub struct BuildInfo {
     /// The web UI this server serves; `null` when its build stamped none.
     pub ui_build: Option<String>,
 }
-
-/// `POST /api/controllers/restart`: the controllers, restarted.
-#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct ControllersRestarted {
-    /// Always `restarted`.
-    pub status: String,
-    pub controllers: Vec<ControllerStatus>,
-}

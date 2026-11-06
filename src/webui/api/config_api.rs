@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use crate::webui::wire::config::{ConfigReload, ConfigSaved, StoreSnapshot};
+use crate::webui::wire::config::{ConfigReload, ConfigSaved, FileSaved, StoreSnapshot};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -165,7 +165,12 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
     let reload = apply_config_change(&state).await;
     (
         StatusCode::OK,
-        Json(with_reload(json!({"status": "saved"}), reload)),
+        Json(FileSaved {
+            status: "saved".to_string(),
+            filename: None,
+            version: None,
+            reload,
+        }),
     )
         .into_response()
 }
@@ -252,14 +257,6 @@ fn config_apply_fields(outcome: &crate::player::ConfigChange) -> ConfigReload {
             .awaits
             .map(|_| crate::player::process_id().to_string()),
     }
-}
-
-/// Adds what became of a save's hardware reload to its reply.
-pub(crate) fn with_reload(mut body: serde_json::Value, reload: ConfigReload) -> serde_json::Value {
-    if let (Some(body), serde_json::Value::Object(reload)) = (body.as_object_mut(), json!(reload)) {
-        body.extend(reload);
-    }
-    body
 }
 
 /// GET /api/config/store — returns config YAML + checksum via the ConfigStore.

@@ -12,8 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! `POST /api/lighting/evaluate`: a song's shows evaluated offline, the 3D
-//! view's Preview mode, in the shape the live `state` message has.
+//! The light show API's payloads (`/api/lighting`): the show files, the
+//! groups a cue can target, a show's validation, and a song's shows
+//! evaluated offline (`POST /api/lighting/evaluate`, the 3D view's Preview
+//! mode) in the shape the live `state` message has.
 
 use serde::Serialize;
 
@@ -60,4 +62,47 @@ pub struct PreviewEffect {
     /// The effect's authored length, seconds.
     pub duration: f64,
     pub fixtures: Vec<String>,
+}
+
+/// `GET /api/lighting`: the `.light` files under the songs directory.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightFiles {
+    pub files: Vec<LightFileInfo>,
+}
+
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightFileInfo {
+    pub name: String,
+    /// Relative to the songs directory.
+    pub path: String,
+}
+
+/// `GET /api/lighting/groups`: the groups a cue can target.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightingGroups {
+    pub groups: Vec<LightingGroup>,
+    /// `false` without a DMX engine: the names come from the config, and
+    /// no group lists its fixtures.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<bool>,
+}
+
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightingGroup {
+    pub name: String,
+    /// The fixtures it resolves to now.
+    pub fixtures: Vec<String>,
+}
+
+/// `POST /api/lighting/validate`: whether a show parses, and why not.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightingValidation {
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<String>>,
 }

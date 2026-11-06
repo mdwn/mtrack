@@ -13,6 +13,10 @@
 //
 
 import type {
+  Browse,
+  BulkImport,
+  SongFile,
+  SongFiles,
   SongList,
   TempoGuess,
   Waveform,
@@ -81,6 +85,7 @@ export async function deleteSong(name: string): Promise<Response> {
 // player's own types, generated from the Rust structs with the rules module
 // (`lib/rules.ts`), so the UI holds no copy of them to drift.
 export type {
+  SongFile,
   BeatGrid,
   TempoConfig,
   TempoChangeConfig,
@@ -107,32 +112,14 @@ export async function fetchWaveform(name: string): Promise<Waveform> {
   return res.json();
 }
 
-export interface SongFile {
-  name: string;
-  type: "audio" | "midi" | "lighting" | "other";
-}
-
 export async function fetchSongFiles(name: string): Promise<SongFile[]> {
   const res = await get(`/songs/${encodeURIComponent(name)}/files`);
   if (!res.ok) throw new Error(`Failed to fetch song files: ${res.status}`);
-  const data = await res.json();
+  const data: SongFiles = await res.json();
   return data.files;
 }
 
-export interface BrowseEntry {
-  name: string;
-  path: string;
-  type: "directory" | "audio" | "midi" | "lighting" | "other";
-  is_dir: boolean;
-}
-
-export interface BrowseResult {
-  path: string;
-  root: string;
-  entries: BrowseEntry[];
-}
-
-export async function browseDirectory(path?: string): Promise<BrowseResult> {
+export async function browseDirectory(path?: string): Promise<Browse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   const res = await get(`/browse${query}`);
   if (!res.ok) {
@@ -149,15 +136,7 @@ export async function createSongInDirectory(
   return post("/browse/create-song", JSON.stringify({ path: dirPath, name }));
 }
 
-export interface BulkImportResult {
-  created: string[];
-  skipped: string[];
-  failed: { name: string; error: string }[];
-}
-
-export async function bulkImportSongs(
-  dirPath: string,
-): Promise<BulkImportResult> {
+export async function bulkImportSongs(dirPath: string): Promise<BulkImport> {
   const res = await post(
     "/browse/bulk-import",
     JSON.stringify({ path: dirPath }),

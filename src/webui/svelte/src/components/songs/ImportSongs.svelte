@@ -19,9 +19,8 @@
     browseDirectory,
     createSongInDirectory,
     bulkImportSongs,
-    type BrowseEntry,
-    type BulkImportResult,
   } from "../../lib/api/songs";
+  import type { BrowseEntry, BulkImport } from "../../gen/rules/mtrack_rules";
 
   interface Props {
     onimported: () => void;
@@ -48,7 +47,7 @@
 
   // Bulk import state
   let bulkImporting = $state(false);
-  let bulkResult = $state<BulkImportResult | null>(null);
+  let bulkResult = $state<BulkImport | null>(null);
   let bulkError = $state("");
 
   async function navigate(path?: string) {

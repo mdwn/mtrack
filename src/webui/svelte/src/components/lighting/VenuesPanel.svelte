@@ -158,7 +158,8 @@
 
   async function loadFixtureTypes() {
     try {
-      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined)).fixtureTypes;
+      fixtureTypes = (await fetchFixtureTypes(ftDir || undefined))
+        .fixture_types;
     } catch {
       // The dropdown falls back to a text input when no types are listed.
     }
@@ -171,8 +172,8 @@
     try {
       const result = await fetchVenues(venueDir || undefined);
       venues = result.venues;
-      venueVersions = result.versions;
-      venueFileErrors = result.errors;
+      venueVersions = result.versions ?? {};
+      venueFileErrors = result.errors ?? [];
     } catch (e: any) {
       venueError = e.message;
     } finally {

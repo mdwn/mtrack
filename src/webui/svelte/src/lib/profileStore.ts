@@ -36,8 +36,8 @@ import {
   saveProfileFile,
   updateProfile,
   type ProfileDraft,
-  type ProfileFileInfo,
 } from "./api/config";
+import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
 import { get } from "./api/rest";
 import { reloadNotice, type ReloadNotice } from "./configReload";
 

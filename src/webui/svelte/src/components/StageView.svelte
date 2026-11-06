@@ -328,7 +328,7 @@
     if (!viewingFile) return;
     void $fixtureTypeChanges;
     fetchFixtureTypes(fixtureTypesDir || undefined)
-      .then((r) => (fileTypes = r.fixtureTypes))
+      .then((r) => (fileTypes = r.fixture_types))
       .catch(() => {
         // Without types every fixture counts as fixed.
       });

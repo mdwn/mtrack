@@ -86,3 +86,67 @@ pub enum TempoGuessSource {
     /// The click track's beat grid.
     BeatGrid,
 }
+
+/// `GET /api/songs/:name/files`: the files in a song's directory, by name.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SongFiles {
+    pub files: Vec<SongFile>,
+}
+
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SongFile {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: FileKind,
+}
+
+/// What a file is to the player, by its extension.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    Directory,
+    Audio,
+    Midi,
+    Lighting,
+    Other,
+}
+
+/// `GET /api/browse`: a directory under the config root, directories first.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Browse {
+    /// Relative to `root`.
+    pub path: String,
+    pub root: String,
+    pub entries: Vec<BrowseEntry>,
+}
+
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: FileKind,
+    pub is_dir: bool,
+}
+
+/// `POST /api/browse/bulk-import`: the songs made, by directory.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct BulkImport {
+    pub created: Vec<String>,
+    /// Directories that already have a `song.yaml`.
+    pub skipped: Vec<String>,
+    pub failed: Vec<ImportFailure>,
+}
+
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ImportFailure {
+    pub name: String,
+    pub error: String,
+}

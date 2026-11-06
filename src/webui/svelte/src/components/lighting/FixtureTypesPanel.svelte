@@ -183,7 +183,7 @@ fixture_type "Name" {
         ftDir || undefined,
         venuesDir || undefined,
       );
-      fixtureTypes = result.fixtureTypes;
+      fixtureTypes = result.fixture_types;
       ftFileErrors = result.errors;
     } catch (e: any) {
       ftError = e.message;

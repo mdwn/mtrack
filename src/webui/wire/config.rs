@@ -61,3 +61,57 @@ pub struct ConfigReload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub awaits_process: Option<String>,
 }
+
+/// A config or profile file saved or deleted, with what became of the
+/// hardware reload.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FileSaved {
+    /// `saved` or `deleted`.
+    pub status: String,
+    /// The profile file, by name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// A profile file's new version, sent back as `If-Match`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(flatten)]
+    pub reload: ConfigReload,
+}
+
+/// `GET /api/profiles`: a profile file, and the sections it has.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ProfileFileInfo {
+    pub filename: String,
+    pub hostname: Option<String>,
+    pub has_audio: bool,
+    pub has_midi: bool,
+    pub has_dmx: bool,
+    pub has_trigger: bool,
+    pub has_controllers: bool,
+}
+
+/// `GET /api/profiles/{name}`: a profile file, read and as written.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ProfileFile {
+    /// The profile as a JSON value, so its f32s are widened as the JSON has
+    /// always carried them.
+    #[cfg_attr(feature = "tsify", tsify(type = "Profile"))]
+    pub profile: serde_json::Value,
+    pub yaml: String,
+    /// Sent back as `If-Match`.
+    pub version: String,
+}
+
+/// `PUT /api/samples/upload/{name}`: where the sample was stored.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SampleUploaded {
+    /// Always `uploaded`.
+    pub status: String,
+    pub file: String,
+    /// Relative to the project, as a sample definition names it.
+    pub path: String,
+}

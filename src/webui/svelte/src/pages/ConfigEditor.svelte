@@ -33,9 +33,9 @@
     deleteProfileFile,
     ConflictError,
     type ProfileDraft,
-    type ProfileFileInfo,
     uploadSampleFile,
   } from "../lib/api/config";
+  import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
