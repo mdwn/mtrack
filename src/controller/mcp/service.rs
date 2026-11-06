@@ -541,7 +541,7 @@ impl McpServer {
     pub fn new(player: Arc<Player>) -> Self {
         Self {
             player,
-            tool_router: Self::tool_router(),
+            tool_router: Self::router(),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -966,8 +966,7 @@ impl McpServer {
 
     #[tool(
         description = "Replace the entire `controllers` list. Pass an array of \
-        controller definitions, each tagged with a `kind` discriminator \
-        (`grpc`, `mcp`, `midi`, `multi`, `osc`)."
+        controller definitions, each tagged with a `kind` discriminator."
     )]
     async fn update_controllers(
         &self,
@@ -4284,43 +4283,68 @@ pub(crate) async fn staged_write_string(
     })
 }
 
+impl McpServer {
+    /// The tools, with the descriptions built from the player's own lists:
+    /// `update_controllers` names the kinds [`crate::config::ControllerKind`]
+    /// has.
+    fn router() -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if let Some(route) = router.map.get_mut("update_controllers") {
+            let description = format!(
+                "{} Kinds: {}.",
+                route.attr.description.as_deref().unwrap_or_default(),
+                crate::config::ControllerKind::names()
+            );
+            route.attr.description = Some(description.into());
+        }
+        router
+    }
+}
+
 #[cfg(test)]
 mod update_controllers_description_tests {
-    use crate::config::Controller;
+    use crate::config::{Controller, ControllerKind};
+    use strum::VariantArray;
 
-    /// The kind each controller is tagged with. Exhaustive, so a new kind
-    /// fails to compile here until it is named, and then the test below
-    /// fails until the tool's description names it too.
-    fn kind(controller: &Controller) -> &'static str {
-        match controller {
-            Controller::Grpc(_) => "grpc",
-            Controller::Mcp(_) => "mcp",
-            Controller::Midi(_) => "midi",
-            Controller::Multi(_) => "multi",
-            Controller::Osc(_) => "osc",
+    /// A controller of each kind. The match is exhaustive, so a new kind
+    /// needs a sample here before this compiles.
+    fn sample(kind: ControllerKind) -> Controller {
+        match kind {
+            ControllerKind::Grpc => Controller::Grpc(crate::config::GrpcController::new(1)),
+            ControllerKind::Mcp => Controller::Mcp(crate::config::McpController::new(1)),
+            ControllerKind::Midi => {
+                let event = || crate::config::midi::note_on(1, 0, 127);
+                Controller::Midi(crate::config::MidiController::new(
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                ))
+            }
+            ControllerKind::Multi => Controller::Multi(Default::default()),
+            ControllerKind::Osc => Controller::Osc(Box::default()),
         }
     }
 
     #[test]
-    fn the_description_names_every_controller_kind() {
-        let router = super::McpServer::tool_router();
+    fn the_description_names_every_controller_kind_by_its_tag() {
+        let router = super::McpServer::router();
         let description = router
             .get("update_controllers")
             .and_then(|tool| tool.description.clone())
             .expect("update_controllers has a description");
-        let samples = [
-            Controller::Grpc(crate::config::GrpcController::new(1)),
-            Controller::Mcp(crate::config::McpController::new(1)),
-            Controller::Multi(Default::default()),
-            Controller::Osc(Box::default()),
-        ];
-        for controller in &samples {
-            // The name matches the tag serde writes.
-            let tagged = serde_json::to_value(controller).unwrap();
-            assert_eq!(tagged["kind"], kind(controller));
-        }
-        for name in ["grpc", "mcp", "midi", "multi", "osc"] {
-            assert!(description.contains(&format!("`{name}`")), "{name}");
+        for &kind in ControllerKind::VARIANTS {
+            let controller = sample(kind);
+            assert_eq!(controller.kind(), kind);
+            // The name is the tag serde writes.
+            let tagged = serde_json::to_value(&controller).unwrap();
+            assert_eq!(tagged["kind"], kind.name());
+            assert!(
+                description.contains(&format!("`{}`", kind.name())),
+                "{description}"
+            );
         }
     }
 }

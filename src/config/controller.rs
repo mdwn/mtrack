@@ -110,6 +110,52 @@ pub enum Controller {
     Osc(Box<OscController>),
 }
 
+/// The kind of a [`Controller`], as its `kind` tag names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
+pub enum ControllerKind {
+    Grpc,
+    Mcp,
+    Midi,
+    Multi,
+    Osc,
+}
+
+impl ControllerKind {
+    /// The `kind` tag, as serde writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ControllerKind::Grpc => "grpc",
+            ControllerKind::Mcp => "mcp",
+            ControllerKind::Midi => "midi",
+            ControllerKind::Multi => "multi",
+            ControllerKind::Osc => "osc",
+        }
+    }
+
+    /// Every kind's tag, as a sentence lists them: `` `grpc`, `mcp` ``….
+    pub fn names() -> String {
+        use strum::VariantArray;
+        ControllerKind::VARIANTS
+            .iter()
+            .map(|kind| format!("`{}`", kind.name()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl Controller {
+    /// The controller's kind.
+    pub fn kind(&self) -> ControllerKind {
+        match self {
+            Controller::Grpc(_) => ControllerKind::Grpc,
+            Controller::Mcp(_) => ControllerKind::Mcp,
+            Controller::Midi(_) => ControllerKind::Midi,
+            Controller::Multi(_) => ControllerKind::Multi,
+            Controller::Osc(_) => ControllerKind::Osc,
+        }
+    }
+}
+
 /// The configuration that maps MIDI events to controller messages.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Deserialize, Serialize, Clone)]

@@ -46,6 +46,7 @@ pub mod trigger;
 
 pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
 pub use self::controller::Controller;
+pub use self::controller::ControllerKind;
 pub use self::controller::CustomModel;
 pub use self::controller::GrpcController;
 pub use self::controller::McpController;
