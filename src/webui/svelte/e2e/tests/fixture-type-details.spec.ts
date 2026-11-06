@@ -118,11 +118,13 @@ test.describe("Fixture type details (GDTF)", () => {
       "Used by Solo in club.",
     );
     await expect(page.getByTestId("ft-viewer-mode")).toHaveText("1: RGB");
-    // What a show can do is the picker's words: this mode has no strobe,
-    // and says which mode does.
-    await expect(page.getByTestId("ft-details-mode-detail")).toContainText(
-      'Strobe — the mode "8: RGBS" has it',
-    );
+    // What a show can do is the player's rule (`Want::met_by`): with no
+    // dimmer or strobe channel, the mode is dimmed and strobed through its
+    // colour, so it lacks nothing the other mode has.
+    const detail = page.getByTestId("ft-details-mode-detail");
+    await expect(detail).toContainText("Dim, through colour");
+    await expect(detail).toContainText("Strobe");
+    await expect(detail).not.toContainText("has it");
     // The in-use pills stay where they are, whichever is being looked at.
     await expect(
       modes

@@ -14,6 +14,8 @@
 
 use std::time::Duration;
 
+use crate::position::duration_from_secs_saturating;
+
 /// Default BPM used when no tempo map is available.
 pub const DEFAULT_BPM: f64 = 120.0;
 
@@ -350,12 +352,6 @@ fn segment_beats_in_secs(ramp: Option<&SegmentRamp>, bpm: f64, secs: f64) -> f64
     }
 }
 
-/// A span in seconds as a `Duration`: none for a negative (or NaN) span, the
-/// longest there is for one too long to hold.
-fn duration_from_secs(secs: f64) -> Duration {
-    Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX)
-}
-
 /// A beat position rounded to a millionth of a beat.
 ///
 /// Times are whole nanoseconds, so a position read back from a time carries
@@ -497,7 +493,8 @@ impl SegmentState {
                 let secs = segment_secs_for_beats(self.ramp.as_ref(), self.bpm, beats - self.beats);
                 (
                     beats,
-                    self.time.saturating_add(duration_from_secs(secs)),
+                    self.time
+                        .saturating_add(duration_from_secs_saturating(secs)),
                     secs,
                 )
             }
@@ -535,7 +532,7 @@ impl SegmentState {
     /// The time of a beat position at or past this state's, before the next.
     fn time_at(&self, beats: f64) -> Duration {
         self.time
-            .saturating_add(duration_from_secs(segment_secs_for_beats(
+            .saturating_add(duration_from_secs_saturating(segment_secs_for_beats(
                 self.ramp.as_ref(),
                 self.bpm,
                 beats - self.beats,
@@ -800,7 +797,10 @@ impl Segments {
         if beats < 0.0 {
             return bar_one
                 .time
-                .saturating_sub(duration_from_secs(steady_secs(bar_one.bpm, -beats)));
+                .saturating_sub(duration_from_secs_saturating(steady_secs(
+                    bar_one.bpm,
+                    -beats,
+                )));
         }
         let past = self.states[1..]
             .iter()
@@ -1090,9 +1090,9 @@ impl TempoMap {
         // Its end, reached through the time's nanoseconds, is not in it.
         (ramp.total_secs - elapsed > 1e-9).then(|| {
             (
-                state
-                    .time
-                    .saturating_add(duration_from_secs(ramp.total_secs - ramp.elapsed_secs)),
+                state.time.saturating_add(duration_from_secs_saturating(
+                    ramp.total_secs - ramp.elapsed_secs,
+                )),
                 ramp.new_bpm,
             )
         })

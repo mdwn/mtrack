@@ -86,7 +86,6 @@ config = "0.15.19"
 cpal = "0.18.1"
 rayon = "1.11.0"
 num_cpus = "1.17.0"
-duration-string = "0.5.3"
 # Every variant of a config enum, for the web UI's selects (`VariantArray`).
 strum = { version = "0.28", features = ["derive"] }
 symphonia = { version = "0.6", features = ["all"] }

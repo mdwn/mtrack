@@ -1960,3 +1960,47 @@ show "Show" {
     assert_eq!(last.time, Duration::from_secs(20));
     assert_eq!(last.effects[0].tempo_offset_secs, 4.0);
 }
+
+/// A count past `loop`'s practical infinity plays as `loop` does, on every
+/// target, a sequence reference's and an inline loop's alike: 10,000
+/// passes, not every pass written (which never finishes laying out).
+#[test]
+fn a_count_past_loops_passes_lays_as_many_as_loop() {
+    let shows = parse_light_shows(
+        r#"
+sequence "beat" {
+    @0.000
+    front_wash: static color: "red", duration: 1s
+}
+
+show "Reference" {
+    @0.000
+    sequence "beat", loop: 5000000000
+}
+
+show "Loop" {
+    @0.000
+    sequence "beat", loop: loop
+}
+
+show "Inline" {
+    @0.000
+    loop {
+        @0.000
+        front_wash: static color: "red", duration: 1s
+    }, repeats: 5000000000
+}
+
+show "Exact" {
+    @0.000
+    sequence "beat", loop: 10000
+}
+"#,
+    )
+    .unwrap();
+    let loop_passes = shows["Loop"].cues.len();
+    assert_eq!(loop_passes, 10_000);
+    for name in ["Reference", "Inline", "Exact"] {
+        assert_eq!(shows[name].cues.len(), loop_passes, "{name}");
+    }
+}

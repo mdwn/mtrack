@@ -17,21 +17,24 @@
 
 use std::time::Duration;
 
-/// A duration as a config string (`500ms`, `2s`): the one parse of one,
-/// for every field that takes one. The error is the parser's; a validator
-/// words its own.
-pub(crate) fn parse_duration_string(raw: &str) -> Result<Duration, duration_string::Error> {
-    duration_string::DurationString::from_string(raw.to_string()).map(Duration::from)
-}
-
-/// Parses an optional duration string (e.g. "500ms") into a `Duration`,
-/// returning `default` when `raw` is `None`.
+/// Parses an optional duration string (e.g. "500ms") by the config's clock
+/// ([`super::length::parse_clock`]) into a `Duration`, returning `default`
+/// when `raw` is `None`.
 pub(crate) fn parse_playback_delay(
     raw: &Option<String>,
     default: Duration,
 ) -> Result<Duration, Box<dyn std::error::Error>> {
     match raw {
-        Some(s) => Ok(parse_duration_string(s)?),
+        Some(s) => super::length::parse_clock(s)
+            .ok_or_else(|| format!("playback_delay '{s}' is not a valid duration").into()),
         None => Ok(default),
     }
+}
+
+/// Why `section`'s `playback_delay` is refused, `None` when it is unset or
+/// reads: the one check, for each section that takes one.
+pub(crate) fn playback_delay_problem(section: &str, raw: &Option<String>) -> Option<String> {
+    raw.as_deref()
+        .filter(|delay| super::length::parse_clock(delay).is_none())
+        .map(|delay| format!("{section} playback_delay '{delay}' is not a valid duration"))
 }

@@ -57,6 +57,9 @@ test.describe("entrySummary", () => {
     expect(entrySummary({ autoPlay: "0h" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "500ms" }, tr)).toBe("0.5s gap");
     expect(entrySummary({ autoPlay: "2m" }, tr)).toBe("120s gap");
+    // The clock reads decimals, and the gap is shown as the player writes it.
+    expect(entrySummary({ autoPlay: "1.5s" }, tr)).toBe("1.5s gap");
+    expect(entrySummary({ autoPlay: "1234ms" }, tr)).toBe("1.234s gap");
     // Read as the player's deserializer reads text: `true` is at once and
     // `false` off, neither a gap; a number with no unit is refused.
     expect(entrySummary({ autoPlay: "true" }, tr)).toBe("");

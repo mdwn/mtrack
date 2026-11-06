@@ -364,7 +364,7 @@ fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wir
         breaks_loop: Some(false),
         fade_out: Some(None),
         fade_in: Some(None),
-        auto_play_ms: Some(gap.map(|gap| gap.as_millis() as u64)),
+        auto_play_ms: Some(gap.map(|gap| gap.as_secs_f64() * 1000.0)),
         ..Default::default()
     })
 }
@@ -1329,7 +1329,7 @@ metronome: {}
         // Stopped, Next reaches the song, which starts after its gap.
         let next = next_json(&pl, false);
         assert_eq!(next["breaks_loop"], false);
-        assert_eq!(next["auto_play_ms"], 2000);
+        assert_eq!(next["auto_play_ms"].as_f64(), Some(2000.0));
 
         pl.next();
         let next = next_json(&pl, true);

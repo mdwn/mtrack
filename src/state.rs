@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::channels::dmx_byte;
+use crate::lighting::channels::{dmx_byte, fine_name, mirror_name};
 use crate::lighting::effects::{is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
@@ -126,7 +126,7 @@ pub(crate) fn apply_test_overlay(
                 covered.push((channel.clone(), b));
             }
             if let Some(b) = def.fine.and_then(at) {
-                covered.push((format!("{channel}_fine"), b));
+                covered.push((fine_name(channel), b));
             }
             for ((mirror, coarse), fine) in mirror_sections(channel, def) {
                 if let Some(b) = at(coarse) {
@@ -531,8 +531,8 @@ fn mirror_sections<'a>(
         .map(move |(i, &(coarse, fine))| {
             let n = i + 2;
             (
-                (format!("{channel}#{n}"), coarse),
-                fine.map(|fine| (format!("{channel}_fine#{n}"), fine)),
+                (mirror_name(channel, n), coarse),
+                fine.map(|fine| (mirror_name(&fine_name(channel), n), fine)),
             )
         })
 }
@@ -564,7 +564,7 @@ fn attach_mirrors(
             let Some(&coarse) = snapshot.channels.get(name) else {
                 continue;
             };
-            let fine = snapshot.channels.get(&format!("{name}_fine")).copied();
+            let fine = snapshot.channels.get(&fine_name(name)).copied();
             for ((mirror, _), mirror_fine) in mirror_sections(name, def) {
                 extra.push((mirror, coarse));
                 if let (Some(fine), Some((mirror_fine, _))) = (fine, mirror_fine) {
@@ -607,7 +607,7 @@ fn attach_pointing(
                 if offset == def.offset {
                     snapshot.channels.insert(channel.to_string(), byte);
                 } else if Some(offset) == def.fine {
-                    snapshot.channels.insert(format!("{channel}_fine"), byte);
+                    snapshot.channels.insert(fine_name(channel), byte);
                 }
             }
         }

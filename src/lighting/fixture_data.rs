@@ -22,6 +22,16 @@ use serde::{Deserialize, Serialize};
 
 use super::geometry::Vec3;
 
+/// The widest beam angle a venue fixture is given, in degrees.
+pub const MAX_BEAM_ANGLE: f64 = 180.0;
+
+/// Whether `degrees` is a venue fixture's beam angle: greater than 0 and
+/// at most [`MAX_BEAM_ANGLE`]. The one check, for the venue file, the API
+/// and the web UI.
+pub fn beam_angle_valid(degrees: f64) -> bool {
+    degrees > 0.0 && degrees <= MAX_BEAM_ANGLE
+}
+
 /// The physical unit a channel value or range is expressed in.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,8 +267,8 @@ pub struct Fixture {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) mode: Option<String>,
 
-    /// The beam angle this unit actually has on stage, in degrees, greater
-    /// than 0 and at most 180: a diffuser or filter fitted to it makes it
+    /// The beam angle this unit actually has on stage, in degrees
+    /// ([`beam_angle_valid`]): a diffuser or filter fitted to it makes it
     /// wider than its type says. A drawing hint for the web UI's 3D view;
     /// nothing in the engine reads it. `None` means the type's own angle.
     #[serde(skip_serializing_if = "Option::is_none")]

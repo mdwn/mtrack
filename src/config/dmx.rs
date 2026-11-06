@@ -150,14 +150,7 @@ impl Dmx {
                 errors.push("dmx dim_speed_modifier must be greater than 0".to_string());
             }
         }
-        if let Some(ref delay) = self.playback_delay {
-            if super::parse_duration_string(delay).is_err() {
-                errors.push(format!(
-                    "dmx playback_delay '{}' is not a valid duration",
-                    delay
-                ));
-            }
-        }
+        errors.extend(super::playback_delay_problem("dmx", &self.playback_delay));
         for (i, universe) in self.universes.iter().enumerate() {
             if universe.name.trim().is_empty() {
                 errors.push(format!("dmx universe[{}]: name must not be empty", i));

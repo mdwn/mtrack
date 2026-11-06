@@ -1,4 +1,5 @@
-import type { GdtfMode } from "../../gen/rules/mtrack_rules";
+import type { GdtfMode, Want } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
 // Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -47,11 +48,13 @@ function hz(value: number): string {
 /** What a show can do in this mode, in the order the panel lists it. */
 export function abilities(mode: GdtfMode): Ability[] {
   const caps = new Set(mode.capabilities ?? []);
+  const wants = new Set(mode.wants ?? []);
   const out: Ability[] = [];
   if (caps.has("color")) out.push({ key: "color" });
   if (caps.has("dimmer")) out.push({ key: "dimmer" });
-  // No dimmer channel, but the colour can be dimmed by mixing less of it.
-  else if (caps.has("color")) out.push({ key: "dimmerThroughColor" });
+  // No dimmer channel, but the player dims it all the same: through its
+  // colour, by mixing less of it.
+  else if (wants.has("dimmer")) out.push({ key: "dimmerThroughColor" });
   if (caps.has("strobe")) {
     const range = mode.strobe_range;
     if (range && range.min_hz != null) {
@@ -68,7 +71,8 @@ export function abilities(mode: GdtfMode): Ability[] {
   if (caps.has("pan_tilt")) out.push({ key: "move" });
   if ((mode.cells ?? 0) > 0)
     out.push({ key: "cells", params: { count: mode.cells ?? 0 } });
-  if (caps.has("color_wheel") && !caps.has("color")) out.push({ key: "wheel" });
+  // The player names a wheel only on a fixture without colour mixing.
+  if (caps.has("color_wheel")) out.push({ key: "wheel" });
   return out;
 }
 
@@ -83,31 +87,19 @@ export function extras(mode: GdtfMode): string[] {
 /** What a mode lacks that another mode of the archive has. */
 export interface Missing {
   /** The suffix of the `lighting.gdtf.missing.*` message. */
-  what: "color" | "dimmer" | "strobe" | "move" | "cells";
+  what: Want;
   /** A mode that has it. */
   mode: string;
 }
 
-/** The abilities this mode lacks that some other offered mode has, each with
- *  the first such mode. Dimming is not lacking while colour can dim it. */
+/** What a show can ask that this mode cannot do and some other offered
+ *  mode can (the player's `Want::met_by`, as `wants`), each with the
+ *  first such mode, in the order the player lists them. */
 export function missingHere(mode: GdtfMode, all: GdtfMode[]): Missing[] {
-  const has = (m: GdtfMode, what: Missing["what"]): boolean => {
-    const caps = new Set(m.capabilities ?? []);
-    switch (what) {
-      case "color":
-        return caps.has("color");
-      case "dimmer":
-        return caps.has("dimmer") || caps.has("color");
-      case "strobe":
-        return caps.has("strobe");
-      case "move":
-        return caps.has("pan_tilt");
-      case "cells":
-        return (m.cells ?? 0) > 0;
-    }
-  };
+  const has = (m: GdtfMode, what: Want): boolean =>
+    (m.wants ?? []).includes(what);
   const out: Missing[] = [];
-  for (const what of ["color", "dimmer", "strobe", "move", "cells"] as const) {
+  for (const what of rules.wants()) {
     if (has(mode, what)) continue;
     const other = all.find(
       (m) => m.name !== mode.name && !isRefused(m) && has(m, what),
