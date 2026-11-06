@@ -55,7 +55,7 @@ pub use crate::lighting::mvr_types::{
     HandEdit, MvrImport, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
     RemovedFixture,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -485,7 +485,7 @@ fn plan(
     // fixture it already is; a new one is named from its GDTF, and a name
     // another fixture has is pinned with a record as `Name (stem)`.
     let fixture_dir = project.join(&options.fixture_types_dir);
-    let mut claimed: HashSet<String> = HashSet::new();
+    let mut claimed = super::Claimed::default();
     let mut type_names: HashMap<String, String> = HashMap::new();
     let mut fixture_types = Vec::new();
     let mut gdtf_writes = Vec::new();

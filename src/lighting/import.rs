@@ -230,9 +230,17 @@ pub struct LibraryEntry {
     pub renamed_from: Option<String>,
 }
 
+/// What a batch of imports (an MVR with several GDTFs) already gave out:
+/// fixture type names, and the stems of the record files it will write.
+#[derive(Debug, Default)]
+pub struct Claimed {
+    pub names: HashSet<String>,
+    pub record_stems: HashSet<String>,
+}
+
 /// Works out where an archive goes and what it is called, writing nothing.
-/// `claimed` holds names this batch already gave out (an MVR with several
-/// GDTFs), and gains this one.
+/// `claimed` holds what this batch already gave out (an MVR with several
+/// GDTFs), and gains this one's name and record stem.
 pub fn place_in_library(
     project: &Path,
     fixture_dir: &Path,
@@ -240,7 +248,7 @@ pub fn place_in_library(
     bytes: &[u8],
     description: &gdtf::Description,
     name: Option<&str>,
-    claimed: &mut HashSet<String>,
+    claimed: &mut Claimed,
 ) -> Result<LibraryEntry, Box<dyn Error>> {
     if Path::new(arrival_file_name).file_name() != Some(std::ffi::OsStr::new(arrival_file_name)) {
         return Err(
@@ -271,7 +279,7 @@ pub fn place_in_library(
         });
         if let Some(current) = current {
             if name.is_none_or(|name| name == current) {
-                claimed.insert(current.clone());
+                claimed.names.insert(current.clone());
                 return Ok(LibraryEntry {
                     name: current,
                     archive,
@@ -321,9 +329,9 @@ pub fn place_in_library(
         }
     };
     let archive = rel(&file_name);
-    let taken = |candidate: &str, claimed: &HashSet<String>| {
+    let taken = |candidate: &str, claimed: &Claimed| {
         records.contains_key(candidate)
-            || claimed.contains(candidate)
+            || claimed.names.contains(candidate)
             || library
                 .types
                 .iter()
@@ -388,13 +396,14 @@ pub fn place_in_library(
         }
         // A new record is named as the web UI names a new type's file
         // (`project_files::new_file_stem`): past a file at its stem that
-        // holds other types.
+        // holds other types, and past the records this batch will write.
         let stem = super::project_files::new_file_stem(
             fixture_dir,
             &type_name,
             super::project_files::FIXTURE_TYPE_EXTENSIONS,
-            &|_| false,
+            &|stem| claimed.record_stems.contains(stem),
         );
+        claimed.record_stems.insert(stem.clone());
         let dir_rel = fixture_dir
             .strip_prefix(project)
             .map(|p| p.to_string_lossy().into_owned())
@@ -403,7 +412,7 @@ pub fn place_in_library(
     } else {
         None
     };
-    claimed.insert(type_name.clone());
+    claimed.names.insert(type_name.clone());
     Ok(LibraryEntry {
         name: type_name,
         archive,
@@ -463,7 +472,7 @@ pub fn import_gdtf_bytes(
         bytes,
         &description,
         name,
-        &mut HashSet::new(),
+        &mut Claimed::default(),
     )?;
     let already_imported = entry.existing && entry.record.is_none();
     if !already_imported {
@@ -725,6 +734,40 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(project.join(TYPES).join("robe_esprite.fixture")).unwrap(),
             broken
+        );
+    }
+
+    /// One batch's records never share a file: "Par", "par a" and "par_a"
+    /// are `par`, `par_a` and `par_a_2`, though two share a stem.
+    #[test]
+    fn a_batch_names_each_record_a_file_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let fixture_dir = project.join(TYPES);
+        let mut claimed = Claimed::default();
+        let mut records = Vec::new();
+        for (file, name) in [("a.gdtf", "Par"), ("b.gdtf", "par a"), ("c.gdtf", "par_a")] {
+            let bytes = synthetic_bytes(&format!("Brick {file}"));
+            let description = crate::lighting::gdtf::parse_archive(&bytes).unwrap();
+            let entry = place_in_library(
+                &project,
+                &fixture_dir,
+                file,
+                &bytes,
+                &description,
+                Some(name),
+                &mut claimed,
+            )
+            .unwrap();
+            records.push(entry.record.expect("a named import is recorded"));
+        }
+        assert_eq!(
+            records,
+            [
+                format!("{TYPES}/par.fixture"),
+                format!("{TYPES}/par_a.fixture"),
+                format!("{TYPES}/par_a_2.fixture"),
+            ]
         );
     }
 
