@@ -30,19 +30,27 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         .unwrap_or("<non-string panic payload>")
 }
 
-/// The files directly in `dir` named `<stem>.<extension>` for one of
-/// `extensions`, the extension in any case (`songs::extension_of`): the
-/// forms one name can take, the one that names it first. That is the one
-/// spelled in lowercase (`Set.yaml` before `Set.YAML`, as when only the
-/// lowercase spelling was read), then by `extensions`' order, then by path,
-/// so the answer is the same however the directory lists its files.
+/// The lighting files directly in `dir` named `<stem>.<extension>` for one
+/// of `extensions`, stem and extension in any case (`songs::extension_of`):
+/// the files one name can take. A file's case is the filesystem's business
+/// (`Par.light` and `par.light` are one file on macOS), so a name's file is
+/// found however it is spelled. In order: an extension spelled lowercase
+/// first, then by `extensions`' order, then by path, so the answer is the
+/// same however the directory lists its files.
 pub fn files_at_stem(dir: &Path, stem: &str, extensions: &[&str]) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
+    let stem = stem.to_lowercase();
     let mut found: Vec<((bool, usize), PathBuf)> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|path| path.is_file() && path.file_stem().is_some_and(|s| s == stem))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.to_lowercase() == stem)
+        })
         .filter_map(|path| {
             let extension = crate::songs::extension_of(&path)?;
             let rank = extensions.iter().position(|e| *e == extension)?;

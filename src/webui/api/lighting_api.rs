@@ -7026,6 +7026,46 @@ show "test" {
         }
     }
 
+    /// A type's stem is found in any case: `Par` (stem `par`) beside a
+    /// `Par.light` holding Spot is refused, as raw text and from the form,
+    /// rather than written beside it, which on a filesystem that ignores
+    /// case would be into it.
+    #[tokio::test]
+    async fn a_new_type_finds_its_stem_in_any_case() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_stem_case");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("Par.light"), sample_fixture_type_dsl("Spot")).unwrap();
+
+        let form = serde_json::json!({"channels": {"red": 1}});
+        for (content_type, body) in [
+            ("text/plain", Body::from(sample_fixture_type_dsl("Par"))),
+            (
+                "application/json",
+                Body::from(serde_json::to_vec(&form).unwrap()),
+            ),
+        ] {
+            let (status, parsed) = fixture_type_request(
+                state.clone(),
+                "PUT",
+                "/lighting/fixture-types/Par?dir=ft_stem_case".to_string(),
+                content_type,
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{content_type}: {parsed}");
+        }
+        let names: Vec<String> = std::fs::read_dir(&ft_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Par.light"]);
+        assert_eq!(
+            std::fs::read_to_string(ft_dir.join("Par.light")).unwrap(),
+            sample_fixture_type_dsl("Spot")
+        );
+    }
+
     /// A form already at the stem in another spelling is written in place,
     /// not beside it and then retired: on a filesystem that ignores case
     /// `Par.fixture` would be that very file, and the save would be lost.
