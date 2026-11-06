@@ -354,7 +354,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
-  directory it cannot read is still that 500. A link in these directories is followed only to
+  directory it cannot read or reach is still that 500. A link in these directories is followed only to
   what is inside the directory: a linked subdirectory or file leading out of it, or a link to
   nothing, is no longer listed (MCP `list_venue_files` showed `linked/secret.venue`, which its
   read refused) nor loaded as venues or fixture types.

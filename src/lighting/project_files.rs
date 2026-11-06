@@ -55,7 +55,9 @@ pub const VENUE_EXTENSIONS: &[&str] = &["venue", "light"];
 ///   with a warning.
 pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathBuf>> {
     use crate::webui::safe_path::{SafePath, VerifiedRoot};
-    if !dir.exists() {
+    // Not `exists`, which says no to a directory it cannot reach: only one
+    // that is not there has no files.
+    if !dir.try_exists()? {
         return Ok(Vec::new());
     }
     let entries = std::fs::read_dir(dir)?;
@@ -329,6 +331,13 @@ mod tests {
 
         assert_eq!(below.unwrap(), [dir.path().join("a.venue")]);
         assert!(root.is_err());
+
+        // A directory inside one that cannot be searched is not missing.
+        std::fs::create_dir(sub.join("inner")).unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreachable = files_under(&sub.join("inner"), VENUE_EXTENSIONS);
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(unreachable.is_err());
         assert!(files_under(&dir.path().join("none"), VENUE_EXTENSIONS)
             .unwrap()
             .is_empty());
