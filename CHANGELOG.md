@@ -395,31 +395,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finds the file a venue or fixture type lives in, or would be written to, and one rule decides
   whether a save or delete may act on it, in the web UI and the MVR and GDTF imports alike. The
   file is the one at any depth that declares the name, else a file at the name's stem (in any
-  case) that does not read, else a file elsewhere that does not read but opens a block for the
-  name (as an older file name left it: `club_2.venue` for "Club-2"). It may be acted on only when
-  it declares the name. A file at the stem that reads and holds another venue or type is not the
-  name's, and is left as it is: a new venue or type is written to a file of its own past it
-  (`club_2.light`), where a venue saved as text over a `club.venue` holding `Other` replaced it.
-  Names that share a stem ("Club (Main)" and "Club Main") likewise get files of their own. A file
-  that does not read (a half-edited `par.light`) is refused, and the web UI says so, "par.light
-  doesn't read: ... Replace it?" (or "Remove it?" for a delete), naming each broken file the
-  request would act on by its path in the directory (`a/club.light`); confirmed, the request is
+  case) that does not read, else a file elsewhere that does not read but seems to open a block for
+  the name (as an older file name left it: `club_2.venue` for "Club-2"). A file that reads and
+  holds other venues or types is never written over or removed: one at the stem is not the
+  name's, and a new venue or type is written to a file of its own past it (`club_2.light`), where
+  a venue saved as text over a `club.venue` holding `Other` replaced it. Names that share a stem
+  ("Club (Main)" and "Club Main") likewise get files of their own. A file that does not read (a
+  half-edited `par.light`) is never edited in place: the save or delete is refused, and the web UI
+  says so, "par.light doesn't read: ... Replace it?" (or "Remove it?" for a delete), naming each
+  broken file the request would act on by its path in the directory (`a/club.light`), and the
+  other named blocks it may hold, as far as a file that does not parse can be read ("It may also
+  hold: venue Arena. The old file is kept as a backup either way."). Confirmed, the request is
   sent again with one `?replace_broken=a/club.light` parameter per file, as written, which lets the
   save replace, or the delete remove, exactly those broken files, never one that reads, nor a
-  namesake in another subdirectory. A broken file that also opens blocks for other names (a
-  broken `tour/all.light` holding Club and Arena) is refused with 409 naming them, and nothing is
-  offered: replacing it would lose them. A replaced or removed broken file is never lost: it is
-  first moved aside beside itself as `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC), which no loader
-  reads, and the reply and the web UI say "The old file was kept as …". The blocks a broken file
-  opens are found however they are written (`venue  "Arena"`, a newline or comment before the
-  name, several on one line, any block the grammar allows: `show`, `sequence`, `tempo`, `include`
-  as well), and in a file that is not UTF-8 too. A broken file at the name's stem that opens only
-  other names' blocks is theirs: "Club Main" beside a broken `club_main.light` holding only "Club
-  (Main)" is saved to `club_main_2.light`. An MVR import whose GDTFs share a file stem ("Par", "par
-  a", "par_a") writes each record to a file of its own (`par`, `par_a`, `par_a_2`); the last
-  overwrote another's. A name with no letters or digits (`!!!`, `★`) is written
-  as `untitled.light`, not a hidden `.light`, and no lighting file is ever written under a hidden
-  name. A fixture type save checks the file found for the name as a venue save does,
+  namesake in another subdirectory; and each is first moved aside beside itself as
+  `<file>.replaced-<YYYYMMDD-HHMMSS>` (UTC), which no loader reads, so nothing it held is lost. The
+  reply and the web UI say "The old file was kept as …". An MVR import whose GDTFs share a file
+  stem ("Par", "par a", "par_a") writes each record to a file of its own (`par`, `par_a`,
+  `par_a_2`); the last overwrote another's. A name with no letters or digits (`!!!`, `★`) is
+  written as `untitled.light`, not a hidden `.light`, and no lighting file is ever written under a
+  hidden name. A fixture type save checks the file found for the name as a venue save does,
   whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got a `Par.fixture`
   beside it with 200. A refused delete says the file "would be removed". The imports name a new
   file as the web UI does, and the web UI folds a run of other characters into one `_`: the MVR
