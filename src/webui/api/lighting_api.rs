@@ -1902,6 +1902,27 @@ pub(super) async fn put_fixture_type(
         .as_ref()
         .and_then(|(path, _)| crate::songs::extension_of(path));
 
+    // The file found must hold the type, or be a broken one the person
+    // chose to replace (the one rule, `require_declares`), before what the
+    // form can express of it is asked: a broken `par.fixture` is offered for
+    // replacing, not refused as a form the editor cannot write.
+    let located_broken = match &located {
+        Some((path, _)) => require_declares_blocking(
+            "fixture type",
+            &name,
+            &dir,
+            std::iter::once(path.clone())
+                .chain(also_broken.iter().cloned())
+                .collect(),
+            fixture_types_declared,
+            &replace_broken,
+            Acting::Saving,
+        )
+        .await?
+        .contains(path),
+        None => false,
+    };
+
     // The channel-map form writes one type, so it cannot carry the others a
     // shared file declares. Raw text is the whole file and says what it means.
     if from_form {
@@ -1918,7 +1939,7 @@ pub(super) async fn put_fixture_type(
     // The channel-map form cannot say what a `.fixture` file holds, so
     // saving one through it would silently drop the type's rich channels or
     // its GDTF reference.
-    if from_form && existing_extension.as_deref() == Some("fixture") {
+    if from_form && existing_extension.as_deref() == Some("fixture") && !located_broken {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({"error": format!(
@@ -6688,6 +6709,39 @@ show "test" {
         assert!(std::fs::read_to_string(&file_path)
             .unwrap()
             .contains("fine 2"));
+    }
+
+    /// A form save over a broken `par.fixture` is offered for replacing
+    /// (the one rule first), not refused as a form the editor cannot write;
+    /// replaced, the broken file is kept aside.
+    #[tokio::test]
+    async fn a_form_save_over_a_broken_fixture_file_offers_to_replace_it() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_form_broken");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("par.fixture"), "fixture_type \"Par\" {\n").unwrap();
+        let send = |query: &'static str| {
+            fixture_type_request(
+                state.clone(),
+                "PUT",
+                format!("/lighting/fixture-types/Par?dir=ft_form_broken{query}"),
+                "application/json",
+                Body::from(
+                    serde_json::to_vec(&serde_json::json!({"channels": {"dimmer": 1}})).unwrap(),
+                ),
+            )
+        };
+        let (status, parsed) = send("").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken"], true, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "par.fixture", "{parsed}");
+        let (status, parsed) = send("&replace_broken=par.fixture").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let kept = parsed["kept"][0].as_str().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ft_dir.join(kept)).unwrap(),
+            "fixture_type \"Par\" {\n"
+        );
     }
 
     #[tokio::test]
