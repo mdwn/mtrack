@@ -237,9 +237,8 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
                     continue;
                 };
                 let relative = relative.to_string_lossy().to_string();
-                if crate::songs::has_hidden_part(std::path::Path::new(&relative))
-                    || files.iter().any(|f: &LightFileInfo| f.path == relative)
-                {
+                // Named, so listed even when hidden: naming is finding.
+                if files.iter().any(|f: &LightFileInfo| f.path == relative) {
                     continue;
                 }
                 files.push(LightFileInfo {
@@ -343,9 +342,14 @@ fn light_show_path(
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
     let root = VerifiedRoot::new(&state.songs_path()).map_err(|e| e.into_response())?;
-    // A hidden file or directory is one the loader and listing pass over
-    // (`songs::is_hidden`): a save there would vanish.
-    if crate::songs::has_hidden_part(std::path::Path::new(name)) {
+    let path = SafePath::validate_relative(name, &root).map_err(|e| e.into_response())?;
+    let named = state.player.songs().light_show_files();
+    // A hidden file or directory is one the listing passes over
+    // (`songs::is_hidden`): a save there would vanish, unless a song names
+    // it, which is what finds it.
+    if crate::songs::has_hidden_part(std::path::Path::new(name))
+        && !crate::songs::is_named_show(&path, &named)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!(
@@ -354,8 +358,7 @@ fn light_show_path(
         )
             .into_response());
     }
-    let path = SafePath::validate_relative(name, &root).map_err(|e| e.into_response())?;
-    if !crate::songs::is_light_show_file(&path, &state.player.songs().light_show_files()) {
+    if !crate::songs::is_light_show_file(&path, &named) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(
@@ -4270,6 +4273,76 @@ show "test" {
         let response = send("PUT", "/lighting/DslSong%2Fother.dsl").await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(!dir.join("other.dsl").exists());
+
+        // The song's files say what it is.
+        let response = send("GET", "/songs/DslSong/files").await.unwrap();
+        let files: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let kind = files["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "show.dsl")
+            .map(|f| f["type"].clone());
+        assert_eq!(kind, Some(json!("lighting")), "{files}");
+
+        // Deleted while the song names it, the song fails to load; its
+        // config still names the show, so it is still one, to write again.
+        let response = send("DELETE", "/lighting/DslSong%2Fshow.dsl")
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = state.player.reload_songs().await;
+        assert!(state.player.songs().get("DslSong").is_err());
+        let response = send("PUT", "/lighting/DslSong%2Fshow.dsl").await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(dir.join("show.dsl").is_file());
+    }
+
+    /// A hidden show a song's `lighting:` names (`.draft.light`) is found by
+    /// being named: listed, validated, saved and deleted. The hidden rule is
+    /// for finding files.
+    #[tokio::test]
+    async fn a_named_hidden_show_is_a_light_show() {
+        let (state, _dir) = test_state();
+        let dir = state.songs_path().join("Drafts");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::testutil::write_wav(dir.join("kick.wav"), vec![vec![0i32; 4410]], 44100).unwrap();
+        let show =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
+        std::fs::write(dir.join(".draft.light"), show).unwrap();
+        std::fs::write(
+            dir.join("song.yaml"),
+            "name: Drafts\ntracks:\n  - name: kick\n    file: kick.wav\n\
+             lighting:\n  - file: .draft.light\n",
+        )
+        .unwrap();
+        state.player.reload_songs().await.unwrap();
+        let send = |method: &'static str, uri: &'static str| {
+            router().with_state(state.clone()).oneshot(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(show))
+                    .unwrap(),
+            )
+        };
+        let listed = response_body(send("GET", "/lighting").await.unwrap()).await;
+        assert!(listed.contains("Drafts/.draft.light"), "{listed}");
+        for (method, uri) in [
+            ("PUT", "/lighting/Drafts%2F.draft.light"),
+            ("POST", "/lighting/validate?file=Drafts/.draft.light"),
+            ("DELETE", "/lighting/Drafts%2F.draft.light"),
+        ] {
+            let response = send(method, uri).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{method} {uri}");
+        }
+        assert!(!dir.join(".draft.light").exists());
+        // An unnamed hidden show is still refused.
+        let response = send("PUT", "/lighting/Drafts%2F.other.light")
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

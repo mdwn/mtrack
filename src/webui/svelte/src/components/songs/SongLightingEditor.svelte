@@ -564,12 +564,13 @@
   /** Saves the song's lighting files around the song.yaml save, in two
    * calls by the parent's Save button. "before" the config save: files
    * not yet the song's are written and registered, so the reload that
-   * save starts finds them on disk. "after" it: files the song already
-   * had are written, checked against the tempo the saved config loads
-   * them with, and removed files are deleted, their entries gone from
-   * the config by then. A failure in either leaves the rest for a retry.
-   * "files", for the auto-save before a play-from, writes every file
-   * and deletes nothing: the config still names the removed ones. */
+   * save starts finds them on disk, and removed files are deleted while
+   * the config still names them, which is what makes a `show.dsl` a light
+   * show the server deletes (`songs::is_light_show_file`). "after" it:
+   * files the song already had are written, checked against the tempo the
+   * saved config loads them with. A failure in either leaves the rest for
+   * a retry. "files", for the auto-save before a play-from, writes every
+   * file and deletes nothing. */
   export async function saveLightingFiles(phase: "before" | "after" | "files") {
     if (phase !== "after") {
       flushRaw();
@@ -580,16 +581,16 @@
         await writeLightFile(lf);
       }
     }
+    if (phase === "before") {
+      while (pendingDeletes.length > 0) {
+        await deleteLightingFile(pendingDeletes[0]);
+        pendingDeletes = pendingDeletes.slice(1);
+      }
+    }
     if (phase !== "before") {
       for (const lf of lightFiles) {
         if (lf.parseError || !song.lighting_files.includes(lf.path)) continue;
         await writeLightFile(lf);
-      }
-    }
-    if (phase === "after") {
-      while (pendingDeletes.length > 0) {
-        await deleteLightingFile(pendingDeletes[0]);
-        pendingDeletes = pendingDeletes.slice(1);
       }
     }
     if (phase !== "before") dirty = pendingDeletes.length > 0;

@@ -128,11 +128,7 @@ impl DslLightingShow {
         config: &config::LightingShow,
         tempo_map: Option<&crate::tempo::TempoMap>,
     ) -> Result<Self, Box<dyn Error>> {
-        let file_path = if config.file().starts_with('/') {
-            PathBuf::from(config.file())
-        } else {
-            start_path.join(config.file())
-        };
+        let file_path = lighting_show_path(start_path, config);
 
         // Validate file exists
         if !file_path.exists() {
@@ -2017,33 +2013,57 @@ pub struct Songs {
     failures: Vec<SongLoadFailure>,
 }
 
+/// Where a song in `start_path` finds the light show its `lighting:` entry
+/// names: an absolute path as written, else one in the song's folder.
+fn lighting_show_path(start_path: &Path, config: &config::LightingShow) -> PathBuf {
+    if config.file().starts_with('/') {
+        PathBuf::from(config.file())
+    } else {
+        start_path.join(config.file())
+    }
+}
+
 /// The one rule for whether `path` is a light show file: a lighting
 /// extension in any case (`Show.LIGHT`), or a file a song's `lighting:`
 /// config names, whatever it is called (`show.dsl`), as the loader loads it
 /// ([`Songs::light_show_files`]). What the web UI lists, opens, validates,
-/// saves and deletes as a light show.
+/// saves and deletes as a light show. A named file is one whatever its name:
+/// the hidden rule ([`is_hidden`]) is for finding files, and a named
+/// `.draft.light` is found.
 pub fn is_light_show_file(path: &Path, named: &HashSet<PathBuf>) -> bool {
-    FileKind::of(path) == FileKind::Lighting
-        || named.contains(path)
-        || path.canonicalize().is_ok_and(|real| named.contains(&real))
+    FileKind::of(path) == FileKind::Lighting || is_named_show(path, named)
+}
+
+/// Whether a song's `lighting:` names `path` (`named`:
+/// [`Songs::light_show_files`]), by the file it is.
+pub fn is_named_show(path: &Path, named: &HashSet<PathBuf>) -> bool {
+    named.contains(path) || path.canonicalize().is_ok_and(|real| named.contains(&real))
 }
 
 impl Songs {
     /// The light show files the songs' `lighting:` configs name, as the
-    /// loader resolved them ([`is_light_show_file`]).
+    /// loader resolves them ([`is_light_show_file`]): a loaded song's, and
+    /// a failed song's whose config still reads (one naming a show that is
+    /// not there, so the show can be written again).
     pub fn light_show_files(&self) -> HashSet<PathBuf> {
-        self.list()
-            .iter()
-            .flat_map(|song| {
-                song.dsl_lighting_shows()
-                    .iter()
-                    .map(|show| {
-                        let path = show.file_path();
-                        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        let real = |path: PathBuf| path.canonicalize().unwrap_or(path);
+        let loaded = self.list().into_iter().flat_map(|song| {
+            song.dsl_lighting_shows()
+                .iter()
+                .map(|show| show.file_path().to_path_buf())
+                .collect::<Vec<_>>()
+        });
+        let failed = self.failures.iter().flat_map(|failure| {
+            let config = config::Song::deserialize(failure.config_path()).ok();
+            config
+                .as_ref()
+                .and_then(|config| config.lighting())
+                .unwrap_or_default()
+                .iter()
+                .map(|show| lighting_show_path(failure.base_path(), show))
+                .collect::<Vec<_>>()
+        });
+        loaded.chain(failed).map(real).collect()
     }
 
     /// Creates a new songs registry.

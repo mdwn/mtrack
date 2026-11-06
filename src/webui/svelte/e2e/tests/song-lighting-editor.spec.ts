@@ -13,6 +13,8 @@
 //
 
 import { test, expect } from "@playwright/test";
+import type { SongList, SongSaved } from "../../src/gen/rules/mtrack_rules";
+import { SONGS } from "../mock-server/test-data";
 
 test.describe("Song Lighting Editor - File Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -270,5 +272,57 @@ test.describe("Song Lighting Editor - Implicit file creation", () => {
     const entries = page.locator(".light-file-entry");
     await expect(entries).toHaveCount(2);
     await expect(page.locator(".unsaved")).toBeVisible();
+  });
+});
+
+test.describe("Song Lighting Editor - a show named by another extension", () => {
+  test("removing a named show.dsl deletes it while the config still names it", async ({
+    page,
+  }) => {
+    // The song's `lighting:` names `show.dsl`: a light show to the server
+    // only while a song names it, so the delete goes before the config
+    // save that stops naming it.
+    const songs: SongList = {
+      ...SONGS,
+      songs: SONGS.songs.map((s) =>
+        s.name === "Test Song Alpha"
+          ? { ...s, lighting_files: ["show.dsl"] }
+          : s,
+      ),
+    };
+    await page.route("**/api/songs", (route) => route.fulfill({ json: songs }));
+    const sent: string[] = [];
+    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
+      const method = route.request().method();
+      if (method === "GET") {
+        return route.fulfill({
+          contentType: "text/yaml",
+          body: "name: Test Song Alpha\ntracks:\n  - kick\nlighting:\n  - file: show.dsl\n",
+        });
+      }
+      if (method !== "PUT") return route.fallback();
+      sent.push(
+        `PUT config ${route.request().postData()?.includes("show.dsl")}`,
+      );
+      await route.fulfill({
+        json: { status: "saved", name: "Test Song Alpha" } satisfies SongSaved,
+      });
+    });
+    await page.route("**/api/lighting/show.dsl", async (route) => {
+      if (route.request().method() !== "DELETE") return route.fallback();
+      sent.push("DELETE show.dsl");
+      await route.fulfill({ json: { status: "deleted" } });
+    });
+
+    await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
+    await expect(page.locator(".light-file-name")).toContainText("show.dsl");
+    await page.locator(".light-file-remove").click();
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: "Confirm" })
+      .click();
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.locator(".save-msg")).toBeVisible();
+    expect(sent).toEqual(["DELETE show.dsl", "PUT config false"]);
   });
 });

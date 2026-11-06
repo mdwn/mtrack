@@ -523,6 +523,9 @@ pub(super) async fn get_song_files(
     };
 
     let song_dir = song.base_path().to_path_buf();
+    // A show a song's `lighting:` names is a light show whatever its name
+    // (`songs::is_light_show_file`), and listed even when hidden.
+    let named = all_songs.light_show_files();
 
     let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
         let mut files: Vec<SongFile> = Vec::new();
@@ -535,12 +538,20 @@ pub(super) async fn get_song_files(
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            // Skip song config files, and hidden files (`songs::is_hidden`).
-            if crate::songs::is_song_config_name(&path) || crate::songs::is_hidden(&path) {
+            let is_show = crate::songs::is_light_show_file(&path, &named);
+            // Skip song config files, and hidden files (`songs::is_hidden`)
+            // no song names.
+            if crate::songs::is_song_config_name(&path)
+                || (crate::songs::is_hidden(&path) && !crate::songs::is_named_show(&path, &named))
+            {
                 continue;
             }
             files.push(SongFile {
-                kind: FileKind::of(&path),
+                kind: if is_show {
+                    FileKind::Lighting
+                } else {
+                    FileKind::of(&path)
+                },
                 name: filename,
             });
         }
