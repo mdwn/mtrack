@@ -17,6 +17,7 @@
 
 mod config;
 mod effects;
+mod files;
 mod positions;
 
 /// A value as a table states it, for comparing with the code's: a number
