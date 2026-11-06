@@ -132,7 +132,7 @@ pub struct MidiEventShapes {
 
 impl MidiEventShapes {
     pub fn new() -> Self {
-        let kinds: Vec<MidiEvent> = (0..).map_while(MidiEvent::kind_at).collect();
+        let kinds = MidiEvent::kinds();
         let seven_bit = (0, 127);
         let ranges = [
             ("channel", (1, 16)),
@@ -157,47 +157,58 @@ impl Default for MidiEventShapes {
 }
 
 impl MidiEvent {
-    /// The kind at `index` in declaration order, its fields at their
-    /// lowest; `None` past the last. The match below names every kind, so
-    /// adding one does not compile until it is listed here too.
-    fn kind_at(index: usize) -> Option<MidiEvent> {
-        let kind = match index {
-            0 => MidiEvent::NoteOff(NoteOff {
+    /// One event of each kind, in declaration order, every field at its
+    /// lowest. A test counts the kinds by a match of its own, so a kind
+    /// missing here fails it.
+    fn kinds() -> Vec<MidiEvent> {
+        vec![
+            MidiEvent::NoteOff(NoteOff {
                 channel: 1,
                 key: 0,
                 velocity: 0,
             }),
-            1 => MidiEvent::NoteOn(NoteOn {
+            MidiEvent::NoteOn(NoteOn {
                 channel: 1,
                 key: 0,
                 velocity: 0,
             }),
-            2 => MidiEvent::Aftertouch(Aftertouch {
+            MidiEvent::Aftertouch(Aftertouch {
                 channel: 1,
                 key: 0,
                 velocity: 0,
             }),
-            3 => MidiEvent::ControlChange(ControlChange {
+            MidiEvent::ControlChange(ControlChange {
                 channel: 1,
                 controller: 0,
                 value: 0,
             }),
-            4 => MidiEvent::ProgramChange(ProgramChange {
+            MidiEvent::ProgramChange(ProgramChange {
                 channel: 1,
                 program: 0,
             }),
-            5 => MidiEvent::ChannelAftertouch(ChannelAftertouch {
+            MidiEvent::ChannelAftertouch(ChannelAftertouch {
                 channel: 1,
                 velocity: 0,
             }),
-            6 => MidiEvent::PitchBend(PitchBend {
+            MidiEvent::PitchBend(PitchBend {
                 channel: 1,
                 bend: 0,
             }),
-            _ => return None,
-        };
-        // Exhaustive: a kind missing above fails to compile here.
-        let listed = match &kind {
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every kind of `MidiEvent` is in `kinds`, each once. The match is
+    /// exhaustive: a new kind does not compile until it has an index here,
+    /// and then fails until `kinds` lists it.
+    #[test]
+    fn kinds_lists_every_kind_once() {
+        const KINDS: usize = 7;
+        let index = |kind: &MidiEvent| match kind {
             MidiEvent::NoteOff(_) => 0,
             MidiEvent::NoteOn(_) => 1,
             MidiEvent::Aftertouch(_) => 2,
@@ -206,7 +217,7 @@ impl MidiEvent {
             MidiEvent::ChannelAftertouch(_) => 5,
             MidiEvent::PitchBend(_) => 6,
         };
-        debug_assert_eq!(listed, index);
-        Some(kind)
+        let listed: Vec<usize> = MidiEvent::kinds().iter().map(index).collect();
+        assert_eq!(listed, (0..KINDS).collect::<Vec<_>>());
     }
 }

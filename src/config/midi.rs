@@ -285,7 +285,6 @@ mod test {
     fn the_editors_ranges_are_what_parsing_takes() {
         use super::super::midi_event::MidiEventShapes;
         let shapes = MidiEventShapes::new();
-        assert_eq!(shapes.kinds.len(), 7);
         for kind in &shapes.kinds {
             let json = serde_json::to_value(kind).unwrap();
             for field in json.as_object().unwrap().keys().filter(|k| *k != "type") {
