@@ -171,12 +171,31 @@ pub type Declares = Result<Vec<String>, Unread>;
 /// broken file is said to "maybe hold".
 const NAMED_BLOCKS: &[&str] = &["venue", "fixture_type", "show", "sequence"];
 
-/// The named blocks `text` seems to open, as information only, never a
-/// decision: a file that does not parse cannot be read exactly. Each of
-/// [`NAMED_BLOCKS`] as a whole word (letters, digits, `_` and `-`, as the
-/// grammar's names run) outside strings and comments, followed past any
-/// whitespace or comments by a quoted name, which as in the grammar has no
-/// escapes; a block keyword with no quoted name is passed over.
+/// Whether a `{` follows `from` on the same line, outside strings: a block
+/// opening its header there.
+fn opens_on_line(chars: &[char], from: usize) -> bool {
+    let mut in_string = false;
+    for &c in chars.iter().skip(from) {
+        match c {
+            '\n' => return false,
+            '"' => in_string = !in_string,
+            '{' if !in_string => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The named blocks `text` seems to open. Never a decision on whether a file
+/// may be written or removed (a file that does not parse cannot be read
+/// exactly): it is what the 409 says a broken file may hold, and how
+/// [`locate`] finds a broken file that seems to open the name's block
+/// elsewhere. Each of [`NAMED_BLOCKS`] as a whole word (letters, digits,
+/// `_` and `-`, as the grammar's names run) outside strings and comments,
+/// followed past any whitespace or comments by a quoted name, which as in
+/// the grammar has no escapes, and a `{` on that line; a keyword with no
+/// quoted name, or a reference with no block (`sequence "x"` in a show), is
+/// passed over.
 fn block_headers(text: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = text.chars().collect();
     let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
@@ -218,7 +237,10 @@ fn block_headers(text: &str) -> Vec<(String, String)> {
             let next = skip(end);
             if NAMED_BLOCKS.contains(&word.as_str()) && chars.get(next) == Some(&'"') {
                 let (name, past) = string_at(next);
-                if !name.is_empty() {
+                // A block opens on its header's line (`{` after the name and
+                // any parameters or `from gdtf(…)`); `sequence "x"(…)` with
+                // no `{` there is a show's reference to a sequence.
+                if !name.is_empty() && opens_on_line(&chars, past) {
                     out.push((word, name));
                 }
                 i = past;
@@ -347,15 +369,22 @@ pub fn may_act_on(
 pub struct Located {
     pub path: PathBuf,
     pub declares: Declares,
+    /// When the file found does not read, every other broken candidate for
+    /// the name (a file elsewhere that seems to open its block): a save or
+    /// delete acts on them all, so none is left to declare the name again
+    /// once fixed.
+    pub other_broken: Vec<(PathBuf, Declares)>,
 }
 
 /// The one rule for the file a name lives in, in a lighting directory: the
 /// first file at any depth that declares it (as the lighting system loads
-/// it); else a file at the name's stem ([`name_stem`], in any case) that
-/// does not read; else a file elsewhere that does not read but seems to open
-/// a block for the name (one an older stem named, half-edited). A stem file
-/// that reads and holds other names is not the name's: a new file is named
-/// past it ([`new_file_stem`]). `None` is a name no file holds or claims.
+/// it); else the broken candidates for it: a file at the name's stem
+/// ([`name_stem`], in any case) that does not read, and each file elsewhere
+/// that does not read but seems to open a block for the name (one an older
+/// stem named, half-edited), the stem file first and the rest in
+/// [`Located::other_broken`]. A stem file that reads and holds other names
+/// is not the name's: a new file is named past it ([`new_file_stem`]).
+/// `None` is a name no file holds or claims.
 fn locate(
     dir: &Path,
     name: &str,
@@ -363,29 +392,45 @@ fn locate(
     keyword: &str,
     declared: fn(&Path) -> Declares,
 ) -> std::io::Result<Option<Located>> {
-    let mut broken_mention = None;
+    let mut mentions = Vec::new();
     for path in files_under(dir, extensions)? {
         let declares = declared(&path);
         match &declares {
             Ok(names) if names.iter().any(|n| n == name) => {
-                return Ok(Some(Located { path, declares }))
+                return Ok(Some(Located {
+                    path,
+                    declares,
+                    other_broken: Vec::new(),
+                }))
             }
-            Err(unread)
-                if broken_mention.is_none()
-                    && unread.blocks.iter().any(|(k, n)| k == keyword && n == name) =>
-            {
-                broken_mention = Some(Located { path, declares });
+            Err(unread) if unread.blocks.iter().any(|(k, n)| k == keyword && n == name) => {
+                mentions.push((path, declares));
             }
             _ => {}
         }
     }
-    for path in crate::util::files_at_stem(dir, &name_stem(name), extensions) {
-        let declares = declared(&path);
-        if declares.is_err() {
-            return Ok(Some(Located { path, declares }));
+    let stem = crate::util::files_at_stem(dir, &name_stem(name), extensions)
+        .into_iter()
+        .map(|path| {
+            let declares = declared(&path);
+            (path, declares)
+        })
+        .find(|(_, declares)| declares.is_err());
+    let mut candidates: Vec<(PathBuf, Declares)> = stem.into_iter().collect();
+    for (path, declares) in mentions {
+        if !candidates.iter().any(|(p, _)| *p == path) {
+            candidates.push((path, declares));
         }
     }
-    Ok(broken_mention)
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let (path, declares) = candidates.remove(0);
+    Ok(Some(Located {
+        path,
+        declares,
+        other_broken: candidates,
+    }))
 }
 
 /// The venue file `name` lives in, or would be written to ([`locate`]):
@@ -657,6 +702,10 @@ mod tests {
         .map(|(k, _)| k)
         .collect();
         assert_eq!(kinds, ["sequence", "show", "fixture_type"]);
+        // A show's reference to a sequence opens no block.
+        let in_show =
+            names("show \"Song\" {\n  @1/1\n  sequence \"strike\"(hit: \"#FF0000\"), loop: 2\n");
+        assert_eq!(in_show, [("show".to_string(), "Song".to_string())]);
         for nothing in [
             "// TODO: move this to the show\n",
             "fixture show-par {",

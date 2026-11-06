@@ -87,7 +87,9 @@ pub(super) async fn get_settings(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
-    let Some((path, _)) = locate_fixture_type_file(&dir, &name).await? else {
+    let Some(super::lighting_api::FoundTypeFile { path, .. }) =
+        locate_fixture_type_file(&root, &dir, &name).await?
+    else {
         let (dir, wanted, project) = (dir.clone(), name.clone(), root.clone());
         let archive = super::helpers::spawn_blocking_io("read the GDTF library", move || {
             Ok::<_, String>(
@@ -270,7 +272,7 @@ fn plan(
     // The record, or — for a GDTF in the library with none yet — the one
     // the importer would write, to be created by this save.
     let (type_path, content, type_version, new_record) =
-        match existing_fixture_type_file(types_dir, name) {
+        match existing_fixture_type_file(root, types_dir, name) {
             Some(path) => {
                 let content = crate::util::read_to_string(&path)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -316,7 +318,7 @@ fn plan(
                  hyphens and underscores; not a route name)"
             ))
         })?;
-        if existing_fixture_type_file(types_dir, &new_name).is_some()
+        if existing_fixture_type_file(root, types_dir, &new_name).is_some()
             || library.get(&new_name).is_some()
         {
             return Err((

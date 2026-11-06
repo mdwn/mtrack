@@ -217,7 +217,7 @@ pub struct LightingFileRefusal {
     pub broken: bool,
     pub parse_error: Option<String>,
     /// Each file that does not read and that the request would act on, to
-    /// name back together in `replace_broken` (comma-separated); empty when
+    /// name back together in `replace_broken` (one parameter each); empty when
     /// a file that reads is refused, which nothing replaces.
     pub broken_files: Vec<BrokenLightingFile>,
 }
