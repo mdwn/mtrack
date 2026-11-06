@@ -130,7 +130,7 @@ impl Drop for SubscriptionHandle {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlayFromArgs {
-    /// Time to start playback from, formatted as `mm:ss.mmm` or `Ns` (e.g. `1:23.456`, `45.5s`).
+    /// Time to start playback from: `mm:ss.mmm`, `Ns`, or a bare number of seconds (e.g. `1:23.456`, `45.5s`, `90`).
     pub start_time: String,
 }
 
@@ -139,7 +139,8 @@ pub struct PlayFromArgs {
 pub struct PlaySongFromArgs {
     /// Name of the song in the active playlist (or all-songs registry).
     pub song_name: String,
-    /// Optional time to start playback from (`mm:ss.mmm` or `Ns`). Defaults to song start.
+    /// Optional time to start playback from: `mm:ss.mmm`, `Ns`, or a bare number of seconds (e.g. `1:23.456`, `45.5s`, `90`).
+    /// Defaults to song start.
     #[serde(default)]
     pub start_time: Option<String>,
 }
@@ -180,7 +181,7 @@ pub struct LoopSectionArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SeekArgs {
-    /// Position to seek to, formatted as `mm:ss.mmm` or `Ns` (e.g. `1:23.456`, `45.5s`).
+    /// Position to seek to: `mm:ss.mmm`, `Ns`, or a bare number of seconds (e.g. `1:23.456`, `45.5s`, `90`).
     pub position: String,
 }
 
@@ -320,7 +321,7 @@ pub struct EvaluateShowArgs {
     /// `.light` DSL source to evaluate directly, without registering it against
     /// a song. Pass `song` as well if the source uses measure-based timing.
     pub source: Option<String>,
-    /// Times to evaluate, each `mm:ss.mmm`, `Ns`, or a bare number of seconds.
+    /// Times to evaluate, each `mm:ss.mmm`, `Ns`, or a bare number of seconds (e.g. `1:23.456`, `45.5s`, `90`).
     pub times: Vec<String>,
     /// Include per-fixture channel values. Set false for a cheaper reply when
     /// only the active-effect list is wanted. Defaults to true.
@@ -726,7 +727,7 @@ impl McpServer {
 
     #[tool(
         description = "Start playback of the current song from a specific time \
-        (e.g. `1:23.456` or `45.5s`)."
+        (e.g. `1:23.456`, `45.5s` or `90`)."
     )]
     async fn play_from(
         &self,
@@ -3562,8 +3563,8 @@ pub(crate) fn song_summary(song: &crate::songs::Song) -> Value {
     })
 }
 
-/// Parses an `mm:ss.mmm` or `Ns` / `N.Ns` time string into a [`Duration`],
-/// as every surface parses a playback position (see
+/// Parses a playback position (`1:23.456`, `45.5s`, `90`) into a
+/// [`std::time::Duration`], as every surface parses one (see
 /// [`crate::util::parse_position`]).
 pub(crate) fn parse_duration(value: &str) -> Result<std::time::Duration, McpError> {
     crate::util::parse_position(value).map_err(|e| McpError::invalid_params(e, None))

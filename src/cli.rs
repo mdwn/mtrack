@@ -166,12 +166,12 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
         host_port: Option<String>,
-        /// Start playback from a specific time (e.g., "1:23.456" or "45.5s").
+        /// Start playback from a specific time (e.g., "1:23.456", "45.5s" or "90").
         #[arg(long)]
         from: Option<String>,
     },
-    /// Seeks within the current song to a time (e.g. "1:23.456" or "45.5s")
-    /// or to the start of a named section (e.g. "chorus").
+    /// Seeks within the current song to a time (e.g. "1:23.456", "45.5s" or
+    /// "90") or to the start of a named section (e.g. "chorus").
     Seek {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]

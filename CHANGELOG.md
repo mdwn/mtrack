@@ -347,6 +347,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directions, patterns, transitions, curves, easings, layers, blend modes, layer commands) now
   come from the parser's own tables, so they cannot drift. Its closing tip faded out with
   `dimmer end_level: 0%`, which fades from 0% to 0%; it now writes `start_level: 100%`.
+- **Position help names every form**: the MCP `play_from`, `play_song_from`, `seek` and
+  `evaluate_show` argument descriptions and the CLI's `play --from` and `seek` help now say a
+  bare number of seconds (`90`) is a position too, as it always was.
 
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
