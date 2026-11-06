@@ -166,23 +166,100 @@ impl std::fmt::Display for Unread {
 /// What a lighting file declares, or why it does not read.
 pub type Declares = Result<Vec<String>, Unread>;
 
-/// The block keywords of a venue or fixture type file.
-const BLOCK_KEYWORDS: &[&str] = &["venue", "fixture_type"];
+/// The keywords that open a top-level block of a lighting file, read from
+/// the grammar's own `file` rule (`include | fixture_type | venue | …`),
+/// each rule's opening literal: `include`, `fixture_type`, `venue`, `show`,
+/// `sequence`, `tempo`. What the grammar adds, this counts.
+fn block_keywords() -> &'static [String] {
+    static KEYWORDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    KEYWORDS.get_or_init(|| {
+        let grammar = include_str!("grammar.pest");
+        let rule_body = |rule: &str| {
+            grammar.lines().find_map(|line| {
+                let (name, body) = line.split_once('=')?;
+                (name.trim() == rule).then(|| body.to_string())
+            })
+        };
+        let file = rule_body("file").expect("the grammar has a `file` rule");
+        let alternatives = file
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(alts, _)| alts)
+            .expect("`file` lists its blocks in parentheses");
+        alternatives
+            .split('|')
+            .filter_map(|rule| {
+                let body = rule_body(rule.trim())?;
+                let (_, rest) = body.split_once('"')?;
+                Some(rest.split_once('"')?.0.to_string())
+            })
+            .collect()
+    })
+}
 
-/// The block headers in `text`: each line opening `keyword "name"`.
+/// The blocks `text` opens, as the person wrote them: each block keyword
+/// ([`block_keywords`]) as a whole word anywhere outside strings and
+/// comments, at any depth (a broken file's braces may not balance), with the
+/// name that follows it past any whitespace or comments (`venue  "Arena"`,
+/// `venue\n"Arena"`, `venue"Arena"`, several on one line); a block with no
+/// name (`tempo { … }`) has an empty one. Read loosely on purpose: it is
+/// what a file that does not parse would lose if replaced, so it errs
+/// toward finding a block.
 fn block_headers(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for line in text.lines().map(str::trim_start) {
-        for keyword in BLOCK_KEYWORDS {
-            let Some(rest) = line
-                .strip_prefix(keyword)
-                .and_then(|rest| rest.strip_prefix(" \""))
-            else {
-                continue;
-            };
-            if let Some((name, _)) = rest.split_once('"') {
-                out.push((keyword.to_string(), name.to_string()));
+    let chars: Vec<char> = text.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    // Past whitespace and comments from `i`.
+    let skip = |mut i: usize| loop {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        let comment = chars.get(i) == Some(&'#')
+            || (chars.get(i) == Some(&'/') && chars.get(i + 1) == Some(&'/'));
+        if !comment {
+            return i;
+        }
+        while i < chars.len() && chars[i] != '\n' {
+            i += 1;
+        }
+    };
+    // The string opening at `i` (a quote), and the index past it.
+    let string_at = |i: usize| {
+        let mut out = String::new();
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '"' {
+            if chars[j] == '\\' && j + 1 < chars.len() {
+                j += 1;
             }
+            out.push(chars[j]);
+            j += 1;
+        }
+        (out, j + 1)
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            i = string_at(i).1;
+        } else if c == '#' || (c == '/' && chars.get(i + 1) == Some(&'/')) {
+            i = skip(i);
+        } else if is_word(c) && (i == 0 || !is_word(chars[i - 1])) {
+            let end = (i..chars.len())
+                .find(|&j| !is_word(chars[j]))
+                .unwrap_or(chars.len());
+            let word: String = chars[i..end].iter().collect();
+            if block_keywords().contains(&word) {
+                let next = skip(end);
+                let name = if chars.get(next) == Some(&'"') {
+                    string_at(next).0
+                } else {
+                    String::new()
+                };
+                out.push((word, name));
+            }
+            i = end;
+        } else {
+            i += 1;
         }
     }
     out
@@ -196,23 +273,34 @@ fn unread(error: String, text: &str) -> Unread {
     }
 }
 
-/// The fixture types the file at `path` declares ([`Declares`]).
-pub fn fixture_types_declared(path: &Path) -> Declares {
-    let text = crate::util::read_to_string(path).map_err(|e| unread(e.to_string(), ""))?;
-    super::parser::parse_fixture_types(&text)
-        .map(|types| types.into_keys().collect())
-        .map_err(|e| unread(e.to_string(), &text))
-}
-
-/// The venues the file at `path` declares ([`Declares`]).
-pub fn venues_declared(path: &Path) -> Declares {
+/// The one read rule for a venue or fixture type file: its bytes, the
+/// names `parse` finds in them, or why not, with the blocks the text opens
+/// read from it as far as it reads (`from_utf8_lossy`, so a file with a
+/// stray Latin-1 byte still names its blocks).
+fn declared_by(path: &Path, parse: fn(&str) -> Result<Vec<String>, String>) -> Declares {
     let bytes = crate::util::read_file(path).map_err(|e| unread(e.to_string(), ""))?;
     let lossy = String::from_utf8_lossy(&bytes);
     let text =
         std::str::from_utf8(&bytes).map_err(|_| unread("not valid UTF-8".to_string(), &lossy))?;
-    super::parser::parse_venues(text)
-        .map(|venues| venues.into_keys().collect())
-        .map_err(|e| unread(e.to_string(), text))
+    parse(text).map_err(|e| unread(e, text))
+}
+
+/// The fixture types the file at `path` declares ([`Declares`]).
+pub fn fixture_types_declared(path: &Path) -> Declares {
+    declared_by(path, |text| {
+        super::parser::parse_fixture_types(text)
+            .map(|types| types.into_keys().collect())
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// The venues the file at `path` declares ([`Declares`]).
+pub fn venues_declared(path: &Path) -> Declares {
+    declared_by(path, |text| {
+        super::parser::parse_venues(text)
+            .map(|venues| venues.into_keys().collect())
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// Why a save or delete of a name may not act on a file ([`may_act_on`]).
@@ -583,6 +671,60 @@ mod tests {
             .expect("found");
         assert_eq!(found.path, d.join("robe_esprite.fixture"));
         assert!(locate_venue(d, "Nowhere").unwrap().is_none());
+    }
+
+    /// The block scan finds a block however its header is written, and
+    /// every block keyword the grammar's `file` rule allows.
+    #[test]
+    fn block_headers_read_any_spacing_and_every_block() {
+        let names = |text: &str| block_headers(text);
+        let arena = ("venue".to_string(), "Arena".to_string());
+        for text in [
+            "venue  \"Arena\" {",
+            "venue\t\"Arena\" {",
+            "venue\n\"Arena\" {",
+            "venue\"Arena\" {",
+            "venue // the hall\n \"Arena\" {",
+        ] {
+            assert_eq!(names(text), std::slice::from_ref(&arena), "{text:?}");
+        }
+        let one_line = names("venue \"Club\" {} venue \"Arena\" {");
+        assert_eq!(one_line.len(), 2, "{one_line:?}");
+        let kinds: Vec<String> = names(
+            "sequence \"strike\" {}\nshow \"Song\" {}\ntempo {}\ninclude \"x.light\"\n\
+             fixture_type \"Par\" {\n  label: \"venue \\\"Not\\\"\" // venue \"Nope\"\n",
+        )
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+        assert_eq!(
+            kinds,
+            ["sequence", "show", "tempo", "include", "fixture_type"]
+        );
+        for keyword in [
+            "include",
+            "fixture_type",
+            "venue",
+            "show",
+            "sequence",
+            "tempo",
+        ] {
+            assert!(block_keywords().iter().any(|k| k == keyword), "{keyword}");
+        }
+    }
+
+    /// Venues and fixture types read alike: a file with a Latin-1 byte
+    /// still names the blocks it opens.
+    #[test]
+    fn a_file_that_is_not_utf8_names_its_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("all.light");
+        std::fs::write(&path, b"fixture_type \"Par\" {\n}\nvenue \"Caf\xe9\" {\n").unwrap();
+        for declares in [fixture_types_declared(&path), venues_declared(&path)] {
+            let unread = declares.unwrap_err();
+            assert_eq!(unread.error, "not valid UTF-8");
+            assert_eq!(unread.blocks.len(), 2, "{unread:?}");
+        }
     }
 
     /// A name's stem, for the web UI's saves and the MVR import alike.
