@@ -2172,11 +2172,9 @@ pub fn named_song_dirs(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
     for dir in &dirs {
         *counts.entry(own_name(dir)).or_default() += 1;
     }
-    // The names the songs already configured under `root` have, as the
-    // loader reads them.
-    let mut taken: HashSet<String> = get_all_songs(root)
-        .map(|songs| songs.list().iter().map(|s| s.name().to_string()).collect())
-        .unwrap_or_default();
+    // The names the songs already configured under `root` have, loaded or
+    // failed, as the loader reads them (without loading the songs).
+    let mut taken = configured_song_names(root)?;
     Ok(dirs
         .into_iter()
         .map(|dir| {
@@ -2382,6 +2380,65 @@ fn insert_song(songs: &mut HashMap<String, Arc<Song>>, song: Arc<Song>) {
     }
 }
 
+/// Every file under `dir` the song loader takes up as a song config
+/// ([`song_yaml`]), in the order it reads them: each directory's entries in
+/// turn, a subdirectory's files where it stands. Hidden files and
+/// directories are passed over (`._song.yaml`, `.git/`).
+fn song_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    // codeql[rust/path-injection] dir is the songs directory configured at startup, or one below it.
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if is_hidden(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            found.extend(song_config_files(&path)?);
+        } else if song_yaml(&path) != SongYaml::NotOne {
+            found.push(path);
+        }
+    }
+    Ok(found)
+}
+
+/// The song config the loader reads at `path`, by its one config read: the
+/// config, or, for a `kind: song` file that does not read, the name its
+/// failure is recorded under (its directory's) and why. `None` for a file
+/// that is no song's (one without a `kind` that does not read as a song may
+/// be a playlist or other YAML, skipped silently).
+fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config::ConfigError)>> {
+    let candidate = song_yaml(path);
+    if candidate == SongYaml::NotOne {
+        return None;
+    }
+    match config::Song::deserialize(path) {
+        Ok(song_config) => Some(Ok(song_config)),
+        Err(e) if candidate == SongYaml::Declared => {
+            let name = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(Err((name, e)))
+        }
+        Err(_) => None,
+    }
+}
+
+/// The names the songs configured under `root` have, loaded or not, as the
+/// loader names them ([`read_song_config`]: a failed song's too), without
+/// loading any song: what a new config must not name its song.
+pub fn configured_song_names(root: &Path) -> std::io::Result<HashSet<String>> {
+    Ok(song_config_files(root)?
+        .iter()
+        .filter_map(|path| match read_song_config(path)? {
+            Ok(config) => Some(config.name().to_string()),
+            Err((name, _)) => Some(name),
+        })
+        .collect())
+}
+
 /// Recurse into the given path and return all valid songs found.
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     get_all_songs_with_defaults(path, false)
@@ -2398,107 +2455,64 @@ pub fn get_all_songs_with_defaults(
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
     let mut failures: Vec<SongLoadFailure> = Vec::new();
-    // codeql[rust/path-injection] path is the songs directory configured at startup.
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-        // Hidden files and directories are passed over (`._song.yaml`).
-        if is_hidden(&path) {
-            continue;
-        }
-
-        if path.is_dir() {
-            let child = get_all_songs_with_defaults(path.as_path(), default_metronome)?;
-            child.list().iter().for_each(|song| {
-                insert_song(&mut songs, song.clone());
-            });
-            failures.extend(child.failures().iter().cloned());
-        }
-
-        // Only attempt to deserialize YAML files as song configs
-        // ([`song_yaml`]): a declared song's failure is recorded, an
-        // untyped file's skipped silently.
-        let candidate = song_yaml(&path);
-        if candidate != SongYaml::NotOne {
-            let is_declared_song = candidate == SongYaml::Declared;
-            {
-                match config::Song::deserialize(path.as_path()) {
-                    Ok(song_config) => match path.parent() {
-                        Some(parent) => match parent.canonicalize() {
-                            Ok(canonical_parent) => {
-                                match Song::new(&canonical_parent, &song_config) {
-                                    Ok(mut song) => {
-                                        // Record the exact source yaml so MCP
-                                        // read/patch tools can target it
-                                        // regardless of layout. The path
-                                        // comes from the directory walk
-                                        // above; canonicalize for symlink
-                                        // safety. On the rare canonicalize
-                                        // race (permission flip / symlink
-                                        // rotation) fall back to the
-                                        // un-canonicalized path so flat-
-                                        // layout writes don't silently
-                                        // retarget to `<base>/song.yaml`.
-                                        song.config_path = Some(
-                                            path.canonicalize()
-                                                .unwrap_or_else(|_| path.to_path_buf()),
-                                        );
-                                        song.apply_metronome_default(default_metronome);
-                                        insert_song(&mut songs, Arc::new(song));
-                                    }
-                                    Err(e) => {
-                                        warn!("Skipping song at {}: {}", path.display(), e);
-                                        // Song::new failures are always recorded — the YAML
-                                        // parsed as a song but its content is invalid.
-                                        failures.push(SongLoadFailure {
-                                            name: song_config.name().to_string(),
-                                            base_path: canonical_parent,
-                                            config_path: path
-                                                .canonicalize()
-                                                .unwrap_or_else(|_| path.to_path_buf()),
-                                            error: format!("{}", e),
-                                        });
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Skipping song at {}: failed to canonicalize: {}",
-                                    path.display(),
-                                    e
-                                );
-                            }
-                        },
-                        None => {
-                            warn!("Skipping song at {}: no parent directory", path.display());
+    for path in song_config_files(path)? {
+        match read_song_config(&path) {
+            None => {}
+            Some(Ok(song_config)) => match path.parent() {
+                Some(parent) => match parent.canonicalize() {
+                    Ok(canonical_parent) => match Song::new(&canonical_parent, &song_config) {
+                        Ok(mut song) => {
+                            // Record the exact source yaml so MCP read/patch
+                            // tools can target it regardless of layout. The
+                            // path comes from the directory walk above;
+                            // canonicalize for symlink safety. On the rare
+                            // canonicalize race (permission flip / symlink
+                            // rotation) fall back to the un-canonicalized
+                            // path so flat-layout writes don't silently
+                            // retarget to `<base>/song.yaml`.
+                            song.config_path =
+                                Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+                            song.apply_metronome_default(default_metronome);
+                            insert_song(&mut songs, Arc::new(song));
+                        }
+                        Err(e) => {
+                            warn!("Skipping song at {}: {}", path.display(), e);
+                            // Song::new failures are always recorded — the YAML
+                            // parsed as a song but its content is invalid.
+                            failures.push(SongLoadFailure {
+                                name: song_config.name().to_string(),
+                                base_path: canonical_parent,
+                                config_path: path
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| path.to_path_buf()),
+                                error: format!("{}", e),
+                            });
                         }
                     },
                     Err(e) => {
-                        // Only record deserialize failures for files with `kind: song`.
-                        // Files without a kind that fail to deserialize are silently
-                        // skipped — they may be playlists or other non-song YAML.
-                        if is_declared_song {
-                            if let Some(parent) = path.parent() {
-                                let name = parent
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                let base_path = parent
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| parent.to_path_buf());
-                                warn!("Failed to deserialize song at {}: {}", path.display(), e);
-                                failures.push(SongLoadFailure {
-                                    name,
-                                    base_path,
-                                    config_path: path
-                                        .canonicalize()
-                                        .unwrap_or_else(|_| path.to_path_buf()),
-                                    error: format!("{}", e),
-                                });
-                            }
-                        }
+                        warn!(
+                            "Skipping song at {}: failed to canonicalize: {}",
+                            path.display(),
+                            e
+                        );
                     }
+                },
+                None => {
+                    warn!("Skipping song at {}: no parent directory", path.display());
+                }
+            },
+            Some(Err((name, e))) => {
+                if let Some(parent) = path.parent() {
+                    let base_path = parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    warn!("Failed to deserialize song at {}: {}", path.display(), e);
+                    failures.push(SongLoadFailure {
+                        name,
+                        base_path,
+                        config_path: path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                        error: format!("{}", e),
+                    });
                 }
             }
         }
@@ -4430,6 +4444,37 @@ sections:
         let mut names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
         names.sort();
         assert_eq!(names, ["Intro", "Intro (2)", "Set/Intro"]);
+        Ok(())
+    }
+
+    /// A configured song that fails to load still has its name: a new
+    /// directory is named past it too, without any song being loaded
+    /// (`configured_song_names`).
+    #[test]
+    fn initialize_songs_names_past_a_failed_songs_name() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for song in ["Live", "Intro", "Broken"] {
+            fs::create_dir_all(root.join(song))?;
+        }
+        crate::testutil::write_wav(root.join("Intro/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        // Names a track that is not there: it fails to load as "Intro".
+        fs::write(
+            root.join("Live/song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: missing.wav\n",
+        )?;
+        // Does not read: its failure is named for its directory.
+        fs::write(root.join("Broken/song.yaml"), "kind: song\ntracks: 3\n")?;
+        let names = super::configured_song_names(root)?;
+        assert!(names.contains("Intro"), "{names:?}");
+        assert!(names.contains("Broken"), "{names:?}");
+
+        let named = super::named_song_dirs(root)?;
+        let intro = named
+            .iter()
+            .find(|(dir, _)| dir.ends_with("Intro"))
+            .unwrap();
+        assert_eq!(intro.1, "Intro (2)");
         Ok(())
     }
 

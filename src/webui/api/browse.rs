@@ -343,7 +343,19 @@ fn import_song_dirs(
     skipped: &mut Vec<String>,
     failed: &mut Vec<ImportFailure>,
 ) {
-    for (dir, name) in songs::named_song_dirs(root).unwrap_or_default() {
+    // A tree that cannot be read is reported, not taken for one with no
+    // songs: a name it holds could not be counted as taken.
+    let dirs = match songs::named_song_dirs(root) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            failed.push(ImportFailure {
+                name: root.display().to_string(),
+                error: format!("cannot read the songs under it: {e}"),
+            });
+            return;
+        }
+    };
+    for (dir, name) in dirs {
         // Relative display name for reporting
         let display_name = dir
             .strip_prefix(root)
