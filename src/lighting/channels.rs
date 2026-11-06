@@ -75,6 +75,13 @@ pub fn dmx_byte(value: f64) -> u8 {
     value.round() as u8
 }
 
+/// The 16-bit value (0 to 65535) a 16-bit channel's value goes out as,
+/// coarse and fine: [`dmx_byte`]'s rule on the 16-bit scale.
+pub fn dmx_word(value: f64) -> u16 {
+    // `as` saturates, and takes not a number to 0.
+    value.round() as u16
+}
+
 /// The value `t` of the way (0.0 to 1.0) from `a` to `b`: exactly `a` at
 /// 0 and exactly `b` at 1, and exactly `a` throughout when the two are
 /// equal.
@@ -433,6 +440,25 @@ mod tests {
     use super::{is_lit, shown_color};
 
     type Case<'a> = (&'a [(&'a str, f64)], [u8; 3]);
+
+    /// A value rounds to its byte, or its 16-bit value, within reach.
+    #[test]
+    fn values_round_within_reach() {
+        use super::{dmx_byte, dmx_word};
+        for (value, byte, word) in [
+            (0.0, 0, 0),
+            (-3.0, 0, 0),
+            (127.5, 128, 128),
+            (254.4, 254, 254),
+            (300.0, 255, 300),
+            (65534.5, 255, 65535),
+            (70000.0, 255, 65535),
+            (f64::NAN, 0, 0),
+        ] {
+            assert_eq!(dmx_byte(value), byte, "{value}");
+            assert_eq!(dmx_word(value), word, "{value}");
+        }
+    }
 
     fn color(channels: &[(&str, f64)]) -> [u8; 3] {
         shown_color(channels.iter().copied()).map(|c| (c * 255.0).round() as u8)

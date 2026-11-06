@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use super::types::EffectLayer;
-use crate::lighting::channels::dmx_byte;
+use crate::lighting::channels::{dmx_byte, dmx_word};
 use crate::lighting::types::{ChannelDef, PhysicalUnit};
 
 /// The full 16-bit DMX scale a resolved value is expressed on.
@@ -150,8 +150,7 @@ pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = 
     match def.fine {
         None => spread(def, dmx_byte(value * 255.0), None),
         Some(_) => {
-            let [high, low] =
-                ((value.clamp(0.0, 1.0) * FULL_SCALE_16).round() as u16).to_be_bytes();
+            let [high, low] = dmx_word(value * FULL_SCALE_16).to_be_bytes();
             spread(def, high, Some(low))
         }
     }
@@ -201,9 +200,7 @@ pub fn resolve_degrees(def: &ChannelDef, parameter: PhysicalParameter, degrees: 
     // 64·257 .. 255·257, so its coarse byte stays inside the function.
     let lo16 = f64::from(dmx_lo) * 257.0;
     let hi16 = f64::from(dmx_hi) * 257.0;
-    let value16 = (lo16 + fraction * (hi16 - lo16))
-        .round()
-        .clamp(0.0, FULL_SCALE_16) as u16;
+    let value16 = dmx_word(lo16 + fraction * (hi16 - lo16));
     Resolved {
         bytes: fanout(def, value16).collect(),
         clamped,

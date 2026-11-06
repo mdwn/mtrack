@@ -32,8 +32,8 @@ use layers::{LayerState, Now};
 use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
-use crate::lighting::channels::CrossKind;
 pub(crate) use crate::lighting::channels::{base_channel, fades_to_dark, is_position_channel};
+use crate::lighting::channels::{dmx_byte, dmx_word, CrossKind};
 
 /// Whether a layer speed master scales its effects' time: 1 does not, and
 /// nor does 0, which freezes the layer instead.
@@ -491,9 +491,7 @@ impl EffectEngine {
             pairs.entry((c.universe, c.channel)).or_default().1 = Some(c.value);
         }
         let byte = |kind: CrossKind, (old, new): (Option<u8>, Option<u8>)| {
-            kind.cross(old.map(f64::from), new.map(f64::from), t)
-                .round()
-                .clamp(0.0, 255.0) as u8
+            dmx_byte(kind.cross(old.map(f64::from), new.map(f64::from), t))
         };
 
         let mut out = BTreeMap::new();
@@ -509,10 +507,8 @@ impl EffectEngine {
                             f64::from(u16::from_be_bytes([coarse.unwrap_or(0), fine.unwrap_or(0)]))
                         })
                     };
-                    let value = kind
-                        .cross(side(values.0, fine_old), side(values.1, fine_new), t)
-                        .round()
-                        .clamp(0.0, f64::from(u16::MAX)) as u16;
+                    let value =
+                        dmx_word(kind.cross(side(values.0, fine_old), side(values.1, fine_new), t));
                     let [high, low] = value.to_be_bytes();
                     out.insert(at(channel), high);
                     out.insert(at(fine), low);
