@@ -13,12 +13,55 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import type {
+  Check,
+  CheckKey,
+  Finding,
+  Readiness,
+} from "../../src/gen/rules/mtrack_rules";
 import { READINESS } from "../mock-server/test-data";
 
 // Every test routes its own readiness answer with `page.route`, so no test
-// depends on state another one left in the shared mock server.
+// depends on state another one left in the shared mock server. The verdicts
+// are the player's (`Readiness::verdicts`, whose own tests hold the rules);
+// these hold the page to showing what the answer says.
 
-type Readiness = typeof READINESS;
+/** Sets the verdict on one check of `r`: its state, its findings and its
+ *  summary. */
+function verdict(
+  r: Readiness,
+  key: CheckKey,
+  state: Check["state"],
+  findings: Finding[],
+  summary: Check["summary"],
+) {
+  const check = r.checks.find((c) => c.key === key)!;
+  Object.assign(check, { state, findings, summary });
+}
+
+/** A song whose show does not load, as the Shows check finds it. */
+function showError(song: string): Finding {
+  return {
+    severity: "blocked",
+    what: {
+      kind: "showError",
+      song,
+      detail: "Effect 'static' requires a 'duration'",
+    },
+    fix: { kind: "song", song },
+    song,
+  };
+}
+
+/** A lint warning under the first song. */
+function lint(severity: Finding["severity"], detail: string): Finding {
+  return {
+    severity,
+    what: { kind: "lint", detail },
+    fix: { kind: "song", song: "Test Song Alpha" },
+    song: "Test Song Alpha",
+  };
+}
 
 let testCounter = 0;
 
@@ -74,6 +117,20 @@ test.describe("Lighting hub", () => {
         fixture: "Brick3",
         reason: 'mode "13: DIM" of fixture type "brick" did not load',
       };
+      verdict(
+        r,
+        "venue",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "venueFailed", ...r.venue_error },
+            fix: { kind: "venues" },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     const alert = page.getByTestId("hub-venue-error");
@@ -94,7 +151,23 @@ test.describe("Lighting hub", () => {
     const message =
       'fixtures "A" and "B" are both patched on universe 1 at addresses 2-4; each will overwrite the other';
     await routeReadiness(page, (r) => {
-      r.patch_warnings = [{ kind: "patch-overlap", message }];
+      r.patch_warnings = [
+        { kind: "patch-overlap", message, severity: "attention" },
+      ];
+      verdict(
+        r,
+        "venue",
+        "attention",
+        [
+          {
+            severity: "attention",
+            what: { kind: "patch", detail: message },
+            fix: { kind: "venues" },
+            song: null,
+          },
+        ],
+        [{ kind: "attention", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-venue")).toHaveAttribute(
@@ -142,13 +215,26 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.fixture_types.unresolved = [
-        {
-          fixture: "Brick9",
-          type: "Nope",
-          reason: "no fixture type named 'Nope' is defined",
-        },
-      ];
+      const unresolved = {
+        fixture: "Brick9",
+        type: "Nope",
+        reason: "no fixture type named 'Nope' is defined",
+      };
+      r.fixture_types.unresolved = [unresolved];
+      verdict(
+        r,
+        "fixtures",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "typeUnresolved", ...unresolved },
+            fix: { kind: "fixtures" },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-fixtures")).toHaveAttribute(
@@ -175,6 +261,23 @@ test.describe("Lighting hub", () => {
       r.venue = null;
       r.groups = [];
       r.shows = [];
+      for (const key of ["fixtures", "groups", "output"] as const)
+        verdict(r, key, "unknown", [], [{ kind: "needsVenue" }]);
+      verdict(
+        r,
+        "venue",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "noVenue" },
+            fix: { kind: "chooseVenue" },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
+      verdict(r, "shows", "ready", [], [{ kind: "showsNone" }]);
     });
     await page.goto("/#/lighting");
     expect(await states(page)).toEqual([
@@ -202,6 +305,25 @@ test.describe("Lighting hub", () => {
         { name: "front_wash", fixtures: 0, songs: ["Test Song Alpha"] },
         { name: "back_wash", fixtures: 3, songs: ["Test Song Alpha"] },
       ];
+      verdict(
+        r,
+        "groups",
+        "attention",
+        [
+          {
+            severity: "attention",
+            what: {
+              kind: "groupEmpty",
+              group: "front_wash",
+              venue: "test-venue",
+              songs: "Test Song Alpha",
+            },
+            fix: { kind: "fit", group: "front_wash" },
+            song: null,
+          },
+        ],
+        [{ kind: "attention", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-groups")).toHaveAttribute(
@@ -225,12 +347,13 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.shows.push({
-        song: "Esaweg",
-        files: [],
-        error: "Effect 'static' requires a 'duration'",
-        warnings: [],
-      } as never);
+      verdict(
+        r,
+        "shows",
+        "blocked",
+        [showError("Esaweg")],
+        [{ kind: "showsBlocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-shows")).toHaveAttribute(
@@ -249,12 +372,13 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.shows[0].warnings = [
-        {
-          kind: "past-end-of-song",
-          message: "a cue starts after the song ends",
-        },
-      ];
+      verdict(
+        r,
+        "shows",
+        "ready",
+        [lint("note", "a cue starts after the song ends")],
+        [{ kind: "showsReady", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     // Advisory kinds do not change the state ...
@@ -271,12 +395,13 @@ test.describe("Lighting hub", () => {
     // A capability gap does.
     await page.unroute("**/api/lighting/readiness");
     await routeReadiness(page, (r) => {
-      r.shows[0].warnings = [
-        {
-          kind: "capability-gap",
-          message: "strobe on fixtures with no strobe",
-        },
-      ];
+      verdict(
+        r,
+        "shows",
+        "attention",
+        [lint("attention", "strobe on fixtures with no strobe")],
+        [{ kind: "attention", count: 1 }],
+      );
     });
     await page.reload();
     await expect(page.getByTestId("check-shows")).toHaveAttribute(
@@ -289,8 +414,20 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.output.universes = [1, 4];
-      r.output.unconfigured = [4];
+      verdict(
+        r,
+        "output",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "universeUnconfigured", universe: 4 },
+            fix: { kind: "fit", group: null },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-output")).toHaveAttribute(
@@ -308,7 +445,20 @@ test.describe("Lighting hub", () => {
 
   test("a universe olad has no port for blocks", async ({ page }) => {
     await routeReadiness(page, (r) => {
-      r.output.olad = { reachable: true, unpatched: [1] };
+      verdict(
+        r,
+        "output",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "universeUnpatched", universe: 1 },
+            fix: { kind: "fit", group: null },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-output")).toHaveAttribute(
@@ -324,7 +474,20 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.output.olad = { reachable: false, unpatched: [] };
+      verdict(
+        r,
+        "output",
+        "unknown",
+        [
+          {
+            severity: "unknown",
+            what: { kind: "oladUnreachable" },
+            fix: { kind: "config" },
+            song: null,
+          },
+        ],
+        [{ kind: "unknown" }],
+      );
     });
     await page.goto("/#/lighting");
     await expect(page.getByTestId("check-output")).toHaveAttribute(
@@ -345,17 +508,29 @@ test.describe("Lighting hub", () => {
     await routeReadiness(page, (r) => {
       r.dmx = false;
       r.venue = null;
-      r.fixture_types = { in_use: [], unresolved: [] };
-      r.groups = [];
-      r.shows = [
-        {
-          song: "Esaweg",
-          files: [],
-          error: "Effect 'static' requires a 'duration'",
-          warnings: [],
-        } as never,
-      ];
-      r.output = { universes: [], unconfigured: [], olad: null };
+      for (const key of ["fixtures", "venue", "groups"] as const)
+        verdict(r, key, "unknown", [], [{ kind: "noDmx" }]);
+      verdict(
+        r,
+        "shows",
+        "blocked",
+        [showError("Esaweg")],
+        [{ kind: "showsBlocked", count: 1 }],
+      );
+      verdict(
+        r,
+        "output",
+        "blocked",
+        [
+          {
+            severity: "blocked",
+            what: { kind: "noDmx" },
+            fix: { kind: "config" },
+            song: null,
+          },
+        ],
+        [{ kind: "blocked", count: 1 }],
+      );
     });
     await page.goto("/#/lighting");
     expect(await states(page)).toEqual([
@@ -387,25 +562,26 @@ test.describe("Lighting hub", () => {
     page,
   }) => {
     await routeReadiness(page, (r) => {
-      r.shows = [
-        {
-          song: "Esaweg",
-          files: [],
-          error: "Effect 'static' requires a 'duration'",
-          warnings: [],
-        } as never,
-        {
-          song: "Devoured in Decay",
-          files: ["show.light"],
-          warnings: [
-            {
-              kind: "unbound-focus-point",
-              message:
-                "`move` on drummer aims at a focus point the venue lacks",
-            },
-          ],
-        },
-      ];
+      verdict(
+        r,
+        "shows",
+        "blocked",
+        [
+          showError("Esaweg"),
+          {
+            ...lint(
+              "attention",
+              "`move` on drummer aims at a focus point the venue lacks",
+            ),
+            fix: { kind: "fit", group: null },
+            song: "Devoured in Decay",
+          },
+        ],
+        [
+          { kind: "showsBlocked", count: 1 },
+          { kind: "attention", count: 1 },
+        ],
+      );
     });
     await page.goto("/#/lighting");
     const card = page.getByTestId("check-shows");
@@ -438,7 +614,14 @@ test.describe("Lighting hub", () => {
     await page.route("**/api/lighting/readiness", async (route) => {
       requests++;
       const facts = structuredClone(READINESS);
-      if (broken) facts.groups[0].fixtures = 0;
+      if (broken)
+        verdict(
+          facts,
+          "groups",
+          "attention",
+          [],
+          [{ kind: "attention", count: 1 }],
+        );
       await route.fulfill({
         status: 200,
         contentType: "application/json",

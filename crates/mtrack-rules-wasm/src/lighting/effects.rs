@@ -20,6 +20,8 @@
 mod color;
 #[path = "../../../../src/lighting/effects/error.rs"]
 mod error;
+#[path = "../../../../src/lighting/effects/pointing.rs"]
+mod pointing;
 #[path = "../../../../src/lighting/effects/tempo_aware.rs"]
 mod tempo_aware;
 #[path = "../../../../src/lighting/effects/types.rs"]
@@ -27,6 +29,7 @@ mod types;
 
 pub use color::{Color, NAMED_COLORS};
 pub use error::EffectError;
+pub use pointing::rest_beam;
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
     BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve, Easing,

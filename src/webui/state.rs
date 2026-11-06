@@ -338,8 +338,12 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 /// Play.
 fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wire::NextUp> {
     let current = playlist.current()?;
-    let status =
-        |fade: &Option<crate::config::Fade>| fade.as_ref().map(crate::config::Fade::status);
+    // A fade of no length is a cut, and is said as none.
+    let status = |fade: &Option<crate::config::Fade>| {
+        fade.as_ref()
+            .filter(|f| f.length != crate::config::LoopCrossfade::Time(std::time::Duration::ZERO))
+            .map(crate::config::Fade::status)
+    };
     let Some(position) = playlist.next_entry() else {
         // A looping song playing at the end of the list: Next (or Previous
         // on the first entry) ends it over its entry's `fade_out`, which the

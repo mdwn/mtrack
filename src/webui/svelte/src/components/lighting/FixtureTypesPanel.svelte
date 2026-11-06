@@ -31,6 +31,7 @@
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
+  import { rules } from "../../lib/rules";
   import {
     channelProblems,
     type ChannelProblem,
@@ -145,7 +146,7 @@
   /** In text mode the DSL declares the name — the file is keyed on it, and
    *  the server refuses a save where the two disagree. So the Name field
    *  reads it out rather than being a second, conflicting source. */
-  let editFtDslName = $derived(declaredFixtureTypeName(editFtDsl));
+  let editFtDslName = $derived(rules.fixture_type_name(editFtDsl) ?? "");
   /** A rich or referential type cannot go back to `.light`: the loader
    *  skips v2 syntax there. Anything else may be saved in either form. */
   let ftExtChoosable = $derived(
@@ -153,13 +154,6 @@
   );
   /** Whether the "which form?" chooser is open ahead of a new type. */
   let newFtChoice = $state(false);
-
-  /** The name a fixture type DSL declares, quoted or bare. Comment lines
-   *  start with `#`, so anchoring to the start of a line skips them. */
-  function declaredFixtureTypeName(dsl: string): string {
-    const match = dsl.match(/^[ \t]*fixture_type[ \t]+(?:"([^"]*)"|([\w-]+))/m);
-    return (match?.[1] ?? match?.[2] ?? "").trim();
-  }
 
   /** The commented starting point for a hand-written `.fixture`. */
   const NEW_FIXTURE_TEMPLATE = `# The rich channel form, which only a .fixture file may hold:

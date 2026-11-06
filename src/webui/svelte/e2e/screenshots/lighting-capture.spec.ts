@@ -465,6 +465,69 @@ const READINESS = {
     unconfigured: [],
     olad: { reachable: true, unpatched: [2] },
   },
+  // The player's verdicts on the facts above.
+  checks: [
+    {
+      key: "fixtures",
+      state: "ready",
+      summary: [{ kind: "typesReady", count: 2 }],
+      findings: [],
+    },
+    {
+      key: "venue",
+      state: "attention",
+      summary: [{ kind: "attention", count: 1 }],
+      findings: [
+        {
+          severity: "attention",
+          what: {
+            kind: "patch",
+            detail:
+              "Brick 5 (universe 1, addresses 16–20) overlaps Brick 4 (13–16) at address 16.",
+          },
+          fix: { kind: "venues" },
+          song: null,
+        },
+      ],
+    },
+    {
+      key: "groups",
+      state: "attention",
+      summary: [{ kind: "attention", count: 1 }],
+      findings: [
+        {
+          severity: "attention",
+          what: {
+            kind: "groupEmpty",
+            group: "movers",
+            venue: "house",
+            songs: "Test Song Beta",
+          },
+          fix: { kind: "fit", group: "movers" },
+          song: null,
+        },
+      ],
+    },
+    {
+      key: "shows",
+      state: "ready",
+      summary: [{ kind: "showsReady", count: 2 }],
+      findings: [],
+    },
+    {
+      key: "output",
+      state: "blocked",
+      summary: [{ kind: "blocked", count: 1 }],
+      findings: [
+        {
+          severity: "blocked",
+          what: { kind: "universeUnpatched", universe: 2 },
+          fix: { kind: "fit", group: null },
+          song: null,
+        },
+      ],
+    },
+  ],
 };
 
 const CONFIG_YAML = `songs: songs

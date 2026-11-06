@@ -262,8 +262,7 @@ export function drawBeam(
   options: { dark: boolean; width: number; dot: number },
 ): void {
   const [r, g, b] = look.rgb.map((c) => Math.round(c * 255));
-  // Lit from a 24/765 mean: the threshold the byte sum had.
-  const lit = look.strobeOn && look.intensity > 24 / 765;
+  const lit = look.lit;
   const neutral = options.dark ? "255,255,255" : "0,0,0";
   ctx.strokeStyle = lit ? `rgba(${r},${g},${b},0.55)` : `rgba(${neutral},0.18)`;
   ctx.lineWidth = lit ? options.width : Math.max(1, options.width / 2);

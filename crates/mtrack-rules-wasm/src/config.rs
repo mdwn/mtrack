@@ -56,6 +56,7 @@ mod trackmappings;
 #[path = "../../../src/config/trigger.rs"]
 mod trigger;
 
+pub use crate::tempo_config::TempoConfig;
 pub use audio::StreamBufferSize;
 pub use controller::MidiController;
 use duration::{parse_duration_string, parse_playback_delay};

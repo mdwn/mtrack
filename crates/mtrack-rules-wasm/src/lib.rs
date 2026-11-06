@@ -103,6 +103,10 @@ mod hardware_status;
 #[path = "../../../src/device_info.rs"]
 pub mod device_info;
 
+/// A playback position as text (`src/position.rs`).
+#[path = "../../../src/position.rs"]
+pub mod position;
+
 /// A tempo map guessed for a song (`src/audio/guessed_tempo.rs`).
 #[path = "../../../src/audio/guessed_tempo.rs"]
 pub mod guessed_tempo;
@@ -323,6 +327,8 @@ type EffectParamsJs = <EffectParams as Tsify>::JsType;
 type EffectEditJs = <EffectEdit as Tsify>::JsType;
 type SequenceRefJs = <SequenceRef as Tsify>::JsType;
 type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
+type ChannelValuesJs = <ChannelValues as Tsify>::JsType;
+type TripleJs = <Triple as Tsify>::JsType;
 type ClaveKindJs = <metronome_config::ClaveKind as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
@@ -861,6 +867,13 @@ pub fn color_hex(text: &str) -> Option<String> {
     Some(format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
 }
 
+/// The name a fixture type's DSL declares (`edit::declared_fixture_type`):
+/// what the file is keyed on.
+#[wasm_bindgen]
+pub fn fixture_type_name(source: &str) -> Option<String> {
+    lighting::parser::edit::declared_fixture_type(source)
+}
+
 /// The effect a click on a timeline lane adds (`edit::new_effect`).
 #[wasm_bindgen]
 pub fn effect_new(layer: Option<String>, by_bars: bool) -> CueEffect {
@@ -1089,6 +1102,69 @@ pub fn clave_half_beats(kind: ClaveKindJs) -> Option<ClaveHalfBeats> {
         first: offsets(first),
         second: offsets(second),
     })
+}
+
+// ── Stage views ─────────────────────────────────────────────────────────────
+
+/// A fixture's channel values as a stage view holds them; a channel left
+/// `undefined` is not reported.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+#[tsify(hashmap_as_object)]
+pub struct ChannelValues(pub std::collections::HashMap<String, Option<f64>>);
+
+/// Whether a fixture with these channel values is lit, as the engine has
+/// it (`channels::is_lit`: some level channel above 0): what every stage
+/// view draws a lit fixture by. `false` for a value that is not channels.
+#[wasm_bindgen]
+pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
+    read::<ChannelValues>(JsValue::from(channels)).is_some_and(|ChannelValues(values)| {
+        lighting::channels::is_lit(
+            values
+                .iter()
+                .filter_map(|(name, value)| Some((name.as_str(), (*value)?))),
+        )
+    })
+}
+
+/// The file name an MVR export of `venue` writes (`export_file_name`):
+/// `output` when it is one the export takes, or the venue's own when
+/// `output` is `None`; `None` for a name the export refuses.
+#[wasm_bindgen]
+pub fn mvr_export_name(output: Option<String>, venue: &str) -> Option<String> {
+    lighting::mvr_types::export_file_name(output.as_deref(), venue).ok()
+}
+
+/// A direction or a rotation in stage space: `[x, y, z]`.
+#[derive(Serialize, Deserialize, Tsify, Clone, Copy, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct Triple(pub [f64; 3]);
+
+/// The direction a fixture mounted at `rotation` (degrees about X, Y, Z)
+/// points at rest (`pointing::rest_beam`): what the plan draws its beam
+/// along. `None` for a value that is not a rotation.
+#[wasm_bindgen]
+pub fn rest_beam(rotation: TripleJs) -> Option<Triple> {
+    let Triple(rotation) = read(JsValue::from(rotation))?;
+    Some(Triple(lighting::effects::rest_beam(rotation)))
+}
+
+// ── Positions ───────────────────────────────────────────────────────────────
+
+/// `secs` as minutes and seconds, `1:15`, to `decimals` places of a
+/// second (`position::minutes_seconds`): the one way a time is shown.
+#[wasm_bindgen]
+pub fn clock(secs: f64, decimals: u32) -> String {
+    position::minutes_seconds(secs, decimals)
+}
+
+/// A position typed as text, in seconds, as the player reads one
+/// (`position::parse_position`: `90`, `90s`, `1:30.5`, `@1:30`); `None`
+/// for text that is no position.
+#[wasm_bindgen]
+pub fn position_parse(text: &str) -> Option<f64> {
+    position::parse_position(text).ok().map(|d| d.as_secs_f64())
 }
 
 // ── Limits ──────────────────────────────────────────────────────────────────

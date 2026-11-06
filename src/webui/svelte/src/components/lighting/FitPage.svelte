@@ -35,7 +35,6 @@
     olaPatchLine,
     orderGroups,
     sameSet,
-    tagsFor,
     withTags,
   } from "../../lib/lighting/fit";
   import { addUniverseToRunningProfile } from "../../lib/profileStore";
@@ -124,7 +123,7 @@
   let current = $derived<FitGroup | null>(
     ordered.find((g) => g.name === selectedName) ?? null,
   );
-  let tags = $derived(current ? tagsFor(current) : []);
+  let tags = $derived(current?.tags ?? []);
   let canTag = $derived(current !== null && current.defined && tags.length > 0);
   let isSuggestion = $derived(
     current?.suggestion != null &&
@@ -199,7 +198,7 @@
     if (!fit?.venue || !current || selection.length === 0) return;
     const venueName = fit.venue.name;
     const names = [...selection];
-    const toAdd = tagsFor(current);
+    const toAdd = current.tags;
     tagging = true;
     tagMsg = null;
     try {

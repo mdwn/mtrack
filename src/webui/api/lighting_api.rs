@@ -2265,13 +2265,13 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
             let warnings: Vec<_> = facts
                 .lint(shows, Some(song))
                 .into_iter()
-                // Venue-level: the Output and Venue sections already carry
-                // them, and repeating them under every song would say each
-                // once per song.
+                // Venue-level: the Output, Venue and Groups sections
+                // already carry them, and repeating them under every song
+                // would say each once per song.
                 .filter(|w| {
                     !matches!(
                         w.kind,
-                        "unconfigured-universe" | "patch-overlap" | "patch-overrun"
+                        "unconfigured-universe" | "patch-overlap" | "patch-overrun" | "empty-group"
                     )
                 })
                 .collect();
@@ -2343,7 +2343,7 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
     // The venue's own findings: whether it loads at all (one fixture that
     // cannot be driven fails the whole venue, and nothing lights), and
     // fixtures patched over each other or past the universe's end.
-    Readiness {
+    let mut report = Readiness {
         dmx: dmx.is_some(),
         venue,
         venue_error: facts.venue_error,
@@ -2360,7 +2360,10 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
             unconfigured,
             olad,
         },
-    }
+        checks: Vec::new(),
+    };
+    report.checks = report.verdicts();
+    report
 }
 
 /// The logical group names declared under `dmx.lighting.groups`, read from the
@@ -7751,7 +7754,11 @@ show "test" {
             .iter()
             .filter_map(|w| w["kind"].as_str())
             .collect();
-        assert!(kinds.contains(&"empty-group"), "{kinds:?}");
+        // The Groups check carries the empty group, not the song.
+        assert!(!kinds.contains(&"empty-group"), "{kinds:?}");
+        let checks = report["checks"].as_array().unwrap();
+        let groups_check = checks.iter().find(|c| c["key"] == json!("groups")).unwrap();
+        assert_eq!(groups_check["state"], json!("attention"), "{report}");
 
         // Nothing listens where olad's web server should be.
         assert_eq!(report["output"]["universes"], json!([1]));

@@ -121,25 +121,3 @@ export function fromPage(box: PlanBox, x: number, y: number): [number, number] {
 export function defaultVenueName(fileName: string): string {
   return fileName.replace(/\.mvr$/i, "");
 }
-
-/** A name reduced to a file-name-safe stem, as the server does for
- *  `<venue>.mvr`: lowercase letters and digits, single underscores. */
-export function fileStem(name: string): string {
-  const stem = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return stem || "fixture";
-}
-
-/** Whether an export file name is one the server will take: a bare `.mvr`
- *  name with no directories and nothing hidden. */
-export function validExportName(name: string): boolean {
-  const n = name.trim();
-  return (
-    /\.mvr$/i.test(n) &&
-    n.length > 4 &&
-    !/[\\/\0]/.test(n) &&
-    !n.startsWith(".")
-  );
-}

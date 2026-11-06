@@ -58,7 +58,6 @@
     aimRotation,
     deckFootprint,
     faceRotation,
-    restAim,
   } from "../../lib/stage/aim";
   import {
     alignOnLine,
@@ -166,8 +165,8 @@
       const next = { ...poses };
       for (const name of names) {
         const { position, rotation } = meta[name] ?? {};
-        if (isMover(name) || !position || !rotation) continue;
-        const aim = restAim(rotation);
+        const aim = rotation && rules.rest_beam(rotation);
+        if (isMover(name) || !position || !aim) continue;
         next[name] = {
           pan: 0,
           tilt: 0,

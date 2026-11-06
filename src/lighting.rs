@@ -13,6 +13,7 @@
 //
 
 pub mod analyze;
+pub mod channels;
 #[cfg(test)]
 mod consistency_tests;
 pub mod diff;

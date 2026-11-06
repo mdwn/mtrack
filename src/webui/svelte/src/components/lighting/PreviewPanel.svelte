@@ -30,13 +30,13 @@
   import { BadAnswerError } from "../../lib/lighting/answer";
   import { fetchSongs } from "../../lib/api/songs";
   import {
-    clock,
     evaluatePreview,
     groupActivity,
     sectionSegments,
     timelineLink,
   } from "../../lib/lighting/preview";
   import { playbackStore } from "../../lib/ws/stores";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     /** Song to open on, from the address. */
@@ -214,7 +214,7 @@
               step="0.1"
               value={time}
               disabled={!song}
-              aria-valuetext={clock(time, true)}
+              aria-valuetext={rules.clock(time, 1)}
               oninput={scrub}
             />
           </div>
@@ -222,7 +222,7 @@
             class="preview__clock"
             for="preview-time"
             data-testid="preview-clock"
-            >{clock(time, true)} / {clock(duration)}</output
+            >{rules.clock(time, 1)} / {rules.clock(duration, 0)}</output
           >
         </div>
       </div>

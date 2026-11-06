@@ -44,6 +44,23 @@ pub struct Warning {
     /// Stable identifier, so callers can filter without matching prose.
     pub kind: &'static str,
     pub message: String,
+    /// How much it matters to a show: `attention` when the rig will not do
+    /// what the show says, else a `note`.
+    pub severity: Severity,
+}
+
+/// How much a finding matters: one that is `blocked` stops the lighting, one
+/// that needs `attention` stops a cue doing what it says, one that is
+/// `unknown` could not be checked, and a `note` is listed but changes
+/// nothing.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Blocked,
+    Attention,
+    Unknown,
+    Note,
 }
 
 /// Something about the library a person should know: two archives stating

@@ -42,7 +42,7 @@ pub use physical::{
 };
 pub(crate) use pointing::mat_vec;
 pub use pointing::{
-    aim, aim_solutions, direction, lerp, nearest_pan, out_of_frame, AimCalibration, Pose,
+    aim, aim_solutions, direction, lerp, nearest_pan, out_of_frame, rest_beam, AimCalibration, Pose,
 };
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};

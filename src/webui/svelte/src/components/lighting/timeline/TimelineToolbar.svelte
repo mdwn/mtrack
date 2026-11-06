@@ -14,11 +14,8 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import {
-    formatMs,
-    SNAP_BEATS,
-    snapLabel,
-  } from "../../../lib/lighting/timeline-state";
+  import { SNAP_BEATS, snapLabel } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     pixelsPerMs: number;
@@ -176,11 +173,15 @@
   <div class="toolbar-spacer"></div>
 
   {#if isPlaying && playheadMs !== null}
-    <span class="cursor-time playhead-time">{formatMs(playheadMs)}</span>
+    <span class="cursor-time playhead-time"
+      >{rules.clock(playheadMs / 1000, 3)}</span
+    >
   {:else if cursorMs !== null}
-    <span class="cursor-time">{formatMs(cursorMs)}</span>
+    <span class="cursor-time">{rules.clock(cursorMs / 1000, 3)}</span>
   {:else if playCursorMs !== null && playCursorMs > 0}
-    <span class="cursor-time play-cursor-time">{formatMs(playCursorMs)}</span>
+    <span class="cursor-time play-cursor-time"
+      >{rules.clock(playCursorMs / 1000, 3)}</span
+    >
   {/if}
 </div>
 

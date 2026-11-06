@@ -12,14 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-/** Formats milliseconds as "m:ss". */
-export function formatMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
 /** A fade length as written (`1measure`, `4beats`, `2s`) for reading:
  *  beats and measures spaced from their count. */
 export function formatFadeLength(length: string): string {

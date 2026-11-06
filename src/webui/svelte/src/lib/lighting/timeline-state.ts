@@ -102,13 +102,6 @@ export function getGridLines(
 }
 
 /** Format milliseconds as MM:SS.mmm */
-export function formatMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  const millis = Math.round(ms % 1000);
-  return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-}
 
 /** Where a timestamp is in the tempo map, in milliseconds: its place
  *  before any offset. A bar and beat with no tempo to place it is at 0. */

@@ -25,7 +25,7 @@
     fetchMvrExportSummary,
     fetchVenue,
   } from "../../lib/api/config";
-  import { fileStem, validExportName } from "../../lib/lighting/mvrPlan";
+  import { rules } from "../../lib/rules";
 
   interface Props {
     venue: string;
@@ -50,7 +50,9 @@
   });
 
   let dialogEl: HTMLDialogElement | undefined = $state();
-  let fileName = $state(untrack(() => `${fileStem(venue)}.mvr`));
+  let fileName = $state(
+    untrack(() => rules.mvr_export_name(undefined, venue) ?? ""),
+  );
   let layersFromTags = $state(false);
   let keep = $state(false);
   let summary = $state<MvrExportSummary | null>(null);
@@ -62,7 +64,9 @@
    *  native close event that causes must not count as the user closing. */
   let asking = false;
 
-  let fileValid = $derived(validExportName(fileName));
+  let fileValid = $derived(
+    rules.mvr_export_name(fileName, venue) !== undefined,
+  );
   let unlinked = $derived(
     summary?.fixed_fixtures.filter((f) => f.focus === null) ?? [],
   );

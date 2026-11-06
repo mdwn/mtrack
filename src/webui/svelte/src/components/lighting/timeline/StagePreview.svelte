@@ -208,7 +208,7 @@
       const intensity = look.intensity;
 
       // Glow
-      if (intensity > 0.02 && strobeVisible) {
+      if (look.lit) {
         const gradient = ctx.createRadialGradient(
           pos.x,
           pos.y,

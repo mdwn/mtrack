@@ -333,6 +333,20 @@ pub fn new_effect(layer: Option<&str>, by_bars: bool) -> CueEffect {
     }
 }
 
+/// The name the first `fixture_type` line of `source` declares, as the
+/// grammar reads it (`fixture_type_name`); `None` when no line declares
+/// one.
+pub fn declared_fixture_type(source: &str) -> Option<String> {
+    let rest = source.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix("fixture_type")?;
+        rest.starts_with([' ', '\t']).then_some(rest.trim_start())
+    })?;
+    let name = LightingParser::parse(Rule::fixture_type_name, rest)
+        .ok()?
+        .next()?;
+    Some(unquoted(name.as_str()).to_string())
+}
+
 /// Whether `text`, whole, is a sequence parameter reference (`$name`) by
 /// the grammar's `param_ref`.
 pub fn param_ref(text: &str) -> bool {

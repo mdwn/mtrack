@@ -70,23 +70,7 @@ pub fn suggested_type_name(name: &str) -> String {
     }
 }
 
-/// A fixture-type (or venue) name reduced to a safe filename stem.
-pub(crate) fn fixture_filename_stem(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.ends_with('_') && !out.is_empty() {
-            out.push('_');
-        }
-    }
-    let out = out.trim_end_matches('_').to_string();
-    if out.is_empty() {
-        "fixture".to_string()
-    } else {
-        out
-    }
-}
+pub(crate) use super::mvr_types::fixture_filename_stem;
 
 /// [`crate::util::write_file`] with the path and any deploy hint in the
 /// error — a bare "Read-only file system (os error 30)" names no file and

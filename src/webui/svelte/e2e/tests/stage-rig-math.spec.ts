@@ -19,6 +19,7 @@
 import type { RigModel } from "../../src/gen/rules/mtrack_rules";
 import { test, expect } from "@playwright/test";
 import { Euler, Vector3 } from "three";
+import { loadRules } from "./rules-node";
 import {
   beamLength,
   beamCss,
@@ -147,7 +148,8 @@ test.describe("stage rig math", () => {
     expect(beamLength([0, 0, 4], [0, 0, 1], style).length).toBe(4);
   });
 
-  test("channels become a colour and a level", () => {
+  test("channels become a colour and a level", async () => {
+    await loadRules();
     const red = beamLook({ red: 255, green: 0, blue: 0, dimmer: 128 });
     expect(red.rgb[0]).toBeCloseTo(128 / 255);
     expect(red.rgb[1]).toBe(0);
@@ -158,9 +160,22 @@ test.describe("stage rig math", () => {
     expect(warm.intensity).toBeGreaterThan(0.9);
     const dark = beamLook({ red: 0, green: 0, blue: 0 });
     expect(dark.intensity).toBe(0);
+    expect(dark.lit).toBe(false);
   });
 
-  test("a strobe flashes at the rate the player reports, not one read off the byte", () => {
+  test("a fixture is lit as the engine has it: any level above 0", async () => {
+    // `channels::is_lit`. The views drew a faint fixture (red 5 under a
+    // full dimmer, a 0.007 mean) as dark, by thresholds of their own.
+    await loadRules();
+    expect(beamLook({ red: 5, green: 0, blue: 0, dimmer: 255 }).lit).toBe(true);
+    // Where a head points says nothing of whether it is lit.
+    expect(beamLook({ red: 0, dimmer: 0, pan: 128 } as never).lit).toBe(false);
+    // Nor is it lit in a strobe's dark half.
+    expect(beamLook({ red: 255, dimmer: 255 }, 5, 150).lit).toBe(false);
+  });
+
+  test("a strobe flashes at the rate the player reports, not one read off the byte", async () => {
+    await loadRules();
     const on = { red: 255, green: 0, blue: 0, dimmer: 255 };
     // A strobe byte alone says nothing: the view does not know the
     // fixture's range or curve. The rate comes beside the bytes.

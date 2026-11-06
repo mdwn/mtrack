@@ -180,6 +180,8 @@ pub struct FitGroup {
     /// Whether the running profile declares the group.
     pub defined: bool,
     pub needs: Needs,
+    /// The tags that would put a fixture in it (`Needs::tags_to_apply`).
+    pub tags: Vec<String>,
     /// The fixtures it finds in the current venue now.
     pub fixtures: Vec<String>,
     pub songs: Vec<String>,

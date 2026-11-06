@@ -20,9 +20,9 @@
   import {
     msToPixel,
     getGridLines,
-    formatMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     pixelsPerMs: number;
@@ -131,7 +131,7 @@
 
       // Label
       ctx.fillStyle = tickLabel;
-      ctx.fillText(formatMs(t), x, h - 16);
+      ctx.fillText(rules.clock(t / 1000, 3), x, h - 16);
     }
 
     // Draw measure/beat grid if tempo exists

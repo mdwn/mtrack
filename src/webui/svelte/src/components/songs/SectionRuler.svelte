@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { effectiveTheme } from "../../lib/theme";
+  import { rules } from "../../lib/rules";
   interface Props {
     songDurationMs: number;
     pixelsPerMs: number;
@@ -53,13 +54,6 @@
   const TIME_BASELINE = 26;
   const TIME_TICK_TOP = 28;
   const LABEL_WIDTH = 80;
-
-  function formatTime(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    return `${min}:${sec.toString().padStart(2, "0")}`;
-  }
 
   function chooseTickInterval(pxPerMs: number): number {
     const candidates = [
@@ -116,7 +110,7 @@
       ctx.lineTo(x, h);
       ctx.stroke();
 
-      ctx.fillText(formatTime(t), x, TIME_BASELINE);
+      ctx.fillText(rules.clock(t / 1000, 0), x, TIME_BASELINE);
     }
 
     // Measure markers from beat grid with density-based thinning.

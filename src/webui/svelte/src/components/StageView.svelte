@@ -46,7 +46,8 @@
   } from "../lib/api/config";
   import { testOutput, venueFailure } from "../lib/ws/status";
   import TestOutputLine from "./lighting/TestOutputLine.svelte";
-  import { deckFootprint, restAim } from "../lib/stage/aim";
+  import { deckFootprint } from "../lib/stage/aim";
+  import { rules } from "../lib/rules";
   import VenueInspector from "./lighting/VenueInspector.svelte";
   import { nudge } from "../lib/stage/arrange";
   import { beamCss, beamLook } from "../lib/stage/rig";
@@ -361,9 +362,9 @@
   let filePoses = $derived.by<Record<string, PoseSnapshot>>(() => {
     const out: Record<string, PoseSnapshot> = {};
     for (const [name, f] of Object.entries(fileFixtures)) {
-      if (!f.position || !f.rotation) continue;
+      const aim = f.rotation && rules.rest_beam(f.rotation);
+      if (!f.position || !aim) continue;
       if (f.capabilities?.includes("pan_tilt")) continue;
-      const aim = restAim(f.rotation);
       out[name] = {
         pan: 0,
         tilt: 0,
@@ -647,7 +648,7 @@
       const intensity = look.intensity;
 
       // Glow
-      if (intensity > 0.02 && strobeVisible) {
+      if (look.lit) {
         const gradient = ctx.createRadialGradient(
           pos.x,
           pos.y,

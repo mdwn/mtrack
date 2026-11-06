@@ -276,3 +276,19 @@ test("the ruler labels and beat lines thin out as the bars narrow", () => {
   const window = getGridLines(grid, 4000, 6000, 0.05);
   expect(window.map((l) => l.ms)).toEqual([4000, 4500, 5000, 5500, 6000]);
 });
+
+test("a time is shown and read as the player has it", async () => {
+  // `position::minutes_seconds`: cut to its places, never rounded into the
+  // next second (the views showed 59.9996 s as "0:60.000", and 59.9996 s
+  // in milliseconds as "0:59.1000").
+  await loadRules();
+  expect(rules.clock(75.5, 0)).toBe("1:15");
+  expect(rules.clock(75.5, 1)).toBe("1:15.5");
+  expect(rules.clock(75.5, 3)).toBe("1:15.500");
+  expect(rules.clock(59.9996, 3)).toBe("0:59.999");
+  // `parse_position`: the spellings every surface takes, and no comma.
+  expect(rules.position_parse("1:23.5")).toBe(83.5);
+  expect(rules.position_parse("@1:23")).toBe(83);
+  expect(rules.position_parse("83s")).toBe(83);
+  expect(rules.position_parse("1:23,5")).toBeUndefined();
+});

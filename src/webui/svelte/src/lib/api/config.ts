@@ -630,7 +630,7 @@ export async function fetchLightingGroups(): Promise<LightingGroup[]> {
   return data.groups;
 }
 
-/** The facts behind the Lighting overview's five checks. */
+/** The Lighting overview's five checks, and the facts behind them. */
 export async function fetchLightingReadiness(): Promise<Readiness> {
   const res = await get("/lighting/readiness");
   if (!res.ok) throw await apiError(res, "Failed to fetch lighting readiness");
@@ -641,6 +641,7 @@ export async function fetchLightingReadiness(): Promise<Readiness> {
     "groups",
     "shows",
     "output",
+    "checks",
   ]);
 }
 

@@ -30,14 +30,6 @@ export function orderGroups(groups: FitGroup[]): FitGroup[] {
   });
 }
 
-/** The tags that would put a fixture in a group: every `AllOf` tag plus the
- *  first `AnyOf` one, as the server suggests them. */
-export function tagsFor(group: FitGroup): string[] {
-  const tags = [...group.needs.all_of];
-  if (group.needs.any_of.length > 0) tags.push(group.needs.any_of[0]);
-  return [...new Set(tags)];
-}
-
 /** Whether two selections name the same fixtures. */
 export function sameSet(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((n) => b.includes(n));

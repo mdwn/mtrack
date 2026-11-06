@@ -482,6 +482,7 @@ pub(super) async fn get_song_tempo_guess(
                 StatusCode::OK,
                 Json(TempoGuess {
                     source: TempoGuessSource::Midi,
+                    config: guessed.to_config(),
                     tempo: guessed,
                 }),
             )
@@ -510,6 +511,7 @@ pub(super) async fn get_song_tempo_guess(
             StatusCode::OK,
             Json(TempoGuess {
                 source: TempoGuessSource::BeatGrid,
+                config: guessed.to_config(),
                 tempo: guessed,
             }),
         )

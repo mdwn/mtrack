@@ -13,6 +13,7 @@
 //
 
 import type { Matrix4, RigModel } from "../../gen/rules/mtrack_rules";
+import { rules } from "../rules";
 
 /**
  * The rig model as the asset store writes it (design §16.2), and the
@@ -151,6 +152,9 @@ export interface BeamLook {
   intensity: number;
   /** False in the dark half of a strobe's cycle. */
   strobeOn: boolean;
+  /** Whether it is lit: the engine's test of a lit fixture
+   *  (`rules.fixture_lit`), outside a strobe's dark half. */
+  lit: boolean;
 }
 
 /**
@@ -187,7 +191,8 @@ export function beamLook(
 ): BeamLook {
   // No state at all for the fixture (idle player, nothing reported yet):
   // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
-  if (!channels) return { rgb: [0, 0, 0], intensity: 0, strobeOn: true };
+  if (!channels)
+    return { rgb: [0, 0, 0], intensity: 0, strobeOn: true, lit: false };
   const dimmer = (channels.dimmer ?? 255) / 255;
   const hasColor =
     channels.red !== undefined ||
@@ -209,7 +214,12 @@ export function beamLook(
     strobeOn = Math.sin((now / 1000) * hz * Math.PI * 2) > 0;
   }
   const intensity = ((r + g + b) / 3) * dimmer;
-  return { rgb: [r * dimmer, g * dimmer, b * dimmer], intensity, strobeOn };
+  return {
+    rgb: [r * dimmer, g * dimmer, b * dimmer],
+    intensity,
+    strobeOn,
+    lit: strobeOn && rules.fixture_lit(channels),
+  };
 }
 
 /** A look as a canvas colour: its colour, or black in a strobe's dark half. */

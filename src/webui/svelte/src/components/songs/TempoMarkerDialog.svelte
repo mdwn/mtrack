@@ -13,7 +13,6 @@
      *
      * -->
 <script lang="ts">
-  import type { GuessedTempo } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
   import type {
     BeatGrid,
@@ -453,24 +452,6 @@
 
   let guessing = $state(false);
 
-  function guessToConfig(guessed: GuessedTempo): TempoConfig {
-    const config: TempoConfig = {
-      bpm: guessed.bpm,
-      time_signature: `${guessed.time_signature[0]}/${guessed.time_signature[1]}`,
-    };
-    if (guessed.start_seconds > 0) config.start = guessed.start_seconds;
-    const changes = guessed.changes.map((c) => {
-      const entry: TempoChangeConfig = { measure: c.measure };
-      if (c.beat > 1) entry.beat = c.beat;
-      entry.bpm = c.bpm;
-      entry.time_signature = `${c.time_signature[0]}/${c.time_signature[1]}`;
-      if (c.transition_beats) entry.transition = { beats: c.transition_beats };
-      return entry;
-    });
-    if (changes.length > 0) config.changes = changes;
-    return rules.tempo_normalize(config)?.config ?? config;
-  }
-
   let importNote = $state("");
 
   /** Imports a light show's tempo map as the song tempo. Time-anchored
@@ -506,7 +487,7 @@
     guessing = true;
     try {
       const result = await fetchTempoGuess(songName);
-      if (result) ontempochange(guessToConfig(result.tempo));
+      if (result) ontempochange(result.config);
     } finally {
       guessing = false;
     }

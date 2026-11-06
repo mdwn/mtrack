@@ -22,7 +22,7 @@
 //! These are warnings, never errors. A show that parses is still valid; these
 //! only say what looks suspicious.
 
-pub use crate::lighting::findings::{Want, Warning};
+pub use crate::lighting::findings::{Severity, Want, Warning};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
@@ -35,7 +35,19 @@ use crate::lighting::timeline::EffectEnd;
 
 impl Warning {
     fn new(kind: &'static str, message: String) -> Self {
-        Warning { kind, message }
+        Warning {
+            kind,
+            message,
+            severity: Severity::Note,
+        }
+    }
+
+    /// A warning that the rig will not do what the show says.
+    fn attention(kind: &'static str, message: String) -> Self {
+        Warning {
+            severity: Severity::Attention,
+            ..Warning::new(kind, message)
+        }
     }
 }
 
@@ -443,7 +455,7 @@ fn capability_coverage(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warnin
                     continue;
                 }
                 if reported.insert((group.clone(), want)) {
-                    out.push(Warning::new(
+                    out.push(Warning::attention(
                         "capability-gap",
                         format!(
                             "`{}` on `{group}` at {:.3}s needs {}, and none of the \
@@ -474,7 +486,7 @@ fn movement_checks(show: &LightShow, ctx: &LintContext, out: &mut Vec<Warning>) 
             for name in focus_targets(&effect.effect_type) {
                 if let Some(points) = &ctx.focus_points {
                     if !points.contains(name) && reported.insert(("focus", name.to_string())) {
-                        out.push(Warning::new(
+                        out.push(Warning::attention(
                             "unbound-focus-point",
                             format!(
                                 "`move` on `{}` at {:.3}s aims at focus point \"{name}\", which \

@@ -441,10 +441,12 @@ impl FitReport {
                     (Some(needs), true) => suggest(needs, &group_wants, &fit_fixtures),
                     _ => Fit::default(),
                 };
+                let needs = defined.clone().unwrap_or_default();
                 report.groups.push(FitGroup {
                     name: name.clone(),
                     defined: defined.is_some(),
-                    needs: defined.unwrap_or_default(),
+                    tags: needs.tags_to_apply(),
+                    needs,
                     fixtures: members,
                     songs: songs_using,
                     wants: group_wants.iter().copied().collect(),

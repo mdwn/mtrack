@@ -78,10 +78,12 @@ impl Evaluation {
         if self.fixtures.is_empty() {
             return None;
         }
-        Some(self.fixtures.iter().all(|f| {
-            f.channels
-                .iter()
-                .all(|(name, &v)| v == 0 || !crate::state::is_level_channel(name))
+        Some(!self.fixtures.iter().any(|f| {
+            crate::lighting::channels::is_lit(
+                f.channels
+                    .iter()
+                    .map(|(name, &v)| (name.as_str(), f64::from(v))),
+            )
         }))
     }
 }

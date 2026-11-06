@@ -19,6 +19,8 @@
 
 pub use crate::{patch, tempo};
 
+#[path = "../../../src/lighting/channels.rs"]
+pub mod channels;
 pub mod effects;
 #[path = "../../../src/lighting/findings.rs"]
 pub mod findings;

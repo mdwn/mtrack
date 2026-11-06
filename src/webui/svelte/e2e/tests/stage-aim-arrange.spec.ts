@@ -22,8 +22,9 @@ import {
   aimRotation,
   deckFootprint,
   faceRotation,
-  restAim,
 } from "../../src/lib/stage/aim";
+import { rules } from "../../src/lib/rules";
+import { loadRules } from "./rules-node";
 import {
   alignOnLine,
   dominantAxis,
@@ -33,6 +34,13 @@ import {
   spaceEvenly,
   type Placed,
 } from "../../src/lib/stage/arrange";
+
+test.beforeAll(loadRules);
+
+/** The player's rest beam of a mounting (`pointing::rest_beam`). */
+function restAim(rotation: [number, number, number]): [number, number, number] {
+  return rules.rest_beam(rotation)!;
+}
 
 /** The house rig as measured: two bricks per side, four across the front. */
 const HOUSE: Placed[] = [

@@ -35,6 +35,7 @@
     TempoSection,
   } from "../../lib/lighting/types";
   import { tempoSourceOf } from "../../lib/lighting/timeline-state";
+  import { absoluteTimestamp, emptyCue } from "../../lib/lighting/types";
   import { rules } from "../../lib/rules";
   import type {
     IncludeSource,
@@ -666,7 +667,13 @@
     }
     const fileName = name.endsWith(".light") ? name : `${name}.light`;
     const showName = fileName.replace(/\.light$/, "");
-    const defaultContent = `show "${showName}" {\n    @00:00.000\n}\n`;
+    // One show of the file's name, with an empty cue at 0, as the player's
+    // writer writes it.
+    const defaultContent =
+      rules.document_write({
+        sequences: [],
+        shows: [{ name: showName, cues: [emptyCue(absoluteTimestamp(0))] }],
+      }) ?? "";
 
     const fullPath = rootPath(fileName);
     // The song's own name is the placeholder's; naming the first file so

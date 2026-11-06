@@ -255,11 +255,6 @@
     previewSeek(playheadMs + (e.key === "ArrowLeft" ? -5000 : 5000));
   }
 
-  function formatPlayheadMs(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, "0")}`;
-  }
-
   /** Musical position + tempo/meter at the playhead, from the player's grid
    * and tempo map (the `tempo:` block's, else the one the grid itself
    * makes) — live while playing and while dragging. The readout rounds the
@@ -673,7 +668,7 @@
         <span class="playhead-info__pos"
           >m{playheadInfo.measure}.{playheadInfo.beat}</span
         >
-        · {formatPlayheadMs(playheadMs)}
+        · {rules.clock(playheadMs / 1000, 0)}
         {#if playheadInfo.bpm !== null}
           · {playheadInfo.bpm}
           {$t("tempo.bpm")}
@@ -728,7 +723,7 @@
         aria-valuemin={0}
         aria-valuemax={Math.floor(songDurationMs / 1000)}
         aria-valuenow={Math.floor(playheadMs / 1000)}
-        aria-valuetext={formatPlayheadMs(playheadMs)}
+        aria-valuetext={rules.clock(playheadMs / 1000, 0)}
         onpointerdown={handlePlayheadDown}
         onpointermove={handlePlayheadMove}
         onpointerup={handlePlayheadUp}
@@ -736,7 +731,8 @@
         onkeydown={handlePlayheadKeydown}
       >
         {#if playheadDragMs !== null}
-          <span class="playhead__time mono">{formatPlayheadMs(playheadMs)}</span
+          <span class="playhead__time mono"
+            >{rules.clock(playheadMs / 1000, 0)}</span
           >
         {/if}
       </div>

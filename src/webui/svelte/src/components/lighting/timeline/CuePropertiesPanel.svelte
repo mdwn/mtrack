@@ -26,7 +26,7 @@
   import EffectForm from "../EffectForm.svelte";
   import LayerCommandForm from "../LayerCommandForm.svelte";
   import SequenceRefForm from "../SequenceRefForm.svelte";
-  import { formatMs } from "../../../lib/lighting/timeline-state";
+  import { rules } from "../../../lib/rules";
 
   interface Props {
     cue: Cue;
@@ -61,7 +61,7 @@
     if (tab.startsWith("effects:")) return "effects";
     return tab;
   });
-  let absTime = $derived(formatMs(cueMs));
+  let absTime = $derived(rules.clock(cueMs / 1000, 3));
 
   let sectionLabels = $derived({
     effects: $t("timeline.properties.effects"),

@@ -20,7 +20,7 @@
   import { sectionColor } from "../../lib/sectionColors";
   import { rules } from "../../lib/rules";
   import BeatIndicator from "./BeatIndicator.svelte";
-  import { formatFadeLength, formatMs } from "../../lib/util/format";
+  import { formatFadeLength } from "../../lib/util/format";
   import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -586,7 +586,7 @@
 
     <div class="playback-card__progress">
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.elapsed_ms)}</span
+        >{rules.clock($playbackStore.elapsed_ms / 1000, 0)}</span
       >
       <div
         class="scrub scrub--seekable"
@@ -626,12 +626,15 @@
           <div
             class="scrub__pending"
             style:left="{pendingStartPct}%"
-            title={formatMs($playbackStore.pending_start_ms ?? 0)}
+            title={rules.clock(
+              ($playbackStore.pending_start_ms ?? 0) / 1000,
+              0,
+            )}
           ></div>
         {/if}
       </div>
       <span class="mono playback-card__time"
-        >{formatMs($playbackStore.song_duration_ms)}</span
+        >{rules.clock($playbackStore.song_duration_ms / 1000, 0)}</span
       >
     </div>
 

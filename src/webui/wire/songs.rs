@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::audio::beat_grid::BeatGrid;
 use crate::audio::guessed_tempo::GuessedTempo;
-use crate::config::Section;
+use crate::config::{Section, TempoConfig};
 
 /// `GET /api/songs`: the songs the player knows, and those that failed to
 /// load.
@@ -74,6 +74,8 @@ pub struct SongFailure {
 pub struct TempoGuess {
     pub source: TempoGuessSource,
     pub tempo: GuessedTempo,
+    /// The guess as a song's `tempo:` block (`GuessedTempo::to_config`).
+    pub config: TempoConfig,
 }
 
 /// What a tempo guess was read from.
