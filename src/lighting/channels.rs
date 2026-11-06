@@ -267,6 +267,23 @@ mod tests {
         assert!(!lit(&closed_dark_white));
     }
 
+    /// A fine byte joins its coarse one (the brighter of the two), in
+    /// whichever order they come: all three flags closed stays dark.
+    #[test]
+    fn a_fine_byte_does_not_replace_its_coarse_one() {
+        let closed = [
+            ("cyan", 255.0),
+            ("cyan_fine", 0.0),
+            ("magenta", 255.0),
+            ("yellow", 255.0),
+            ("dimmer", 255.0),
+        ];
+        assert!(!lit(&closed));
+        let mut reversed = closed;
+        reversed.reverse();
+        assert!(!lit(&reversed));
+    }
+
     #[test]
     fn cyan_magenta_and_yellow_are_emitters_unless_the_fixture_mixes_subtractively() {
         // Cyan alone, or two of three, are emitters: lit by their own level.
