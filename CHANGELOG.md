@@ -153,8 +153,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
-  dashboard's next-up line show the gap to the millisecond, as a fade's length is shown
-  (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`).
+  dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is
+  shown (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`; `auto_play: 1.0005s`
+  reads `1.0005s` on both, where the next-up line said `1s`, and `auto_play: 0.5ms` is a gap
+  there too, where it said the song starts at once). The status's `next.auto_play_ms` is exact
+  (a fraction of a millisecond where there is one), where it was truncated to whole milliseconds.
 - **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
   `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one parser:
   decimal numbers with `ms`, `s`, `m` (minutes) or `h`, summed (`1m30s`); fades take `beats` and

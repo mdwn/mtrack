@@ -204,7 +204,9 @@ pub struct AmbientState {
 
 /// The song after the current one. A looping song that is playing goes on
 /// only by a loop break, with the playlist's fades; otherwise the next song
-/// starts by itself after `auto_play_ms`, or (`null`) waits for Play. The
+/// starts by itself after `auto_play_ms` (exact, not rounded: the web UI
+/// writes it as the entry's gap is written, `gap_text`), or (`null`) waits
+/// for Play. The
 /// fields a case does not decide are absent.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -223,7 +225,7 @@ pub struct NextUp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fade_in: Option<Option<FadeStatus>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_play_ms: Option<Option<u64>>,
+    pub auto_play_ms: Option<Option<f64>>,
 }
 
 /// The stage at one instant, by fixture: what the live `state` message and

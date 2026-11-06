@@ -208,6 +208,16 @@ test.describe("Dashboard: next up", () => {
     });
     await expect(nextUp).toHaveText("Next: Opener — starts by itself after 2s");
 
+    // The gap as the entry shows it: unrounded, half a millisecond is a gap.
+    await sendWsMessage(page, wsId, {
+      ...frame,
+      looping: false,
+      next: { song: "Opener", breaks_loop: false, auto_play_ms: 1000.5 },
+    });
+    await expect(nextUp).toHaveText(
+      "Next: Opener — starts by itself after 1.0005s",
+    );
+
     await sendWsMessage(page, wsId, {
       ...frame,
       looping: false,

@@ -1187,8 +1187,8 @@ pub fn fade_length_text(text: &str) -> Option<String> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AutoPlayReading {
     Off,
-    /// The gap, and as a reader is shown it (`config::length::clock_text`:
-    /// `1.5s`).
+    /// The gap, and as a reader is shown it ([`gap_text`], as the
+    /// dashboard's next-up line shows it: `1.5s`).
     Gap {
         ms: f64,
         text: String,
@@ -1203,10 +1203,13 @@ pub fn auto_play_read(text: &str) -> AutoPlayReading {
     let value = serde_json::Value::String(text.to_string());
     match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
         Ok(Ok(None)) => AutoPlayReading::Off,
-        Ok(Ok(Some(gap))) => AutoPlayReading::Gap {
-            ms: gap.as_secs_f64() * 1000.0,
-            text: config::length::clock_text(gap),
-        },
+        Ok(Ok(Some(gap))) => {
+            let ms = gap.as_secs_f64() * 1000.0;
+            AutoPlayReading::Gap {
+                ms,
+                text: gap_text(ms),
+            }
+        }
         _ => AutoPlayReading::Invalid,
     }
 }
