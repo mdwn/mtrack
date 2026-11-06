@@ -417,7 +417,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any doubt the broken file is the fixture's record, offered for replacing, and a GDTF's archive
   is never deleted while a file that does not read may be its record (409). A broken file's blocks
   are found wherever their opening brace stands, so a broken record as the GDTF import writes it
-  (`fixture_type "Par"`, then `from gdtf(…)` and `{` on lines of their own) is found by its name. The
+  (`fixture_type "Par"`, then `from gdtf(…)` and `{` on lines of their own) is found by its name.
+  One rule decides whether a broken file may hold a name or a GDTF archive: its block headers, the
+  name after a quote anywhere in it (so a quote left open mid-file does not hide a later venue),
+  or the archive's path. It decides which broken files a save or delete offers, whether the
+  library answers for a fixture, whether a library fixture's DELETE must first offer to remove
+  such a file (then removes it, kept aside, and the archive), whether deleting a recorded GDTF
+  fixture keeps its archive (the reply says which file named it), and whether an import's
+  fixture name is taken (an unpinned import picks the next name past a broken file that may
+  hold it). An MVR re-import that cannot patch the venue file in place refuses when the file
+  holds other venues, naming them, and otherwise keeps the old file beside the regenerated one
+  (`<file>.replaced-<time>`, named in the import's report); it regenerated the file with this
+  venue only, losing the others. The
   reply and the web UI say "The old file was kept as …". An MVR import whose GDTFs share a file
   stem ("Par", "par a", "par_a") writes each record to a file of its own (`par`, `par_a`,
   `par_a_2`); the last overwrote another's. A name with no letters or digits (`!!!`, `★`) is
