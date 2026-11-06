@@ -573,6 +573,36 @@ fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::P
         .next()
 }
 
+/// Where a save writes a venue or fixture type file: `file`, under `dir`,
+/// held inside it by the one containment rule MCP's tools take
+/// (`SafePath::validate_relative_entry`), and refused when it is a link to
+/// nothing, as writing through it would create whatever it names.
+#[allow(clippy::result_large_err)]
+fn lighting_write_path(
+    dir: &std::path::Path,
+    file: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, VerifiedRoot};
+    let refuse = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
+    let relative = file
+        .strip_prefix(dir)
+        .map_err(|_| refuse(format!("{} is outside {}", file.display(), dir.display())))?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let root = VerifiedRoot::new(dir).map_err(|e| e.into_response())?;
+    let entry =
+        SafePath::validate_relative_entry(&relative, &root).map_err(|e| e.into_response())?;
+    if entry.is_dangling_link() {
+        return Err(refuse(format!(
+            "{} is a link to a file that is not there",
+            crate::util::filename_display(file)
+        )));
+    }
+    Ok(entry.into_path())
+}
+
 /// Serialises every read-check-write of a venue file, so two saves cannot
 /// interleave between the version check and the write; and every write of a
 /// fixture type file, which a fixture's settings save rewrites with its
@@ -1737,6 +1767,7 @@ pub(super) async fn put_fixture_type(
     // and profiles writes use, so a refusal is reported as the configuration
     // problem it is rather than a server fault. The file goes under the
     // directory that was made, not the spelling.
+    let resolved_dir = dir.clone();
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
 
     // An existing type stays in its own folder, at any depth; a new one is
@@ -1745,7 +1776,7 @@ pub(super) async fn put_fixture_type(
     let folder = located
         .as_ref()
         .and_then(|(path, _)| path.parent())
-        .map_or(dir, std::path::Path::to_path_buf);
+        .map_or_else(|| dir.clone(), std::path::Path::to_path_buf);
     // The files at the stem, by their kind (`songs::extension_of`), never by
     // their spelling: on a filesystem that ignores case, `Par.fixture` and
     // `Par.FIXTURE` are one file.
@@ -1775,6 +1806,12 @@ pub(super) async fn put_fixture_type(
         }
     }
     let file_path = in_form.unwrap_or_else(|| folder.join(format!("{stem}.{extension}")));
+    // The file found or made under the directory as it was read, or as it
+    // was made: held inside it either way.
+    let file_path = match file_path.strip_prefix(&resolved_dir) {
+        Ok(relative) => lighting_write_path(&dir, &dir.join(relative))?,
+        Err(_) => lighting_write_path(&dir, &file_path)?,
+    };
     // The other forms of this type are retired, or the loader would register
     // the name twice: each file at the stem in another form that declares
     // this type. A file declaring other types is left alone.
@@ -2663,6 +2700,10 @@ pub(super) async fn put_venue(
                     .into_response(),
             );
         }
+        let file_path = match lighting_write_path(&dir, &file_path) {
+            Ok(path) => path,
+            Err(r) => return reply(r),
+        };
         config_io::staged_write(&file_path, &dsl)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover
@@ -6922,6 +6963,42 @@ show "test" {
             std::fs::read_to_string(ft_dir.join("Par.FIXTURE")).unwrap(),
             sample_rich_fixture_type_dsl("Par")
         );
+    }
+
+    /// A save does not write through a link to nothing, which would create
+    /// the file it names, outside the project or not: the one containment
+    /// rule MCP's tools take.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saves_refuse_a_link_to_nothing() {
+        let (state, _dir) = test_state();
+        let outside = tempfile::tempdir().unwrap();
+        for (rel, file) in [("ft_dead", "par.light"), ("v_dead", "club.light")] {
+            let dir = _dir.path().join(rel);
+            std::fs::create_dir(&dir).unwrap();
+            std::os::unix::fs::symlink(outside.path().join(file), dir.join(file)).unwrap();
+        }
+
+        let (status, parsed) = fixture_type_request(
+            state.clone(),
+            "PUT",
+            "/lighting/fixture-types/par?dir=ft_dead".to_string(),
+            "text/plain",
+            Body::from(sample_fixture_type_dsl("par")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/venues/club?dir=v_dead".to_string(),
+            "text/plain",
+            Body::from(sample_venue_dsl("club")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
