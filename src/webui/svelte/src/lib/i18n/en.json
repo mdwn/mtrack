@@ -355,6 +355,7 @@
   "trigger.controlChange": "Control Change",
   "trigger.midiChannel": "Channel",
   "trigger.keyCC": "Key / CC#",
+  "trigger.ccValue": "CC Value",
   "trigger.midiSample": "Sample",
   "trigger.cal.calibrateChannel": "Calibrate Channel {channel}",
   "trigger.cal.device": "Device",

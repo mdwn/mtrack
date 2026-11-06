@@ -46,6 +46,31 @@ test.describe("Profile Editor - Triggers Section", () => {
     await expect(page.locator('[id^="trigger-midi-ch-"]')).toBeVisible();
   });
 
+  test("a control change trigger saves its controller and value, not a key", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "+ MIDI" }).click();
+    await page
+      .locator('[id^="trigger-midi-type-"]')
+      .selectOption("control_change");
+    await page.locator('[id^="trigger-midi-key-"]').fill("5");
+    await page.locator('[id^="trigger-midi-key-"]').blur();
+    await page.locator('[id^="trigger-midi-value-"]').fill("64");
+    await page.locator('[id^="trigger-midi-value-"]').blur();
+
+    const saved = page.waitForRequest(
+      (r) => r.method() === "PUT" && r.url().endsWith("/api/config/profiles/0"),
+    );
+    await page.getByRole("button", { name: "Save" }).click();
+    const body = (await saved).postDataJSON();
+    expect(body.profile.trigger.inputs[0]).toEqual({
+      kind: "midi",
+      event: { type: "control_change", channel: 10, controller: 5, value: 64 },
+      sample: "",
+    });
+    await expect(page.locator(".save-msg")).toContainText("Saved");
+  });
+
   test("audio input shows Calibrate button", async ({ page }) => {
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.getByRole("button", { name: "Calibrate" })).toBeVisible();

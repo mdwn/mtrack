@@ -125,14 +125,51 @@
     onchange();
   }
 
-  /** A field of a MIDI input's event; the event's type decides which it
-   *  has, so a change is a new event. */
+  /** The MIDI events a trigger input listens for. */
+  type TriggerEvent = Extract<
+    MidiEvent,
+    { type: "note_on" | "note_off" | "control_change" }
+  >;
+
+  /** A MIDI input's event with a field changed, built with exactly its
+   *  type's fields: a change of type keeps the channel and the key or
+   *  controller number, and a control change carries the value it
+   *  matches. */
   function updateMidiEvent(
     input: MidiTriggerInput,
-    key: string,
-    value: string | number,
+    change: {
+      type?: TriggerEvent["type"];
+      channel?: number;
+      number?: number;
+      value?: number;
+    },
   ) {
-    input.event = { ...input.event, [key]: value } as MidiEvent;
+    const event = input.event;
+    const type =
+      change.type ??
+      (event.type === "note_off" || event.type === "control_change"
+        ? event.type
+        : "note_on");
+    const channel = change.channel ?? event.channel;
+    const number =
+      change.number ??
+      ("key" in event
+        ? event.key
+        : "controller" in event
+          ? event.controller
+          : 60);
+    const velocity = "velocity" in event ? event.velocity : undefined;
+    input.event =
+      type === "control_change"
+        ? {
+            type,
+            channel,
+            controller: number,
+            value: change.value ?? ("value" in event ? event.value : 127),
+          }
+        : velocity === undefined
+          ? { type, channel, key: number }
+          : { type, channel, key: number, velocity };
     onchange();
   }
 
@@ -879,7 +916,11 @@
         {:else}
           <!-- MIDI trigger input -->
           <div class="input-fields">
-            <div class="field-row-3">
+            <div
+              class={input.event.type === "control_change"
+                ? "field-row-4"
+                : "field-row-3"}
+            >
               <div class="field">
                 <label for="trigger-midi-type-{i}"
                   >{$t("trigger.eventType")}</label
@@ -889,11 +930,10 @@
                   class="input"
                   value={input.event?.type ?? "note_on"}
                   onchange={(e) =>
-                    updateMidiEvent(
-                      input,
-                      "type",
-                      (e.target as HTMLSelectElement).value,
-                    )}
+                    updateMidiEvent(input, {
+                      type: (e.target as HTMLSelectElement)
+                        .value as TriggerEvent["type"],
+                    })}
                 >
                   <option value="note_on">{$t("trigger.noteOn")}</option>
                   <option value="note_off">{$t("trigger.noteOff")}</option>
@@ -914,11 +954,10 @@
                   class="input"
                   value={input.event?.channel ?? 10}
                   onchange={(e) =>
-                    updateMidiEvent(
-                      input,
-                      "channel",
-                      parseInt((e.target as HTMLInputElement).value) || 1,
-                    )}
+                    updateMidiEvent(input, {
+                      channel:
+                        parseInt((e.target as HTMLInputElement).value) || 1,
+                    })}
                 />
               </div>
               <div class="field">
@@ -934,18 +973,33 @@
                     : "controller" in input.event
                       ? input.event.controller
                       : 60}
-                  onchange={(e) => {
-                    const v =
-                      parseInt((e.target as HTMLInputElement).value) || 0;
-                    const type = input.event?.type ?? "note_on";
-                    if (type === "control_change") {
-                      updateMidiEvent(input, "controller", v);
-                    } else {
-                      updateMidiEvent(input, "key", v);
-                    }
-                  }}
+                  onchange={(e) =>
+                    updateMidiEvent(input, {
+                      number:
+                        parseInt((e.target as HTMLInputElement).value) || 0,
+                    })}
                 />
               </div>
+              {#if input.event.type === "control_change"}
+                <div class="field">
+                  <label for="trigger-midi-value-{i}"
+                    >{$t("trigger.ccValue")}</label
+                  >
+                  <input
+                    id="trigger-midi-value-{i}"
+                    type="number"
+                    min="0"
+                    max="127"
+                    class="input"
+                    value={input.event.value}
+                    onchange={(e) =>
+                      updateMidiEvent(input, {
+                        value:
+                          parseInt((e.target as HTMLInputElement).value) || 0,
+                      })}
+                  />
+                </div>
+              {/if}
             </div>
             <div class="field">
               <label for="trigger-midi-sample-{i}"
@@ -1006,6 +1060,11 @@
   .field-row-3 {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  .field-row-4 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 12px;
   }
   .field-header {
