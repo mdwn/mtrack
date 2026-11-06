@@ -17,7 +17,6 @@
   import { playbackStore } from "../lib/ws/stores";
   import { setLocked } from "../lib/api/config";
   import { playerClient } from "../lib/grpc/client";
-  import { playlistEnds } from "../lib/nextUp";
   import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -91,7 +90,11 @@
     }
   }
 
-  let ends = $derived(playlistEnds($playbackStore));
+  // Whether Previous and Next have an entry to move to, as the player says.
+  let ends = $derived({
+    atFirst: $playbackStore.playlist_at_first,
+    atLast: $playbackStore.playlist_at_last,
+  });
   let canPrev = $derived(
     $playbackStore.playlist_songs.length > 0 && !ends.atFirst,
   );

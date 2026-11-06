@@ -35,6 +35,8 @@ function playbackState(overrides: Record<string, unknown> = {}) {
     song_duration_ms: 240000,
     playlist_name: "setlist",
     playlist_position: 1,
+    playlist_at_first: false,
+    playlist_at_last: true,
     playlist_songs: ["Test Song Alpha", "Test Song Beta"],
     tracks: [],
     available_playlists: ["all_songs", "setlist"],

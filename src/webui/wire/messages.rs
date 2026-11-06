@@ -57,6 +57,10 @@ pub struct Playback {
     /// A song an edit took off the list, playing on: the playlist sits
     /// before the entry at `playlist_position` rather than on it.
     pub playlist_off_list: bool,
+    /// Whether Previous has no entry to move back to, and Next none to move
+    /// on to (`Playlist::can_move`).
+    pub playlist_at_first: bool,
+    pub playlist_at_last: bool,
     pub playlist_songs: Vec<String>,
     pub tracks: Vec<TrackInfo>,
     pub available_playlists: Vec<String>,

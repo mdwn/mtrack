@@ -21,7 +21,7 @@
   import { rules } from "../../lib/rules";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatFadeLength } from "../../lib/util/format";
-  import { describeNext, loopEndFade, playlistEnds } from "../../lib/nextUp";
+  import { describeNext, loopEndFade } from "../../lib/nextUp";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -294,7 +294,11 @@
   let loopEnd = $derived(
     $playbackStore.is_playing ? loopEndFade($playbackStore.next) : null,
   );
-  let ends = $derived(playlistEnds($playbackStore));
+  // Whether Previous and Next have an entry to move to, as the player says.
+  let ends = $derived({
+    atFirst: $playbackStore.playlist_at_first,
+    atLast: $playbackStore.playlist_at_last,
+  });
   let atFirst = $derived(ends.atFirst);
   let atLast = $derived(ends.atLast);
   let canPrev = $derived(

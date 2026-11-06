@@ -62,6 +62,8 @@ async function openWithPlayhead(page: Page, yaml = SONG_YAML): Promise<void> {
       song_duration_ms: 34000,
       playlist_name: "setlist",
       playlist_position: 1,
+      playlist_at_first: false,
+      playlist_at_last: true,
       playlist_songs: [SONG],
       tracks: [],
       available_playlists: ["setlist"],

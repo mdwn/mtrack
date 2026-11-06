@@ -269,6 +269,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             playlist_name,
             playlist_position,
             playlist_off_list,
+            playlist_at_first: !playlist.can_move(true),
+            playlist_at_last: !playlist.can_move(false),
             playlist_songs,
             tracks,
             available_playlists,

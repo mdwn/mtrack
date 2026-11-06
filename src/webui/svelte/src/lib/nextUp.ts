@@ -13,7 +13,6 @@
 //
 
 import type { FadeStatus, NextUp } from "../gen/rules/mtrack_rules";
-import type { PlaybackState } from "./ws/stores";
 import type { Translate } from "./i18n";
 import { formatFadeLength, formatGapMs } from "./util/format";
 
@@ -68,24 +67,4 @@ export function loopEndFade(
 ): FadeStatus | null {
   if (!next || !(next.breaks_loop || next.ends_loop)) return null;
   return next.fade_out ?? null;
-}
-
-/** Whether the playlist is at its first entry, with nothing for Previous to
- *  move back to, and at its last, with nothing for Next. Off the list, it
- *  sits before the entry at its position, which Next lands on; Previous
- *  lands on the one before, or on the first entry itself, so off the list
- *  is never the first. */
-export function playlistEnds(
-  state: Pick<
-    PlaybackState,
-    "playlist_position" | "playlist_off_list" | "playlist_songs"
-  >,
-): { atFirst: boolean; atLast: boolean } {
-  const lastEntry = state.playlist_songs.length - 1;
-  return {
-    atFirst: !state.playlist_off_list && state.playlist_position <= 0,
-    atLast: state.playlist_off_list
-      ? state.playlist_position > lastEntry
-      : state.playlist_position >= lastEntry,
-  };
 }
