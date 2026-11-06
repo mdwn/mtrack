@@ -338,6 +338,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One text for "no effect engine"**: with no DMX engine, gRPC `GetActiveEffects` (and so
+  `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
+  answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
+  MCP's lighting resource already said.
 - **A song that failed to load says why on MCP and gRPC**: a song whose files are there but did
   not load (a `.light` file that does not parse, say) was "unable to find song broken" to every
   MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to gRPC

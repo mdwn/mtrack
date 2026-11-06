@@ -673,10 +673,7 @@ impl McpServer {
         each fixture is actually outputting — use `get_fixture_state`."
     )]
     async fn get_active_effects(&self) -> Result<CallToolResult, McpError> {
-        let summary = self
-            .player
-            .format_active_effects()
-            .unwrap_or_else(|| "(no effect engine configured)".to_string());
+        let summary = self.player.active_effects_summary();
         Ok(CallToolResult::success(vec![ContentBlock::text(summary)]))
     }
 
@@ -3577,7 +3574,7 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
     let Some(engine) = player.effect_engine() else {
         return Ok(json!({
             "available": false,
-            "reason": "no effect engine configured",
+            "reason": crate::player::NO_EFFECT_ENGINE,
         }));
     };
 

@@ -57,6 +57,10 @@ use crate::{
     songs::Song,
 };
 
+/// What every surface says for the lighting effects when there is no
+/// effect engine (no DMX engine configured).
+pub const NO_EFFECT_ENGINE: &str = "no effect engine configured";
+
 /// Direction for playlist navigation.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PlaylistDirection {
@@ -1111,6 +1115,13 @@ impl Player {
             .dmx_engine
             .clone()
             .map(|engine| engine.format_active_effects())
+    }
+
+    /// The active lighting effects as text for a surface to show:
+    /// [`Player::format_active_effects`], or [`NO_EFFECT_ENGINE`] without one.
+    pub fn active_effects_summary(&self) -> String {
+        self.format_active_effects()
+            .unwrap_or_else(|| NO_EFFECT_ENGINE.to_string())
     }
 
     /// Emits the per-song MIDI event and notifies all song-change notifiers.

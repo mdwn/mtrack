@@ -1615,8 +1615,7 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
 
     // get_active_effects returns a human-readable summary. We don't pin its
     // exact text (the formatter is internal), but we verify a non-empty
-    // string came back rather than the "(no effect engine configured)"
-    // placeholder.
+    // string came back rather than the no-engine placeholder.
     let effects_resp = call_tool(
         &client,
         &url,
@@ -1630,7 +1629,7 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
         .as_str()
         .unwrap_or_default();
     assert!(
-        !effects_text.contains("(no effect engine configured)"),
+        effects_text != crate::player::NO_EFFECT_ENGINE,
         "expected a real effects summary, got: {effects_text}"
     );
 

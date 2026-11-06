@@ -443,10 +443,7 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<GetActiveEffectsRequest>,
     ) -> Result<Response<GetActiveEffectsResponse>, Status> {
-        let active_effects = self
-            .player
-            .format_active_effects()
-            .unwrap_or_else(|| "No DMX engine available".to_string());
+        let active_effects = self.player.active_effects_summary();
 
         Ok(Response::new(GetActiveEffectsResponse { active_effects }))
     }
