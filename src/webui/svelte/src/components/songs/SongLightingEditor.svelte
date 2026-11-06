@@ -671,8 +671,10 @@
       error = $t("songLighting.badFileName");
       return;
     }
-    const fileName = name.endsWith(".light") ? name : `${name}.light`;
-    const showName = fileName.replace(/\.light$/, "");
+    // A light show by its extension, in any case, as the player loads it.
+    const fileName =
+      rules.file_kind(name) === "lighting" ? name : `${name}.light`;
+    const showName = fileName.slice(0, fileName.lastIndexOf("."));
     // One show of the file's name, with an empty cue at 0, as the player's
     // writer writes it.
     const defaultContent =

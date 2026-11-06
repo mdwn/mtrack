@@ -80,10 +80,14 @@ pub(crate) fn entry_basename(entry: &str) -> &str {
     entry.rsplit('/').next().unwrap_or(entry)
 }
 
-/// An entry's file name without its `.gdtf`, if it has one.
+/// An entry's file name without its `.gdtf`, in any case
+/// (`songs::has_extension`), if it has one.
 fn gdtf_stem(entry: &str) -> &str {
-    let base = entry_basename(entry);
-    base.strip_suffix(".gdtf").unwrap_or(base)
+    let base = std::path::Path::new(entry_basename(entry));
+    let stem = crate::songs::has_extension(base, &["gdtf"])
+        .then(|| base.file_stem().and_then(|s| s.to_str()))
+        .flatten();
+    stem.or(base.to_str()).unwrap_or(entry)
 }
 
 /// Finds the embedded entry a fixture's `GDTFSpec` names. Console exports
@@ -135,6 +139,15 @@ pub fn resolve_gdtf_entry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry's `.gdtf` is read in any case, as every file's extension is.
+    #[test]
+    fn a_gdtf_stem_takes_the_extension_in_any_case() {
+        assert_eq!(gdtf_stem("fixtures/Robe@Esprite.GDTF"), "Robe@Esprite");
+        assert_eq!(gdtf_stem("Robe@Esprite.gdtf"), "Robe@Esprite");
+        assert_eq!(gdtf_stem("Robe@Esprite"), "Robe@Esprite");
+        assert_eq!(gdtf_stem("Robe.Esprite.zip"), "Robe.Esprite.zip");
+    }
 
     #[test]
     fn gdtf_references_resolve_tolerantly() {

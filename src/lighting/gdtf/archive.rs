@@ -57,8 +57,14 @@ const MODEL_DIRS: [&str; 2] = ["models/gltf/", "models/gltf_low/"];
 /// The mesh stem an archive entry is, if it is one: `(stem, detail rank)`.
 fn mesh_entry(name: &str) -> Option<(String, usize)> {
     MODEL_DIRS.iter().enumerate().find_map(|(rank, dir)| {
-        let stem = name.strip_prefix(dir)?.strip_suffix(".glb")?;
-        (!stem.is_empty() && !stem.contains('/')).then(|| (stem.to_ascii_lowercase(), rank))
+        // Directly in the directory, `.glb` in any case (`songs::has_extension`).
+        let rest = name.strip_prefix(dir)?;
+        let file = std::path::Path::new(rest);
+        if rest.contains('/') || !crate::songs::has_extension(file, &["glb"]) {
+            return None;
+        }
+        let stem = file.file_stem()?.to_str()?;
+        (!stem.is_empty()).then(|| (stem.to_ascii_lowercase(), rank))
     })
 }
 
@@ -247,6 +253,22 @@ pub(super) mod tests {
     use std::io::Write;
 
     use super::*;
+
+    /// A mesh is a `.glb` in any case, directly in a model directory.
+    #[test]
+    fn a_mesh_entry_takes_the_extension_in_any_case() {
+        assert_eq!(
+            mesh_entry("models/gltf/Head.GLB"),
+            Some(("head".to_string(), 0))
+        );
+        assert_eq!(
+            mesh_entry("models/gltf_low/head.glb"),
+            Some(("head".to_string(), 1))
+        );
+        assert_eq!(mesh_entry("models/gltf/sub/head.glb"), None);
+        assert_eq!(mesh_entry("models/gltf/.glb"), None);
+        assert_eq!(mesh_entry("models/gltf/head.3ds"), None);
+    }
 
     /// Builds an in-memory zip with the given entries.
     pub(crate) fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {

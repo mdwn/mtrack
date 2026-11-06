@@ -1113,6 +1113,14 @@ pub fn midi_extensions() -> Vec<String> {
         .collect()
 }
 
+/// What the file `name` is to the player, by its extension in any case
+/// (`songs::FileKind::of`): a `Show.LIGHT` is a light show, as the player
+/// loads it. Never `directory`.
+#[wasm_bindgen]
+pub fn file_kind(name: &str) -> songs::FileKind {
+    songs::FileKind::of(std::path::Path::new(name))
+}
+
 /// The samples of a synthesized click at `freq` Hz and `volume`, at
 /// `sample_rate` (`synthesize_click`, the click the player renders): what
 /// a click's preview plays. `None` for a rate past 384 kHz or a value that
