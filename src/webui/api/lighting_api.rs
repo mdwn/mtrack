@@ -713,11 +713,33 @@ fn shared_fixture_type_file_response(
     others: &[String],
     action: &str,
 ) -> axum::response::Response {
+    shared_file_response("fixture type", name, path, others, action)
+}
+
+/// The names a file a save retires (its twin in another form) declares and
+/// the saved text does not, sorted: retiring it would lose them, so the save
+/// is refused. One rule for fixture types and venues.
+fn lost_by_retiring(declared: Vec<String>, saved: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut lost: Vec<String> = declared.into_iter().filter(|n| !saved(n)).collect();
+    lost.sort();
+    lost
+}
+
+/// The 409 for a save or delete that would take a file's other venues or
+/// fixture types (`keyword`) with it.
+fn shared_file_response(
+    keyword: &str,
+    name: &str,
+    path: &std::path::Path,
+    others: &[String],
+    action: &str,
+) -> axum::response::Response {
     (
         StatusCode::CONFLICT,
         Json(json!({"error": format!(
-            "fixture type \"{}\" lives in {}, which also defines {}; {} would remove them — \
+            "{} \"{}\" lives in {}, which also defines {}; {} would remove them — \
              edit the file as text instead",
+            keyword,
             name,
             crate::util::filename_display(path),
             others
@@ -1995,12 +2017,8 @@ pub(super) async fn put_fixture_type(
         if !declared.contains(&name) {
             continue;
         }
-        let mut lost: Vec<String> = declared
-            .into_iter()
-            .filter(|n| !types.contains_key(n))
-            .collect();
+        let lost = lost_by_retiring(declared, |n| types.contains_key(n));
         if !lost.is_empty() {
-            lost.sort();
             return Err(shared_fixture_type_file_response(
                 &name,
                 &path,
@@ -2012,28 +2030,25 @@ pub(super) async fn put_fixture_type(
     }
     // A broken file the person chose to replace is set aside, kept, before
     // the save writes (`set_aside_broken`), whether the save writes in its
-    // place or, in another form, beside it. (A twin declares the type, so
-    // reads, and is never one of them.)
+    // place or, in another form, beside it; so is each twin the save
+    // retires. (A twin declares the type, so reads, and is never broken.)
+    // A failed write puts them all back.
     let fp = file_path;
     let dsl_owned = dsl;
     let kept_root = resolved_dir.clone();
+    let mut retired = broken;
+    retired.extend(stale_twins);
     let kept = super::helpers::spawn_blocking_io("write fixture type", move || {
-        let set_aside = set_aside_all(&broken)?;
+        let set_aside = set_aside_all(&retired)?;
         if let Err(e) = config_io::staged_write(&fp, &dsl_owned) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
-        let kept: Vec<String> = set_aside
-            .iter()
-            .map(|(_, backup)| lighting::project_files::display_in(&kept_root, backup))
-            .collect();
-        for twin in stale_twins {
-            // Best effort: the save is durable already, and a leftover twin
-            // surfaces as a duplicate fixture type name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the fixture type's stale twin");
-            }
-        }
-        Ok::<_, String>(kept)
+        Ok::<_, String>(
+            set_aside
+                .iter()
+                .map(|(_, backup)| lighting::project_files::display_in(&kept_root, backup))
+                .collect::<Vec<String>>(),
+        )
     })
     .await?;
 
@@ -2973,7 +2988,9 @@ pub(super) async fn put_venue(
         // content outgrows `.light`, in which case it moves to `.venue` and
         // the `.light` original is retired after the durable write.
         let file_path = match &located {
-            Some(l) if !typed || crate::songs::extension_of(&l.path).as_deref() == Some("venue") => {
+            Some(l)
+                if !typed || crate::songs::extension_of(&l.path).as_deref() == Some("venue") =>
+            {
                 l.path.clone()
             }
             Some(l) => l.path.with_extension("venue"),
@@ -3017,7 +3034,26 @@ pub(super) async fn put_venue(
             .as_ref()
             .map(|l| l.path.clone())
             .filter(|path| path != &file_path && !broken.contains(path));
-        if stale_twin.is_some() && file_path.exists() {
+        // A twin that also declares a venue the saved text does not is not
+        // retired, which would lose that venue: the save is refused, by the
+        // rule fixture types take (`lost_by_retiring`).
+        if let Some(twin) = &stale_twin {
+            if let Ok(declared) = venues_declared(twin) {
+                let lost = lost_by_retiring(declared, |n| venues.contains_key(n));
+                if !lost.is_empty() {
+                    return reply(shared_file_response(
+                        "venue",
+                        &name,
+                        twin,
+                        &lost,
+                        "saving this venue in another form",
+                    ));
+                }
+            }
+        }
+        // The file the venue moves to is taken unless it is a broken one the
+        // person chose to replace, set aside below.
+        if stale_twin.is_some() && file_path.exists() && !broken.contains(&file_path) {
             return reply(
                 (
                     StatusCode::CONFLICT,
@@ -3035,8 +3071,11 @@ pub(super) async fn put_venue(
             Err(r) => return reply(r),
         };
         // A broken file the person chose to replace is set aside, kept
-        // (`set_aside_broken`), before the save writes.
-        let set_aside = set_aside_all(&broken)?;
+        // (`set_aside_broken`), before the save writes; so is the `.light`
+        // twin the save retires. A failed write puts them all back.
+        let mut retired = broken;
+        retired.extend(stale_twin);
+        let set_aside = set_aside_all(&retired)?;
         if let Err(e) = config_io::staged_write(&file_path, &dsl) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
@@ -3044,13 +3083,6 @@ pub(super) async fn put_venue(
             .iter()
             .map(|(_, backup)| lighting::project_files::display_in(&dir, backup))
             .collect();
-        if let Some(twin) = stale_twin {
-            // Best effort: the save is durable already, and a leftover
-            // `.light` twin surfaces as a duplicate venue name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the venue's .light twin");
-            }
-        }
         Ok::<_, String>(Ok((content_version(dsl.as_bytes()), kept)))
     })
     .await?;
@@ -5627,6 +5659,82 @@ show "test" {
         assert!(dir.path().join("lighting/library/synth.gdtf").exists());
     }
 
+    /// A venue moving from `.light` to `.venue` onto a broken `club.venue`
+    /// the person chose to replace saves: the broken file and the retired
+    /// twin are both set aside, kept.
+    #[tokio::test]
+    async fn a_typed_venue_save_replaces_a_broken_venue_file() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_move");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
+        std::fs::write(dir.join("club.venue"), "venue \"Club\" {\n").unwrap();
+        let typed = "venue \"Club\" {\n  focus \"DS\" (0, 0, 0)\n}\n";
+        let put = |query: &'static str| {
+            fixture_type_request(
+                state.clone(),
+                "PUT",
+                format!("/lighting/venues/Club?dir=v_move{query}"),
+                "text/plain",
+                Body::from(typed),
+            )
+        };
+
+        let (status, parsed) = put("").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "club.venue", "{parsed}");
+
+        let (status, parsed) = put("&replace_broken=club.venue").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.venue")).unwrap(),
+            typed
+        );
+        assert!(!dir.join("club.light").exists());
+        let mut kept: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".replaced-"))
+            .collect();
+        kept.sort();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept[0].starts_with("club.light.replaced-"), "{kept:?}");
+        assert!(kept[1].starts_with("club.venue.replaced-"), "{kept:?}");
+    }
+
+    /// A raw-text save that would retire a `.light` twin holding another
+    /// venue too is refused, as a fixture type's is: Arena is not lost.
+    #[tokio::test]
+    async fn a_venue_save_does_not_retire_a_twin_holding_another_venue() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_lost");
+        std::fs::create_dir_all(&dir).unwrap();
+        let both = format!(
+            "{}\n{}\n",
+            sample_venue_dsl("Club"),
+            sample_venue_dsl("Arena")
+        );
+        std::fs::write(dir.join("club.light"), &both).unwrap();
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/venues/Club?dir=v_lost".to_string(),
+            "text/plain",
+            Body::from("venue \"Club\" {\n  focus \"DS\" (0, 0, 0)\n}\n"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert!(
+            parsed["error"].as_str().unwrap().contains("\"Arena\""),
+            "{parsed}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.light")).unwrap(),
+            both
+        );
+        assert!(!dir.join("club.venue").exists());
+    }
+
     /// A delete that cannot set every broken file aside puts back those it
     /// did, and removes nothing.
     #[cfg(unix)]
@@ -7519,6 +7627,43 @@ show "test" {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(ft_dir.join("mover.fixture").exists());
         assert!(!ft_dir.join("mover.light").exists());
+    }
+
+    /// A retired twin is set aside, kept, as any file a save replaces is,
+    /// and named in the reply: `Par.light` beside a saved `par.fixture`.
+    #[tokio::test]
+    async fn put_fixture_type_sets_the_retired_twin_aside() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_aside");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("Par.light"), sample_fixture_type_dsl("Par")).unwrap();
+        std::fs::write(
+            ft_dir.join("par.fixture"),
+            sample_rich_fixture_type_dsl("Par"),
+        )
+        .unwrap();
+
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/fixture-types/Par?dir=ft_aside&ext=fixture".to_string(),
+            "text/plain",
+            Body::from(sample_rich_fixture_type_dsl("Par")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(!ft_dir.join("Par.light").exists());
+        let kept: Vec<String> = std::fs::read_dir(&ft_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("Par.light.replaced-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            std::fs::read_to_string(ft_dir.join(&kept[0])).unwrap(),
+            sample_fixture_type_dsl("Par")
+        );
+        assert_eq!(parsed["kept"], json!([kept[0].clone()]), "{parsed}");
     }
 
     /// A file at the stem in the same form is not a twin, whatever its
