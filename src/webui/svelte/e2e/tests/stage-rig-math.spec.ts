@@ -163,6 +163,23 @@ test.describe("stage rig math", () => {
     expect(dark.lit).toBe(false);
   });
 
+  test("the colour is the player's: dimmer times colour, white added, CMY flags filtering white", async () => {
+    // `channels::shown_color`, which the TUI draws by too.
+    await loadRules();
+    const css = (channels: Record<string, number>) =>
+      beamCss(beamLook(channels));
+    expect(css({ red: 255, dimmer: 0 })).toBe("rgb(0,0,0)");
+    expect(css({ red: 255, dimmer: 51 })).toBe("rgb(51,0,0)");
+    expect(css({ dimmer: 255 })).toBe("rgb(255,235,204)");
+    expect(css({ red: 0, white: 100, dimmer: 255 })).toBe("rgb(100,100,100)");
+    // Nothing that lights it: a head's position alone is dark.
+    expect(css({ pan: 128 })).toBe("rgb(0,0,0)");
+    // A CMY fixture's flags: cyan closed takes the red out of its white.
+    expect(
+      css({ cyan: 255, magenta: 0, yellow: 0, dimmer: 255 }),
+    ).toBe("rgb(0,255,255)");
+  });
+
   test("a fixture is lit as the engine has it: by the light it emits", async () => {
     // `channels::is_lit`: its dimmer times its brightest emitter. The views
     // drew a faint fixture (red 5 under a full dimmer, a 0.007 mean) as
@@ -195,7 +212,8 @@ test.describe("stage rig math", () => {
     expect(beamCss(beamLook(on, 5, 150))).toBe("rgb(0,0,0)");
   });
 
-  test("a fixture with no reported state is dark; one without a dimmer is not", () => {
+  test("a fixture with no reported state is dark; one without a dimmer is not", async () => {
+    await loadRules();
     // Idle player: the server has said nothing about the fixture.
     const idle = beamLook(undefined);
     expect(idle.intensity).toBe(0);

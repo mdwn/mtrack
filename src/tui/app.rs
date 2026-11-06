@@ -166,14 +166,18 @@ impl App {
     }
 }
 
-/// Converts fixture snapshots into display-ready colors by extracting RGB channels.
+/// Each fixture in the colour it shows (`channels::shown_color`), as the
+/// web UI's stage views draw it.
 fn fixture_colors_from_snapshot(fixtures: &[FixtureSnapshot]) -> Vec<FixtureColor> {
     fixtures
         .iter()
         .map(|f| {
-            let r = f.channels.get("red").copied().unwrap_or(0);
-            let g = f.channels.get("green").copied().unwrap_or(0);
-            let b = f.channels.get("blue").copied().unwrap_or(0);
+            let [r, g, b] = crate::lighting::channels::shown_color(
+                f.channels
+                    .iter()
+                    .map(|(name, &value)| (name.as_str(), f64::from(value))),
+            )
+            .map(|c| crate::lighting::effects::dmx_byte(c * 255.0));
             FixtureColor {
                 name: f.name.clone(),
                 r,
@@ -315,6 +319,23 @@ mod tests {
             assert_eq!(colors[0].r, 10);
             assert_eq!(colors[0].g, 20);
             assert_eq!(colors[0].b, 30);
+        }
+
+        /// A fixture's dimmer scales its colour, a dimmer-only fixture
+        /// shows a warm white, and white adds to the mix.
+        #[test]
+        fn dimmer_and_white_apply() {
+            let rgb = |channels: &[(&str, u8)]| {
+                let c = &fixture_colors_from_snapshot(&[make_fixture("f", channels)])[0];
+                (c.r, c.g, c.b)
+            };
+            assert_eq!(rgb(&[("red", 255), ("dimmer", 0)]), (0, 0, 0));
+            assert_eq!(rgb(&[("red", 255), ("dimmer", 51)]), (51, 0, 0));
+            assert_eq!(rgb(&[("dimmer", 255)]), (255, 235, 204));
+            assert_eq!(
+                rgb(&[("red", 255), ("blue", 0), ("white", 100), ("dimmer", 255)]),
+                (255, 100, 100)
+            );
         }
 
         #[test]

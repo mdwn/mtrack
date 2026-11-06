@@ -154,6 +154,28 @@ impl Light {
         self.levels.get("dimmer").copied()
     }
 
+    /// Its colour, each primary 0 to 255, given what it emits
+    /// ([`Self::emitted`]): on a part mixing subtractively (`subtractive`)
+    /// with a flag of its own, the white its flags pass (a flag it lacks
+    /// being `flag`'s); else its red, green and blue where it has any; else
+    /// none where it has a white, or a warm white at `emitted`; its white
+    /// added.
+    fn color(&self, subtractive: bool, flag: impl Fn(&str) -> f64, emitted: f64) -> [f64; 3] {
+        let level = |name: &str| self.levels.get(name).copied();
+        let has = |name: &str| self.levels.contains_key(name);
+        let white = level("white");
+        let base = if subtractive && CMY_OF_RGB.iter().any(|(_, cmy)| has(cmy)) {
+            CMY_OF_RGB.map(|(_, cmy)| FULL - level(cmy).unwrap_or_else(|| flag(cmy)))
+        } else if CMY_OF_RGB.iter().any(|(rgb, _)| has(rgb)) {
+            CMY_OF_RGB.map(|(rgb, _)| level(rgb).unwrap_or(0.0))
+        } else if white.is_some() {
+            [0.0; 3]
+        } else {
+            WARM.map(|c| c * emitted)
+        };
+        base.map(|c| (c + white.unwrap_or(0.0)).min(FULL))
+    }
+
     /// Its brightest emitter -- on a fixture mixing subtractively
     /// (`subtractive`), the white its flags pass counting as one when it
     /// has a flag of its own: all of it while any flag is open, none with
@@ -200,6 +222,46 @@ impl Light {
 /// else lights it: a strobe, a colour wheel, where it points, an optic or
 /// a colour temperature. The rig is dark when no fixture is lit.
 pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
+    lamps(values)
+        .iter()
+        .any(|lamp| lamp.dimmer * lamp.emitted > 0.0)
+}
+
+/// The colour a fixture whose channels hold `values` (DMX values, 0 to
+/// 255) shows, red, green and blue each 0.0 to 1.0: what every view of
+/// the rig (the web UI's stage views, the TUI) draws it in. Each part
+/// that lights it by [`is_lit`]'s rule shows its colour times its dimmer,
+/// and the fixture the brightest of them in each primary: a part's red,
+/// green and blue -- on one mixing subtractively, the white its cyan,
+/// magenta and yellow flags pass (full less each flag) -- with its white
+/// added; a part with no colour of its own (a dimmer-only fixture, a
+/// part lit by amber or UV alone) a warm white at the level it emits.
+pub fn shown_color<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> [f64; 3] {
+    let mut shown = [0.0_f64; 3];
+    for lamp in lamps(values) {
+        for (shown, color) in shown.iter_mut().zip(lamp.color) {
+            *shown = shown.max(color * lamp.dimmer / FULL / FULL);
+        }
+    }
+    shown.map(|c| c.clamp(0.0, 1.0))
+}
+
+/// The warm white a part with no colour of its own shows, each primary
+/// a share of its level.
+const WARM: [f64; 3] = [1.0, 0.92, 0.8];
+
+/// One part of a fixture that may light it ([`lamps`]): what it emits,
+/// its colour (each primary 0 to 255) and the dimmer it takes.
+struct Lamp {
+    emitted: f64,
+    color: [f64; 3],
+    dimmer: f64,
+}
+
+/// The parts of a fixture whose channels hold `values` that may light it,
+/// by [`is_lit`]'s rule: each part with an emitter, with the dimmer it
+/// takes, and each dimmer that is a light of its own.
+fn lamps<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> Vec<Lamp> {
     use std::collections::{BTreeMap, BTreeSet};
     // Each part's light, by its section and its cell; the fixture's own
     // under ("", "").
@@ -233,7 +295,8 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             .or_else(|| own_subtractive(("", "")))
             .unwrap_or(false)
     };
-    let emitted: BTreeMap<(&str, &str), Option<f64>> = parts
+    // Each part's emitter and colour; `None` for a part with no emitter.
+    let emitted: BTreeMap<(&str, &str), Option<(f64, [f64; 3])>> = parts
         .iter()
         .map(|(&key, light)| {
             let flag = |name: &str| {
@@ -243,7 +306,10 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
                     // A flag the fixture lacks is open.
                     .unwrap_or(0.0)
             };
-            (key, light.emitted(subtractive(key), flag))
+            let subtractive = subtractive(key);
+            let emitted = light.emitted(subtractive, &flag);
+            let color = emitted.map(|emitted| light.color(subtractive, &flag, emitted));
+            (key, emitted.zip(color))
         })
         .collect();
     // The part a part takes its dimmer from.
@@ -253,9 +319,9 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             .find(|k| parts.get(k).and_then(Light::dimmer).is_some())
     };
     let mut used = BTreeSet::new();
-    let mut lit = false;
+    let mut lamps = Vec::new();
     for (&key, emitted) in &emitted {
-        let Some(emitted) = emitted else {
+        let Some((emitted, color)) = *emitted else {
             continue;
         };
         let dimmer = match dimmer_of(key) {
@@ -265,20 +331,98 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
             }
             None => FULL,
         };
-        lit |= dimmer * emitted > 0.0;
+        lamps.push(Lamp {
+            emitted,
+            color,
+            dimmer,
+        });
     }
     let any_emitter = emitted.values().any(Option::is_some);
-    lit || parts.iter().any(|(key, light)| {
-        emitted[key].is_none()
-            && !used.contains(key)
-            && (*key != ("", "") || !any_emitter)
-            && light.dimmer().is_some_and(|d| d > 0.0)
-    })
+    // A dimmer no part with an emitter takes, a light of its own.
+    lamps.extend(parts.iter().filter_map(|(key, light)| {
+        let dimmer = light.dimmer()?;
+        (emitted[key].is_none() && !used.contains(key) && (*key != ("", "") || !any_emitter)).then(
+            || Lamp {
+                emitted: FULL,
+                color: WARM.map(|c| c * FULL),
+                dimmer,
+            },
+        )
+    }));
+    lamps
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_lit;
+    use super::{is_lit, shown_color};
+
+    fn color(channels: &[(&str, f64)]) -> [u8; 3] {
+        shown_color(channels.iter().copied()).map(|c| (c * 255.0).round() as u8)
+    }
+
+    /// A fixture shows its colour times its dimmer, white added; a dimmer
+    /// alone a warm white; nothing that lights it, black -- dark exactly
+    /// where `is_lit` has it dark.
+    #[test]
+    fn a_fixture_shows_its_colour_times_its_dimmer() {
+        let cases: &[(&[(&str, f64)], [u8; 3])] = &[
+            (&[("red", 255.0), ("dimmer", 0.0)], [0, 0, 0]),
+            (&[("red", 255.0), ("dimmer", 51.0)], [51, 0, 0]),
+            (&[("red", 255.0), ("green", 128.0)], [255, 128, 0]),
+            (&[("dimmer", 255.0)], [255, 235, 204]),
+            (&[("dimmer", 0.0)], [0, 0, 0]),
+            (
+                &[("red", 0.0), ("white", 100.0), ("dimmer", 255.0)],
+                [100, 100, 100],
+            ),
+            (&[("white", 255.0)], [255, 255, 255]),
+            (&[("red", 0.0), ("green", 0.0), ("blue", 0.0)], [0, 0, 0]),
+            (&[("pan", 128.0), ("gobo", 9.0)], [0, 0, 0]),
+            (&[], [0, 0, 0]),
+            // Flags filtering white: cyan closed takes the red out.
+            (
+                &[
+                    ("cyan", 255.0),
+                    ("magenta", 0.0),
+                    ("yellow", 0.0),
+                    ("dimmer", 255.0),
+                ],
+                [0, 255, 255],
+            ),
+            (
+                &[("cyan", 255.0), ("magenta", 255.0), ("yellow", 255.0)],
+                [0, 0, 0],
+            ),
+            // Each section by its own dimmer, the brightest of them shown.
+            (
+                &[
+                    ("dimmer:1", 255.0),
+                    ("red:1", 0.0),
+                    ("dimmer:2", 0.0),
+                    ("red:2", 255.0),
+                ],
+                [0, 0, 0],
+            ),
+            (
+                &[
+                    ("dimmer:1", 255.0),
+                    ("blue:1", 255.0),
+                    ("dimmer:2", 255.0),
+                    ("red:2", 128.0),
+                ],
+                [128, 0, 255],
+            ),
+        ];
+        for (channels, expected) in cases {
+            let shown = color(channels);
+            assert_eq!(shown, *expected, "{channels:?}");
+            assert_eq!(
+                shown != [0, 0, 0],
+                is_lit(channels.iter().copied()),
+                "{channels:?}"
+            );
+        }
+    }
 
     fn lit(channels: &[(&str, f64)]) -> bool {
         is_lit(channels.iter().copied())

@@ -152,6 +152,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The TUI and the web UI show a fixture in the same colour**: the TUI drew a fixture in its raw
+  red, green and blue, so `red 255` under `dimmer 0` showed full red and a dimmer-only fixture
+  black, where the web UI's stage views showed black and a warm white. Both now draw the player's
+  one reading, beside its test of a lit fixture: each part that lights the fixture in its colour
+  times its dimmer, white added, a dimmer alone (or amber or UV alone) a warm white, and nothing
+  where nothing lights it. In the stage views this also changes: a fixture mixing subtractively
+  shows the white its cyan, magenta and yellow flags pass (`cyan 255` under a full dimmer is
+  cyan, was a warm white); a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`) show
+  their colours under their own dimmers (they showed as a warm white at the fixture's dimmer, or
+  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black
+  (was a warm white); and amber or UV alone shows a warm white at its level times the dimmer
+  (was the dimmer alone).
+
 - **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to
   its byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI
   DMX. Both now round to the nearest by one rule, so a show's 8-bit channel may go out one count

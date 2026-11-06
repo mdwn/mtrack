@@ -159,12 +159,11 @@ export interface BeamLook {
 
 /**
  * The colour and level a fixture's state shows, the one reading every
- * stage view (2D plot, timeline preview, 3D scene) draws from:
- * `red`/`green`/`blue` (+ `white`) mixed by `dimmer`, or a warm white by
- * `dimmer` alone. A CMY fixture's state carries the engine's RGB (its
- * flags take the complement at output), so it shows its colour here too.
- * A colour wheel is not read: the engine sends it no colour, and the
- * fixture shows as a dimmer-only white.
+ * stage view (2D plot, timeline preview, 3D scene) draws from: the
+ * player's own (`rules.fixture_color`, which the TUI draws by too) --
+ * each part that lights the fixture in its colour times its dimmer, white
+ * added, a dimmer alone a warm white -- and lit as the player has it
+ * (`rules.fixture_lit`). The level is the colour's mean.
  *
  * `strobeHz` is the rate the player says the fixture is flashing at (the
  * state's `strobe_rates`: its strobe byte read back through its own strobe
@@ -177,46 +176,23 @@ export interface BeamLook {
  * full.
  */
 export function beamLook(
-  channels:
-    | {
-        red?: number;
-        green?: number;
-        blue?: number;
-        dimmer?: number;
-        white?: number;
-      }
-    | undefined,
+  channels: Record<string, number | undefined> | undefined,
   strobeHz?: number,
   now: number = Date.now(),
 ): BeamLook {
   // No state at all for the fixture (idle player, nothing reported yet):
-  // dark. An entry without a `dimmer` key is a dimmer-less fixture, below.
+  // dark.
   if (!channels)
     return { rgb: [0, 0, 0], intensity: 0, strobeOn: true, lit: false };
-  const dimmer = (channels.dimmer ?? 255) / 255;
-  const hasColor =
-    channels.red !== undefined ||
-    channels.green !== undefined ||
-    channels.blue !== undefined;
-  // A dimmer-only fixture is a warm white; a colour fixture shows its mix.
-  let r = hasColor ? (channels.red ?? 0) / 255 : 1;
-  let g = hasColor ? (channels.green ?? 0) / 255 : 0.92;
-  let b = hasColor ? (channels.blue ?? 0) / 255 : 0.8;
-  if (channels.white !== undefined) {
-    const w = channels.white / 255;
-    r = Math.min(1, r + w);
-    g = Math.min(1, g + w);
-    b = Math.min(1, b + w);
-  }
+  const rgb = rules.fixture_color(channels);
   let strobeOn = true;
   const hz = strobeHz ?? 0;
   if (hz > 0) {
     strobeOn = Math.sin((now / 1000) * hz * Math.PI * 2) > 0;
   }
-  const intensity = ((r + g + b) / 3) * dimmer;
   return {
-    rgb: [r * dimmer, g * dimmer, b * dimmer],
-    intensity,
+    rgb,
+    intensity: (rgb[0] + rgb[1] + rgb[2]) / 3,
     strobeOn,
     lit: strobeOn && rules.fixture_lit(channels),
   };
