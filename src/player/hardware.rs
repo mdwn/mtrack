@@ -1837,14 +1837,7 @@ mod test {
     #[tokio::test]
     async fn a_failed_subsystem_is_reported_with_its_reason() {
         let player = crate::player::Player::new_with_devices(
-            crate::player::PlayerDevices {
-                audio: None,
-                mappings: None,
-                midi: None,
-                dmx_engine: None,
-                sample_engine: None,
-                trigger_engine: None,
-            },
+            crate::testutil::player::no_devices(),
             HashMap::new(),
             "all_songs".to_string(),
             None,

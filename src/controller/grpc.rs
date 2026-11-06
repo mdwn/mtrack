@@ -754,15 +754,8 @@ impl PlayerService for PlayerServer {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap,
-        error::Error,
-        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{collections::HashMap, error::Error, net::Ipv4Addr, sync::Arc, time::Duration};
 
-    use tokio::net::TcpListener;
     use tonic::transport::Channel;
 
     use crate::{
@@ -836,10 +829,7 @@ mod test {
         let device = binding.to_mock()?;
 
         // Get a random port.
-        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-        let listener = TcpListener::bind(addr).await?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
 
         println!("Using port {} for testing.", port);
 
@@ -1011,10 +1001,7 @@ mod test {
     async fn serve_grpc(
         player: Arc<Player>,
     ) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
-        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-        let listener = TcpListener::bind(addr).await?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
 
         let driver = Driver::new(config::GrpcController::new(port), player.clone())?;
         tokio::spawn(driver.monitor_events());

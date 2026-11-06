@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 // Plot | 3D on the venue's stage card: the picture changes in place; the
 // venue, the selection, the inspector and the header stay. The current
@@ -80,9 +81,7 @@ async function withCurrentVenue(page: Page, path: string) {
     return r.fulfill({ json: CLUB_SCENE });
   });
   await page.goto(`/?wsId=${wsId}${path}`);
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...BUILT_IN, _wsId: wsId },
-  });
+  await sendWs(page, wsId, BUILT_IN);
   return { wsId, reads: () => sceneReads };
 }
 

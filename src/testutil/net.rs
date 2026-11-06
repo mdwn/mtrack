@@ -18,7 +18,13 @@
 
 /// A loopback TCP port nothing listens on.
 pub fn free_tcp_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
+    free_tcp_port_on(std::net::Ipv4Addr::LOCALHOST)
+}
+
+/// A TCP port nothing listens on at `ip`: for a server binding every
+/// interface (`Ipv4Addr::UNSPECIFIED`), a port free on all of them.
+pub fn free_tcp_port_on(ip: std::net::Ipv4Addr) -> u16 {
+    std::net::TcpListener::bind((ip, 0))
         .expect("bind")
         .local_addr()
         .expect("local_addr")

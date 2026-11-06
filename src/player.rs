@@ -3609,14 +3609,7 @@ mod test {
             &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
         )?;
-        let devices = PlayerDevices {
-            audio: None,
-            mappings: None,
-            midi: None,
-            dmx_engine: None,
-            sample_engine: None,
-            trigger_engine: None,
-        };
+        let devices = no_devices();
         let player = Player::new_with_devices(
             devices,
             test_playlists(playlist, songs),

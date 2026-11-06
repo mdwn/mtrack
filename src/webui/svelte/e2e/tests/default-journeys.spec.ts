@@ -15,6 +15,7 @@
 import { test, expect, type Page, type Request } from "@playwright/test";
 import { card } from "../support/locators";
 import { MVR_INSPECTION } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 // What a first-time user does in each Lighting editor: open it, press the
 // add/new button, take whatever the form offers, save — and what the server
@@ -287,24 +288,21 @@ async function openPlan(page: Page, venue: ReturnType<typeof richVenue>) {
   );
   await page.goto(`/?wsId=${venue.name}#/lighting/venues`);
   await expect(page.locator(".item-card").first()).toBeVisible();
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: {
-      type: "metadata",
-      _wsId: venue.name,
-      fixtures: Object.fromEntries(
-        Object.values(venue.fixtures).map((f) => [
-          f.name,
-          {
-            tags: f.tags,
-            type: f.fixture_type,
-            capabilities: ["color"],
-            position: f.position,
-            rotation: f.rotation,
-          },
-        ]),
-      ),
-      venue: { name: venue.name, dir: null, focus_points: venue.focus_points },
-    },
+  await sendWs(page, venue.name, {
+    type: "metadata",
+    fixtures: Object.fromEntries(
+      Object.values(venue.fixtures).map((f) => [
+        f.name,
+        {
+          tags: f.tags,
+          type: f.fixture_type,
+          capabilities: ["color"],
+          position: f.position,
+          rotation: f.rotation,
+        },
+      ]),
+    ),
+    venue: { name: venue.name, dir: null, focus_points: venue.focus_points },
   });
   await expect(page.locator(".inspector")).toBeVisible();
   return puts;

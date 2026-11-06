@@ -546,12 +546,7 @@ mod test {
         list.iter().copied().collect()
     }
 
-    fn shows(src: &str) -> Vec<LightShow> {
-        crate::lighting::parser::parse_light_shows_with_tempo(src, None)
-            .unwrap()
-            .into_values()
-            .collect()
-    }
+    use crate::testutil::lighting::shows;
 
     #[test]
     fn dimmer_and_pulse_want_a_dimmer_or_colour() {

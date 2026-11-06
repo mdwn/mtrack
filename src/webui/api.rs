@@ -496,10 +496,8 @@ pub(super) mod test_helpers {
         let devices = PlayerDevices {
             audio,
             mappings,
-            midi: None,
             dmx_engine,
-            sample_engine: None,
-            trigger_engine: None,
+            ..crate::testutil::player::no_devices()
         };
         let player = std::sync::Arc::new(
             crate::player::Player::new_with_devices(devices, playlists, active.to_string(), None)

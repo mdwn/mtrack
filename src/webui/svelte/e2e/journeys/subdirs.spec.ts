@@ -13,6 +13,7 @@
 //
 
 import { api, expect, synthGdtf, test } from "./harness";
+import { card } from "../support/locators";
 
 // Fixture types and venues kept in subdirectories: the engine always read
 // them, and the Lighting area must see the same project — listed, opened
@@ -48,13 +49,7 @@ test.describe("Project files in subdirectories", () => {
   }) => {
     await page.goto("/#/lighting/fixtures");
     for (const name of ["Par", "Brick"])
-      await expect(
-        page.locator(".item-card").filter({
-          has: page.locator(".item-name", {
-            hasText: new RegExp(`^${name}$`),
-          }),
-        }),
-      ).toBeVisible();
+      await expect(card(page, name)).toBeVisible();
 
     const list = await api<{
       fixture_types: Record<string, { file: string | null }>;
