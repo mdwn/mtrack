@@ -826,17 +826,48 @@ fn song_config_path(
     }
     // The folder's own config, by the rule MCP's `write_song` takes too:
     // never a `song.yaml` beside a `song.yml` or another song's config.
-    songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
-        let error = if deleting {
+    let conflict = |error: String| {
+        Box::new((StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response())
+    };
+    let path = songs::song_config_to_write(song_dir.as_path()).ok_or_else(|| {
+        conflict(if deleting {
             format!(
                 "{name}'s folder holds another song's config, so {name} cannot be deleted from \
                  here; remove the files by hand"
             )
         } else {
             format!("{name}'s folder holds another song config; edit that file instead")
-        };
-        Box::new((StatusCode::CONFLICT, Json(json!({ "error": error }))).into_response())
-    })
+        })
+    })?;
+    // A config already there is acted on only when it is this song's: one
+    // naming another song is that song's, not to be overwritten or deleted
+    // by this name; one that does not read cannot say, so is not deleted.
+    if path.is_file() {
+        let declared = crate::config::Song::deserialize(&path).map(|c| c.name().to_string());
+        let file = crate::util::filename_display(&path);
+        match declared {
+            Ok(declared) if declared == name => {}
+            Ok(declared) => {
+                return Err(conflict(format!(
+                    "{file} in {name}'s folder holds the song \"{declared}\"; {} — edit or \
+                     move that file by hand",
+                    if deleting {
+                        "it is not deleted"
+                    } else {
+                        "it is not overwritten"
+                    }
+                )));
+            }
+            Err(e) if deleting => {
+                return Err(conflict(format!(
+                    "{file} in {name}'s folder does not read ({e}), so whose it is cannot be \
+                     told; it is not deleted — remove it by hand"
+                )));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(path)
 }
 
 pub(super) fn resolve_song_dir(
@@ -1312,9 +1343,10 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// A folder whose config is `song.yml`, for a song the registry knows
-    /// by another name, is saved into that file, not a new `song.yaml`
-    /// beside it; one holding another song's config is refused.
+    /// A folder whose config is `song.yml` is saved into that file, not a
+    /// new `song.yaml` beside it; one holding another song's config is
+    /// refused. A config there naming another song ("Bar" in `Foo/`) is
+    /// that song's: neither overwritten nor deleted by the folder's name.
     #[tokio::test]
     async fn put_song_writes_the_folders_own_config() {
         let (state, _dir) = test_state();
@@ -1346,11 +1378,33 @@ mod test {
                 .status()
             }
         };
-        assert_eq!(put("/songs/Foo", config("Foo")).await, StatusCode::OK);
+        assert_eq!(put("/songs/Foo", config("Foo")).await, StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config("Bar")
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/songs/Foo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(body.contains("\\\"Bar\\\""), "{body}");
+        assert!(song_dir.join("song.yml").exists());
+
+        let edited = config("Bar").replace("track1\n", "track1 \n");
+        assert_eq!(put("/songs/Bar", edited.clone()).await, StatusCode::OK);
         assert!(!song_dir.join("song.yaml").exists());
         assert_eq!(
             std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
-            config("Foo")
+            edited
         );
 
         assert_eq!(
