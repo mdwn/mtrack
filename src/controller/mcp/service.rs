@@ -1195,20 +1195,21 @@ impl McpServer {
         // whose edits read the file first.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let songs_root = self.songs_root_verified().await?;
-        let yaml_path = match self.player.songs().get(&args.name) {
-            Ok(existing) => {
+        // A song that failed to load is rewritten in place, as the web UI's
+        // song editor does: fixing it is the usual reason to write it.
+        let yaml_path = match self.player.songs().config_path(&args.name) {
+            Some(path) => {
                 // Use the recorded `config_path` so flat-layout songs
                 // (`<root>/<name>.yaml`) and directory-layout songs
                 // (`<root>/<name>/song.yaml`) both round-trip through their
                 // original file rather than writing to `<base>/song.yaml`,
                 // which is shared across all flat-layout songs.
-                let path = existing.config_path_or_default();
                 crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
                     .map_err(safepath_err)?
                     .as_path()
                     .to_path_buf()
             }
-            Err(_) => {
+            None => {
                 crate::webui::safe_path::SafePath::validate_new_name(&args.name)
                     .map_err(safepath_err)?;
                 let song_dir = crate::webui::safe_path::SafePath::create_dir(

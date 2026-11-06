@@ -2085,6 +2085,16 @@ impl Songs {
     pub fn failure(&self, name: &str) -> Option<&SongLoadFailure> {
         self.failures.iter().find(|f| f.name() == name)
     }
+
+    /// The YAML file the song by `name` was read from, loaded or not:
+    /// where an edit of it is written back. `None` for a song the registry
+    /// has not seen.
+    pub fn config_path(&self, name: &str) -> Option<PathBuf> {
+        match self.get(name) {
+            Ok(song) => Some(song.config_path_or_default()),
+            Err(_) => self.failure(name).map(|f| f.config_path().to_path_buf()),
+        }
+    }
 }
 
 /// Create default song configurations in a repository of song directories

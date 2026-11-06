@@ -338,6 +338,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
+  not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
+  song came from; it now writes the file the song was read from, as the web UI's song editor
+  does. A playlist listed as text says why a song is missing (`unable to find song <name>`, or
+  `song <name> failed to load: ...`) where it said `(unable to find song)`.
 - **MCP `set_ambient_mode` takes a mode in any case, as gRPC does**: `{mode: "On"}` was
   refused by MCP and taken by gRPC `SetAmbientMode`; both now read a mode one way (any case,
   spaces trimmed), and refuse another name with `unknown ambient mode '<name>': use auto, on or

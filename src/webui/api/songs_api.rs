@@ -836,12 +836,9 @@ fn song_config_path(
     name: &str,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
-    let songs = player.songs();
-    let loaded = match songs.get(name) {
-        Ok(song) => Some(song.config_path_or_default()),
-        Err(_) => songs.failure(name).map(|f| f.config_path().to_path_buf()),
-    };
-    Ok(loaded
+    Ok(player
+        .songs()
+        .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
         .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
 }

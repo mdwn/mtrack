@@ -73,9 +73,9 @@ impl Player {
                 .registry()
                 .get(song_name)
                 .map_err(|e| e.to_string())?;
-            let song = all_songs
-                .navigate_to(song_name)
-                .ok_or_else(|| format!("Song '{}' not found", song_name))?;
+            let song = all_songs.navigate_to(song_name).ok_or_else(|| {
+                crate::songs::SongLookupError::NotFound(song_name.to_string()).to_string()
+            })?;
             *self.active_playlist.write() = "all_songs".to_string();
             Ok(song)
         });
