@@ -85,7 +85,9 @@ impl ChannelState {
     /// Blend this channel state with another
     pub fn blend_with(&self, other: ChannelState) -> ChannelState {
         let blended_value = match other.blend_mode {
-            BlendMode::Replace => self.value + (other.value - self.value) * other.mix,
+            BlendMode::Replace => {
+                crate::lighting::channels::lerp(self.value, other.value, other.mix)
+            }
             BlendMode::Multiply => self.value * other.value,
             BlendMode::Add => (self.value + other.value).min(1.0),
             BlendMode::Overlay => {

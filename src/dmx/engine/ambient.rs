@@ -136,7 +136,7 @@ impl Level {
             self.over,
         )
         .min(1.0);
-        self.from + (self.to - self.from) * progress
+        crate::lighting::channels::lerp(self.from, self.to, progress)
     }
 
     /// Fades on from where it is now to `to`, at the pace of a whole fade
