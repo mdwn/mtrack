@@ -28,7 +28,6 @@ pub(crate) use super::effect_parse::{
     CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS, PER_KEYWORDS,
 };
 pub(crate) use super::types::LayerCommandParam;
-pub(crate) use super::utils::UNITS;
 
 /// The keyword `table` writes `value` as (the first, where a value has
 /// more than one).

@@ -15,11 +15,12 @@
 //! effect's parameters and defaults, and every keyword list.
 
 use super::{stated, Stated};
+use crate::config::length::UNITS;
 use crate::lighting::effects::{CycleTransition, NAMED_COLORS};
 use crate::lighting::parser::document::EffectKind;
 use crate::lighting::parser::edit::vocabulary;
 use crate::lighting::parser::words::{
-    effect_defaults, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS, UNITS,
+    effect_defaults, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS,
 };
 
 const EFFECTS_MD: &str = include_str!("../../docs/src/lighting/effects.md");

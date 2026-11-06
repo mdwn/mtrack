@@ -35,8 +35,9 @@
 //! input because for them validation failure is a hard failure.
 //!
 //! **Lock mode.** While the player is locked, every tool not listed in
-//! [`OPEN_WHILE_LOCKED`] is refused before it runs, with a tool error
-//! (`isError: true`) whose text says the player is locked. The gate sits in
+//! [`crate::player::lock_policy::OPEN_WHILE_LOCKED`] is refused before it
+//! runs, with a tool error (`isError: true`) whose text says the player is
+//! locked. The gate sits in
 //! `call_tool`, so a new tool is refused while locked until it is listed.
 
 use std::collections::HashMap;
@@ -60,7 +61,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
+use crate::config::store::ConfigSection;
 use crate::lighting::readiness::{group_names, VenueFacts};
+use crate::player::lock_policy::Surface;
 use crate::player::Player;
 use crate::util::FaultKind;
 
@@ -152,23 +155,24 @@ pub struct SwitchPlaylistArgs {
     pub name: String,
 }
 
-/// Ambient light's mode.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum AmbientModeArg {
-    /// Between songs, after its delay: the usual.
-    Auto,
-    /// Now, over any song, until `auto` again.
-    On,
-    /// None: ambient playing fades out.
-    Off,
+/// Ambient light's mode: one of [`AmbientMode::ALL`]'s names.
+fn ambient_mode_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use crate::dmx::engine::AmbientMode;
+    let names: Vec<&str> = AmbientMode::ALL.iter().map(|m| m.as_str()).collect();
+    schemars::json_schema!({
+        "type": "string",
+        "enum": names,
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetAmbientModeArgs {
-    /// `auto`, `on` or `off`.
-    pub mode: AmbientModeArg,
+    /// `auto` (between songs, after its delay: the usual), `on` (now, over
+    /// any song, until `auto` again) or `off` (none: ambient playing fades
+    /// out).
+    #[schemars(schema_with = "ambient_mode_schema")]
+    pub mode: crate::dmx::engine::AmbientMode,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -538,7 +542,7 @@ impl McpServer {
     pub fn new(player: Arc<Player>) -> Self {
         Self {
             player,
-            tool_router: Self::tool_router(),
+            tool_router: Self::router(),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -624,25 +628,15 @@ impl McpServer {
         // it current: inspecting cues is a read, and it should not have the
         // side effect of changing what is queued.
         if let Some(name) = args.song.as_deref() {
-            let song = self
-                .player
-                .songs()
-                .get(name)
-                .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+            let song = self.song(name)?;
             let shows = crate::lighting::evaluate::registered_shows(&song);
 
-            // Merged and time-sorted, the way the player's own timeline
-            // combines a song's shows. Concatenating per show would restart
-            // indices at zero for each one and interleave their times, so the
-            // same song answered differently depending on which branch ran.
-            let tempo = crate::lighting::timeline::shows_tempo_map(&shows, None);
-            let mut cues: Vec<(std::time::Duration, usize)> = shows
-                .iter()
-                .flat_map(|show| show.cues.iter().map(|cue| (cue.time, cue.effects.len())))
-                .collect();
-            cues.sort_by_key(|(time, _)| *time);
-
-            let cues: Vec<Value> = cues
+            // Merged and time-sorted by the player's own timeline, so the
+            // same song answers as the loaded timeline does.
+            let timeline = crate::lighting::timeline::LightingTimeline::new(shows);
+            let tempo = timeline.tempo_map();
+            let cues: Vec<Value> = timeline
+                .cue_effect_counts()
                 .into_iter()
                 .enumerate()
                 .map(|(index, (time, effects))| {
@@ -678,10 +672,7 @@ impl McpServer {
         each fixture is actually outputting — use `get_fixture_state`."
     )]
     async fn get_active_effects(&self) -> Result<CallToolResult, McpError> {
-        let summary = self
-            .player
-            .format_active_effects()
-            .unwrap_or_else(|| "(no effect engine configured)".to_string());
+        let summary = self.player.active_effects_summary();
         Ok(CallToolResult::success(vec![ContentBlock::text(summary)]))
     }
 
@@ -875,12 +866,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SetAmbientModeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::dmx::engine::AmbientMode;
-        let mode = match args.mode {
-            AmbientModeArg::Auto => AmbientMode::Auto,
-            AmbientModeArg::On => AmbientMode::On,
-            AmbientModeArg::Off => AmbientMode::Off,
-        };
+        let mode = args.mode;
         let player = self.player.clone();
         tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
             .await
@@ -954,13 +940,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let audio: Option<crate::config::Audio> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_audio(audio, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Audio, args).await
     }
 
     #[tool(
@@ -971,13 +951,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let midi: Option<crate::config::Midi> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_midi(midi, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Midi, args).await
     }
 
     #[tool(
@@ -988,32 +962,18 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let dmx: Option<crate::config::Dmx> = parse_optional(args.body)?;
-        let snapshot = store
-            .update_dmx(dmx, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Dmx, args).await
     }
 
     #[tool(
         description = "Replace the entire `controllers` list. Pass an array of \
-        controller definitions, each tagged with a `kind` discriminator \
-        (`grpc`, `mcp`, `osc`, `midi`)."
+        controller definitions, each tagged with a `kind` discriminator."
     )]
     async fn update_controllers(
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let store = self.config_store()?;
-        let controllers: Vec<crate::config::Controller> = serde_json::from_value(args.body)
-            .map_err(|e| McpError::invalid_params(format!("invalid controllers: {e}"), None))?;
-        let snapshot = store
-            .update_controllers(controllers, &args.expected_checksum)
-            .await
-            .map_err(config_err)?;
-        self.reload_and_respond(snapshot).await
+        self.update_section(ConfigSection::Controllers, args).await
     }
 
     #[tool(description = "Append a new hardware profile to the `profiles` list.")]
@@ -1075,11 +1035,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let path = song.config_path_or_default();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
@@ -1109,11 +1065,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
 
         let tracks: Vec<Value> = song
             .tracks()
@@ -1219,11 +1171,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let grid = song.beat_grid();
         Ok(ok_json(json!({
             "name": song.name(),
@@ -1248,20 +1196,21 @@ impl McpServer {
         // whose edits read the file first.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let songs_root = self.songs_root_verified().await?;
-        let yaml_path = match self.player.songs().get(&args.name) {
-            Ok(existing) => {
+        // A song that failed to load is rewritten in place, as the web UI's
+        // song editor does: fixing it is the usual reason to write it.
+        let yaml_path = match self.player.songs().config_path(&args.name) {
+            Some(path) => {
                 // Use the recorded `config_path` so flat-layout songs
                 // (`<root>/<name>.yaml`) and directory-layout songs
                 // (`<root>/<name>/song.yaml`) both round-trip through their
                 // original file rather than writing to `<base>/song.yaml`,
                 // which is shared across all flat-layout songs.
-                let path = existing.config_path_or_default();
                 crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
                     .map_err(safepath_err)?
                     .as_path()
                     .to_path_buf()
             }
-            Err(_) => {
+            None => {
                 crate::webui::safe_path::SafePath::validate_new_name(&args.name)
                     .map_err(safepath_err)?;
                 let song_dir = crate::webui::safe_path::SafePath::create_dir(
@@ -1390,11 +1339,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (tempo, draft_path, root) = match args.song.as_deref() {
             Some(name) => {
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let path = match args.file.as_deref() {
                     Some(file) => {
                         validate_lighting_filename(file)?;
@@ -1471,12 +1416,7 @@ impl McpServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let song = match song {
-            Some(name) => Some(
-                self.player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
-            ),
+            Some(name) => Some(self.song(name)?),
             None => None,
         };
 
@@ -1521,11 +1461,7 @@ impl McpServer {
                 // song's tempo the parser rejects every `@bar`/`beat` construct,
                 // so this is the only way to evaluate an unsaved edit of a
                 // measure-timed show.
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let tempo = song_lighting_tempo(&song);
                 let shows = crate::lighting::parser::parse_light_file_within(
                     source,
@@ -1543,11 +1479,7 @@ impl McpServer {
                 None,
             )),
             (Some(name), None) => {
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let shows = crate::lighting::evaluate::registered_shows(&song);
                 if shows.is_empty() {
                     return Err(McpError::invalid_params(
@@ -1614,7 +1546,8 @@ impl McpServer {
             )
         })
         .await
-        .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?;
+        .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
         let results: Vec<Value> = evaluated
             .evaluations
@@ -2226,22 +2159,9 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         validate_lighting_filename(&args.file)?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}` — check the song's \
-                     `lighting:` block for the exact filename it references",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2386,20 +2306,8 @@ impl McpServer {
         // the songs under it, and the file and reference found before it
         // could be ones the song no longer has.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}`",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let song = self.song(&args.song)?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
 
         let config_path = song.config_path_or_default();
         let reference = path
@@ -2523,11 +2431,7 @@ impl McpServer {
         // looking the song up, so the tempo the show is checked against and
         // the place it is written are the song's as a web save left them.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         // Validate against the tempo this song will actually load it with,
         // otherwise a bar/beat show is rejected here and then loads fine; and
         // where it will be written, which its `include`s resolve against.
@@ -2653,11 +2557,7 @@ impl McpServer {
         // Held from the lookup and the read, so a save between them and the
         // write, such as the web UI's song editor, is not lost.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let path = song.config_path_or_default();
         let original = read_text(&path).await?;
         let updated = apply_patch(
@@ -2708,21 +2608,8 @@ impl McpServer {
         // Held from looking the song up, so the tempo the patch is checked
         // against is the song's as a web save left it.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "song `{}` has no lighting file named `{}` — check the song's \
-                     `lighting:` block for the exact filename it references",
-                    args.song, args.file
-                ),
-                None,
-            )
-        })?;
+        let song = self.song(&args.song)?;
+        let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,
@@ -2806,72 +2693,17 @@ impl McpServer {
     }
 }
 
-/// The tools that stay open while the player is locked: reads, validation
-/// and offline evaluation, and the playback controls the web UI also leaves
-/// open (transport, playlist switch, samples, ambient light, section loops,
-/// auto-play). Every other tool writes config or project files and is
-/// refused while locked, so a new tool is locked out until it is listed here.
-pub(crate) const OPEN_WHILE_LOCKED: &[&str] = &[
-    // Reads.
-    "status",
-    "host_info",
-    "list_songs",
-    "list_playlists",
-    "get_cues",
-    "get_active_effects",
-    "get_fixture_state",
-    "get_config",
-    "read_song",
-    "song_details",
-    "song_beat_grid",
-    "read_playlist",
-    "lighting_dsl_reference",
-    "validate_lighting",
-    "evaluate_show",
-    "analyze_show",
-    "diff_shows",
-    "list_venues",
-    "suggest_group_tags",
-    "list_groups",
-    "list_fixture_types",
-    "list_gdtf_modes",
-    "inspect_mvr",
-    "read_song_lighting",
-    "list_venue_files",
-    "read_venue",
-    "list_fixture_type_files",
-    "read_fixture_type",
-    // Playback controls.
-    "play",
-    "play_from",
-    "play_song_from",
-    "seek",
-    "seek_to_section",
-    "stop",
-    "next",
-    "previous",
-    "switch_playlist",
-    "stop_samples",
-    "set_ambient_mode",
-    "cancel_auto_play",
-    "loop_section",
-    "stop_section_loop",
-    "section_ack",
-];
-
 impl McpServer {
     /// The tool error a locked player answers a write with, or `None` when
     /// the call may proceed.
     fn refused_while_locked(&self, tool: &str) -> Option<CallToolResult> {
-        if OPEN_WHILE_LOCKED.contains(&tool) || !self.tool_router.has_route(tool) {
+        if !self.tool_router.has_route(tool) {
             return None;
         }
-        let e = self.player.require_unlocked().err()?;
-        Some(CallToolResult::error(vec![ContentBlock::text(format!(
-            "{e} `{tool}` changes the show's config or files, which the \
-             player refuses while locked. Unlock it from the web UI's lock \
-             toggle; playback controls and reads still work."
-        ))]))
+        let e = self.player.check_lock(Surface::Mcp, tool).err()?;
+        Some(CallToolResult::error(vec![ContentBlock::text(
+            e.to_string(),
+        )]))
     }
 }
 
@@ -3628,7 +3460,7 @@ async fn build_lighting_snapshot(player: &Player) -> Result<Value, McpError> {
     let Some(engine) = player.effect_engine() else {
         return Ok(json!({
             "available": false,
-            "reason": "no effect engine configured",
+            "reason": crate::player::NO_EFFECT_ENGINE,
         }));
     };
 
@@ -3714,19 +3546,7 @@ async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
 /// engine, as the player's status read it (bounded on the blocking pool:
 /// the effects loop holds the ambient lock while it starts the show).
 fn ambient_json(ambient: Option<&crate::player::DmxRead<crate::player::AmbientStatus>>) -> Value {
-    match ambient {
-        None => Value::Null,
-        Some(crate::player::DmxRead::Read(ambient)) => json!({
-            "mode": ambient.report.mode.as_str(),
-            "source": ambient.source.map(|s| s.as_str()),
-            "show": ambient.report.show.as_ref().map(|show| show.display().to_string()),
-            "state": ambient.report.state,
-        }),
-        Some(_) => json!({
-            "available": false,
-            "reason": "could not read the ambient light's state",
-        }),
-    }
+    json!(ambient.map(crate::player::DmxRead::view))
 }
 
 /// What breaking the current song's loop would do, by the playlist's
@@ -3910,6 +3730,15 @@ impl McpServer {
         Ok(handle.abort_handle())
     }
 
+    /// The loaded song by `name`. One that failed to load says why, as
+    /// [`crate::songs::Songs::get`] answers.
+    pub(crate) fn song(&self, name: &str) -> Result<Arc<crate::songs::Song>, McpError> {
+        self.player
+            .songs()
+            .get(name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))
+    }
+
     /// Returns the player's [`ConfigStore`] or an MCP error when none is wired.
     pub(crate) fn config_store(&self) -> Result<Arc<crate::config::store::ConfigStore>, McpError> {
         self.player.config_store().ok_or_else(|| {
@@ -4045,19 +3874,21 @@ impl McpServer {
     }
 }
 
-/// Parses an `Option<T>` from a JSON value, accepting `null` as `None`.
-pub(crate) fn parse_optional<T: for<'de> serde::Deserialize<'de>>(
-    value: Value,
-) -> Result<Option<T>, McpError> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(|e| McpError::invalid_params(format!("invalid payload: {e}"), None))
-}
-
 impl McpServer {
+    /// Saves `section` from the tool's body, then applies it.
+    async fn update_section(
+        &self,
+        section: ConfigSection,
+        args: UpdateConfigArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let snapshot = self
+            .config_store()?
+            .update_section(section, args.body, &args.expected_checksum)
+            .await
+            .map_err(config_err)?;
+        self.reload_and_respond(snapshot).await
+    }
+
     /// Applies a saved config change to the running hardware and answers
     /// with the new snapshot, as every surface's config change does. A
     /// change saved here was otherwise not applied until something else
@@ -4133,6 +3964,24 @@ pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpEr
 fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
         .map_err(safepath_err)
+}
+
+/// [`find_song_lighting_path`], or the one error every lighting-file tool
+/// gives for a file the song does not have.
+fn existing_song_lighting_path(
+    song: &crate::songs::Song,
+    song_name: &str,
+    file: &str,
+) -> Result<std::path::PathBuf, McpError> {
+    find_song_lighting_path(song, file).ok_or_else(|| {
+        McpError::invalid_params(
+            format!(
+                "song `{song_name}` has no lighting file named `{file}` — check the song's \
+                 `lighting:` block for the exact filename it references"
+            ),
+            None,
+        )
+    })
 }
 
 /// Resolves a lighting filename to its on-disk path, searching three
@@ -4434,6 +4283,72 @@ pub(crate) async fn staged_write_string(
         }
         McpError::internal_error(message, None)
     })
+}
+
+impl McpServer {
+    /// The tools, with the descriptions built from the player's own lists:
+    /// `update_controllers` names the kinds [`crate::config::ControllerKind`]
+    /// has.
+    fn router() -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if let Some(route) = router.map.get_mut("update_controllers") {
+            let description = format!(
+                "{} Kinds: {}.",
+                route.attr.description.as_deref().unwrap_or_default(),
+                crate::config::ControllerKind::names()
+            );
+            route.attr.description = Some(description.into());
+        }
+        router
+    }
+}
+
+#[cfg(test)]
+mod update_controllers_description_tests {
+    use crate::config::{Controller, ControllerKind};
+    use strum::VariantArray;
+
+    /// A controller of each kind. The match is exhaustive, so a new kind
+    /// needs a sample here before this compiles.
+    fn sample(kind: ControllerKind) -> Controller {
+        match kind {
+            ControllerKind::Grpc => Controller::Grpc(crate::config::GrpcController::new(1)),
+            ControllerKind::Mcp => Controller::Mcp(crate::config::McpController::new(1)),
+            ControllerKind::Midi => {
+                let event = || crate::config::midi::note_on(1, 0, 127);
+                Controller::Midi(crate::config::MidiController::new(
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                    event(),
+                ))
+            }
+            ControllerKind::Multi => Controller::Multi(Default::default()),
+            ControllerKind::Osc => Controller::Osc(Box::default()),
+        }
+    }
+
+    #[test]
+    fn the_description_names_every_controller_kind_by_its_tag() {
+        let router = super::McpServer::router();
+        let description = router
+            .get("update_controllers")
+            .and_then(|tool| tool.description.clone())
+            .expect("update_controllers has a description");
+        for &kind in ControllerKind::VARIANTS {
+            let controller = sample(kind);
+            assert_eq!(controller.kind(), kind);
+            // The name is the tag serde writes.
+            let tagged = serde_json::to_value(&controller).unwrap();
+            assert_eq!(tagged["kind"], kind.name());
+            assert!(
+                description.contains(&format!("`{}`", kind.name())),
+                "{description}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

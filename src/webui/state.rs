@@ -309,21 +309,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                     song: song.clone(),
                     remaining_ms: remaining.as_millis() as u64,
                 }),
-            // With a DMX engine, whatever the mode, so the card can show it;
-            // left out, as without one, when the read did not answer.
-            ambient: match &status.ambient {
-                Some(crate::player::DmxRead::Read(ambient)) => Some(wire::AmbientState {
-                    mode: ambient.report.mode,
-                    source: ambient.source,
-                    show: ambient
-                        .report
-                        .show
-                        .as_ref()
-                        .map(|show| show.display().to_string()),
-                    state: ambient.report.state.to_string(),
-                }),
-                _ => None,
-            },
+            // With a DMX engine, whatever the mode, so the card can show it,
+            // or that the read did not answer.
+            ambient: status.ambient.as_ref().map(crate::player::DmxRead::view),
             next: next_up(&playlist, is_playing),
         }));
 
@@ -376,7 +364,7 @@ fn next_up(playlist: &crate::playlist::Playlist, is_playing: bool) -> Option<wir
         breaks_loop: Some(false),
         fade_out: Some(None),
         fade_in: Some(None),
-        auto_play_ms: Some(gap.map(|gap| gap.as_millis() as u64)),
+        auto_play_ms: Some(gap.map(|gap| gap.as_secs_f64() * 1000.0)),
         ..Default::default()
     })
 }
@@ -1341,7 +1329,7 @@ metronome: {}
         // Stopped, Next reaches the song, which starts after its gap.
         let next = next_json(&pl, false);
         assert_eq!(next["breaks_loop"], false);
-        assert_eq!(next["auto_play_ms"], 2000);
+        assert_eq!(next["auto_play_ms"].as_f64(), Some(2000.0));
 
         pl.next();
         let next = next_json(&pl, true);

@@ -27,6 +27,7 @@ import {
   packDeckLights,
   type DeckLight,
 } from "../../src/lib/stage/decklight";
+import { loadRules } from "./rules-node";
 
 const WHITE: [number, number, number] = [1, 1, 1];
 
@@ -49,6 +50,10 @@ function light(over: Partial<DeckLight>): DeckLight {
 }
 
 const level = (l: DeckLight, x: number, y: number) => deckLight(l, x, y)[0];
+
+test.beforeAll(async () => {
+  await loadRules();
+});
 
 test.describe("deck light", () => {
   test("the reference beam straight down lights its centre to 1", () => {

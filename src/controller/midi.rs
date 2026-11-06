@@ -17,58 +17,38 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, span, warn, Level};
 
-use super::TransportAction;
+use super::{TransportAction, TransportBindings};
 use crate::{config, midi, midi::Device, player::Player};
 
-/// MIDI events that the controller recognizes.
-struct MidiEvents {
-    play: LiveEvent<'static>,
-    prev: LiveEvent<'static>,
-    next: LiveEvent<'static>,
-    stop: LiveEvent<'static>,
-    all_songs: LiveEvent<'static>,
-    playlist: LiveEvent<'static>,
-    section_ack: Option<LiveEvent<'static>>,
-    stop_section_loop: Option<LiveEvent<'static>>,
-    ambient_on: Option<LiveEvent<'static>>,
-    ambient_off: Option<LiveEvent<'static>>,
-    ambient_auto: Option<LiveEvent<'static>>,
-    cancel_auto_play: Option<LiveEvent<'static>>,
+/// The MIDI event configured for each transport action.
+type MidiEvents = TransportBindings<LiveEvent<'static>>;
+
+/// The MIDI event `config` binds to `action`, `None` for none.
+fn midi_event_for(
+    config: &config::MidiController,
+    action: TransportAction,
+) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+    use crate::dmx::engine::AmbientMode;
+    Ok(match action {
+        TransportAction::Play => Some(config.play()?),
+        TransportAction::Prev => Some(config.prev()?),
+        TransportAction::Next => Some(config.next()?),
+        TransportAction::Stop => Some(config.stop()?),
+        TransportAction::AllSongs => Some(config.all_songs()?),
+        TransportAction::Playlist => Some(config.playlist()?),
+        TransportAction::SectionAck => config.section_ack()?,
+        TransportAction::StopSectionLoop => config.stop_section_loop()?,
+        TransportAction::AmbientMode(AmbientMode::On) => config.ambient_on()?,
+        TransportAction::AmbientMode(AmbientMode::Off) => config.ambient_off()?,
+        TransportAction::AmbientMode(AmbientMode::Auto) => config.ambient_auto()?,
+        TransportAction::CancelAutoPlay => config.cancel_auto_play()?,
+    })
 }
 
-/// Classifies a parsed MIDI event against the known controller events.
 /// The transport action a MIDI event is configured as, `None` for one
 /// that is not.
 fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> Option<TransportAction> {
-    use crate::dmx::engine::AmbientMode;
-    let action = if *event == events.play {
-        TransportAction::Play
-    } else if *event == events.prev {
-        TransportAction::Prev
-    } else if *event == events.next {
-        TransportAction::Next
-    } else if *event == events.stop {
-        TransportAction::Stop
-    } else if *event == events.all_songs {
-        TransportAction::AllSongs
-    } else if *event == events.playlist {
-        TransportAction::Playlist
-    } else if events.section_ack.as_ref() == Some(event) {
-        TransportAction::SectionAck
-    } else if events.stop_section_loop.as_ref() == Some(event) {
-        TransportAction::StopSectionLoop
-    } else if events.ambient_on.as_ref() == Some(event) {
-        TransportAction::AmbientMode(AmbientMode::On)
-    } else if events.ambient_off.as_ref() == Some(event) {
-        TransportAction::AmbientMode(AmbientMode::Off)
-    } else if events.ambient_auto.as_ref() == Some(event) {
-        TransportAction::AmbientMode(AmbientMode::Auto)
-    } else if events.cancel_auto_play.as_ref() == Some(event) {
-        TransportAction::CancelAutoPlay
-    } else {
-        return None;
-    };
-    Some(action)
+    events.classify(|bound| bound == event)
 }
 
 /// Stops a device's event watch when dropped.
@@ -107,20 +87,7 @@ impl Driver {
                 Ok(Arc::new(Driver {
                     player,
                     midi_device,
-                    events: MidiEvents {
-                        play: config.play()?,
-                        prev: config.prev()?,
-                        next: config.next()?,
-                        stop: config.stop()?,
-                        all_songs: config.all_songs()?,
-                        playlist: config.playlist()?,
-                        section_ack: config.section_ack()?,
-                        stop_section_loop: config.stop_section_loop()?,
-                        ambient_on: config.ambient_on()?,
-                        ambient_off: config.ambient_off()?,
-                        ambient_auto: config.ambient_auto()?,
-                        cancel_auto_play: config.cancel_auto_play()?,
-                    },
+                    events: MidiEvents::new(|action| midi_event_for(&config, action))?,
                 }))
             }
             None => Err("No MIDI device to use for MIDI configuration".into()),
@@ -136,20 +103,7 @@ impl super::Driver for Driver {
         let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(256);
         let player = self.player.clone();
         let device = self.midi_device.clone();
-        let events = MidiEvents {
-            play: self.events.play,
-            prev: self.events.prev,
-            next: self.events.next,
-            stop: self.events.stop,
-            all_songs: self.events.all_songs,
-            playlist: self.events.playlist,
-            section_ack: self.events.section_ack,
-            stop_section_loop: self.events.stop_section_loop,
-            ambient_on: self.events.ambient_on,
-            ambient_off: self.events.ambient_off,
-            ambient_auto: self.events.ambient_auto,
-            cancel_auto_play: self.events.cancel_auto_play,
-        };
+        let events = self.events.clone();
 
         // Watched before the task below exists, so that the task only ever
         // stops a watch that has started.
@@ -568,21 +522,16 @@ mod test {
         use crate::config::midi::{note_on, ToMidiEvent};
         use midly::live::LiveEvent;
 
+        /// Keys 0 to 11 on channel 16, one per action in
+        /// [`TransportAction::ALL`]'s order.
         fn make_test_events() -> MidiEvents {
-            MidiEvents {
-                play: note_on(16, 0, 127).to_midi_event().unwrap(),
-                prev: note_on(16, 1, 127).to_midi_event().unwrap(),
-                next: note_on(16, 2, 127).to_midi_event().unwrap(),
-                stop: note_on(16, 3, 127).to_midi_event().unwrap(),
-                all_songs: note_on(16, 4, 127).to_midi_event().unwrap(),
-                playlist: note_on(16, 5, 127).to_midi_event().unwrap(),
-                section_ack: Some(note_on(16, 6, 127).to_midi_event().unwrap()),
-                stop_section_loop: Some(note_on(16, 7, 127).to_midi_event().unwrap()),
-                ambient_on: Some(note_on(16, 8, 127).to_midi_event().unwrap()),
-                ambient_off: Some(note_on(16, 9, 127).to_midi_event().unwrap()),
-                ambient_auto: Some(note_on(16, 10, 127).to_midi_event().unwrap()),
-                cancel_auto_play: Some(note_on(16, 11, 127).to_midi_event().unwrap()),
-            }
+            let mut key = 0;
+            MidiEvents::new(|_| {
+                let event = note_on(16, key, 127).to_midi_event()?;
+                key += 1;
+                Ok(Some(event))
+            })
+            .unwrap()
         }
 
         #[test]

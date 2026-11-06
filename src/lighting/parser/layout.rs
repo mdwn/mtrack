@@ -33,6 +33,7 @@ use super::show::{parse_file_with, ParsedCue, ParsedShow};
 use super::types::EffectKind;
 use super::utils::unquote;
 use crate::lighting::effects::DEFAULT_LAYER;
+use crate::position::duration_from_secs_saturating;
 use crate::tempo::TempoMap;
 
 /// How far past the last written end the timeline reaches.
@@ -316,10 +317,6 @@ fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-fn secs(secs: f64) -> Duration {
-    Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX)
-}
-
 /// Where the offset in force changes along a block's cues: at each cue's
 /// score time, the offset for the cues after it. A position exactly at a
 /// cue is before it: the cue, and a grid line on it, are drawn before the
@@ -330,8 +327,9 @@ fn offset_steps(cues: &[ParsedCue]) -> Vec<(Duration, Duration)> {
         .filter_map(|cue| {
             let new_offset = cue.new_offset?;
             Some((
-                cue.time.saturating_sub(secs(cue.offset_secs)),
-                secs(new_offset),
+                cue.time
+                    .saturating_sub(duration_from_secs_saturating(cue.offset_secs)),
+                duration_from_secs_saturating(new_offset),
             ))
         })
         .collect();
@@ -376,7 +374,10 @@ fn written_end(cues: &[ParsedCue]) -> Duration {
     for cue in cues {
         end = end.max(cue.time);
         if let Some(new_offset) = cue.new_offset {
-            end = end.max(cue.time.saturating_add(secs(new_offset - cue.offset_secs)));
+            end = end.max(
+                cue.time
+                    .saturating_add(duration_from_secs_saturating(new_offset - cue.offset_secs)),
+            );
         }
         let mut limit = Duration::MAX;
         for pass in &cue.passes {
@@ -418,7 +419,7 @@ fn cue_layout(
     horizon: Duration,
     tempo_map: &Option<TempoMap>,
 ) -> CueLayout {
-    let offset = secs(cue.offset_secs);
+    let offset = duration_from_secs_saturating(cue.offset_secs);
     let effects = cue
         .cues
         .iter()
@@ -470,7 +471,9 @@ fn cue_layout(
         ms: ms(cue.time),
         score_ms: ms(cue.time.saturating_sub(offset)),
         offset_ms: ms(offset),
-        next_offset_ms: ms(secs(cue.new_offset.unwrap_or(cue.offset_secs))),
+        next_offset_ms: ms(duration_from_secs_saturating(
+            cue.new_offset.unwrap_or(cue.offset_secs),
+        )),
         offset_measures: cue.offset_measures,
         reset: cue.reset,
         effects,

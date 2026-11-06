@@ -14,6 +14,8 @@
 
 //! Notification event types for the audio notification subsystem.
 
+use crate::config::{section_key, NotificationKind};
+
 /// Events that trigger audio notifications during playback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationEvent {
@@ -34,24 +36,25 @@ impl NotificationEvent {
     /// to `"section_entering"` if no per-section override exists.
     pub fn override_key(&self) -> String {
         match self {
-            NotificationEvent::SectionEntering { section_name } => {
-                format!("section:{}", section_name)
-            }
-            NotificationEvent::LoopArmed => "loop_armed".to_string(),
-            NotificationEvent::BreakRequested => "break_requested".to_string(),
-            NotificationEvent::LoopExited => "loop_exited".to_string(),
+            NotificationEvent::SectionEntering { section_name } => section_key(section_name),
+            _ => self.fallback_key().to_string(),
+        }
+    }
+
+    /// The event's kind.
+    pub fn kind(&self) -> NotificationKind {
+        match self {
+            NotificationEvent::SectionEntering { .. } => NotificationKind::SectionEntering,
+            NotificationEvent::LoopArmed => NotificationKind::LoopArmed,
+            NotificationEvent::BreakRequested => NotificationKind::BreakRequested,
+            NotificationEvent::LoopExited => NotificationKind::LoopExited,
         }
     }
 
     /// Returns the generic fallback key for this event type.
     /// Only differs from `override_key()` for `SectionEntering`.
     pub fn fallback_key(&self) -> &'static str {
-        match self {
-            NotificationEvent::SectionEntering { .. } => "section_entering",
-            NotificationEvent::LoopArmed => "loop_armed",
-            NotificationEvent::BreakRequested => "break_requested",
-            NotificationEvent::LoopExited => "loop_exited",
-        }
+        self.kind().key()
     }
 }
 

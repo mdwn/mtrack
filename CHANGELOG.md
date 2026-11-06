@@ -152,6 +152,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
+  dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is
+  shown (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`; `auto_play: 1.0005s`
+  reads `1.0005s` on both, where the next-up line said `1s`, and `auto_play: 0.5ms` is a gap
+  there too, where it said the song starts at once). The status's `next.auto_play_ms` is exact
+  (a fraction of a millisecond where there is one), where it was truncated to whole milliseconds.
+- **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
+  `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one parser:
+  decimal numbers with `ms`, `s`, `m` (minutes), `h`, `ns`, `us`, `d`, `w` or `y`, summed (`1m30s`);
+  fades take `beats` and `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere
+  the `duration_string` crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a
+  fade of none, and fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which was
+  "longer than any song"; the bound is now 1,000,000 seconds in every unit). The crate's other units
+  read as they did: `ns`, `us`, `d`, `w` and `y` (a year being 31,556,926 seconds), now with
+  decimals too, and a fade takes them as well. No longer accepted: a fade of `0mm`, `0ss` or `0sm`,
+  which read as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as `1.5s`, not
+  `1500ms`; a `playback_delay` the clock refuses now says `playback_delay '<text>' is not a valid
+  duration`. The `duration-string` dependency is gone. The clock reads a number as Rust reads a
+  decimal, so `1e2s`, `+2s`, `-0s` (none), `5.s` and `.5s` are now taken in every clock field. A
+  fade of `00s` or `-0s` is now none (a cut) and `1 000ms` (a space in the number) is one second;
+  both were refused.
+- **The TUI and the web UI show a fixture in the same colour**: the TUI drew a fixture in its raw
+  red, green and blue, so `red 255` under `dimmer 0` showed full red, a dimmer-only fixture black,
+  and a CMY fixture, a GDTF profile's sections and an amber-only fixture no colour, where the web
+  UI's stage views drew their own reading. Both now draw the player's one reading, beside its test
+  of a lit fixture: each emitter of each part that lights the fixture -- red, green, blue, white,
+  amber, lime, UV, warm and cool white, ... -- in its own colour at its level, added, times the
+  part's dimmer; a fixture mixing subtractively in the white its cyan, magenta and yellow flags
+  pass; a dimmer alone a warm white; and black exactly where nothing lights it. In the TUI, `red
+  255` under `dimmer 0` is black, a dimmer alone a warm white, white adds to the mix, a CMY fixture
+  shows the white its flags pass, a GDTF profile's sections (`red:2`) and ganged mirrors (`red#2`)
+  show their colours under their own dimmers, and amber alone shows amber. In the stage views: `cyan
+  255` under a full dimmer on a CMY fixture is cyan (was a warm white); sections and mirrors show
+  their colours under their own dimmers (they showed as a warm white at the fixture's dimmer, or
+  full with none); `white 0` under a full dimmer, or a fixture with no level channel, is black (was
+  a warm white); and an RGBA, RGBW+UV or RGB+WW fixture lit by its amber, UV or warm white shows
+  that colour (`red 0, green 0, blue 0, amber 255` is amber, was black; amber or UV alone was a warm
+  white at the dimmer).
+
+- **A level rounds to its DMX byte**: a light show's level on an 8-bit channel was truncated to its
+  byte, while MIDI DMX rounded, so the same 50% went out as 127 from a show and 128 from MIDI DMX.
+  Both now round to the nearest by one rule, so a show's 8-bit channel may go out one count higher
+  than before: `dimmer: 50%` is 128 (was 127), `0.999` is 255 (was 254), and a colour byte or a
+  crossfade's level likewise. A `rainbow`'s colours, and a `cycle`'s hue fade, round too: hue 30 at
+  full is 255, 128, 0 (was 255, 127, 0). 16-bit channels are as they were. The fixture snapshot (the
+  web UI's stage views, the TUI, MCP `get_fixture_state`) shows the same rounded byte. A strobe rate
+  on a fixture without a step table may go out one count higher too, and the rate the player reports
+  for a strobe byte is read at the byte rather than half a byte above it; 10 Hz on a PixelBrick's
+  period curve is 249 (was 248), and 0.04 Hz on a 20 Hz unit with no strobe function is byte 1, its
+  slowest rate (was 0, off). A step table's 8-bit bytes are as they were; on a 16-bit strobe channel
+  a step table's coarse byte is now exactly the step's (a step at DMX 127 to 254 went out one
+  higher, 128 to 255). A MIDI DMX value that is not a number goes out as 0 (was 255).
+
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes
@@ -362,6 +415,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   colour channels. The docs' tables of effects, defaults, OSC addresses, trigger inputs, MIDI
   event kinds and CLI commands are now tested against the code.
 
+- **A 6/8 MIDI tempo guess no longer warns of a poor fit**: the MIDI file's beats were scored
+  against the click track's in dotted quarters, two to a 6/8 bar, while the click grid counts six
+  eighths, so a correct 6/8 map from a click in eighths scored about 200 ms off (at 120 BPM) and the
+  tempo editor showed its alignment warning. The score now counts the grid's beats (one per
+  denominator note); where beat 1 falls is still found by the dotted-quarter pulse. Other metres the
+  score now counts differently: 3/8 (three eighths a bar, where it was one dotted quarter), a
+  whole-note denominator (one whole note, where it was a quarter) and denominators of 32 and above
+  (one denominator note, where it was a quarter).
+- **The editor takes as many sequence passes as the player, and a huge count no longer hangs**:
+  setting a sequence's `loop` count in the timeline refused counts past 4,294,967,295 that the
+  player reads; it now asks the player's own rule, which reads a count as a 64-bit number on every
+  target (the web UI and a 32-bit Pi refused `loop: 5000000000`). A sequence count above 10,000
+  (`loop: 5000000000`, or an inline loop's `repeats:`) plays 10,000 passes, the same as `loop`; it
+  used to lay out every pass, which could hang the player and the web editor (`loop: 100000000`
+  did).
+- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a loop
+  break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes each on
+  its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through and
+  overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same blend
+  the web UI's view of the crossfade uses. A fixture's fine bytes and mirrored sections now cross by
+  their channel's rule too -- any channel with a `fine` byte, from a GDTF profile or a fixture
+  type's own `channel "pan" @ 1 fine 2` -- rather than fading each byte: a mirrored strobe or gobo
+  switches at the midpoint (it faded); a mirrored pan or tilt holds where only one side points it
+  (it faded from or to 0); and a mover's fine byte holds where one side does not point it (it faded
+  to 0). Where two channels are patched over one DMX channel -- two fixtures', or one fixture's own
+  (`channels: { dimmer: 1, strobe: 1 }`) -- the crossfade crosses it the same way every time and
+  drops neither's byte: a 16-bit value's fine byte could go out on neither side, and the dimmer and
+  strobe above crossed 0 to 200 as 50 or as 0 a quarter of the way, by run; it fades.
+- **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
+  other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
+  mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
+  the way. Each byte now rounds to the nearest, by the engine's one interpolation, so a shared
+  byte stays put and the rest may come out one higher (black to white halfway is 128, was 127).
+- **MCP `write_song` rewrites a song that failed to load in place**: it took a song that did
+  not load for a new one, and wrote `<songs>/<name>/song.yaml` beside (or over) the file the
+  song came from; it now writes the file the song was read from, as the web UI's song editor
+  does. A playlist listed as text says why a song is missing (`unable to find song <name>`, or
+  `song <name> failed to load: ...`) where it said `(unable to find song)`.
+- **MCP `set_ambient_mode` takes a mode in any case, as gRPC does**: `{mode: "On"}` was
+  refused by MCP and taken by gRPC `SetAmbientMode`; both now read a mode one way (any case,
+  spaces trimmed), and refuse another name with `unknown ambient mode '<name>': use auto, on or
+  off`.
+- **One error for a song lighting file that is not there**: MCP `delete_song_lighting`, which
+  answered only "song `x` has no lighting file named `y`" now adds, as the other two did, "check
+  the song's `lighting:` block for the exact filename it references".
+- **One parse and validation for a config section update, on every surface**: MCP
+  `update_audio`, `update_midi`, `update_dmx` and `update_controllers`, gRPC `UpdateAudio`,
+  `UpdateMidi`, `UpdateDmx` and `UpdateControllers`, and the web API's `PUT /api/config/audio`,
+  `/midi`, `/dmx` and `/controllers` all save through one parse and validation. What changes:
+  - A body that is not the section's shape (MCP `update_audio{body: 5}`) answers `Validation
+    error: invalid audio JSON: ...` everywhere. MCP said `invalid payload: ...`; gRPC said
+    `invalid audio JSON: ...` (`invalid MIDI JSON`, `invalid DMX JSON`, `invalid controllers
+    JSON`); the web API said `{"error": "invalid audio: ..."}`.
+  - A section that parses but does not validate (an audio block with a bad sample format, say)
+    is now refused by MCP and gRPC too, where only the web API checked; the web API now answers
+    `{"error": "Validation error: <errors joined by "; ">"}` where it answered
+    `{"errors": [...]}`.
+  - gRPC `UpdateAudio`, `UpdateMidi` and `UpdateDmx` with `*_json: "null"` now remove the
+    section, as an empty string always did; they were refused.
+  - gRPC `UpdateControllers{controllers_json: ""}` answers `Validation error: invalid
+    controllers JSON: invalid type: null, expected a sequence`, where it answered `invalid
+    controllers JSON: EOF while parsing a value`.
+  - `PUT /api/config/controllers` without a `controllers` field answers that same validation
+    error, where it answered `missing controllers field`.
+  - JSON gRPC cannot parse at all still answers `invalid <section> JSON: ...`, with the config's
+    section name (`audio`, `midi`, `dmx`, `controllers`).
+- **The terminal UI logs a transport key that fails**: a play, or a switch to `all_songs` or
+  back to the playlist, that failed from the TUI's keys was dropped silently. The keys now run
+  the transport actions the MIDI and OSC controllers run, so the failure shows in the TUI's
+  log pane, as it is logged from a controller. An OSC address configured for both a transport
+  action and an OSC-only one (pause, stop samples, loop section, seek, seek section) is now
+  taken as the transport action.
+- **One lock refusal on every surface**: MCP refused a write while locked with the player's
+  `Player is locked. Unlock to make changes.` followed by its own hint naming the tool. It now
+  answers that sentence alone, as gRPC and the web UI do. Which operations stay open while
+  locked is one table for MCP, gRPC and the web UI; what each surface leaves open is unchanged.
+- **A status that could not read ambient light says so on every surface**: when the status's
+  read of the DMX engine timed out or failed, MCP `status` gave the ambient light as
+  `{"available": false, "reason": ...}`, but gRPC `Status` and the web UI's playback message left
+  it out, as though there were no DMX engine. gRPC's `AmbientStatus` now carries
+  `available: false` and `reason` (new fields 5 and 6; mode and state are then empty), and the
+  web UI's playback message carries `{"available": false, "reason": ...}`, shown on the
+  dashboard as "Ambient light: no reading".
+- **`mtrack verify --check` refuses a category it does not know**: `mtrack verify mtrack.yaml
+  --check track_mappings` (a typo) ran no checks and exited 0. It now fails with clap's error
+  listing the categories (`track-mappings`).
+- **One text for "no effect engine"**: with no DMX engine, gRPC `GetActiveEffects` (and so
+  `mtrack active-effects`) answered `No DMX engine available` and MCP `get_active_effects`
+  answered `(no effect engine configured)`. Both now answer `no effect engine configured`, as
+  MCP's lighting resource already said.
+- **A song that failed to load says why on every surface**: a song whose files are there but
+  did not load (a `.light` file that does not parse, say) was "unable to find song broken" to
+  every MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to
+  gRPC `PlaySongFrom`, and 404 `Song not found: broken` to the web API's waveform, tempo guess
+  and files (`GET /api/songs/broken/waveform`, `/tempo-guess`, `/files`). They now answer
+  `song broken failed to load: <the load error>` (400 on the web API). An unknown song answers
+  `unable to find song <name>` everywhere: gRPC `PlaySongFrom` said `Song '<name>' not found`,
+  the web API (those three, `GET /api/songs/<name>`, and the song file uploads) `Song not found:
+  <name>`, and the web preview (`POST /api/lighting/evaluate`)
+  `unknown song: <name>`; the preview's failed-to-load answer gains the `song <name> failed to
+  load: ` prefix.
+- **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
+  time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
+  now refuses more than 64 times (`at most 64 times per request`) and a time past a week
+  (`time out of range`). The web UI's preview now checks the song, and that it has lighting,
+  before these bounds: 65 times for an unknown song answers 404 `unable to find song <name>`
+  rather than 400, and for a song with no lighting `song `<name>` has no lighting loaded` rather
+  than `at most 64 times per request`.
+- **A per-section notification sound that does not load is logged like the others**: a section
+  override (`notifications.sections.<name>`, global or per song) that failed to load was logged
+  as `Failed to load section notification override` (or `Failed to load song section
+  notification override`) with a `section` field; it is now logged as `Failed to load
+  notification audio override` with `key=section:<name>`, as the event overrides are.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.

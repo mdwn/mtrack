@@ -23,7 +23,7 @@ import type {
   FadeConfig,
 } from "../gen/rules/mtrack_rules";
 import type { AutoPlay, PlaylistAmbient } from "./api/config";
-import { formatFadeLength, formatGapMs } from "./util/format";
+import { formatFadeLength } from "./util/format";
 import { rules } from "./rules";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
@@ -84,7 +84,7 @@ export function entrySummary(
       ? tr("playlists.autoPlayGapInvalid", { values: { gap: gapText } })
       : read?.kind === "gap" && read.ms > 0
         ? tr("playlists.autoPlayGapSummary", {
-            values: { gap: formatGapMs(read.ms) },
+            values: { gap: read.text },
           })
         : null;
   const ambient = entry.ambient ?? null;

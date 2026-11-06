@@ -112,6 +112,7 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
                 name: summary.name.clone(),
                 footprint: summary.footprint,
                 capabilities: None,
+                wants: None,
                 cells: None,
                 strobe_range: None,
                 channels: None,
@@ -138,8 +139,9 @@ fn inspect_description(description: &lighting::gdtf::Description) -> GdtfInspect
                         None,
                     );
                     info.cells = fixture_type.cells().to_vec();
-                    mode.capabilities =
-                        Some(lighting::fit::FitFixture::from_info(&info, &[]).capability_names());
+                    let fit = lighting::fit::FitFixture::from_info(&info, &[]);
+                    mode.capabilities = Some(fit.capability_names());
+                    mode.wants = Some(fit.wants());
                     mode.cells = Some(fixture_type.cells().len());
                     mode.strobe_range =
                         fixture_type
@@ -2032,14 +2034,6 @@ pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoRespons
     }
 }
 
-/// The most instants one evaluate request may ask for. A scrubber asks for
-/// one; anything near this is a script.
-const MAX_EVALUATE_TIMES: usize = 64;
-
-/// The latest instant one evaluate request may ask for: a week. No song is
-/// longer, and the evaluator steps through every second it is given.
-const MAX_EVALUATE_TIME: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
-
 /// Body of `POST /api/lighting/evaluate`.
 #[derive(serde::Deserialize)]
 pub(super) struct EvaluateRequest {
@@ -2066,12 +2060,6 @@ pub(super) async fn evaluate_lighting(
     let error = |status: StatusCode, message: String| {
         (status, Json(json!({"error": message}))).into_response()
     };
-    if request.times.len() > MAX_EVALUATE_TIMES {
-        return error(
-            StatusCode::BAD_REQUEST,
-            format!("at most {MAX_EVALUATE_TIMES} times per request"),
-        );
-    }
     if request.times.iter().any(|t| !t.is_finite() || *t < 0.0) {
         return error(
             StatusCode::BAD_REQUEST,
@@ -2084,15 +2072,7 @@ pub(super) async fn evaluate_lighting(
         Ok(song) => song,
         // A song whose lighting fails to parse never loads: the registry
         // keeps its failure, and the message says why.
-        Err(_) => {
-            return match songs.failures().iter().find(|f| f.name() == request.song) {
-                Some(failure) => error(StatusCode::BAD_REQUEST, failure.error().to_string()),
-                None => error(
-                    StatusCode::NOT_FOUND,
-                    format!("unknown song: {}", request.song),
-                ),
-            };
-        }
+        Err(e) => return super::helpers::song_lookup_response(e),
     };
     let shows = crate::lighting::evaluate::registered_shows(&song);
     if shows.is_empty() {
@@ -2102,18 +2082,22 @@ pub(super) async fn evaluate_lighting(
         );
     }
     let tempo = song.lighting_tempo_map();
-    // Duration::from_secs_f64 panics on what it cannot hold, and the
-    // evaluator steps through every second it is asked for: bound both.
-    // Collected rather than sized up front: the count is already capped
-    // above, and a capacity taken from the request is what CodeQL flags.
+    // Duration::from_secs_f64 panics on what it cannot hold; the evaluator
+    // bounds the count and the latest instant itself. Collected rather than
+    // sized up front: a capacity taken from the request is what CodeQL flags.
     let times: Vec<std::time::Duration> = match request
         .times
         .iter()
-        .map(|t| crate::util::duration_from_secs(*t).filter(|d| *d <= MAX_EVALUATE_TIME))
+        .map(|t| crate::util::duration_from_secs(*t))
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,
-        None => return error(StatusCode::BAD_REQUEST, "time out of range".to_string()),
+        None => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                crate::lighting::evaluate::EvaluateError::TimeOutOfRange.to_string(),
+            )
+        }
     };
     let lighting_system = state
         .player
@@ -2132,7 +2116,8 @@ pub(super) async fn evaluate_lighting(
     })
     .await;
     let evaluated = match evaluated {
-        Ok(evaluated) => evaluated,
+        Ok(Ok(evaluated)) => evaluated,
+        Ok(Err(e)) => return error(StatusCode::BAD_REQUEST, e.to_string()),
         Err(e) => {
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3198,11 +3183,12 @@ fn venue_from_json(name: &str, json: &serde_json::Value) -> Result<lighting::typ
             Some(value) => Some(
                 value
                     .as_f64()
-                    .filter(|v| *v > 0.0 && *v <= 180.0)
+                    .filter(|v| lighting::fixture_data::beam_angle_valid(*v))
                     .ok_or_else(|| {
                         format!(
                             "Fixture '{fix_name}': 'beam_angle' must be a number of degrees, \
-                             greater than 0 and at most 180, or null"
+                             greater than 0 and at most {}, or null",
+                            lighting::fixture_data::MAX_BEAM_ANGLE
                         )
                     })?,
             ),

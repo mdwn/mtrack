@@ -346,9 +346,9 @@ enum Commands {
     Verify {
         /// The path to the mtrack.yaml player config file.
         config: String,
-        /// Only check specific categories (e.g., "track-mappings"). Runs all checks if omitted.
-        #[arg(long)]
-        check: Option<Vec<String>>,
+        /// Only check specific categories. Runs all checks if omitted.
+        #[arg(long, value_enum)]
+        check: Option<Vec<crate::verify::Check>>,
         /// Hostname to verify against. When profiles are used, this filters which profiles
         /// to check. If omitted, all profiles are verified.
         #[arg(long)]
@@ -1253,7 +1253,10 @@ mod tests {
                     hostname,
                 } => {
                     assert_eq!(config, "mtrack.yaml");
-                    assert_eq!(check.as_deref(), Some(&["track-mappings".to_string()][..]));
+                    assert_eq!(
+                        check.as_deref(),
+                        Some(&[crate::verify::Check::TrackMappings][..])
+                    );
                     assert_eq!(hostname.as_deref(), Some("stage-left"));
                 }
                 _ => panic!("expected Verify command"),
@@ -1583,26 +1586,19 @@ mod tests {
         }
 
         #[test]
-        fn parse_verify_with_multiple_checks() {
-            let cli = Cli::try_parse_from([
+        fn parse_verify_refuses_an_unknown_check() {
+            // A typo used to run no checks and exit 0.
+            let err = Cli::try_parse_from([
                 "mtrack",
                 "verify",
                 "mtrack.yaml",
                 "--check",
-                "track-mappings",
-                "--check",
-                "other-check",
+                "track_mappings",
             ])
-            .unwrap();
-            match cli.command {
-                Commands::Verify { check, .. } => {
-                    let checks = check.unwrap();
-                    assert_eq!(checks.len(), 2);
-                    assert!(checks.contains(&"track-mappings".to_string()));
-                    assert!(checks.contains(&"other-check".to_string()));
-                }
-                _ => panic!("expected Verify command"),
-            }
+            .err()
+            .expect("an unknown check is refused");
+            assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(err.to_string().contains("track-mappings"), "{err}");
         }
 
         #[test]

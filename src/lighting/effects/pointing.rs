@@ -352,8 +352,8 @@ pub fn nearest_pan(pan: f64, current: f64, range: (f64, f64)) -> f64 {
 /// Interpolates a pose along the shortest path in degrees.
 pub fn lerp(from: Pose, to: Pose, t: f64) -> Pose {
     Pose {
-        pan: from.pan + (to.pan - from.pan) * t,
-        tilt: from.tilt + (to.tilt - from.tilt) * t,
+        pan: crate::lighting::channels::lerp(from.pan, to.pan, t),
+        tilt: crate::lighting::channels::lerp(from.tilt, to.tilt, t),
     }
 }
 

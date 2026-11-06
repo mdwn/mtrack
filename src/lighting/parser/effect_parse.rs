@@ -186,21 +186,174 @@ const EFFECT_PARAMS: [(EffectKind, &[&str]); 8] = [
         EffectKind::Rainbow,
         &["speed", "saturation", "brightness", "duration"],
     ),
+    (EffectKind::Move, &MOVE_KIND_PARAMS),
+];
+
+/// What a `move` reads: each of [`MOVE_PARAMS`], each of [`MOVE_ALIASES`],
+/// then its easing and duration.
+const MOVE_KIND_PARAMS: [&str; MOVE_PARAMS.len() + MOVE_ALIASES.len() + 2] = {
+    let mut out = [""; MOVE_PARAMS.len() + MOVE_ALIASES.len() + 2];
+    let mut i = 0;
+    while i < MOVE_PARAMS.len() {
+        out[i] = MOVE_PARAMS[i].1;
+        i += 1;
+    }
+    let mut j = 0;
+    while j < MOVE_ALIASES.len() {
+        out[i + j] = MOVE_ALIASES[j].0;
+        j += 1;
+    }
+    out[i + j] = "easing";
+    out[i + j + 1] = "duration";
+    out
+};
+
+/// A `move`'s target and start parameters.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveParam {
+    Focus,
+    Pan,
+    Tilt,
+    From,
+    FromPan,
+    FromTilt,
+}
+
+/// The end of a move a parameter sets: where it goes, or where it starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MoveEnd {
+    To,
+    From,
+}
+
+/// What of its end a parameter sets: a quoted focus point, or an angle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MoveSlot {
+    Point,
+    Pan,
+    Tilt,
+}
+
+/// Each `move` parameter: its name, the end it sets and what of it. An
+/// end is a point or angles, never both. The one table: the parser reads
+/// a move by it, and the editor clears and quotes by it.
+const MOVE_PARAMS: [(MoveParam, &str, MoveEnd, MoveSlot); 6] = [
+    (MoveParam::Focus, "focus", MoveEnd::To, MoveSlot::Point),
+    (MoveParam::Pan, "pan", MoveEnd::To, MoveSlot::Pan),
+    (MoveParam::Tilt, "tilt", MoveEnd::To, MoveSlot::Tilt),
+    (MoveParam::From, "from", MoveEnd::From, MoveSlot::Point),
+    (MoveParam::FromPan, "from_pan", MoveEnd::From, MoveSlot::Pan),
     (
-        EffectKind::Move,
-        &[
-            "focus",
-            "to",
-            "from",
-            "from_pan",
-            "from_tilt",
-            "pan",
-            "tilt",
-            "easing",
-            "duration",
-        ],
+        MoveParam::FromTilt,
+        "from_tilt",
+        MoveEnd::From,
+        MoveSlot::Tilt,
     ),
 ];
+
+/// Other names a `move` parameter is written under: `to` for `focus`.
+pub(crate) const MOVE_ALIASES: [(&str, MoveParam); 1] = [("to", MoveParam::Focus)];
+
+impl MoveParam {
+    fn row(self) -> (MoveParam, &'static str, MoveEnd, MoveSlot) {
+        *MOVE_PARAMS
+            .iter()
+            .find(|(param, ..)| *param == self)
+            .expect("every move parameter")
+    }
+
+    /// The parameter `name` (or an alias of it) is.
+    fn named(name: &str) -> Option<MoveParam> {
+        MOVE_PARAMS
+            .iter()
+            .find(|(_, n, ..)| *n == name)
+            .map(|(param, ..)| *param)
+            .or_else(|| {
+                MOVE_ALIASES
+                    .iter()
+                    .find(|(alias, _)| *alias == name)
+                    .map(|(_, param)| *param)
+            })
+    }
+
+    /// The parameter of `end` that sets `slot`.
+    fn of(end: MoveEnd, slot: MoveSlot) -> MoveParam {
+        MOVE_PARAMS
+            .iter()
+            .find(|(_, _, e, s)| *e == end && *s == slot)
+            .map(|(param, ..)| *param)
+            .expect("every end has every slot")
+    }
+
+    /// The name it is written under.
+    pub(crate) fn name(self) -> &'static str {
+        self.row().1
+    }
+
+    /// The parameters that are a focus point.
+    pub(crate) fn points() -> impl Iterator<Item = MoveParam> {
+        MOVE_PARAMS
+            .iter()
+            .filter(|(.., slot)| *slot == MoveSlot::Point)
+            .map(|(param, ..)| *param)
+    }
+
+    /// Whether its value is a quoted focus point (else an angle).
+    pub(crate) fn is_point(self) -> bool {
+        self.row().3 == MoveSlot::Point
+    }
+
+    /// Every name setting it gives no longer applies: its aliases, and on
+    /// its end the angles a point excludes, or the point angles exclude.
+    pub(crate) fn excludes(self) -> Vec<&'static str> {
+        let (_, _, end, _) = self.row();
+        let aliases = MOVE_ALIASES
+            .iter()
+            .filter(|(_, param)| *param == self)
+            .map(|(alias, _)| *alias);
+        let others = MOVE_PARAMS
+            .iter()
+            .filter(|(param, _, e, _)| *e == end && param.is_point() != self.is_point())
+            .flat_map(|(param, name, ..)| {
+                std::iter::once(*name).chain(
+                    MOVE_ALIASES
+                        .iter()
+                        .filter(move |(_, p)| p == param)
+                        .map(|(alias, _)| *alias),
+                )
+            });
+        aliases.chain(others).collect()
+    }
+}
+
+/// One end of a move as written: its point, pan and tilt.
+#[derive(Default)]
+struct MoveEndWritten {
+    point: Option<String>,
+    pan: Option<f64>,
+    tilt: Option<f64>,
+}
+
+impl MoveEndWritten {
+    /// The end, `None` for none written; an error naming its parameters
+    /// for both a point and angles.
+    fn target(self, end: MoveEnd) -> Result<Option<MoveTarget>, String> {
+        let name = |slot| MoveParam::of(end, slot).name();
+        match (self.point, self.pan, self.tilt) {
+            (Some(_), pan, tilt) if pan.is_some() || tilt.is_some() => Err(format!(
+                "move: give either `{}` or `{}`/`{}`, not both",
+                name(MoveSlot::Point),
+                name(MoveSlot::Pan),
+                name(MoveSlot::Tilt)
+            )),
+            (Some(point), _, _) => Ok(Some(MoveTarget::Focus(point))),
+            (None, None, None) => Ok(None),
+            (None, pan, tilt) => Ok(Some(MoveTarget::Angles { pan, tilt })),
+        }
+    }
+}
 
 /// The parameters `parse_effect_definition` reads for every effect
 /// (`spread` does something on a cycle or a rainbow alone, which lint says).
@@ -689,45 +842,37 @@ pub(crate) fn apply_parameters_to_effect_type(
             easing,
             duration,
         } => {
-            let mut to_focus: Option<String> = None;
-            let mut to_pan: Option<f64> = None;
-            let mut to_tilt: Option<f64> = None;
-            let mut from_focus: Option<String> = None;
-            let mut from_pan: Option<f64> = None;
-            let mut from_tilt: Option<f64> = None;
+            let mut ends = [MoveEndWritten::default(), MoveEndWritten::default()];
             for (key, value) in parameters {
+                if let Some(param) = MoveParam::named(key) {
+                    let (_, _, end, slot) = param.row();
+                    let written = &mut ends[end as usize];
+                    match slot {
+                        MoveSlot::Point => written.point = Some(unquoted(value).to_string()),
+                        MoveSlot::Pan => written.pan = Some(parse_degrees(value)?),
+                        MoveSlot::Tilt => written.tilt = Some(parse_degrees(value)?),
+                    }
+                    continue;
+                }
                 match key.as_str() {
-                    "focus" | "to" => to_focus = Some(unquoted(value).to_string()),
-                    "pan" => to_pan = Some(parse_degrees(value)?),
-                    "tilt" => to_tilt = Some(parse_degrees(value)?),
-                    "from" => from_focus = Some(unquoted(value).to_string()),
-                    "from_pan" => from_pan = Some(parse_degrees(value)?),
-                    "from_tilt" => from_tilt = Some(parse_degrees(value)?),
                     "easing" => *easing = keyword_value(&EASINGS, value, "Invalid easing")?,
                     "duration" => *duration = ctx.duration(value)?,
                     other => return Err(unread(other).into()),
                 }
             }
-            *to = match (to_focus, to_pan, to_tilt) {
-                (Some(_), pan, tilt) if pan.is_some() || tilt.is_some() => {
-                    return Err("move: give either `focus` or `pan`/`tilt`, not both".into());
-                }
-                (Some(name), _, _) => MoveTarget::Focus(name),
-                (None, None, None) => {
-                    return Err("move: requires a `focus` (or `to`), or `pan`/`tilt`".into());
-                }
-                (None, pan, tilt) => MoveTarget::Angles { pan, tilt },
-            };
-            *from = match (from_focus, from_pan, from_tilt) {
-                (Some(_), pan, tilt) if pan.is_some() || tilt.is_some() => {
-                    return Err(
-                        "move: give either `from` or `from_pan`/`from_tilt`, not both".into(),
-                    );
-                }
-                (Some(name), _, _) => Some(MoveTarget::Focus(name)),
-                (None, None, None) => None,
-                (None, pan, tilt) => Some(MoveTarget::Angles { pan, tilt }),
-            };
+            let [to_written, from_written] = ends;
+            *to = to_written.target(MoveEnd::To)?.ok_or_else(|| {
+                let name = |slot| MoveParam::of(MoveEnd::To, slot).name();
+                let aliases: Vec<&str> = MOVE_ALIASES.iter().map(|(alias, _)| *alias).collect();
+                format!(
+                    "move: requires a `{}` (or `{}`), or `{}`/`{}`",
+                    name(MoveSlot::Point),
+                    aliases.join("`, `"),
+                    name(MoveSlot::Pan),
+                    name(MoveSlot::Tilt)
+                )
+            })?;
+            *from = from_written.target(MoveEnd::From)?;
         }
         EffectType::Rainbow {
             speed,

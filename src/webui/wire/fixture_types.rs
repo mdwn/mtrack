@@ -120,6 +120,10 @@ pub struct GdtfMode {
     /// capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<crate::lighting::fit::Capability>>,
+    /// What a show can ask of a fixture that the mode can do
+    /// (`Want::met_by`): dimming through colour counts as dimming.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wants: Option<Vec<crate::lighting::findings::Want>>,
     /// Cells of a pixel mode (0 for a one-colour fixture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cells: Option<usize>,

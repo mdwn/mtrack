@@ -15,12 +15,13 @@
 //! `{{name}}` slots filled from the parser's own tables, so the effects,
 //! their parameters and defaults, and every keyword list are the grammar's.
 
+use crate::config::length::UNITS;
 use crate::lighting::effects::NAMED_COLORS;
 use crate::lighting::parser::document::EffectKind;
 use crate::lighting::parser::edit::vocabulary;
 use crate::lighting::parser::words::{
     effect_defaults, LayerCommandParam, CHASE_TRANSITIONS, COMMON_PARAMS, CYCLE_TRANSITIONS,
-    PER_KEYWORDS, UNITS,
+    PER_KEYWORDS,
 };
 
 /// The reference's prose, with a `{{name}}` slot for each table.

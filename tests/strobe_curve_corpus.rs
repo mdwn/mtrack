@@ -30,7 +30,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use mtrack::lighting::effects::{coarse_byte, FixtureInfo, StrobeMap};
+use mtrack::lighting::channels::dmx_byte;
+use mtrack::lighting::effects::{FixtureInfo, StrobeMap};
+
+/// The byte a normalized level goes out as on an 8-bit channel.
+fn coarse_byte(level: f64) -> u8 {
+    dmx_byte(level * 255.0)
+}
 use mtrack::lighting::system::fixture_info_for;
 use mtrack::lighting::types::{
     ChannelDef, ChannelFunction, FixtureType, FunctionStep, PhysicalRange, PhysicalUnit,
@@ -340,14 +346,14 @@ fn every_strobe_byte_reads_back_as_a_rate_the_engine_writes_it_for() {
 /// (1–20 Hz over 0..255, no open range) has the engine write byte 0 for
 /// 1.00–1.03 Hz, and the views must flash at 1 Hz, not sit still. A
 /// channel with no function (a ratio of the maximum alone) gets byte 0
-/// for a rate below a 255th of its maximum — 0.04 Hz on a 20 Hz unit —
+/// for a rate below half a 255th of its maximum — 0.03 Hz on a 20 Hz unit —
 /// and that reads back as off: nothing declares byte 0 a rate there, and
 /// byte 0 is what the engine writes for off.
 #[test]
 fn byte_zero_is_a_rate_only_where_a_function_declares_it_one() {
     // Linear (or declared): the function itself. Automatic for a type
     // with no GDTF is period, which with no offset is a ratio of the
-    // maximum, and writes 1 Hz at byte 12.
+    // maximum, and writes 1 Hz at byte 13 (12.75, rounded).
     let mut fixture_type = bottomless_fixture_type();
     fixture_type.set_strobe_curve(Some(StrobeCurve::Linear));
     let bottomless = fixture_info_for("f", 1, 1, "Bottomless", &fixture_type);
@@ -365,7 +371,9 @@ fn byte_zero_is_a_rate_only_where_a_function_declares_it_one() {
         .expect("the example moving head");
     let map = ratio.strobe_map();
     assert!(matches!(map, StrobeMap::Ratio { .. }), "{map:?}");
-    assert_eq!(coarse_byte(map.normalized(0.04)), 0);
+    assert_eq!(coarse_byte(map.normalized(0.03)), 0);
+    // Half a 255th and up rounds to byte 1, the slowest rate there is.
+    assert_eq!(coarse_byte(map.normalized(0.04)), 1);
     assert_eq!(ratio.strobe_hz(0), None, "off, as the engine writes it");
     assert!(ratio.strobe_hz(1).is_some_and(|hz| hz < 0.2));
 }

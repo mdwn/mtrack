@@ -617,6 +617,13 @@ fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
 /// How many passes a `loop` reference lays: a practical infinity.
 const LOOP_PASSES: usize = 10000;
 
+/// A count of passes as the passes laid, on every target: as written, up
+/// to [`LOOP_PASSES`]; a count above it plays as `loop` does, as many passes
+/// as a practical infinity lays, rather than laying out every pass.
+fn passes_of(count: u64) -> usize {
+    usize::try_from(count).map_or(LOOP_PASSES, |count| count.min(LOOP_PASSES))
+}
+
 fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
     match loop_param {
         Some(SequenceLoop::Once) => Ok(1),
@@ -627,7 +634,7 @@ fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<d
         Some(SequenceLoop::Random) => {
             Err("Random loop mode not yet implemented for sequences".into())
         }
-        Some(SequenceLoop::Count(n)) => Ok(n),
+        Some(SequenceLoop::Count(n)) => Ok(passes_of(n)),
         None => Ok(1), // Default to once if not specified
     }
 }
@@ -688,7 +695,9 @@ fn parse_sequence_reference_pair(seq_ref_pair: Pair<Rule>) -> Result<SequenceCal
     })
 }
 
-fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
+/// A sequence reference's `loop:` value: a mode's keyword, or a count of
+/// one or more passes. The one rule; the editor's counts are checked by it.
+pub(super) fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
     // Be robust against trailing comments or extra tokens after the loop value.
     // Examples we want to support:
     //   loop: 3
@@ -707,24 +716,25 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
     if let Some((named, _)) = SEQUENCE_LOOPS.iter().find(|(_, k)| *k == token) {
         return Ok(*named);
     }
+    let expected = || {
+        let modes: Vec<String> = SEQUENCE_LOOPS
+            .iter()
+            .map(|(_, k)| format!("'{k}'"))
+            .collect();
+        format!("Expected {}, or a number", modes.join(", "))
+    };
     match token {
         numeric if !numeric.is_empty() => {
             // Try to parse as a number
-            let count: usize = numeric.parse().map_err(|_| {
-                format!(
-                    "Invalid loop count: '{}'. Expected 'once', 'loop', 'pingpong', 'random', or a number",
-                    numeric
-                )
-            })?;
+            let count: u64 = numeric
+                .parse()
+                .map_err(|_| format!("Invalid loop count: '{numeric}'. {}", expected()))?;
             if count == 0 {
                 return Err("Loop count must be at least 1".into());
             }
             Ok(SequenceLoop::Count(count))
         }
-        _ => Err(
-            "Invalid loop parameter. Expected 'once', 'loop', 'pingpong', 'random', or a number"
-                .into(),
-        ),
+        _ => Err(format!("Invalid loop parameter. {}", expected()).into()),
     }
 }
 
@@ -915,7 +925,7 @@ fn place_inline_loop(
         .find(|p| p.as_rule() == Rule::number_value)
     {
         repeats = match parse_sequence_loop_param(count.as_str())? {
-            SequenceLoop::Count(n) => n,
+            SequenceLoop::Count(n) => passes_of(n),
             _ => unreachable!("a number_value is a count"),
         };
     }
@@ -1308,6 +1318,15 @@ mod tests {
             determine_loop_count(Some(SequenceLoop::Count(5))).unwrap(),
             5
         );
+    }
+
+    #[test]
+    fn loop_count_past_loops_passes_lays_loops_passes() {
+        let laid = |n| determine_loop_count(Some(SequenceLoop::Count(n))).unwrap();
+        assert_eq!(laid(10_000), LOOP_PASSES);
+        assert_eq!(laid(10_001), LOOP_PASSES);
+        assert_eq!(laid(5_000_000_000), LOOP_PASSES);
+        assert_eq!(laid(u64::MAX), LOOP_PASSES);
     }
 
     #[test]

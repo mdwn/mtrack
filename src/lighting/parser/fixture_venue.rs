@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 
+use super::super::fixture_data::{beam_angle_valid, MAX_BEAM_ANGLE};
 use super::super::types::{
     ganged_from_cells, Cell, ChannelDef, ChannelFunction, Fixture, FixtureType, FixtureTypeV1,
     GdtfSource, MovementLimits, PhysicalRange, PhysicalUnit, StrobeCurve, Vec3, Venue, VenueSource,
@@ -884,10 +885,10 @@ pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<
                     .map(|p| p.as_str().trim().to_string())
                     .unwrap_or_default();
                 let degrees: f64 = text.parse()?;
-                if !degrees.is_finite() || degrees <= 0.0 || degrees > 180.0 {
+                if !beam_angle_valid(degrees) {
                     return Err(format!(
                         "fixture \"{}\": beam_angle {text} is not allowed; it is degrees, \
-                         greater than 0 and at most 180",
+                         greater than 0 and at most {MAX_BEAM_ANGLE}",
                         name.as_deref().unwrap_or_default()
                     )
                     .into());

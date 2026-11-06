@@ -527,7 +527,7 @@ fn apply_dimmer(
             }
         };
 
-        start_level + (end_level - start_level) * curved_progress
+        crate::lighting::channels::lerp(start_level, end_level, curved_progress)
     };
 
     // Apply dimmer to all fixtures

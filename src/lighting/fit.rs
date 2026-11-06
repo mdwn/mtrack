@@ -166,6 +166,15 @@ impl FitFixture {
         self.tally.have(want) > 0
     }
 
+    /// What the fixture can do of what a show asks ([`Want::ALL`], by
+    /// lint's rule, `Want::met_by`), in the order a page lists them.
+    pub fn wants(&self) -> Vec<Want> {
+        Want::ALL
+            .into_iter()
+            .filter(|want| self.can(*want))
+            .collect()
+    }
+
     /// The capability names the pages show: the four shows can ask for
     /// (`color`, `pan_tilt`, `strobe`, `cells`) first, then what else the
     /// fixture has — `dimmer`, `white`, `zoom`, `focus`, `gobo` and
@@ -766,6 +775,41 @@ mod test {
             .collect();
         let info = FixtureInfo::new("f".into(), 1, 1, "T".into(), map, None);
         FitFixture::from_info(&info, &[])
+    }
+
+    /// The PB15's modes as the web UI's mocks hold them
+    /// (`e2e/mock-server/index.ts`, `lighting-capture.spec.ts`,
+    /// `lighting-venue-mode.spec.ts`): pinned here, so a mock says what the
+    /// player says. RGB alone is dimmed and strobed through its colour.
+    #[test]
+    fn the_mocked_pb15_modes_are_what_the_player_says() {
+        use Capability::*;
+        for (channels, capabilities, wants) in [
+            (
+                &["red", "green", "blue"][..],
+                vec![Color, Strobe],
+                vec![Want::Color, Want::Dimmer, Want::Strobe],
+            ),
+            (
+                &["red", "green", "blue", "strobe"][..],
+                vec![Color, Strobe],
+                vec![Want::Color, Want::Dimmer, Want::Strobe],
+            ),
+            (
+                &["red", "green", "blue", "white", "strobe"][..],
+                vec![Color, Strobe, White],
+                vec![Want::Color, Want::Dimmer, Want::Strobe],
+            ),
+            (
+                &["dimmer", "red", "green", "blue", "amber", "white", "strobe"][..],
+                vec![Color, Strobe, Dimmer, White],
+                vec![Want::Color, Want::Dimmer, Want::Strobe],
+            ),
+        ] {
+            let fixture = named(channels);
+            assert_eq!(fixture.capability_names(), capabilities, "{channels:?}");
+            assert_eq!(fixture.wants(), wants, "{channels:?}");
+        }
     }
 
     #[test]

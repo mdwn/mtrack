@@ -17,6 +17,7 @@
 
 use pest::Parser;
 
+use crate::config::length::UNITS;
 use crate::lighting::effects::NAMED_COLORS;
 use crate::lighting::fixture_data::StrobeCurve;
 use crate::lighting::parser::effect_parse::{
@@ -26,7 +27,7 @@ use crate::lighting::parser::grammar::{LightingParser, Rule};
 use crate::lighting::parser::types::{
     LayerCommandParam, EFFECT_KEYWORDS, LAYER_COMMAND_KEYWORDS, SEQUENCE_LOOPS,
 };
-use crate::lighting::parser::utils::{BLEND_KEYWORDS, LAYER_KEYWORDS, UNITS};
+use crate::lighting::parser::utils::{BLEND_KEYWORDS, LAYER_KEYWORDS};
 
 /// The quoted words of the grammar rule `name`, which may span lines.
 fn grammar_words(name: &str) -> Vec<String> {

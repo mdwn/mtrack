@@ -109,6 +109,7 @@
   "playback.ambientPlaying": "Ambient light",
   "playback.ambientPending": "Ambient light soon",
   "playback.ambientUnavailable": "No ambient show",
+  "playback.ambientUnread": "Ambient light: no reading",
   "playback.ambientMode": "Ambient light",
   "playback.ambientModeHint": "Ambient light: Auto plays it between songs; On holds it now, over any song; Off plays none.",
   "playback.ambientModes.auto": "Auto",

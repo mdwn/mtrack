@@ -261,6 +261,12 @@ pub mod bounds {
         secs.is_finite() && secs.abs() <= MAX_SECS
     }
 
+    /// `ms` milliseconds as a time on a song: `None` for a negative one or
+    /// one past [`MAX_SECS`].
+    pub fn at_ms(ms: f64) -> Option<std::time::Duration> {
+        (ms >= 0.0 && secs(ms / 1000.0)).then(|| std::time::Duration::from_secs_f64(ms / 1000.0))
+    }
+
     pub fn beat(beat: f64) -> bool {
         beat.is_finite() && beat.abs() <= MAX_BEAT
     }
@@ -548,10 +554,7 @@ impl TempoQuery {
         let (at, measure, beat, label, sig) = match self {
             TempoQuery::Time { ms } => {
                 let map = map.as_ref()?;
-                if *ms < 0.0 || !bounds::secs(ms / 1000.0) {
-                    return None;
-                }
-                let at = Duration::from_secs_f64(ms / 1000.0);
+                let at = bounds::at_ms(*ms)?;
                 let (measure, beat) = map.time_to_measure_beat(at);
                 let sig = map.time_signature_at_time(at, 0.0);
                 (at, measure, beat, map.position_label(at), sig)
@@ -574,10 +577,7 @@ impl TempoQuery {
                 )
             }
             TempoQuery::Span { from_ms, duration } => {
-                if *from_ms < 0.0 || !bounds::secs(from_ms / 1000.0) {
-                    return None;
-                }
-                let from = Duration::from_secs_f64(from_ms / 1000.0);
+                let from = bounds::at_ms(*from_ms)?;
                 let length =
                     lighting::parser::utils::parse_duration_string(duration, &map, Some(from), 0.0)
                         .ok()?;
@@ -650,16 +650,8 @@ impl TempoDistance {
     /// The distance from `from_ms` to `to_ms` on `source`'s map; `None`
     /// when the source makes no map or a time is not one.
     pub fn between(source: &TempoSource, from_ms: f64, to_ms: f64) -> Option<TempoDistance> {
-        if from_ms < 0.0
-            || to_ms < 0.0
-            || !bounds::secs(from_ms / 1000.0)
-            || !bounds::secs(to_ms / 1000.0)
-        {
-            return None;
-        }
+        let (from, to) = (bounds::at_ms(from_ms)?, bounds::at_ms(to_ms)?);
         let map = source.to_tempo_map().ok()?;
-        let from = Duration::from_secs_f64(from_ms / 1000.0);
-        let to = Duration::from_secs_f64(to_ms / 1000.0);
         Some(TempoDistance {
             ms: to_ms - from_ms,
             beats: map.beats_between(from, to),
@@ -783,11 +775,7 @@ impl LayoutRequest {
             }
             None => None,
         };
-        let until = if self.until_ms > 0.0 && bounds::secs(self.until_ms / 1000.0) {
-            Duration::from_secs_f64(self.until_ms / 1000.0)
-        } else {
-            Duration::ZERO
-        };
+        let until = bounds::at_ms(self.until_ms).unwrap_or(Duration::ZERO);
         lighting::parser::layout::layout(
             &self.source,
             self.path.as_deref().map(Path::new),
@@ -927,8 +915,8 @@ pub fn snapped_length(
     }
     let span = TempoDistance::between(source, at_ms, at_ms + duration_ms)?;
     let map = source.to_tempo_map().ok()?;
-    let round = |n: f64| (n + 0.5).floor();
-    let from = Duration::from_secs_f64(at_ms / 1000.0);
+    let round = lighting::parser::writer::round;
+    let from = bounds::at_ms(at_ms)?;
     // The player's own length of that many bars or beats from there.
     let length = match step {
         None => map.measures_to_duration(round(span.measures).max(1.0), from, 0.0),
@@ -1018,6 +1006,18 @@ pub fn tempo_defaults() -> wire_messages::PlaybackTempo {
 #[wasm_bindgen]
 pub fn midi_event_shapes() -> config::MidiEventShapes {
     config::MidiEventShapes::new()
+}
+
+/// Ambient light's modes, in the order the dashboard offers them.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct AmbientModes(pub Vec<dmx::engine::AmbientMode>);
+
+/// Every ambient light mode: the dashboard's mode buttons.
+#[wasm_bindgen]
+pub fn ambient_modes() -> AmbientModes {
+    AmbientModes(dmx::engine::AmbientMode::ALL.to_vec())
 }
 
 /// The values each of a config's choices takes: what the config editor's
@@ -1135,6 +1135,24 @@ pub fn fixture_lit(channels: ChannelValuesJs) -> bool {
     })
 }
 
+/// The colour a fixture with these channel values shows, red, green and
+/// blue each 0 to 1 (`channels::shown_color`: each part that lights it,
+/// by `fixture_lit`'s rule, in its emitters' colours at their levels,
+/// added, times its dimmer; black exactly where it is dark):
+/// what every stage view draws a fixture in. Black for a value that is
+/// not channels.
+#[wasm_bindgen]
+pub fn fixture_color(channels: ChannelValuesJs) -> Triple {
+    let values = read::<ChannelValues>(JsValue::from(channels))
+        .map(|ChannelValues(values)| values)
+        .unwrap_or_default();
+    Triple(lighting::channels::shown_color(
+        values
+            .iter()
+            .filter_map(|(name, value)| Some((name.as_str(), (*value)?))),
+    ))
+}
+
 /// The file name an MVR export of `venue` writes (`export_file_name`):
 /// `output` when it is one the export takes, or the venue's own when
 /// `output` is `None`; `None` for a name the export refuses.
@@ -1192,14 +1210,19 @@ pub fn fade_length_text(text: &str) -> Option<String> {
 }
 
 /// An entry's `auto_play` written as text, as the player reads it: off,
-/// a gap before its song (`2s`, `500ms`, `2m`; `true` is none), or text it
-/// refuses (`2`, a number with no unit).
+/// a gap before its song (the config's clock: `2s`, `1.5s`, `500ms`, `2m`;
+/// `true` is none), or text it refuses (`2`, a number with no unit).
 #[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
 #[tsify(into_wasm_abi)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AutoPlayReading {
     Off,
-    Gap { ms: f64 },
+    /// The gap, and as a reader is shown it ([`gap_text`], as the
+    /// dashboard's next-up line shows it: `1.5s`).
+    Gap {
+        ms: f64,
+        text: String,
+    },
     Invalid,
 }
 
@@ -1210,11 +1233,25 @@ pub fn auto_play_read(text: &str) -> AutoPlayReading {
     let value = serde_json::Value::String(text.to_string());
     match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
         Ok(Ok(None)) => AutoPlayReading::Off,
-        Ok(Ok(Some(gap))) => AutoPlayReading::Gap {
-            ms: gap.as_secs_f64() * 1000.0,
-        },
+        Ok(Ok(Some(gap))) => {
+            let ms = gap.as_secs_f64() * 1000.0;
+            AutoPlayReading::Gap {
+                ms,
+                text: gap_text(ms),
+            }
+        }
         _ => AutoPlayReading::Invalid,
     }
+}
+
+/// A gap of `ms` milliseconds as a reader is shown it, as the config's
+/// clock writes it (`config::length::clock_text`: `2s`, `1.5s`); empty for
+/// a time no song has.
+#[wasm_bindgen]
+pub fn gap_text(ms: f64) -> String {
+    bounds::at_ms(ms)
+        .map(config::length::clock_text)
+        .unwrap_or_default()
 }
 
 // ── Positions ───────────────────────────────────────────────────────────────
@@ -1297,6 +1334,9 @@ pub struct Limits {
     /// denominators (`tempo::SONG_MAX_NUMERATOR`, `SONG_DENOMINATORS`).
     pub signature_numerator_max: u32,
     pub signature_denominators: Vec<u32>,
+    /// The widest beam angle a venue fixture is given, in degrees
+    /// (`fixture_data::MAX_BEAM_ANGLE`).
+    pub beam_angle_max: f64,
 }
 
 /// [`Limits`], for the web UI.
@@ -1307,7 +1347,28 @@ pub fn limits() -> Limits {
         gain_db: (track_gains::MIN_GAIN_DB, track_gains::MAX_GAIN_DB),
         signature_numerator_max: tempo::SONG_MAX_NUMERATOR,
         signature_denominators: tempo::SONG_DENOMINATORS.to_vec(),
+        beam_angle_max: lighting::fixture_data::MAX_BEAM_ANGLE,
     }
+}
+
+/// Whether `degrees` is a venue fixture's beam angle
+/// (`fixture_data::beam_angle_valid`).
+#[wasm_bindgen]
+pub fn beam_angle_valid(degrees: f64) -> bool {
+    lighting::fixture_data::beam_angle_valid(degrees)
+}
+
+/// What a show can ask of a fixture, in the order a fixture's page lists
+/// them (`Want::ALL`).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct Wants(pub Vec<lighting::findings::Want>);
+
+/// [`Wants`], for the web UI.
+#[wasm_bindgen]
+pub fn wants() -> Wants {
+    Wants(lighting::findings::Want::ALL.to_vec())
 }
 
 // ── DMX patch ───────────────────────────────────────────────────────────────

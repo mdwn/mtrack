@@ -540,7 +540,8 @@ controllers:
 | `status_events` | `off_events`/`idling_events`/`playing_events` | — | no |
 | `notifications` | notification sounds | — | no |
 
-Durations use the `duration_string` format: `500ms`, `1s`, `2m`.
+Durations are decimal numbers, each with a unit -- `ns`, `us`, `ms`, `s`, `m` (minutes), `h`, `d`,
+`w` or `y` -- summed when there are several: `500ms`, `1.5s`, `2m`, `1m30s`.
 
 ## Legacy layout
 

@@ -47,6 +47,14 @@ pub fn duration_from_secs(secs: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(secs).ok()
 }
 
+/// A span of `secs` seconds as a `Duration`, saturating: none for a
+/// negative (or NaN) span, the longest there is for one too long to hold.
+/// For spans the player computes, where [`duration_from_secs`] is for
+/// seconds a client sends.
+pub fn duration_from_secs_saturating(secs: f64) -> Duration {
+    Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX)
+}
+
 /// A playback position a client sent as text: seconds (`90`, `90s`,
 /// `1.5`, `1,5`) or minutes and seconds (`1:30`, `1:30.5s`, `1:30,5`), with
 /// or without the `@` a cue position is written with (`@1:30`). The one

@@ -83,7 +83,10 @@ app.get("/api/songs", (_req, res) => {
 
 app.get("/api/songs/:name", (req, res) => {
   const song = SONGS.songs.find((s) => s.name === req.params.name);
-  if (!song) return res.status(404).json({ error: "Song not found" });
+  if (!song)
+    return res
+      .status(404)
+      .json({ error: `unable to find song ${req.params.name}` });
   let yaml = `name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`;
   if (song.has_midi) {
     yaml += `midi_playback:\n  file: song.mid\n  exclude_midi_channels:\n    - 10\n`;
@@ -415,7 +418,8 @@ const GDTF_INSPECTION: GdtfInspection = {
     {
       name: "1: RGB",
       footprint: 3,
-      capabilities: ["color", "dimmer"],
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
       cells: 0,
       channels: [
         [1, "red"],
@@ -426,7 +430,8 @@ const GDTF_INSPECTION: GdtfInspection = {
     {
       name: "8: RGBS",
       footprint: 4,
-      capabilities: ["color", "dimmer", "strobe"],
+      capabilities: ["color", "strobe"],
+      wants: ["color", "dimmer", "strobe"],
       cells: 0,
       strobe_range: { min_hz: 0.4, max_hz: 25 },
       channels: [

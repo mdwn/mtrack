@@ -23,11 +23,29 @@ pub enum Severity {
     Error,
 }
 
+/// A category of checks: what `mtrack verify --check` names, and what each
+/// issue is filed under. Clap refuses a name not listed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
+pub enum Check {
+    /// Every song track has an entry in the track mappings.
+    TrackMappings,
+}
+
+impl std::fmt::Display for Check {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        let value = self
+            .to_possible_value()
+            .expect("every check is a possible value");
+        f.write_str(value.get_name())
+    }
+}
+
 /// A single verification issue found during checking.
 #[derive(Debug, Clone)]
 pub struct Issue {
     pub severity: Severity,
-    pub category: &'static str,
+    pub category: Check,
     pub song_name: String,
     pub message: String,
 }
@@ -61,7 +79,7 @@ pub fn check_track_mappings(song: &Song, track_mappings: &HashMap<String, Vec<u1
         .filter(|track| !track_mappings.contains_key(track.name()))
         .map(|track| Issue {
             severity: Severity::Warning,
-            category: "track-mappings",
+            category: Check::TrackMappings,
             song_name: song.name().to_string(),
             message: format!("track \"{}\" has no entry in track_mappings", track.name()),
         })
@@ -186,7 +204,8 @@ mod tests {
         assert_eq!(issues[0].song_name, "test-song");
         assert!(issues[0].message.contains("click"));
         assert_eq!(issues[0].severity, Severity::Warning);
-        assert_eq!(issues[0].category, "track-mappings");
+        assert_eq!(issues[0].category, Check::TrackMappings);
+        assert_eq!(issues[0].category.to_string(), "track-mappings");
     }
 
     #[test]
@@ -244,7 +263,7 @@ mod tests {
         let mut report = VerificationReport::default();
         report.issues.push(Issue {
             severity: Severity::Warning,
-            category: "test",
+            category: Check::TrackMappings,
             song_name: "song".to_string(),
             message: "warning".to_string(),
         });
@@ -252,7 +271,7 @@ mod tests {
 
         report.issues.push(Issue {
             severity: Severity::Error,
-            category: "test",
+            category: Check::TrackMappings,
             song_name: "song".to_string(),
             message: "error".to_string(),
         });
@@ -264,14 +283,14 @@ mod tests {
         let mut report_a = VerificationReport::default();
         report_a.issues.push(Issue {
             severity: Severity::Warning,
-            category: "a",
+            category: Check::TrackMappings,
             song_name: "song".to_string(),
             message: "issue a".to_string(),
         });
         let mut report_b = VerificationReport::default();
         report_b.issues.push(Issue {
             severity: Severity::Error,
-            category: "b",
+            category: Check::TrackMappings,
             song_name: "song".to_string(),
             message: "issue b".to_string(),
         });
@@ -327,7 +346,7 @@ mod tests {
         let report = VerificationReport {
             issues: vec![Issue {
                 severity: Severity::Warning,
-                category: "track-mappings",
+                category: Check::TrackMappings,
                 song_name: "song-a".to_string(),
                 message: "track \"guitar\" has no mapping".to_string(),
             }],
@@ -341,7 +360,7 @@ mod tests {
         let report = VerificationReport {
             issues: vec![Issue {
                 severity: Severity::Error,
-                category: "track-mappings",
+                category: Check::TrackMappings,
                 song_name: "song-a".to_string(),
                 message: "track \"guitar\" has no mapping".to_string(),
             }],
@@ -355,7 +374,7 @@ mod tests {
         let report = VerificationReport {
             issues: vec![Issue {
                 severity: Severity::Warning,
-                category: "track-mappings",
+                category: Check::TrackMappings,
                 song_name: "song-a".to_string(),
                 message: "unmapped track".to_string(),
             }],
@@ -370,13 +389,13 @@ mod tests {
             issues: vec![
                 Issue {
                     severity: Severity::Warning,
-                    category: "track-mappings",
+                    category: Check::TrackMappings,
                     song_name: "song-a".to_string(),
                     message: "warning issue".to_string(),
                 },
                 Issue {
                     severity: Severity::Error,
-                    category: "track-mappings",
+                    category: Check::TrackMappings,
                     song_name: "song-a".to_string(),
                     message: "error issue".to_string(),
                 },

@@ -582,7 +582,7 @@ fn test_static_effect_crossfade() {
     // Test fade in: at t=500ms, should be 50% (half blue)
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 127); // Should be 127 (50% of 255)
+    assert_eq!(blue_cmd.value, 128); // Should be 128 (50% of 255)
 
     // Test full intensity: at t=1000ms, should be 100% (full blue)
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 500ms more = 1000ms total
@@ -592,7 +592,7 @@ fn test_static_effect_crossfade() {
     // Test fade out: at t=2500ms, should be 50% (half blue)
     let commands = engine.update(Duration::from_millis(1500), None).unwrap(); // 1500ms more = 2500ms total
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 127); // Should be 127 (50% of 255)
+    assert_eq!(blue_cmd.value, 128); // Should be 128 (50% of 255)
 
     // Test fade out: at t=3000ms, effect should be finished (no commands)
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 500ms more = 3000ms total
