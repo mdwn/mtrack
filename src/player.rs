@@ -4566,7 +4566,7 @@ mod test {
             .await;
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("not found"));
+        assert_eq!(err.to_string(), "unable to find song Nonexistent Song");
         Ok(())
     }
 

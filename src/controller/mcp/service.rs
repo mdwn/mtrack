@@ -623,11 +623,7 @@ impl McpServer {
         // it current: inspecting cues is a read, and it should not have the
         // side effect of changing what is queued.
         if let Some(name) = args.song.as_deref() {
-            let song = self
-                .player
-                .songs()
-                .get(name)
-                .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+            let song = self.song(name)?;
             let shows = crate::lighting::evaluate::registered_shows(&song);
 
             // Merged and time-sorted, the way the player's own timeline
@@ -1074,11 +1070,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let path = song.config_path_or_default();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
@@ -1108,11 +1100,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
 
         let tracks: Vec<Value> = song
             .tracks()
@@ -1218,11 +1206,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let grid = song.beat_grid();
         Ok(ok_json(json!({
             "name": song.name(),
@@ -1389,11 +1373,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (tempo, draft_path, root) = match args.song.as_deref() {
             Some(name) => {
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let path = match args.file.as_deref() {
                     Some(file) => {
                         validate_lighting_filename(file)?;
@@ -1471,10 +1451,7 @@ impl McpServer {
 
         let song = match song {
             Some(name) => Some(
-                self.player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+                self.song(name)?,
             ),
             None => None,
         };
@@ -1520,11 +1497,7 @@ impl McpServer {
                 // song's tempo the parser rejects every `@bar`/`beat` construct,
                 // so this is the only way to evaluate an unsaved edit of a
                 // measure-timed show.
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let tempo = song_lighting_tempo(&song);
                 let shows = crate::lighting::parser::parse_light_file_within(
                     source,
@@ -1542,11 +1515,7 @@ impl McpServer {
                 None,
             )),
             (Some(name), None) => {
-                let song = self
-                    .player
-                    .songs()
-                    .get(name)
-                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let song = self.song(name)?;
                 let shows = crate::lighting::evaluate::registered_shows(&song);
                 if shows.is_empty() {
                     return Err(McpError::invalid_params(
@@ -2226,11 +2195,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SongLightingArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         validate_lighting_filename(&args.file)?;
         let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
             McpError::invalid_params(
@@ -2386,11 +2351,7 @@ impl McpServer {
         // the songs under it, and the file and reference found before it
         // could be ones the song no longer has.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -2523,11 +2484,7 @@ impl McpServer {
         // looking the song up, so the tempo the show is checked against and
         // the place it is written are the song's as a web save left them.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         // Validate against the tempo this song will actually load it with,
         // otherwise a bar/beat show is rejected here and then loads fine; and
         // where it will be written, which its `include`s resolve against.
@@ -2653,11 +2610,7 @@ impl McpServer {
         // Held from the lookup and the read, so a save between them and the
         // write, such as the web UI's song editor, is not lost.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.name)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.name)?;
         let path = song.config_path_or_default();
         let original = read_text(&path).await?;
         let updated = apply_patch(
@@ -2708,11 +2661,7 @@ impl McpServer {
         // Held from looking the song up, so the tempo the patch is checked
         // against is the song's as a web save left it.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
-        let song = self
-            .player
-            .songs()
-            .get(&args.song)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let song = self.song(&args.song)?;
         let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -3908,6 +3857,15 @@ impl McpServer {
             }
         });
         Ok(handle.abort_handle())
+    }
+
+    /// The loaded song by `name`. One that failed to load says why, as
+    /// [`crate::songs::Songs::get`] answers.
+    pub(crate) fn song(&self, name: &str) -> Result<Arc<crate::songs::Song>, McpError> {
+        self.player
+            .songs()
+            .get(name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))
     }
 
     /// Returns the player's [`ConfigStore`] or an MCP error when none is wired.

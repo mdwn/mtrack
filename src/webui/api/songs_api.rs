@@ -171,7 +171,7 @@ pub(super) async fn get_song(
                 ),
             },
             Err(_) => {
-                if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+                if let Some(failure) = all_songs.failure(&name) {
                     match Some(failure.config_path().to_path_buf()).filter(|p| p.is_file()) {
                         Some(path) => GetSongResult::YamlPath(path),
                         None => GetSongResult::NotFound(
@@ -863,11 +863,7 @@ fn song_config_path(
     let songs = player.songs();
     let loaded = match songs.get(name) {
         Ok(song) => Some(song.config_path_or_default()),
-        Err(_) => songs
-            .failures()
-            .iter()
-            .find(|f| f.name() == name)
-            .map(|f| f.config_path().to_path_buf()),
+        Err(_) => songs.failure(name).map(|f| f.config_path().to_path_buf()),
     };
     Ok(loaded
         .filter(|path| path.starts_with(song_dir.as_path()))
@@ -895,7 +891,7 @@ pub(super) fn resolve_song_dir(
 
     // Check failures list — the song exists on disk but failed to load.
     let all_songs = player.songs();
-    if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+    if let Some(failure) = all_songs.failure(name) {
         if let Ok(safe) = SafePath::resolve(failure.base_path(), &root) {
             if safe.is_dir() {
                 return Ok(safe);

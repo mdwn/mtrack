@@ -338,6 +338,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A song that failed to load says why on MCP and gRPC**: a song whose files are there but did
+  not load (a `.light` file that does not parse, say) was "unable to find song broken" to every
+  MCP tool that takes a song (`evaluate_show{song:"broken"}`, `song_details`, ...) and to gRPC
+  `PlaySongFrom`. They now answer `song broken failed to load: <the load error>`, as the web UI's
+  preview did. gRPC `PlaySongFrom` with an unknown name answers `unable to find song <name>`
+  rather than `Song '<name>' not found`.
 - **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
   time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
   now refuses more than 64 times (`at most 64 times per request`) and a time past a week
