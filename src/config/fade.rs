@@ -19,7 +19,7 @@ use serde::Serialize;
 
 /// A fade's curve.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum FadeCurve {
     /// Quick in, slow out: the level holds up through the fade.

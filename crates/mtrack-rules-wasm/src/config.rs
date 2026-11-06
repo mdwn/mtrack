@@ -73,8 +73,9 @@ pub mod ambient {
     pub use super::playlist_settings::{Ambient, PlaylistAmbient};
 }
 
-/// The values each of a config's choices takes, as the player's own enums
-/// are written (`serde`): what the config editor's selects offer.
+/// The values each of a config's choices takes: every variant of the
+/// player's own enums (`VariantArray`), as `serde` writes them: what the
+/// config editor's selects offer.
 #[derive(serde::Serialize, tsify_next::Tsify)]
 #[tsify(into_wasm_abi)]
 pub struct ConfigChoices {
@@ -95,43 +96,22 @@ pub struct ConfigChoices {
 
 impl Default for ConfigChoices {
     fn default() -> Self {
-        use crate::audio::SampleFormat;
-        use crate::lighting::fixture_data::StrobeCurve;
-        use samples::{ReleaseBehavior, RetriggerBehavior, VelocityMode};
-        use trigger::{TriggerInputAction, VelocityCurve};
+        use strum::VariantArray;
         ConfigChoices {
-            trigger_actions: vec![TriggerInputAction::Trigger, TriggerInputAction::Release],
-            velocity_curves: vec![
-                VelocityCurve::Linear,
-                VelocityCurve::Logarithmic,
-                VelocityCurve::Fixed,
-            ],
-            resamplers: vec![audio::ResamplerType::Sinc, audio::ResamplerType::Fft],
-            sample_formats: [SampleFormat::Int, SampleFormat::Float]
-                .map(SampleFormat::as_str)
-                .to_vec(),
-            release_behaviors: vec![
-                ReleaseBehavior::PlayToCompletion,
-                ReleaseBehavior::Stop,
-                ReleaseBehavior::Fade,
-            ],
-            retrigger_behaviors: vec![RetriggerBehavior::Cut, RetriggerBehavior::Polyphonic],
-            velocity_modes: vec![
-                VelocityMode::Ignore,
-                VelocityMode::Scale,
-                VelocityMode::Layers,
-            ],
-            beat_clock_seams: vec![
-                midi::BeatClockSeams::RunThrough,
-                midi::BeatClockSeams::Relocate,
-            ],
-            fade_curves: vec![FadeCurve::EqualPower, FadeCurve::Linear],
-            hint_aligns: vec![pilot::HintAlign::End, pilot::HintAlign::Start],
-            strobe_curves: vec![
-                StrobeCurve::Period,
-                StrobeCurve::Linear,
-                StrobeCurve::Declared,
-            ],
+            trigger_actions: trigger::TriggerInputAction::VARIANTS.to_vec(),
+            velocity_curves: trigger::VelocityCurve::VARIANTS.to_vec(),
+            resamplers: audio::ResamplerType::VARIANTS.to_vec(),
+            sample_formats: crate::audio::SampleFormat::VARIANTS
+                .iter()
+                .map(|f| f.as_str())
+                .collect(),
+            release_behaviors: samples::ReleaseBehavior::VARIANTS.to_vec(),
+            retrigger_behaviors: samples::RetriggerBehavior::VARIANTS.to_vec(),
+            velocity_modes: samples::VelocityMode::VARIANTS.to_vec(),
+            beat_clock_seams: midi::BeatClockSeams::VARIANTS.to_vec(),
+            fade_curves: FadeCurve::VARIANTS.to_vec(),
+            hint_aligns: pilot::HintAlign::VARIANTS.to_vec(),
+            strobe_curves: crate::lighting::fixture_data::StrobeCurve::VARIANTS.to_vec(),
             fixed_velocity: trigger::default_fixed_velocity(),
         }
     }

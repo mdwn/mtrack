@@ -229,7 +229,9 @@ impl VelocityConfig {
 
 /// Velocity handling mode.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityMode {
     /// Ignore velocity, play at default volume.
@@ -262,7 +264,9 @@ impl VelocityLayer {
 
 /// Behavior when a voice is released (e.g. Note Off, trigger release).
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseBehavior {
     /// Let the sample play to completion, ignoring the release.
@@ -276,7 +280,9 @@ pub enum ReleaseBehavior {
 
 /// Behavior when a sample is triggered while it's already playing.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq, strum::VariantArray,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RetriggerBehavior {
     /// Stop the previous voice and start a new one.

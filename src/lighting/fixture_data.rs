@@ -128,7 +128,9 @@ pub struct GdtfSource {
 /// firmware does otherwise (the Astera PixelBrick runs on a period curve)
 /// says so in its record; see [`StrobeCurve::automatic`].
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum StrobeCurve {
     /// Linear in the flash period (1/Hz) across the DMX range: what

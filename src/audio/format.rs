@@ -15,7 +15,7 @@
 use std::{error::Error, fmt, str::FromStr};
 
 /// Sample format enumeration for audio processing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::VariantArray)]
 pub enum SampleFormat {
     /// Integer samples (e.g., 16-bit, 24-bit, 32-bit)
     Int,
