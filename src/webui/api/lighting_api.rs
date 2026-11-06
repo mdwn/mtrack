@@ -610,13 +610,13 @@ async fn require_declares_blocking(
     Ok(broken_among(&pairs))
 }
 
-/// The files among `files` that do not read: once the one rule let a
-/// request act on them, the broken files a person chose to replace or
-/// remove, which [`set_aside_broken`] keeps.
+/// The files among `files` that are broken (`project_files::is_broken`):
+/// once the one rule let a request act on them, the broken files a person
+/// chose to replace or remove, which [`set_aside_broken`] keeps.
 fn broken_among(files: &[(&std::path::Path, &Declares)]) -> Vec<std::path::PathBuf> {
     files
         .iter()
-        .filter(|(_, declares)| declares.is_err())
+        .filter(|(_, declares)| lighting::project_files::is_broken(declares))
         .map(|(path, _)| path.to_path_buf())
         .collect()
 }
@@ -5703,6 +5703,50 @@ show "test" {
         assert!(kept[1].starts_with("club.venue.replaced-"), "{kept:?}");
     }
 
+    /// A file at the target that reads but declares nothing (empty, or
+    /// comments only) is offered for replacing as a broken one is, and set
+    /// aside when replaced.
+    #[tokio::test]
+    async fn an_empty_target_file_is_offered_for_replacing() {
+        let (state, _dir) = test_state();
+        for (n, text) in ["", "// to do\n"].iter().enumerate() {
+            let rel = format!("v_empty_{n}");
+            let dir = _dir.path().join(&rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
+            std::fs::write(dir.join("club.venue"), text).unwrap();
+            let typed = "venue \"Club\" {\n  focus \"DS\" (0, 0, 0)\n}\n";
+            let put = |query: &'static str| {
+                fixture_type_request(
+                    state.clone(),
+                    "PUT",
+                    format!("/lighting/venues/Club?dir={rel}{query}"),
+                    "text/plain",
+                    Body::from(typed),
+                )
+            };
+            let (status, parsed) = put("").await;
+            assert_eq!(status, StatusCode::CONFLICT, "{text:?}: {parsed}");
+            assert_eq!(parsed["broken"], true, "{text:?}: {parsed}");
+            assert_eq!(parsed["broken_files"][0]["file"], "club.venue", "{parsed}");
+            let (status, parsed) = put("&replace_broken=club.venue").await;
+            assert_eq!(status, StatusCode::OK, "{text:?}: {parsed}");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("club.venue")).unwrap(),
+                typed
+            );
+            let kept = parsed["kept"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|k| k.as_str().unwrap())
+                .find(|k| k.starts_with("club.venue."))
+                .unwrap()
+                .to_string();
+            assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), *text);
+        }
+    }
+
     /// A raw-text save that would retire a `.light` twin holding another
     /// venue too is refused, as a fixture type's is: Arena is not lost.
     #[tokio::test]
@@ -7942,8 +7986,11 @@ show "test" {
         let names: Vec<String> = std::fs::read_dir(&ft_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with("Par.light.replaced-"))
             .collect();
+        // The retired `.light` twin is set aside, kept.
         assert_eq!(names, ["Par.FIXTURE"]);
+        assert!(!ft_dir.join("Par.light").exists());
         assert_eq!(
             std::fs::read_to_string(ft_dir.join("Par.FIXTURE")).unwrap(),
             edited

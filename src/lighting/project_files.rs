@@ -301,10 +301,11 @@ pub struct Refusal {
 ///
 /// - A file that declares `name` may be acted on.
 /// - One that reads and holds only other names is refused.
-/// - One that does not read is refused, unless `replace_broken` names
-///   exactly that file: a person who was shown its parse error, and the
-///   other blocks it seems to hold, chose to replace it. It is kept aside
-///   either way, so nothing it held is lost.
+/// - One that does not read, or reads and declares nothing (empty, or
+///   comments only: [`is_broken`]), is refused, unless `replace_broken`
+///   names exactly that file: a person who was shown its parse error, and
+///   the other blocks it seems to hold, chose to replace it. It is kept
+///   aside either way, so nothing it held is lost.
 ///
 /// `shown` is the file as the person sees it: its path in its directory
 /// ([`display_in`]), so one of two alike-named files in two subdirectories
@@ -318,13 +319,16 @@ pub fn may_act_on(
 ) -> Result<(), Refusal> {
     let (why, parse_error, also_mentions) = match declares {
         Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
-        Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None, Vec::new()),
+        _ if is_broken(declares) && replace_broken.iter().any(|f| f == shown) => return Ok(()),
+        Ok(names) if names.is_empty() => {
+            let error = "it is empty or holds only comments".to_string();
+            (error.clone(), Some(error), Vec::new())
+        }
         Ok(names) => {
             let mut names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
             names.sort();
             (format!("it holds {}", names.join(", ")), None, Vec::new())
         }
-        Err(_) if replace_broken.iter().any(|f| f == shown) => return Ok(()),
         Err(unread) => {
             let mut also: Vec<String> = unread
                 .blocks
@@ -347,6 +351,17 @@ pub fn may_act_on(
         parse_error,
         also_mentions,
     })
+}
+
+/// Whether a venue or fixture type file is one a person may choose to
+/// replace or remove ([`may_act_on`]), and a save or delete then sets
+/// aside: it does not read, or reads and declares nothing (empty, or
+/// comments only), so a save cannot say whose it is.
+pub fn is_broken(declares: &Declares) -> bool {
+    match declares {
+        Ok(names) => names.is_empty(),
+        Err(_) => true,
+    }
 }
 
 /// Sets a file aside before a save replaces it or a delete removes it (a
