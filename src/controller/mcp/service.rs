@@ -1613,7 +1613,8 @@ impl McpServer {
             )
         })
         .await
-        .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?;
+        .map_err(|e| McpError::internal_error(format!("evaluation failed: {e}"), None))?
+        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
         let results: Vec<Value> = evaluated
             .evaluations

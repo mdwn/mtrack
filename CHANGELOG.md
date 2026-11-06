@@ -338,6 +338,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP `evaluate_show` has the web preview's bounds**: it took any number of times and any
+  time, so `times: ["1e12"]` could hold a thread for a long time. Like the web UI's preview, it
+  now refuses more than 64 times (`at most 64 times per request`) and a time past a week
+  (`time out of range`). The web UI's preview now checks the song before these bounds, so 65
+  times for an unknown song answers 404 `unknown song` rather than 400.
 - **A fixture patched up to DMX address 65535 does not wrap**: a channel past 65535 was written
   to address 0 and up (or stopped the player in a debug build); it is not sent, as the fixture
   test's overlay already had it.

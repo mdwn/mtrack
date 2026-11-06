@@ -2032,14 +2032,6 @@ pub(super) async fn get_fit(State(state): State<WebUiState>) -> impl IntoRespons
     }
 }
 
-/// The most instants one evaluate request may ask for. A scrubber asks for
-/// one; anything near this is a script.
-const MAX_EVALUATE_TIMES: usize = 64;
-
-/// The latest instant one evaluate request may ask for: a week. No song is
-/// longer, and the evaluator steps through every second it is given.
-const MAX_EVALUATE_TIME: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
-
 /// Body of `POST /api/lighting/evaluate`.
 #[derive(serde::Deserialize)]
 pub(super) struct EvaluateRequest {
@@ -2066,12 +2058,6 @@ pub(super) async fn evaluate_lighting(
     let error = |status: StatusCode, message: String| {
         (status, Json(json!({"error": message}))).into_response()
     };
-    if request.times.len() > MAX_EVALUATE_TIMES {
-        return error(
-            StatusCode::BAD_REQUEST,
-            format!("at most {MAX_EVALUATE_TIMES} times per request"),
-        );
-    }
     if request.times.iter().any(|t| !t.is_finite() || *t < 0.0) {
         return error(
             StatusCode::BAD_REQUEST,
@@ -2102,14 +2088,13 @@ pub(super) async fn evaluate_lighting(
         );
     }
     let tempo = song.lighting_tempo_map();
-    // Duration::from_secs_f64 panics on what it cannot hold, and the
-    // evaluator steps through every second it is asked for: bound both.
-    // Collected rather than sized up front: the count is already capped
-    // above, and a capacity taken from the request is what CodeQL flags.
+    // Duration::from_secs_f64 panics on what it cannot hold; the evaluator
+    // bounds the count and the latest instant itself. Collected rather than
+    // sized up front: a capacity taken from the request is what CodeQL flags.
     let times: Vec<std::time::Duration> = match request
         .times
         .iter()
-        .map(|t| crate::util::duration_from_secs(*t).filter(|d| *d <= MAX_EVALUATE_TIME))
+        .map(|t| crate::util::duration_from_secs(*t))
         .collect::<Option<Vec<_>>>()
     {
         Some(times) => times,
@@ -2132,7 +2117,8 @@ pub(super) async fn evaluate_lighting(
     })
     .await;
     let evaluated = match evaluated {
-        Ok(evaluated) => evaluated,
+        Ok(Ok(evaluated)) => evaluated,
+        Ok(Err(e)) => return error(StatusCode::BAD_REQUEST, e.to_string()),
         Err(e) => {
             return error(
                 StatusCode::INTERNAL_SERVER_ERROR,

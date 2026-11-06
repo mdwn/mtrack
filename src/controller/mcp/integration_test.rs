@@ -1784,6 +1784,37 @@ async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
         "expected a rejection when both song and source are given: {both}"
     );
 
+    // The bounds the web UI's preview has: at most 64 instants, none past a
+    // week.
+    let too_late = call_tool(
+        &client,
+        &url,
+        &session,
+        903,
+        "evaluate_show",
+        json!({"source": source, "times": ["1e12"]}),
+    )
+    .await;
+    assert!(
+        too_late["error"].to_string().contains("time out of range"),
+        "{too_late}"
+    );
+    let too_many = call_tool(
+        &client,
+        &url,
+        &session,
+        904,
+        "evaluate_show",
+        json!({"source": source, "times": vec!["1.0"; 65]}),
+    )
+    .await;
+    assert!(
+        too_many["error"]
+            .to_string()
+            .contains("at most 64 times per request"),
+        "{too_many}"
+    );
+
     // Playback was never started, and evaluating must not have started it.
     assert!(
         !player.is_playing().await,
