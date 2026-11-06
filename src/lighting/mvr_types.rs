@@ -52,7 +52,8 @@ pub fn export_file_name(output: Option<&str>, venue: &str) -> Result<String, Str
         None => format!("{}.mvr", fixture_filename_stem(venue)),
     };
     let bare = std::path::Path::new(&output).file_name() == Some(std::ffi::OsStr::new(&output));
-    if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
+    let hidden = crate::songs::is_hidden(std::path::Path::new(&output));
+    if !bare || hidden || output.contains('\\') || output.contains('\0') {
         return Err(format!(
             "output \"{output}\" must be a bare file name; exports land in {EXPORT_DIR}/"
         ));

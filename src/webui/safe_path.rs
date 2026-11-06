@@ -120,7 +120,8 @@ impl SafePath {
     /// rules stay readable, savable and deletable.
     pub fn validate_new_name(name: &str) -> Result<(), SafePathError> {
         Self::validate_name(name)?;
-        if name.trim() != name || name.starts_with('.') || name.chars().any(char::is_control) {
+        let hidden = crate::songs::is_hidden(std::path::Path::new(name));
+        if name.trim() != name || hidden || name.chars().any(char::is_control) {
             return Err(SafePathError::InvalidName);
         }
         Ok(())

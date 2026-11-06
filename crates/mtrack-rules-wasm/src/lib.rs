@@ -202,8 +202,8 @@ pub mod state {
 
 pub mod songs {
     pub use crate::file_kind::{
-        extension_of, has_exact_extension, has_extension, FileKind, AUDIO_EXTENSIONS,
-        LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
+        extension_of, has_exact_extension, has_extension, has_hidden_part, is_hidden, FileKind,
+        AUDIO_EXTENSIONS, LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
     };
 }
 

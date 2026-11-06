@@ -33,8 +33,8 @@ use crate::util::{filename_display, FileStamp};
 
 mod file_kind;
 pub use file_kind::{
-    extension_of, has_exact_extension, has_extension, FileKind, AUDIO_EXTENSIONS,
-    LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
+    extension_of, has_exact_extension, has_extension, has_hidden_part, is_hidden, FileKind,
+    AUDIO_EXTENSIONS, LIGHTING_EXTENSIONS, MIDI_EXTENSIONS,
 };
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
@@ -2257,27 +2257,6 @@ pub fn named_song_dirs(
             (dir, name)
         })
         .collect())
-}
-
-/// Whether `path` is hidden: its name starts with a dot (`.git`,
-/// `.draft.light`, `._Show.light`). The one hidden rule for discovery:
-/// `songs --init`, the song file listing and browser and the lighting files
-/// walk (`project_files::files_under`) pass such a file or directory over,
-/// the songs tree's walk its directories ([`walk_passes_over`]), and no save
-/// writes one ([`has_hidden_part`]) unless a song's `lighting:` names it.
-pub fn is_hidden(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with('.'))
-}
-
-/// Whether any part of the relative path `relative` is hidden
-/// ([`is_hidden`]): `Foo/.x.light`, `.git/show.light`. A save refuses such a
-/// path, as the walks would never find what it wrote.
-pub fn has_hidden_part(relative: &Path) -> bool {
-    relative
-        .iter()
-        .any(|part| part != "." && part != ".." && is_hidden(Path::new(part)))
 }
 
 /// Whether `path` is an AppleDouble file (`._song.yaml`, `._Show.light`):
