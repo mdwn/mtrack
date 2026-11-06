@@ -48,14 +48,21 @@ pub fn duration_from_secs(secs: f64) -> Option<Duration> {
 }
 
 /// A playback position a client sent as text: seconds (`90`, `90s`,
-/// `1.5`) or minutes and seconds (`1:30`, `1:30.5s`), with or without the
-/// `@` a cue position is written with (`@1:30`). The one parser for a
-/// position as text; a position sent as a number of seconds goes through
-/// [`duration_from_secs`], as this does. Errors are the reason, for the
-/// surface to answer with.
+/// `1.5`, `1,5`) or minutes and seconds (`1:30`, `1:30.5s`, `1:30,5`), with
+/// or without the `@` a cue position is written with (`@1:30`). The one
+/// parser for a position as text; a position sent as a number of seconds
+/// goes through [`duration_from_secs`], as this does. Errors are the
+/// reason, for the surface to answer with.
 pub fn parse_position(value: &str) -> Result<Duration, String> {
     let trimmed = value.trim();
     let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim();
+    // A decimal comma (`83,5`) is a decimal point.
+    let decimal = trimmed.replacen(',', ".", 1);
+    let trimmed = if trimmed.contains('.') {
+        trimmed
+    } else {
+        decimal.as_str()
+    };
     let seconds = if let Some(stripped) = trimmed
         .strip_suffix('s')
         .or_else(|| trimmed.strip_suffix('S'))
@@ -104,5 +111,13 @@ mod tests {
         assert_eq!(minutes_seconds(59.96, 1), "0:59.9");
         assert_eq!(minutes_seconds(-3.0, 0), "0:00");
         assert_eq!(minutes_seconds(3600.0, 0), "60:00");
+    }
+
+    #[test]
+    fn a_position_takes_a_decimal_comma() {
+        assert_eq!(parse_position("83,5"), Ok(Duration::from_secs_f64(83.5)));
+        assert_eq!(parse_position("1:23,5"), Ok(Duration::from_secs_f64(83.5)));
+        assert!(parse_position("1,2,3").is_err());
+        assert!(parse_position("1.5,5").is_err());
     }
 }

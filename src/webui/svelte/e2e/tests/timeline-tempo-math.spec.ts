@@ -286,9 +286,11 @@ test("a time is shown and read as the player has it", async () => {
   expect(rules.clock(75.5, 1)).toBe("1:15.5");
   expect(rules.clock(75.5, 3)).toBe("1:15.500");
   expect(rules.clock(59.9996, 3)).toBe("0:59.999");
-  // `parse_position`: the spellings every surface takes, and no comma.
+  // `parse_position`: the spellings every surface takes, a decimal comma
+  // among them.
   expect(rules.position_parse("1:23.5")).toBe(83.5);
   expect(rules.position_parse("@1:23")).toBe(83);
   expect(rules.position_parse("83s")).toBe(83);
-  expect(rules.position_parse("1:23,5")).toBeUndefined();
+  expect(rules.position_parse("1:23,5")).toBe(83.5);
+  expect(rules.position_parse("1,2,3")).toBeUndefined();
 });
