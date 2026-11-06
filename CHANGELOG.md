@@ -178,9 +178,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full is 255, 128, 0 (was 255, 127, 0). 16-bit channels are as they were. The fixture snapshot (the
   web UI's stage views, the TUI, MCP `get_fixture_state`) shows the same rounded byte. A strobe rate
   on a fixture without a step table may go out one count higher too, and the rate the player reports
-  for a strobe byte is read at the byte rather than half a byte above it; a step table's bytes are
-  as they were (10 Hz on a PixelBrick's period curve is 249, was 248; 0.04 Hz on a 20 Hz unit with
-  no strobe function is byte 1, its slowest rate, was 0, off). A MIDI DMX value that is not a number goes out as 0 (was 255).
+  for a strobe byte is read at the byte rather than half a byte above it; 10 Hz on a PixelBrick's
+  period curve is 249 (was 248), and 0.04 Hz on a 20 Hz unit with no strobe function is byte 1, its
+  slowest rate (was 0, off). A step table's 8-bit bytes are as they were; on a 16-bit strobe channel
+  a step table's coarse byte is now exactly the step's (a step at DMX 127 to 254 went out one
+  higher, 128 to 255). A MIDI DMX value that is not a number goes out as 0 (was 255).
 
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
@@ -368,13 +370,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a
-  loop break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes
-  each on its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through
-  and overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same
-  blend the web UI's view of the crossfade uses. A GDTF fixture's fine bytes and mirrored sections
-  cross by their channel's rule too: a mirrored strobe or gobo switches at the midpoint, and a
-  mover's fine byte holds where one side does not point it, rather than fading to 0.
+- **A loop crossfade moves a 16-bit channel straight**: the DMX of a `loop_crossfade` (and of a loop
+  break's fade and ambient light crossing in) faded a 16-bit channel's coarse and fine bytes each on
+  its own, so pan from 0x00FF to 0x0100 went back to 0x00BF a quarter of the way through and
+  overshot to 0x0180 halfway. It now crosses as the one value the two bytes make, by the same blend
+  the web UI's view of the crossfade uses. A fixture's fine bytes and mirrored sections now cross by
+  their channel's rule too -- any channel with a `fine` byte, from a GDTF profile or a fixture
+  type's own `channel "pan" @ 1 fine 2` -- rather than fading each byte: a mirrored strobe or gobo
+  switches at the midpoint (it faded); a mirrored pan or tilt holds where only one side points it
+  (it faded from or to 0); and a mover's fine byte holds where one side does not point it (it faded
+  to 0). Where two fixtures are patched over one DMX channel, the crossfade crosses it the same way
+  every time and drops neither fixture's byte (a 16-bit value's fine byte could go out on neither
+  side).
 - **A colour fade keeps a byte both colours share**: a `cycle` with `transition: fade`, and any
   other blend of two colours, truncated each byte, so a byte the two colours share dipped by one
   mid-fade: red to orange flickered red 255 to 254, and white to white was 254 four percent of
