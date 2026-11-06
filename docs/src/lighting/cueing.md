@@ -18,8 +18,8 @@ A show needs a tempo map to use anything musical: `@measure/beat` cues, `4measur
   ([Verification](verification.md)).
 
 A show that uses musical timing with neither fails to parse with an error saying it "requires a
-tempo section" (a measure cue), or that its values "require a tempo section" (a duration, speed
-or frequency written in beats or measures).
+tempo section" (a measure cue, or an `offset` command), or that its values "require a tempo
+section" (a duration, speed or frequency written in beats or measures).
 
 ## Time-Based Cues
 
