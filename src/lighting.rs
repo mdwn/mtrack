@@ -51,6 +51,7 @@ pub mod timeline;
 pub mod types;
 pub mod validation;
 pub mod venue_patch;
+pub mod venue_rows;
 #[cfg(test)]
 mod visual_consistency_tests;
 

@@ -334,6 +334,8 @@ type SequenceRefJs = <SequenceRef as Tsify>::JsType;
 type TransitionConfigJs = <TransitionConfig as Tsify>::JsType;
 type ChannelValuesJs = <ChannelValues as Tsify>::JsType;
 type TripleJs = <Triple as Tsify>::JsType;
+type VenueRowsJs = <VenueRows as Tsify>::JsType;
+type ChannelRowsJs = <ChannelRows as Tsify>::JsType;
 type ClaveKindJs = <metronome_config::ClaveKind as Tsify>::JsType;
 
 // ── Beat grid ───────────────────────────────────────────────────────────────
@@ -1210,6 +1212,54 @@ pub fn clock(secs: f64, decimals: u32) -> String {
 #[wasm_bindgen]
 pub fn position_parse(text: &str) -> Option<f64> {
     position::parse_position(text).ok().map(|d| d.as_secs_f64())
+}
+
+// ── Editor rows ─────────────────────────────────────────────────────────────
+
+/// A venue editor's fixture rows.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct VenueRows(pub Vec<lighting::venue_rows::VenueRow>);
+
+/// The rows that cannot be saved, and why.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct RowProblemList(pub Vec<lighting::venue_rows::RowProblems>);
+
+/// A fixture type editor's channel rows.
+#[derive(Deserialize, Tsify, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct ChannelRows(pub Vec<lighting::venue_rows::ChannelRow>);
+
+/// The channel rows that cannot be saved, and why.
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(transparent)]
+pub struct ChannelProblemList(pub Vec<lighting::venue_rows::ChannelProblems>);
+
+/// What stops each of a venue's fixture rows from saving
+/// (`venue_rows::venue_row_problems`, the save's own check); a fixture of
+/// a type in `gdtf_types` must name its mode. `None` for a value that is
+/// not rows.
+#[wasm_bindgen]
+pub fn venue_row_problems(rows: VenueRowsJs, gdtf_types: Vec<String>) -> Option<RowProblemList> {
+    let VenueRows(rows) = read(JsValue::from(rows))?;
+    let from_gdtf = |t: &str| gdtf_types.iter().any(|g| g == t);
+    Some(RowProblemList(lighting::venue_rows::venue_row_problems(
+        &rows, from_gdtf,
+    )))
+}
+
+/// What stops each of a fixture type's channel rows from saving
+/// (`venue_rows::channel_row_problems`). `None` for a value that is not
+/// rows.
+#[wasm_bindgen]
+pub fn channel_row_problems(rows: ChannelRowsJs) -> Option<ChannelProblemList> {
+    let ChannelRows(rows) = read(JsValue::from(rows))?;
+    Some(ChannelProblemList(
+        lighting::venue_rows::channel_row_problems(&rows),
+    ))
 }
 
 // ── Limits ──────────────────────────────────────────────────────────────────

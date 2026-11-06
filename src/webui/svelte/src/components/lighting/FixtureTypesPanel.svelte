@@ -33,10 +33,6 @@
   import { untrack } from "svelte";
   import { rules } from "../../lib/rules";
   import {
-    channelProblems,
-    type ChannelProblem,
-  } from "../../lib/lighting/venueRows";
-  import {
     fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchFixtureType,
@@ -439,9 +435,7 @@ fixture_type "Name" {
   /** Set by a refused save: the channel rows are then checked as edited. */
   let checkChannels = $state(false);
   let channelIssues = $derived(
-    checkChannels
-      ? channelProblems(editFtChannels)
-      : new Map<number, ChannelProblem[]>(),
+    checkChannels ? (rules.channel_row_problems(editFtChannels) ?? []) : [],
   );
 
   function removeFtChannel(i: number) {
@@ -460,13 +454,14 @@ fixture_type "Name" {
     // Every channel row is saved or the save is refused: a blank name, a
     // name another row has, or an address below 1 is marked, never dropped
     // or merged into its namesake.
-    const found = channelProblems(editFtChannels);
-    if (found.size > 0) {
+    // The player's own check of the rows (`rules.channel_row_problems`).
+    const found = rules.channel_row_problems(editFtChannels) ?? [];
+    if (found.length > 0) {
       checkChannels = true;
       ftMsg = get(t)("lighting.channelRowsNeedAttention", {
-        values: { count: found.size },
+        values: { count: found.length },
       });
-      const first = Math.min(...found.keys());
+      const first = found[0].row;
       queueMicrotask(() =>
         document
           .querySelector<HTMLElement>(
@@ -737,7 +732,8 @@ fixture_type "Name" {
               >
             </div>
             {#each editFtChannels as ch, i (i)}
-              {@const issues = channelIssues.get(i) ?? []}
+              {@const issues =
+                channelIssues.find((p) => p.row === i)?.problems ?? []}
               <div
                 class="channel-row"
                 data-channel-row={i}

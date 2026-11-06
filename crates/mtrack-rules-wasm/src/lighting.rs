@@ -39,6 +39,8 @@ pub mod mvr_types;
 pub mod parser;
 #[path = "../../../src/lighting/stage_model.rs"]
 pub mod stage_model;
+#[path = "../../../src/lighting/venue_rows.rs"]
+pub mod venue_rows;
 
 pub mod fit {
     pub use super::fit_types::*;

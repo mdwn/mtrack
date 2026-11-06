@@ -18,6 +18,8 @@
     FixtureTypeEntry,
     FixtureTypeGdtf,
     LightingFileError,
+    RowProblem,
+    RowProblems,
     Vec3,
     Venue,
     VenueSource,
@@ -36,12 +38,7 @@
   import { untrack } from "svelte";
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
-  import {
-    nextFixtureName,
-    rowProblems,
-    nextPatch,
-    type RowProblem,
-  } from "../../lib/lighting/venueRows";
+  import { nextFixtureName, nextPatch } from "../../lib/lighting/venueRows";
   import {
     ConflictError,
     fetchFixtureTypeGdtf,
@@ -155,6 +152,13 @@
   let fixtureTypeNames = $derived(Object.keys(fixtureTypes).sort());
   /** A fixture from a GDTF: every row of it names its own mode. */
   const fromGdtf = (type: string) => !!fixtureTypes[type]?.referential;
+
+  /** What stops each row from saving: the player's own check of the rows
+   *  (`rules.venue_row_problems`). */
+  function rowProblems(): RowProblems[] {
+    const gdtf = Object.keys(fixtureTypes).filter(fromGdtf);
+    return rules.venue_row_problems(editVenueFixtures, gdtf) ?? [];
+  }
 
   async function loadFixtureTypes() {
     try {
@@ -443,11 +447,7 @@
   /** Set by a refused save: from then on the rows are checked as they are
    *  edited, so a fixed row clears its message. */
   let checkRows = $state(false);
-  let problems = $derived(
-    checkRows
-      ? rowProblems(editVenueFixtures, fromGdtf)
-      : new Map<number, RowProblem[]>(),
-  );
+  let problems = $derived(checkRows ? rowProblems() : []);
 
   /** Words for what a row runs into. */
   function clashMessage(i: number): string {
@@ -487,13 +487,13 @@
     }
     // Every row is saved or the save is refused: a row that cannot be
     // saved is marked, never left out.
-    const found = rowProblems(editVenueFixtures, fromGdtf);
-    if (found.size > 0) {
+    const found = rowProblems();
+    if (found.length > 0) {
       checkRows = true;
       venueMsg = get(t)("lighting.venueRowsNeedAttention", {
-        values: { count: found.size },
+        values: { count: found.length },
       });
-      const first = Math.min(...found.keys());
+      const first = found[0].row;
       queueMicrotask(() =>
         document
           .querySelector<HTMLElement>(
@@ -656,7 +656,7 @@
         </div>
 
         {#each editVenueFixtures as fix, i (i)}
-          {@const rowIssues = problems.get(i) ?? []}
+          {@const rowIssues = problems.find((p) => p.row === i)?.problems ?? []}
           {@const bad = (p: RowProblem) => rowIssues.includes(p)}
           <div
             class="venue-fixture-card"
