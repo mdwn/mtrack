@@ -540,19 +540,27 @@ impl EffectEngine {
     /// How each DMX channel (universe, channel) of the patched fixtures
     /// crosses a crossfade: by its channel's kind, as a byte of its own or
     /// as the coarse or fine byte of a 16-bit value -- the channel's own
-    /// bytes and each mirror's. Where patches overlap, the same whatever
-    /// order the fixtures come in ([`CrossPlace`]'s order), and a coarse or
-    /// fine byte whose partner another patch took crosses as a byte of its
-    /// own, so no channel either side drives is dropped.
+    /// bytes and each mirror's. Where channels overlap, inside one fixture
+    /// or between two, the same whatever order the maps hold them in
+    /// ([`CrossPlace`]'s order), and a coarse or fine byte whose partner
+    /// another channel took crosses as a byte of its own, so no channel
+    /// either side drives is dropped.
     fn cross_places(&self) -> HashMap<(u16, u16), CrossPlace> {
         let mut places: HashMap<(u16, u16), CrossPlace> = HashMap::new();
+        // Of two places on one channel -- a fixture's own channels over
+        // each other, or another fixture's -- the first by `CrossPlace`'s
+        // order, whatever order the maps give them in.
+        let mut claim = |address, place: CrossPlace| {
+            places
+                .entry(address)
+                .and_modify(|held| *held = (*held).min(place))
+                .or_insert(place);
+        };
         for fixture in self.fixtures.as_map().values() {
-            // The fixture's own: its channel definitions over its channels.
-            let mut own = HashMap::new();
             let at = |offset: u16| Some((fixture.universe, fixture.dmx_channel(offset)?));
             for (name, &offset) in &fixture.channels {
                 if let Some(address) = at(offset) {
-                    own.insert(address, CrossPlace::Byte(CrossKind::of(name)));
+                    claim(address, CrossPlace::Byte(CrossKind::of(name)));
                 }
             }
             for (name, def) in &fixture.channel_defs {
@@ -565,21 +573,12 @@ impl EffectEngine {
                     };
                     match fine {
                         Some(fine) => {
-                            own.insert(coarse, CrossPlace::Coarse(kind, fine.1));
-                            own.insert(fine, CrossPlace::Fine(kind, coarse.1));
+                            claim(coarse, CrossPlace::Coarse(kind, fine.1));
+                            claim(fine, CrossPlace::Fine(kind, coarse.1));
                         }
-                        None => {
-                            own.insert(coarse, CrossPlace::Byte(kind));
-                        }
+                        None => claim(coarse, CrossPlace::Byte(kind)),
                     }
                 }
-            }
-            // Over another fixture's patch: by `CrossPlace`'s order.
-            for (address, place) in own {
-                places
-                    .entry(address)
-                    .and_modify(|held| *held = (*held).min(place))
-                    .or_insert(place);
             }
         }
         // A coarse or fine byte whose partner is not its own.

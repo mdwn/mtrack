@@ -514,3 +514,28 @@ fn overlapping_patches_cross_the_same_every_time_and_drop_nothing() {
         }
     }
 }
+
+/// Two channels of one fixture patched over one offset (a v1 `channels:
+/// { dimmer: 1, strobe: 1 }`, which nothing refuses) cross by one rule,
+/// whatever order the fixture's maps hold them in: the fade.
+#[test]
+fn an_overlap_inside_one_fixture_crosses_the_same_every_time() {
+    let channels = HashMap::from([("dimmer".to_string(), 1), ("strobe".to_string(), 1)]);
+    let old = frame(&[(1, 0)]);
+    let new = frame(&[(1, 200)]);
+    for _ in 0..32 {
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(FixtureInfo::new(
+            "par".to_string(),
+            1,
+            1,
+            "Par".to_string(),
+            channels.clone(),
+            None,
+        ));
+        assert_eq!(
+            value(&engine.crossfade_commands(&old, &new, 0.25), 1),
+            Some(50)
+        );
+    }
+}
