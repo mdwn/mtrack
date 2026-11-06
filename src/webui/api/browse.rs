@@ -196,7 +196,7 @@ pub(super) async fn create_song_in_directory(
     let dir_canonical = dir_safe.as_path().to_path_buf();
 
     let config_path = dir_canonical.join("song.yaml");
-    if config_path.exists() || songs::has_song_config(&dir_canonical) {
+    if songs::has_song_config(&dir_canonical) {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": "a song config already exists in this directory"})),

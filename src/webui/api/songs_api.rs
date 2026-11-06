@@ -590,7 +590,7 @@ pub(super) async fn post_song(
     };
 
     let config_path = song_dir.join_filename("song.yaml");
-    if config_path.exists() || songs::has_song_config(song_dir.as_path()) {
+    if songs::has_song_config(song_dir.as_path()) {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),

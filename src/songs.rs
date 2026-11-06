@@ -2143,10 +2143,10 @@ pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>>
 /// second. Returns whether one was written. `songs --init` and the web UI's
 /// bulk import both take this rule.
 pub fn init_song_dir(dir: &Path, name: &str) -> Result<bool, Box<dyn Error>> {
-    let config_path = dir.join("song.yaml");
-    if config_path.exists() || has_song_config(dir) {
+    if has_song_config(dir) {
         return Ok(false);
     }
+    let config_path = dir.join("song.yaml");
     let mut config = Song::initialize(&dir.to_path_buf())?.get_config();
     config.set_name(name);
     config.save(&config_path)?;
@@ -2302,10 +2302,16 @@ pub fn is_song_config_name(path: &Path) -> bool {
     path.file_stem().is_some_and(|stem| stem == "song") && is_yaml_config(path)
 }
 
-/// Whether the directory `dir` holds a file that makes it a song's
-/// ([`marks_a_song_dir`]), whatever the file is called (`song.yaml`,
-/// `song.yml`, `album.yaml`).
+/// Whether the directory `dir` holds a song's config: a file that makes it
+/// a song's ([`marks_a_song_dir`]), whatever it is called (`song.yaml`,
+/// `song.yml`, `album.yaml`), or anything at all named `song.yaml`, which a
+/// new config could not be written over. The one rule for "this directory
+/// has a config already" that init, the bulk import and the web UI's song
+/// creation and uploads take.
 pub fn has_song_config(dir: &Path) -> bool {
+    if dir.join("song.yaml").symlink_metadata().is_ok() {
+        return true;
+    }
     fs::read_dir(dir).is_ok_and(|entries| {
         entries
             .filter_map(|e| e.ok().map(|e| e.path()))
