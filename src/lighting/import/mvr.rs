@@ -288,7 +288,12 @@ fn plan(
             let file = format!(
                 "{}/{}.venue",
                 options.venues_dir.trim_end_matches('/'),
-                crate::lighting::project_files::name_stem(&venue_name)
+                crate::lighting::project_files::new_file_stem(
+                    &project.join(&options.venues_dir),
+                    &venue_name,
+                    crate::lighting::project_files::VENUE_EXTENSIONS,
+                    &|_| false,
+                )
             );
             (project.join(&file), file)
         }
@@ -891,6 +896,7 @@ fn find_existing_venue(
     };
     if let Err(refusal) = may_act_on(
         venue_name,
+        "venue",
         &display_in(&dir, &found.path),
         &found.declares,
         &[],
@@ -2401,12 +2407,19 @@ mod existing_venue_tests {
             .expect("found");
         assert_eq!(found.0, venues.join("tour/anywhere.venue"));
 
-        let error = find_existing_venue(dir.path(), "venues", "House")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("does not define a venue named \"House\" (it holds \"Other\")"),
-            "{error}"
+        // The file at the name's stem reads and holds another venue: it is
+        // not House's, which gets a file of its own past it.
+        assert!(find_existing_venue(dir.path(), "venues", "House")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            crate::lighting::project_files::new_file_stem(
+                &venues,
+                "House",
+                crate::lighting::project_files::VENUE_EXTENSIONS,
+                &|_| false
+            ),
+            "house_2"
         );
 
         let error = find_existing_venue(dir.path(), "venues", "Broken")

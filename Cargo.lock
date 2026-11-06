@@ -2272,6 +2272,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "crossterm",
+ "form_urlencoded",
  "futures-util",
  "hostname",
  "hound",

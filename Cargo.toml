@@ -83,6 +83,8 @@ bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
 [dependencies]
 clap = { version = "4.5.60", features = ["cargo", "derive"] }
 config = "0.15.19"
+# The web UI's repeated query parameters (`replace_broken`, one per file).
+form_urlencoded = "1.2.2"
 cpal = "0.18.1"
 rayon = "1.11.0"
 num_cpus = "1.17.0"

@@ -160,9 +160,8 @@ test.describe("Venues Management", () => {
     );
     await dialog.getByRole("button", { name: "Replace it" }).click();
     await expect.poll(() => puts.length).toBe(2);
-    expect(decodeURIComponent(puts[1])).toContain(
-      "replace_broken=a/club.light,club.venue",
-    );
+    const retried = new URL(puts[1]).searchParams.getAll("replace_broken");
+    expect(retried).toEqual(["a/club.light", "club.venue"]);
   });
 
   test("cancel button closes venue editor", async ({ page }) => {

@@ -464,14 +464,15 @@ fn new_record_for(
             format!("{} is not a readable GDTF: {e}", library_type.file_name),
         )
     })?;
-    // Named as the web UI names a type's file (`project_files::name_stem`).
-    let stem = lighting::project_files::name_stem(file_name_for);
-    let mut path = types_dir.join(format!("{stem}.fixture"));
-    let mut n = 2;
-    while path.exists() || claimed.contains(&path) {
-        path = types_dir.join(format!("{stem}_{n}.fixture"));
-        n += 1;
-    }
+    // Named as the web UI names a new type's file
+    // (`project_files::new_file_stem`), past the pins this save already made.
+    let stem = lighting::project_files::new_file_stem(
+        types_dir,
+        file_name_for,
+        lighting::project_files::FIXTURE_TYPE_EXTENSIONS,
+        &|stem| claimed.contains(&types_dir.join(format!("{stem}.fixture"))),
+    );
+    let path = types_dir.join(format!("{stem}.fixture"));
     claimed.push(path.clone());
     let text = lighting::import::gdtf_definition(
         &library_type.name,

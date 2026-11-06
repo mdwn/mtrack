@@ -394,17 +394,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A venue or fixture type save or delete acts only on a file holding its name**: one rule
   finds the file a venue or fixture type lives in, or would be written to, and one rule decides
   whether a save or delete may act on it, in the web UI and the MVR and GDTF imports alike. The
-  file is the one at any depth that declares the name, else the one at the name's stem (in any
-  case), else a file that does not read but opens a block for the name (as an older file name
-  left it: `club_2.venue` for "Club-2"). It may be acted on only when it declares the name. A file
-  that holds another venue or type is refused with 409 and left as it is: a venue saved as text
-  over a `club.venue` holding `Other` replaced it, and a delete removed it. A file that does not
-  read (a half-edited `par.light`) is refused too, and the web UI says so, "par.light doesn't
-  read: ... Replace it?" (or "Remove it?" for a delete), naming each broken file the request would
-  act on by its path in the directory (`a/club.light`); confirmed, the request is sent again with
-  `?replace_broken=a/club.light` (comma-separated for several), which lets the save replace, or
-  the delete remove, exactly those broken files, never one that reads, nor a namesake in another
-  subdirectory. A fixture type save checks the file found for the name as a venue save does,
+  file is the one at any depth that declares the name, else a file at the name's stem (in any
+  case) that does not read, else a file elsewhere that does not read but opens a block for the
+  name (as an older file name left it: `club_2.venue` for "Club-2"). It may be acted on only when
+  it declares the name. A file at the stem that reads and holds another venue or type is not the
+  name's, and is left as it is: a new venue or type is written to a file of its own past it
+  (`club_2.light`), where a venue saved as text over a `club.venue` holding `Other` replaced it.
+  Names that share a stem ("Club (Main)" and "Club Main") likewise get files of their own. A file
+  that does not read (a half-edited `par.light`) is refused, and the web UI says so, "par.light
+  doesn't read: ... Replace it?" (or "Remove it?" for a delete), naming each broken file the
+  request would act on by its path in the directory (`a/club.light`); confirmed, the request is
+  sent again with one `?replace_broken=a/club.light` parameter per file, as written, which lets the
+  save replace, or the delete remove, exactly those broken files, never one that reads, nor a
+  namesake in another subdirectory. A broken file that also opens blocks for other names (a
+  broken `tour/all.light` holding Club and Arena) is refused with 409 naming them, and nothing is
+  offered: replacing it would lose them. A name with no letters or digits (`!!!`, `★`) is written
+  as `untitled.light`, not a hidden `.light`, and no lighting file is ever written under a hidden
+  name. A fixture type save checks the file found for the name as a venue save does,
   whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got a `Par.fixture`
   beside it with 200. A refused delete says the file "would be removed". The imports name a new
   file as the web UI does, and the web UI folds a run of other characters into one `_`: the MVR

@@ -19,11 +19,14 @@ import { t } from "svelte-i18n";
 import type { LightingFileRefusal } from "../../gen/rules/mtrack_rules";
 import { showConfirm } from "../dialog.svelte";
 
-/** `path` with `replace_broken=<files>` added to its query, when given. */
-export function withReplaceBroken(path: string, files?: string): string {
-  if (!files) return path;
-  const join = path.includes("?") ? "&" : "?";
-  return `${path}${join}replace_broken=${encodeURIComponent(files)}`;
+/** `path` with one `replace_broken=<file>` query parameter per file, each
+ *  as written, when there are any. */
+export function withReplaceBroken(path: string, files?: string[]): string {
+  if (!files || files.length === 0) return path;
+  const params = files
+    .map((file) => `replace_broken=${encodeURIComponent(file)}`)
+    .join("&");
+  return `${path}${path.includes("?") ? "&" : "?"}${params}`;
 }
 
 /**
@@ -31,11 +34,11 @@ export function withReplaceBroken(path: string, files?: string): string {
  * because the files it would act on do not read (a 409 naming each, by its
  * path in the lighting directory, with its parse error), says so and asks
  * whether to replace (or remove) them; confirmed, the request goes again
- * naming exactly those files, comma-separated. Any other answer, or a
+ * naming exactly those files, one parameter each. Any other answer, or a
  * refusal the person keeps, is returned as it came.
  */
 export async function offeringToReplaceBroken(
-  send: (replaceBroken?: string) => Promise<Response>,
+  send: (replaceBroken?: string[]) => Promise<Response>,
   acting: "save" | "delete",
 ): Promise<Response> {
   const res = await send();
@@ -69,5 +72,5 @@ export async function offeringToReplaceBroken(
         : "lighting.brokenFileRemoveLabel",
     ),
   });
-  return confirmed ? send(broken.map((f) => f.file).join(",")) : res;
+  return confirmed ? send(broken.map((f) => f.file)) : res;
 }

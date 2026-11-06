@@ -104,7 +104,9 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
 /// named (by the web UI and the MVR and GDTF imports) and an existing one is
 /// found at it: lowercase, with each run of spaces and anything but letters,
 /// digits and `-` as one `_`, none at either end (`Club-2` is `club-2`,
-/// `Synth Brick (twin)` is `synth_brick_twin`).
+/// `Synth Brick (twin)` is `synth_brick_twin`). A name with none of those
+/// (`!!!`, `★`) is `untitled`, never an empty stem, which would make a
+/// hidden `.light`.
 pub fn name_stem(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars().flat_map(char::to_lowercase) {
@@ -114,27 +116,103 @@ pub fn name_stem(name: &str) -> String {
             out.push('_');
         }
     }
-    out.trim_end_matches('_').to_string()
+    let out = out.trim_end_matches('_');
+    if out.is_empty() {
+        "untitled".to_string()
+    } else {
+        out.to_string()
+    }
+}
+
+/// The stem a NEW file for `name` takes in `dir`: [`name_stem`], unless a
+/// file is already at it (in any of `extensions`, in any case) or `taken`
+/// claims it, when it is the first free `{stem}_{n}` from 2. Names that
+/// share a stem ("Club (Main)" and "Club Main") get files of their own: the
+/// one rule for naming a new file, for the web UI and the MVR and GDTF
+/// imports.
+pub fn new_file_stem(
+    dir: &Path,
+    name: &str,
+    extensions: &[&str],
+    taken: &dyn Fn(&str) -> bool,
+) -> String {
+    let base = name_stem(name);
+    let free =
+        |stem: &str| !taken(stem) && crate::util::files_at_stem(dir, stem, extensions).is_empty();
+    if free(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}_{n}"))
+        .find(|stem| free(stem))
+        .expect("some suffix is free")
+}
+
+/// Why a lighting file does not read, and the blocks it opens all the same
+/// (`venue "Club"`, `fixture_type "Par"`), by their header lines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unread {
+    pub error: String,
+    /// Each block header: its keyword and the name it opens.
+    pub blocks: Vec<(String, String)>,
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)
+    }
 }
 
 /// What a lighting file declares, or why it does not read.
-pub type Declares = Result<Vec<String>, String>;
+pub type Declares = Result<Vec<String>, Unread>;
+
+/// The block keywords of a venue or fixture type file.
+const BLOCK_KEYWORDS: &[&str] = &["venue", "fixture_type"];
+
+/// The block headers in `text`: each line opening `keyword "name"`.
+fn block_headers(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim_start) {
+        for keyword in BLOCK_KEYWORDS {
+            let Some(rest) = line
+                .strip_prefix(keyword)
+                .and_then(|rest| rest.strip_prefix(" \""))
+            else {
+                continue;
+            };
+            if let Some((name, _)) = rest.split_once('"') {
+                out.push((keyword.to_string(), name.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// An [`Unread`] for `error`, with the blocks `text` opens.
+fn unread(error: String, text: &str) -> Unread {
+    Unread {
+        error,
+        blocks: block_headers(text),
+    }
+}
 
 /// The fixture types the file at `path` declares ([`Declares`]).
 pub fn fixture_types_declared(path: &Path) -> Declares {
-    let text = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
+    let text = crate::util::read_to_string(path).map_err(|e| unread(e.to_string(), ""))?;
     super::parser::parse_fixture_types(&text)
         .map(|types| types.into_keys().collect())
-        .map_err(|e| e.to_string())
+        .map_err(|e| unread(e.to_string(), &text))
 }
 
 /// The venues the file at `path` declares ([`Declares`]).
 pub fn venues_declared(path: &Path) -> Declares {
-    let bytes = crate::util::read_file(path).map_err(|e| e.to_string())?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "not valid UTF-8".to_string())?;
+    let bytes = crate::util::read_file(path).map_err(|e| unread(e.to_string(), ""))?;
+    let lossy = String::from_utf8_lossy(&bytes);
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| unread("not valid UTF-8".to_string(), &lossy))?;
     super::parser::parse_venues(text)
         .map(|venues| venues.into_keys().collect())
-        .map_err(|e| e.to_string())
+        .map_err(|e| unread(e.to_string(), text))
 }
 
 /// Why a save or delete of a name may not act on a file ([`may_act_on`]).
@@ -145,36 +223,76 @@ pub struct Refusal {
     pub file: String,
     /// What is wrong with it: `it holds "Other"`, `it does not read: …`.
     pub why: String,
-    /// Its parse error, when it does not read: the one case a person may
-    /// choose to replace it.
+    /// Its parse error, when it does not read and holds nothing but the
+    /// name: the one case a person may choose to replace it.
     pub parse_error: Option<String>,
 }
 
 /// The one rule for a venue or fixture type file that a save or delete of
-/// `name` would act on (write over, rewrite or remove), wherever it is
-/// asked: the web UI's saves and deletes, and the MVR and GDTF imports.
-/// Only a file that declares `name`; one that holds only other names is
-/// refused, and so is one that does not read, unless `replace_broken`
-/// names exactly that file (a person who was shown its parse error and
-/// chose to replace it). `shown` is the file as the person sees it: its
-/// path in its directory ([`display_in`]), so one of two alike-named files
-/// in two subdirectories is never taken for the other.
+/// `name` (a `keyword` block: `venue`, `fixture_type`) would act on (write
+/// over, rewrite or remove), wherever it is asked: the web UI's saves and
+/// deletes, and the MVR and GDTF imports.
+///
+/// - A file that declares `name` may be acted on.
+/// - One that reads and holds only other names is refused.
+/// - One that does not read but opens blocks for other names (a broken
+///   `all.light` holding Club and Arena) is refused too, naming them:
+///   replacing it would lose them.
+/// - One that does not read and opens no block but this one's is refused,
+///   unless `replace_broken` names exactly that file (a person who was shown
+///   its parse error and chose to replace it).
+///
+/// `shown` is the file as the person sees it: its path in its directory
+/// ([`display_in`]), so one of two alike-named files in two subdirectories
+/// is never taken for the other.
 pub fn may_act_on(
     name: &str,
+    keyword: &str,
     shown: &str,
     declares: &Declares,
     replace_broken: &[String],
 ) -> Result<(), Refusal> {
+    let listed = |mut items: Vec<String>| {
+        items.sort();
+        items.dedup();
+        items.join(", ")
+    };
     let (why, parse_error) = match declares {
         Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
         Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None),
-        Ok(names) => {
-            let mut names: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
-            names.sort();
-            (format!("it holds {}", names.join(", ")), None)
+        Ok(names) => (
+            format!(
+                "it holds {}",
+                listed(names.iter().map(|n| format!("\"{n}\"")).collect())
+            ),
+            None,
+        ),
+        Err(unread) => {
+            let others: Vec<String> = unread
+                .blocks
+                .iter()
+                .filter(|(k, n)| !(k == keyword && n == name))
+                .map(|(k, n)| format!("{k} \"{n}\""))
+                .collect();
+            if !others.is_empty() {
+                (
+                    format!(
+                        "it does not read ({}), and it also holds {}, which replacing it would \
+                         lose",
+                        unread.error,
+                        listed(others)
+                    ),
+                    None,
+                )
+            } else if replace_broken.iter().any(|f| f == shown) {
+                return Ok(());
+            } else {
+                (
+                    format!("it does not read: {}", unread.error),
+                    Some(unread.error.clone()),
+                )
+            }
         }
-        Err(_) if replace_broken.iter().any(|f| f == shown) => return Ok(()),
-        Err(e) => (format!("it does not read: {e}"), Some(e.clone())),
     };
     Err(Refusal {
         file: shown.to_string(),
@@ -191,18 +309,13 @@ pub struct Located {
     pub declares: Declares,
 }
 
-/// Whether some line of `text` opens a `keyword "name"` block.
-fn mentions(text: &str, keyword: &str, name: &str) -> bool {
-    let header = format!("{keyword} \"{name}\"");
-    text.lines().any(|l| l.trim_start().starts_with(&header))
-}
-
-/// The one rule for the file a name lives in, or would be written to, in a
-/// lighting directory: the first file at any depth that declares it (as
-/// the lighting system loads it); else the file at the name's stem
-/// ([`name_stem`], in any case); else a file that does not read but opens a
-/// block for the name (one an older stem named, half-edited). `None` is a
-/// name no file holds or claims.
+/// The one rule for the file a name lives in, in a lighting directory: the
+/// first file at any depth that declares it (as the lighting system loads
+/// it); else a file at the name's stem ([`name_stem`], in any case) that
+/// does not read; else a file elsewhere that does not read but opens a
+/// block for the name (one an older stem named, half-edited). A stem file
+/// that reads and holds other names is not the name's: a new file is named
+/// past it ([`new_file_stem`]). `None` is a name no file holds or claims.
 fn locate(
     dir: &Path,
     name: &str,
@@ -217,21 +330,20 @@ fn locate(
             Ok(names) if names.iter().any(|n| n == name) => {
                 return Ok(Some(Located { path, declares }))
             }
-            Err(_) if broken_mention.is_none() => {
-                let text = crate::util::read_file(&path).unwrap_or_default();
-                if mentions(&String::from_utf8_lossy(&text), keyword, name) {
-                    broken_mention = Some(Located { path, declares });
-                }
+            Err(unread)
+                if broken_mention.is_none()
+                    && unread.blocks.iter().any(|(k, n)| k == keyword && n == name) =>
+            {
+                broken_mention = Some(Located { path, declares });
             }
             _ => {}
         }
     }
-    if let Some(path) = crate::util::files_at_stem(dir, &name_stem(name), extensions)
-        .into_iter()
-        .next()
-    {
+    for path in crate::util::files_at_stem(dir, &name_stem(name), extensions) {
         let declares = declared(&path);
-        return Ok(Some(Located { path, declares }));
+        if declares.is_err() {
+            return Ok(Some(Located { path, declares }));
+        }
     }
     Ok(broken_mention)
 }
@@ -425,9 +537,9 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
 mod tests {
     use super::*;
 
-    /// The one locate rule: a declaring file at any depth, else the file
-    /// at the stem, else a broken file opening a block for the name (as an
-    /// older stem left it: `club_2.venue` for "Club-2").
+    /// The one locate rule: a declaring file at any depth, else a broken
+    /// file at the stem, else a broken file opening a block for the name (as
+    /// an older stem left it: `club_2.venue` for "Club-2").
     #[test]
     fn locate_finds_declared_then_stem_then_a_broken_mention() {
         let dir = tempfile::tempdir().unwrap();
@@ -437,11 +549,23 @@ mod tests {
         assert_eq!(found.path, d.join("club_2.venue"));
         assert!(found.declares.is_err());
 
+        // A stem file that reads and holds another venue is not the name's.
         write(d, "club-2.venue", "venue \"Other\" {\n}\n");
+        assert_eq!(
+            locate_venue(d, "Club-2").unwrap().unwrap().path,
+            d.join("club_2.venue")
+        );
+        assert_eq!(
+            new_file_stem(d, "Club-2", VENUE_EXTENSIONS, &|_| false),
+            "club-2_2"
+        );
+        // A broken one is.
+        write(d, "club-2.venue", "venue \"Other\" {\n");
         assert_eq!(
             locate_venue(d, "Club-2").unwrap().unwrap().path,
             d.join("club-2.venue")
         );
+        write(d, "club-2.venue", "venue \"Other\" {\n}\n");
 
         write(d, "tour/x.venue", "venue \"Club-2\" {\n}\n");
         assert_eq!(
@@ -469,6 +593,9 @@ mod tests {
         assert_eq!(name_stem("a/b.c"), "a_b_c");
         assert_eq!(name_stem("Synth Brick (twin)"), "synth_brick_twin");
         assert_eq!(name_stem("my_fixture__01"), "my_fixture_01");
+        for nothing in ["!!!", "()", "★", "🔥", ""] {
+            assert_eq!(name_stem(nothing), "untitled", "{nothing}");
+        }
     }
 
     /// The one rule for a file a save or delete acts on: one declaring the
@@ -477,22 +604,38 @@ mod tests {
     #[test]
     fn may_act_on_a_broken_file_only_when_named() {
         let file = "a/Par.light";
-        let broken: Declares = Err("line 2: expected }".to_string());
+        let unread = |blocks: &[(&str, &str)]| Unread {
+            error: "line 2: expected }".to_string(),
+            blocks: blocks
+                .iter()
+                .map(|(k, n)| (k.to_string(), n.to_string()))
+                .collect(),
+        };
+        let broken: Declares = Err(unread(&[("fixture_type", "Par")]));
         let foreign: Declares = Ok(vec!["Spot".to_string()]);
         let own: Declares = Ok(vec!["Par".to_string(), "Spot".to_string()]);
         let named = |files: &[&str]| files.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        let act = |declares: &Declares, flag: &[&str]| {
+            may_act_on("Par", "fixture_type", file, declares, &named(flag))
+        };
 
-        assert!(may_act_on("Par", file, &own, &[]).is_ok());
-        let refused = may_act_on("Par", file, &broken, &[]).unwrap_err();
+        assert!(act(&own, &[]).is_ok());
+        let refused = act(&broken, &[]).unwrap_err();
         assert_eq!(refused.file, "a/Par.light");
         assert_eq!(refused.parse_error.as_deref(), Some("line 2: expected }"));
-        assert!(may_act_on("Par", file, &broken, &named(&["b/x.light", "a/Par.light"])).is_ok());
+        assert!(act(&broken, &["b/x.light", "a/Par.light"]).is_ok());
         // Named by its path in the directory: another subdirectory's file
         // of that name is not it.
-        assert!(may_act_on("Par", file, &broken, &named(&["Par.light", "b/Par.light"])).is_err());
-        let refused = may_act_on("Par", file, &foreign, &named(&["a/Par.light"])).unwrap_err();
+        assert!(act(&broken, &["Par.light", "b/Par.light"]).is_err());
+        let refused = act(&foreign, &["a/Par.light"]).unwrap_err();
         assert_eq!(refused.parse_error, None);
         assert!(refused.why.contains("\"Spot\""), "{refused:?}");
+        // A broken file that also opens another name's block is not
+        // replaced, flag or no flag, and says what it would lose.
+        let shared = Err(unread(&[("fixture_type", "Par"), ("venue", "Club")]));
+        let refused = act(&shared, &["a/Par.light"]).unwrap_err();
+        assert_eq!(refused.parse_error, None);
+        assert!(refused.why.contains("venue \"Club\""), "{refused:?}");
     }
 
     /// A link is followed to what is inside the directory only: one out of

@@ -370,9 +370,13 @@ pub fn place_in_library(
         // twin.
         if let Some(found) = super::project_files::locate_fixture_type(fixture_dir, &type_name)? {
             let shown = super::project_files::display_in(fixture_dir, &found.path);
-            if let Err(refusal) =
-                super::project_files::may_act_on(&type_name, &shown, &found.declares, &[])
-            {
+            if let Err(refusal) = super::project_files::may_act_on(
+                &type_name,
+                "fixture_type",
+                &shown,
+                &found.declares,
+                &[],
+            ) {
                 return Err(format!(
                     "{} does not define a fixture type named \"{type_name}\" ({}); import under \
                      another name, or fix or move the file by hand",
@@ -382,15 +386,15 @@ pub fn place_in_library(
                 .into());
             }
         }
-        // A new record is named as the web UI names a type's file
-        // (`project_files::name_stem`).
-        let base = super::project_files::name_stem(&type_name);
-        let mut stem = base.clone();
-        let mut n = 2;
-        while fixture_dir.join(format!("{stem}.fixture")).exists() {
-            stem = format!("{base}_{n}");
-            n += 1;
-        }
+        // A new record is named as the web UI names a new type's file
+        // (`project_files::new_file_stem`): past a file at its stem that
+        // holds other types.
+        let stem = super::project_files::new_file_stem(
+            fixture_dir,
+            &type_name,
+            super::project_files::FIXTURE_TYPE_EXTENSIONS,
+            &|_| false,
+        );
         let dir_rel = fixture_dir
             .strip_prefix(project)
             .map(|p| p.to_string_lossy().into_owned())
