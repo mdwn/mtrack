@@ -28,7 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { FIT, STATUS } from "../mock-server/test-data";
-import type { Readiness } from "../../src/gen/rules/mtrack_rules";
+import type { GdtfMode, Readiness } from "../../src/gen/rules/mtrack_rules";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DOCS_IMAGES = path.resolve(
@@ -57,10 +57,9 @@ const MOVER = "Spot Mover";
 const MODES = [
   {
     name: "1: RGB",
-    channel_count: 3,
     footprint: 3,
-    capabilities: ["color"],
-    wants: ["color", "dimmer"],
+    capabilities: ["color", "strobe"],
+    wants: ["color", "dimmer", "strobe"],
     cells: 0,
     channels: [
       [1, "red"],
@@ -70,7 +69,6 @@ const MODES = [
   },
   {
     name: "8: RGBS",
-    channel_count: 4,
     footprint: 4,
     capabilities: ["color", "strobe"],
     wants: ["color", "dimmer", "strobe"],
@@ -85,9 +83,8 @@ const MODES = [
   },
   {
     name: "9: RGBWS",
-    channel_count: 5,
     footprint: 5,
-    capabilities: ["color", "strobe"],
+    capabilities: ["color", "strobe", "white"],
     wants: ["color", "dimmer", "strobe"],
     cells: 0,
     strobe_range: { min_hz: 0.4, max_hz: 25 },
@@ -101,9 +98,8 @@ const MODES = [
   },
   {
     name: "13: DIM RGBAWS",
-    channel_count: 7,
     footprint: 7,
-    capabilities: ["color", "dimmer", "strobe"],
+    capabilities: ["color", "strobe", "dimmer", "white"],
     wants: ["color", "dimmer", "strobe"],
     cells: 0,
     strobe_range: { min_hz: 0.4, max_hz: 25 },
@@ -117,7 +113,7 @@ const MODES = [
       [7, "strobe"],
     ],
   },
-];
+] satisfies GdtfMode[];
 const FOOTPRINT: Record<string, number> = Object.fromEntries(
   MODES.map((m) => [m.name, m.footprint]),
 );
