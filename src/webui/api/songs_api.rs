@@ -151,10 +151,12 @@ pub(super) async fn get_song(
 
     let result = {
         let all_songs = state.player.songs();
-        match all_songs.get(&name) {
-            Ok(song) => match Some(song.config_path_or_default()).filter(|p| p.is_file()) {
-                Some(path) => GetSongResult::YamlPath(path),
-                None => GetSongResult::Summary(
+        // The file the song was read from, loaded or not, by the registry's
+        // one rule.
+        match all_songs.config_path(&name).filter(|p| p.is_file()) {
+            Some(path) => GetSongResult::YamlPath(path),
+            None => match all_songs.get(&name) {
+                Ok(song) => GetSongResult::Summary(
                     (
                         StatusCode::OK,
                         Json(json!({
@@ -169,23 +171,17 @@ pub(super) async fn get_song(
                     )
                         .into_response(),
                 ),
-            },
-            Err(e) => {
-                if let Some(failure) = all_songs.failure(&name) {
-                    match Some(failure.config_path().to_path_buf()).filter(|p| p.is_file()) {
-                        Some(path) => GetSongResult::YamlPath(path),
-                        None => GetSongResult::NotFound(
-                            (
-                                StatusCode::NOT_FOUND,
-                                Json(json!({"error": format!("No config file found for failed song: {}", name)})),
-                            )
-                                .into_response(),
-                        ),
-                    }
-                } else {
-                    GetSongResult::NotFound(super::helpers::song_lookup_response(e))
+                Err(crate::songs::SongLookupError::FailedToLoad { .. }) => {
+                    GetSongResult::NotFound(
+                        (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"error": format!("No config file found for failed song: {}", name)})),
+                        )
+                            .into_response(),
+                    )
                 }
-            }
+                Err(e) => GetSongResult::NotFound(super::helpers::song_lookup_response(e)),
+            },
         }
     };
 

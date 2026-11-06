@@ -13,8 +13,9 @@
 //
 
 //! Which operations stay open while the player is locked, on every control
-//! surface: one table, which MCP's `call_tool` gate, the gRPC handlers and
-//! the web UI's lock middleware all ask, and one refusal,
+//! surface: one table, which MCP's `call_tool` gate, the gRPC service's
+//! lock guard (`controller::grpc::LockGuard`, for native gRPC and gRPC-Web)
+//! and the web UI's lock middleware all ask, and one refusal,
 //! [`super::LockedError`].
 
 /// The surface an operation is named on.

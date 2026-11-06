@@ -109,9 +109,6 @@ pub(crate) struct LockGuard<S> {
     player: Arc<Player>,
 }
 
-/// The path prefix of the player service's RPCs.
-const PLAYER_SERVICE_PATH: &str = "/player.v1.PlayerService/";
-
 impl<S> tonic::server::NamedService for LockGuard<S>
 where
     S: tonic::server::NamedService,
@@ -121,7 +118,8 @@ where
 
 impl<S, B> tower::Service<http::Request<B>> for LockGuard<S>
 where
-    S: tower::Service<http::Request<B>, Response = http::Response<tonic::body::Body>>,
+    S: tower::Service<http::Request<B>, Response = http::Response<tonic::body::Body>>
+        + tonic::server::NamedService,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
 {
@@ -138,8 +136,13 @@ where
 
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
         use futures_util::FutureExt;
+        // `/<service name>/<RPC>`: the RPC is what the lock policy names.
         let path = request.uri().path();
-        let rpc = path.strip_prefix(PLAYER_SERVICE_PATH).unwrap_or(path);
+        let rpc = path
+            .strip_prefix('/')
+            .and_then(|path| path.strip_prefix(S::NAME))
+            .and_then(|path| path.strip_prefix('/'))
+            .unwrap_or(path);
         if let Err(e) = self
             .player
             .check_lock(crate::player::lock_policy::Surface::Grpc, rpc)
@@ -1795,7 +1798,9 @@ mod test {
             .collect();
         assert!(locked.contains(&"UpdateAudio"));
         for rpc in locked {
-            let request = http::Request::post(format!("{}{rpc}", super::PLAYER_SERVICE_PATH))
+            use tonic::server::NamedService;
+            let service = <super::PlayerServiceServer<super::PlayerServer> as NamedService>::NAME;
+            let request = http::Request::post(format!("/{service}/{rpc}"))
                 .header("content-type", "application/grpc")
                 .body(tonic::body::Body::empty())?;
             let response = super::player_service(player.clone())
