@@ -704,12 +704,8 @@ impl PlayerService for PlayerServer {
         request: Request<SetAmbientModeRequest>,
     ) -> Result<Response<SetAmbientModeResponse>, Status> {
         let name = request.into_inner().mode;
-        let mode = crate::dmx::engine::AmbientMode::parse(&name).ok_or_else(|| {
-            Status::invalid_argument(format!(
-                "unknown ambient mode '{name}': use {}",
-                crate::dmx::engine::AmbientMode::names()
-            ))
-        })?;
+        let mode = crate::dmx::engine::AmbientMode::parse_or_error(&name)
+            .map_err(Status::invalid_argument)?;
         let player = self.player.clone();
         tokio::task::spawn_blocking(move || player.set_ambient_mode(mode))
             .await

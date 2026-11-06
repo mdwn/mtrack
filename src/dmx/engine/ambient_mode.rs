@@ -75,6 +75,17 @@ impl AmbientMode {
     pub fn parse(name: &str) -> Option<AmbientMode> {
         name.trim().parse().ok()
     }
+
+    /// [`Self::parse`], or the one refusal every surface gives for a name
+    /// that is not a mode.
+    pub fn parse_or_error(name: &str) -> Result<AmbientMode, String> {
+        AmbientMode::parse(name).ok_or_else(|| {
+            format!(
+                "unknown ambient mode '{name}': use {}",
+                AmbientMode::names()
+            )
+        })
+    }
 }
 
 impl Serialize for AmbientMode {
@@ -86,12 +97,7 @@ impl Serialize for AmbientMode {
 impl<'de> Deserialize<'de> for AmbientMode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let name = String::deserialize(deserializer)?;
-        AmbientMode::parse(&name).ok_or_else(|| {
-            serde::de::Error::custom(format!(
-                "unknown ambient mode '{name}': use {}",
-                AmbientMode::names()
-            ))
-        })
+        AmbientMode::parse_or_error(&name).map_err(serde::de::Error::custom)
     }
 }
 
