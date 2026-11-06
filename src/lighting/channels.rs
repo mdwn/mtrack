@@ -145,19 +145,23 @@ impl Light {
 }
 
 /// Whether a fixture whose channels hold `values` (DMX values, 0 to 255)
-/// is lit: the light it emits is above 0. A part of it -- the fixture
+/// is lit: the light it emits is above 0. Each part of it -- the fixture
 /// itself, a section of a GDTF profile's (`red:2`), a cell or a ganged
-/// mirror (`red#2`) -- emits its brightest emitter (red, green, blue,
-/// white, amber, UV, …, or, mixing subtractively, the white its cyan,
-/// magenta and yellow flags pass) times its dimmer, or the fixture's where it has none of its own;
-/// the fixture is lit when any part with an emitter is. A fixture with no
-/// emitter at all follows its dimmers. Nothing else lights it: a strobe,
-/// a colour wheel, where it points, an optic or a colour temperature. The
-/// rig is dark when no fixture is lit.
+/// mirror (`red#2`, `red:2#3`) -- emits its brightest emitter (red, green,
+/// blue, white, amber, UV, …, or, mixing subtractively, the white its
+/// cyan, magenta and yellow flags pass) times its dimmer: its own, else
+/// its section's, else the fixture's. A part with a dimmer and no emitter
+/// that no other part takes its dimmer from is a light of its own (a ring
+/// of white on a dimmer), lit by that dimmer; the fixture's own dimmer is
+/// one only when nothing in the fixture has an emitter. The fixture is lit
+/// when any part is. Nothing else lights it: a strobe, a colour wheel,
+/// where it points, an optic or a colour temperature. The rig is dark when
+/// no fixture is lit.
 pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
-    // Each part's light, by what its channels name it after the attribute
-    // (`:section`, `#cell`); the fixture's own under "#".
-    let mut parts: std::collections::BTreeMap<String, Light> = Default::default();
+    use std::collections::{BTreeMap, BTreeSet};
+    // Each part's light, by its section and its cell; the fixture's own
+    // under ("", "").
+    let mut parts: BTreeMap<(&str, &str), Light> = BTreeMap::new();
     for (name, value) in values {
         if !is_level_channel(name) {
             continue;
@@ -165,23 +169,38 @@ pub fn is_lit<'a>(values: impl IntoIterator<Item = (&'a str, f64)>) -> bool {
         let (channel, cell) = name.split_once('#').unwrap_or((name, ""));
         let section = channel.split_once(':').map_or("", |(_, section)| section);
         parts
-            .entry(format!("{section}#{cell}"))
+            .entry((section, cell))
             .or_default()
             .add(base_channel(channel), value);
     }
-    let own_dimmer = parts.get("#").and_then(Light::dimmer);
-    let emitting: Vec<(&Light, f64)> = parts
-        .values()
-        .filter_map(|light| Some((light, light.emitted()?)))
-        .collect();
-    if emitting.is_empty() {
-        return parts
-            .values()
-            .any(|light| light.dimmer().is_some_and(|d| d > 0.0));
+    // The part a part takes its dimmer from.
+    let dimmer_of = |key: (&'a str, &'a str)| {
+        [key, (key.0, ""), ("", "")]
+            .into_iter()
+            .find(|k| parts.get(k).and_then(Light::dimmer).is_some())
+    };
+    let mut used = BTreeSet::new();
+    let mut lit = false;
+    for (&key, light) in &parts {
+        let Some(emitted) = light.emitted() else {
+            continue;
+        };
+        let dimmer = match dimmer_of(key) {
+            Some(from) => {
+                used.insert(from);
+                parts[&from].dimmer().unwrap_or(FULL)
+            }
+            None => FULL,
+        };
+        lit |= dimmer * emitted > 0.0;
     }
-    emitting
-        .iter()
-        .any(|(light, emitted)| light.dimmer().or(own_dimmer).unwrap_or(FULL) * emitted > 0.0)
+    let any_emitter = parts.values().any(|light| light.emitted().is_some());
+    lit || parts.iter().any(|(key, light)| {
+        light.emitted().is_none()
+            && !used.contains(key)
+            && (*key != ("", "") || !any_emitter)
+            && light.dimmer().is_some_and(|d| d > 0.0)
+    })
 }
 
 #[cfg(test)]
@@ -238,6 +257,28 @@ mod tests {
         assert!(!lit(&[("dimmer", 0.0), ("red#2", 255.0)]));
         // Sectioned dimmers alone: any open.
         assert!(lit(&[("dimmer:1", 0.0), ("dimmer:2", 4.0)]));
+        // A cell in a section takes the section's dimmer before the
+        // fixture's.
+        assert!(!lit(&[
+            ("dimmer", 255.0),
+            ("dimmer:1", 0.0),
+            ("red:1#2", 255.0)
+        ]));
+        assert!(lit(&[
+            ("dimmer", 0.0),
+            ("dimmer:1", 255.0),
+            ("red:1#2", 255.0)
+        ]));
+        // A section that is a dimmer alone is a light of its own.
+        assert!(lit(&[
+            ("red", 0.0),
+            ("dimmer", 0.0),
+            ("dimmer:ring", 255.0)
+        ]));
+        // But not one its cells take their dimmer from, nor the fixture's
+        // master dimmer over black colours.
+        assert!(!lit(&[("dimmer:1", 255.0), ("red:1#2", 0.0)]));
+        assert!(!lit(&[("dimmer", 255.0), ("red:1", 0.0)]));
     }
 
     /// Cyan, magenta and yellow are flags filtering white on a fixture that
