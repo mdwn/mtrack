@@ -136,32 +136,45 @@ impl SafePath {
         }
     }
 
-    /// Validates a relative path under the root without creating anything.
-    /// If the full path exists, it's resolved and verified. If it doesn't exist,
-    /// each segment is checked for traversal (no "..", "\", null), the nearest
-    /// existing directory above it is resolved and verified, and the
-    /// constructed path is returned without filesystem modification.
-    /// Use this for read-only operations where the directory may not exist.
+    /// Validates a relative path under the root without creating anything,
+    /// for reading: [`SafePath::validate_relative_entry`]'s path, with a
+    /// dangling link refused. Use this for read-only operations where the
+    /// directory may not exist.
     pub fn validate_relative(
         relative: &str,
         root: &VerifiedRoot,
     ) -> Result<PathBuf, SafePathError> {
-        Self::validate_relative_segments(relative)?;
-        let resolved = root.as_path().join(relative);
-        // A link counts as there even when what it points at is not, so a
-        // dangling one is resolved, and refused, rather than written through.
-        let is_there = |path: &Path| path.symlink_metadata().is_ok();
-        if is_there(&resolved) {
-            let safe = SafePath::resolve(&resolved, root)?;
-            Ok(safe.path)
-        } else {
-            // The nearest directory above it that is there must resolve
-            // inside the root too: a linked subdirectory leads out of it.
-            if let Some(ancestor) = resolved.ancestors().skip(1).find(|a| is_there(a)) {
-                SafePath::resolve(ancestor, root)?;
-            }
-            Ok(resolved)
+        let entry = Self::validate_relative_entry(relative, root)?;
+        if entry.is_dangling_link() {
+            return Err(SafePathError::NotFound);
         }
+        Ok(entry.into_path())
+    }
+
+    /// The entry at a relative path under the root, checked without
+    /// creating anything: each segment is checked for traversal (no "..",
+    /// "\", null); the nearest existing directory above it must resolve
+    /// inside the root, so a linked subdirectory is no way out; and when
+    /// the entry resolves (through a link too), what it resolves to must be
+    /// inside the root. The path given back is the entry itself, under the
+    /// root, not what a link at it points at: deleting it removes the link,
+    /// not its target. A link that resolves to nothing is reported, as
+    /// writing through it would create whatever it names.
+    pub fn validate_relative_entry(
+        relative: &str,
+        root: &VerifiedRoot,
+    ) -> Result<CheckedEntry, SafePathError> {
+        Self::validate_relative_segments(relative)?;
+        let path = root.as_path().join(relative);
+        let is_there = |path: &Path| path.symlink_metadata().is_ok();
+        if let Some(ancestor) = path.ancestors().skip(1).find(|a| is_there(a)) {
+            SafePath::resolve(ancestor, root)?;
+        }
+        if path.exists() {
+            SafePath::resolve(&path, root)?;
+        }
+        let dangling = is_there(&path) && !path.exists();
+        Ok(CheckedEntry { path, dangling })
     }
 
     /// Creates a nested directory path (e.g. "Artist/Album/Song") segment by segment,
@@ -200,6 +213,30 @@ impl std::ops::Deref for SafePath {
     type Target = Path;
     fn deref(&self) -> &Path {
         &self.path
+    }
+}
+
+/// An entry under a root, checked by [`SafePath::validate_relative_entry`].
+#[derive(Debug, Clone)]
+pub struct CheckedEntry {
+    path: PathBuf,
+    dangling: bool,
+}
+
+impl CheckedEntry {
+    /// The entry's path under the root (a link itself, not its target).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The entry's path under the root.
+    pub fn into_path(self) -> PathBuf {
+        self.path
+    }
+
+    /// Whether the entry is a link that resolves to nothing.
+    pub fn is_dangling_link(&self) -> bool {
+        self.dangling
     }
 }
 
@@ -476,6 +513,30 @@ mod tests {
         }
         std::fs::create_dir(dir.path().join("in")).unwrap();
         assert!(SafePath::validate_relative("in/new.venue", &root).is_ok());
+    }
+
+    /// The entry is the link itself, not what it points at, and a link to
+    /// nothing inside the root is reported, not refused.
+    #[cfg(unix)]
+    #[test]
+    fn validate_relative_entry_is_the_link_not_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.venue"), "").unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("main.venue"),
+            dir.path().join("alias.venue"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone.venue"), dir.path().join("dead.venue"))
+            .unwrap();
+        let root = VerifiedRoot::new(dir.path()).unwrap();
+
+        let alias = SafePath::validate_relative_entry("alias.venue", &root).unwrap();
+        assert_eq!(alias.path(), root.as_path().join("alias.venue"));
+        assert!(!alias.is_dangling_link());
+        let dead = SafePath::validate_relative_entry("dead.venue", &root).unwrap();
+        assert!(dead.is_dangling_link());
+        assert!(SafePath::validate_relative("dead.venue", &root).is_err());
     }
 
     #[test]

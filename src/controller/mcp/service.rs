@@ -2354,7 +2354,7 @@ impl McpServer {
         Parameters(args): Parameters<LightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self
-            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
+            .resolve_lighting_file_to_delete(LightingDirKind::Venues, &args.file)
             .await?;
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
@@ -2368,7 +2368,7 @@ impl McpServer {
         Parameters(args): Parameters<LightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self
-            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
+            .resolve_lighting_file_to_delete(LightingDirKind::FixtureTypes, &args.file)
             .await?;
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         remove_lighting_file(&path).await?;
@@ -3978,20 +3978,48 @@ impl McpServer {
 
     /// Resolves a venue or fixture-type file inside its lighting directory,
     /// named by its path relative to it (`main.venue`, `club/main.venue`),
-    /// after validating each segment for path-traversal safety and the
-    /// extension, and holding the path inside the directory
-    /// (`SafePath::validate_relative`).
+    /// to read or write, after validating each segment for path-traversal
+    /// safety and the extension, and holding the path inside the directory
+    /// as the web UI holds its paths (`SafePath::validate_relative_entry`).
+    /// The path is the entry in the directory: a link inside it to a file
+    /// inside it is read and written through. A link to nothing is refused,
+    /// as writing through it would create whatever it names.
     pub(crate) async fn resolve_lighting_file(
         &self,
         kind: LightingDirKind,
         name: &str,
     ) -> Result<std::path::PathBuf, McpError> {
+        let entry = self.lighting_entry(kind, name).await?;
+        if entry.is_dangling_link() {
+            return Err(McpError::invalid_params(
+                format!("{name} is a link to a file that is not there"),
+                None,
+            ));
+        }
+        Ok(entry.into_path())
+    }
+
+    /// [`Self::resolve_lighting_file`], to delete: the entry itself, so a
+    /// link is removed rather than the file it points at, and a link to
+    /// nothing can be removed too.
+    pub(crate) async fn resolve_lighting_file_to_delete(
+        &self,
+        kind: LightingDirKind,
+        name: &str,
+    ) -> Result<std::path::PathBuf, McpError> {
+        Ok(self.lighting_entry(kind, name).await?.into_path())
+    }
+
+    async fn lighting_entry(
+        &self,
+        kind: LightingDirKind,
+        name: &str,
+    ) -> Result<crate::webui::safe_path::CheckedEntry, McpError> {
         validate_lighting_dir_filename(kind, name)?;
         let dir = self.resolve_lighting_dir(kind).await?;
-        // Held inside the directory as the web UI holds its paths, so a
-        // linked subdirectory is no way out of it.
         let root = crate::webui::safe_path::VerifiedRoot::new(&dir).map_err(safepath_err)?;
-        crate::webui::safe_path::SafePath::validate_relative(name, &root).map_err(safepath_err)
+        crate::webui::safe_path::SafePath::validate_relative_entry(name, &root)
+            .map_err(safepath_err)
     }
 
     /// Rescans songs from disk and rebuilds the player's playlists. Used after

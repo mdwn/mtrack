@@ -369,7 +369,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked as a file name was, so `..` is still refused, and the path is held inside the directory
   as the web UI holds its paths, so a subdirectory linked out of it is refused too. The web UI's
   checks of a path that is not there yet now also refuse one under a linked directory leading out
-  of the project, or a dangling link.
+  of the project, or a dangling link. A link inside the directory is the entry the tools act on:
+  `delete_venue{file: "alias.venue"}` removes the link `alias.venue`, not the `main.venue` it
+  points at, and a link to nothing can be deleted but not written through.
 - **A `.yml` playlist is edited in place**: saving a playlist kept as `setlist.yml` from the web
   UI, or with MCP `write_playlist` / `read_playlist`, went to `setlist.yaml` (dropping the file's
   transitions and auto play in the web UI's case), and on reload `setlist.yml` won, so the edit had

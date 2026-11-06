@@ -1237,6 +1237,51 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         assert!(outside.path().join("secret.venue").exists());
         assert!(!outside.path().join("new.venue").exists());
         std::fs::remove_file(venues_dir.join("linked")).unwrap();
+
+        // Deleting a link removes the link, not the file it points at; a
+        // link to nothing can be deleted, but not written through.
+        std::fs::write(venues_dir.join("main.venue"), nested_dsl).unwrap();
+        std::os::unix::fs::symlink(
+            venues_dir.join("main.venue"),
+            venues_dir.join("alias.venue"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("gone.venue"),
+            venues_dir.join("dead.venue"),
+        )
+        .unwrap();
+        let wrote = call_tool(
+            &client,
+            &url,
+            &session,
+            227,
+            "write_venue",
+            json!({"file": "dead.venue", "source": nested_dsl}),
+        )
+        .await;
+        assert!(
+            wrote.get("error").is_some() || wrote["result"]["isError"].as_bool() == Some(true),
+            "writing through a link to nothing should be refused: {wrote}",
+        );
+        assert!(!outside.path().join("gone.venue").exists());
+        for (id, file) in [(228, "alias.venue"), (229, "dead.venue")] {
+            let reply = tool_json(
+                &call_tool(
+                    &client,
+                    &url,
+                    &session,
+                    id,
+                    "delete_venue",
+                    json!({"file": file}),
+                )
+                .await,
+            );
+            assert!(reply["deleted"].is_string(), "{file}: {reply}");
+            assert!(venues_dir.join(file).symlink_metadata().is_err(), "{file}");
+        }
+        assert!(venues_dir.join("main.venue").exists());
+        std::fs::remove_file(venues_dir.join("main.venue")).unwrap();
     }
     std::fs::remove_dir_all(venues_dir.join("club")).unwrap();
     let bad_venue = call_tool(
