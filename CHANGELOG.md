@@ -413,7 +413,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (and put back if the write then fails). Every broken file that may be the name's (one at its stem,
   and each elsewhere that seems to open its block) is named in the one 409 and acted on together,
   so none comes back to declare the name once fixed; and a GDTF in the library is its fixture even
-  behind a broken stem file that does not seem to open its block. The
+  behind a broken stem file whose text names neither the fixture (in quotes) nor its archive. In
+  any doubt the broken file is the fixture's record, offered for replacing, and a GDTF's archive
+  is never deleted while a file that does not read may be its record (409). A broken file's blocks
+  are found wherever their opening brace stands, so a broken record as the GDTF import writes it
+  (`fixture_type "Par"`, then `from gdtf(…)` and `{` on lines of their own) is found by its name. The
   reply and the web UI say "The old file was kept as …". An MVR import whose GDTFs share a file
   stem ("Par", "par a", "par_a") writes each record to a file of its own (`par`, `par_a`,
   `par_a_2`); the last overwrote another's. A name with no letters or digits (`!!!`, `★`) is
