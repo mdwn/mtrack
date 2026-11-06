@@ -19,6 +19,7 @@ import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
 import { sendWs } from "../support/ws";
 import { capturePlaylistPut } from "../support/playlists";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
 
@@ -328,7 +329,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -420,7 +421,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ending-fade")).toHaveCount(0);
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -463,7 +464,7 @@ test.describe("Dashboard: ambient light mode", () => {
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",

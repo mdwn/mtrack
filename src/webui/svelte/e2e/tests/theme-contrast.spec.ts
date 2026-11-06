@@ -32,6 +32,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendWsRetrying } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -193,7 +194,7 @@ pilot:
 `;
 
 const PLAYBACK = {
-  type: "playback",
+  ...PLAYBACK_STATE,
   is_playing: true,
   elapsed_ms: 0,
   song_name: SONG,

@@ -1022,13 +1022,7 @@ impl Drop for Engine {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashSet,
-        error::Error,
-        net::{Ipv4Addr, SocketAddr, TcpListener},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{collections::HashSet, error::Error, net::Ipv4Addr, sync::Arc, time::Duration};
 
     use midly::num::u7;
 
@@ -1039,11 +1033,7 @@ mod test {
     use crate::lighting::effects::EffectType;
 
     fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
-        let listener = TcpListener::bind(SocketAddr::new(
-            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            0,
-        ))?;
-        let port = listener.local_addr()?.port();
+        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
         // Use a mock OLA client for tests
         let ola_client = OlaClientFactory::create_mock_client();
         let engine = Engine::new(
@@ -3542,14 +3532,7 @@ mod test {
             // Show "b" starts sequence "x" at 5 s; show "a" stops "x" at 5 s.
             // Live, the stop lands before the start, so "x" plays; a seek
             // took the stop for the whole time and dropped it.
-            let cues_of = |src: &str| {
-                crate::lighting::parser::parse_light_shows(src)
-                    .unwrap()
-                    .into_values()
-                    .next()
-                    .unwrap()
-                    .cues
-            };
+            let cues_of = |src: &str| crate::testutil::lighting::shows(src).swap_remove(0).cues;
             let mut cues = cues_of(
                 "sequence \"x\" {\n    @00:00.000\n    wash: static, color: \"green\", \
                  duration: 10s, layer: midground, blend_mode: replace\n}\n\n\

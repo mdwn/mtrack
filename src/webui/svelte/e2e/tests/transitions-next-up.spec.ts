@@ -16,6 +16,7 @@ import { test, expect } from "@playwright/test";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { sendWs } from "../support/ws";
 import { capturePlaylistPut } from "../support/playlists";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
 
@@ -142,7 +143,7 @@ test.describe("Dashboard: next up", () => {
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Walk-in",
@@ -229,7 +230,7 @@ test.describe("Dashboard: next up", () => {
       lights: null,
     });
     const last = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Daegrima",
@@ -320,7 +321,7 @@ test.describe("Dashboard: next up", () => {
     const nextButton = page.getByRole("button", { name: "Next", exact: true });
     const rows = page.locator(".playlist-card__row");
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 0,
       song_name: "Daegrima",
@@ -374,7 +375,7 @@ test.describe("Dashboard: next up", () => {
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Daegrima",

@@ -474,9 +474,7 @@ mod test {
     fn a_web_server_that_is_not_there_is_unreachable() {
         // Bind and drop: nothing is listening on the port by the time we ask,
         // which is what an olad without its web server looks like.
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
+        let port = crate::testutil::net::free_tcp_port();
         assert!(matches!(
             probe_universe("127.0.0.1", port, 1, Instant::now() + PROBE_DEADLINE),
             Err(ProbeError::Unreachable(_))
@@ -595,9 +593,7 @@ mod test {
 
     #[test]
     fn a_report_from_a_dead_web_server_is_unreachable_and_stops_early() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
+        let port = crate::testutil::net::free_tcp_port();
         let report = probe_universes_at("127.0.0.1", port, &[1, 2, 3]);
         assert!(!report.reachable);
         assert!(report.unreachable_reason.is_some());

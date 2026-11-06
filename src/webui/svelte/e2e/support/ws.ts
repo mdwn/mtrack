@@ -21,9 +21,15 @@ import { expect, type Page } from "@playwright/test";
 
 const SEND_WS = "http://127.0.0.1:3111/test/send-ws";
 
-async function post(page: Page, wsId: string, msg: object): Promise<number> {
+/** Posts `msg` for the page connected as `wsId`, or, with no `wsId`, for
+ *  every page connected; how many it went to. */
+async function post(
+  page: Page,
+  wsId: string | null,
+  msg: object,
+): Promise<number> {
   const res = await page.request.post(SEND_WS, {
-    data: { ...msg, _wsId: wsId },
+    data: wsId === null ? msg : { ...msg, _wsId: wsId },
   });
   return (await res.json()).sent;
 }
@@ -60,4 +66,10 @@ export async function sendWsUnchecked(
   msg: object,
 ): Promise<void> {
   await post(page, wsId, msg);
+}
+
+/** Sends `msg` to every page connected, whatever its wsId, and does not
+ *  check how many that was: for a page opened without a wsId. */
+export async function broadcastWs(page: Page, msg: object): Promise<void> {
+  await post(page, null, msg);
 }

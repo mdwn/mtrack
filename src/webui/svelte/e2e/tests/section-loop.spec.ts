@@ -15,6 +15,7 @@
 import { test, expect } from "@playwright/test";
 import { stubPlayerService } from "../support/grpc";
 import { sendWs } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
 
@@ -23,7 +24,7 @@ function playbackWithSections(
   overrides: Record<string, unknown> = {},
 ) {
   return {
-    type: "playback",
+    ...PLAYBACK_STATE,
     is_playing: true,
     elapsed_ms: 3000,
     song_name: "Test Song Beta",
@@ -166,7 +167,7 @@ test.describe("Section Loop Controls", () => {
 
   test("section chips hidden when song has no sections", async ({ page }) => {
     await sendWs(page, wsId, {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Alpha",
