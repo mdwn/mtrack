@@ -989,6 +989,7 @@
   "playlists.beforeThisSong": "Before this song",
   "playlists.afterThisSong": "After this song",
   "playlists.autoPlayGapSummary": "{gap} gap",
+  "playlists.autoPlayGapInvalid": "auto play \"{gap}\" is not a gap (e.g. 2s)",
   "playlists.entryAmbientHint": "What the rig plays in the gap before this song.",
   "playlists.entryAmbientPlaylist": "The playlist's",
   "playlists.entryAmbientInherit": "playlist's",

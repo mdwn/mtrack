@@ -1191,15 +1191,30 @@ pub fn fade_length_text(text: &str) -> Option<String> {
         .map(|length| length.text())
 }
 
-/// The gap an entry's `auto_play` written as `text` waits before its song
-/// (`AutoPlayConfig::parse`, the player's reading of a gap: `2s`, `500ms`,
-/// `2m`), in milliseconds; `None` for text that is no gap.
+/// An entry's `auto_play` written as text, as the player reads it: off,
+/// a gap before its song (`2s`, `500ms`, `2m`; `true` is none), or text it
+/// refuses (`2`, a number with no unit).
+#[derive(Serialize, Tsify, Clone, Debug, PartialEq)]
+#[tsify(into_wasm_abi)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AutoPlayReading {
+    Off,
+    Gap { ms: f64 },
+    Invalid,
+}
+
+/// [`AutoPlayReading`] of `text`, read through the config's own
+/// deserializer and `AutoPlayConfig::parse`.
 #[wasm_bindgen]
-pub fn auto_play_gap_ms(text: &str) -> Option<f64> {
-    let gap = config::AutoPlayConfig::Gap(text.to_string())
-        .parse()
-        .ok()??;
-    Some(gap.as_secs_f64() * 1000.0)
+pub fn auto_play_read(text: &str) -> AutoPlayReading {
+    let value = serde_json::Value::String(text.to_string());
+    match serde_json::from_value::<config::AutoPlayConfig>(value).map(|c| c.parse()) {
+        Ok(Ok(None)) => AutoPlayReading::Off,
+        Ok(Ok(Some(gap))) => AutoPlayReading::Gap {
+            ms: gap.as_secs_f64() * 1000.0,
+        },
+        _ => AutoPlayReading::Invalid,
+    }
 }
 
 // ── Positions ───────────────────────────────────────────────────────────────

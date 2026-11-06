@@ -57,6 +57,16 @@ test.describe("entrySummary", () => {
     expect(entrySummary({ autoPlay: "0h" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "500ms" }, tr)).toBe("0.5s gap");
     expect(entrySummary({ autoPlay: "2m" }, tr)).toBe("120s gap");
+    // Read as the player's deserializer reads text: `true` is at once and
+    // `false` off, neither a gap; a number with no unit is refused.
+    expect(entrySummary({ autoPlay: "true" }, tr)).toBe("");
+    expect(entrySummary({ autoPlay: "false" }, tr)).toBe("");
+    expect(entrySummary({ autoPlay: "0" }, tr)).toBe(
+      'auto play "0" is not a gap (e.g. 2s)',
+    );
+    expect(entrySummary({ autoPlay: "2" }, tr)).toBe(
+      'auto play "2" is not a gap (e.g. 2s)',
+    );
   });
 
   test("the ambient light: none, or its own", () => {
