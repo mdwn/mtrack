@@ -330,17 +330,17 @@ fn beat_step_ticks(numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
 }
 
 /// The tick step between the beats the beat grid counts in a time
-/// signature: a bar's ticks over [`TimeSignature::grid_beats_per_measure`],
-/// one per denominator note, so a 6/8 bar is six eighths (where
-/// [`beat_step_ticks`] has two dotted quarters).
-fn grid_step_ticks(numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
-    let signature = TimeSignature::new(u32::from(numerator), 1 << denominator_power.min(31));
-    let beats = signature.grid_beats_per_measure();
-    if beats == 0 {
-        return tpb.max(1);
-    }
-    let bar_ticks = tpb as f64 * signature.beats_per_measure();
-    ((bar_ticks / f64::from(beats)).round() as u64).max(1)
+/// signature: one per denominator note, as
+/// [`TimeSignature::grid_beats_per_measure`] counts a bar (a 6/8 bar is six
+/// eighths, where [`beat_step_ticks`] has two dotted quarters). Whole ticks,
+/// rounded down as [`beat_step_ticks`] rounds its simple metres.
+fn grid_step_ticks(_numerator: u8, denominator_power: u8, tpb: u64) -> u64 {
+    // Four quarter notes a whole note, over the notes a whole note holds.
+    let whole = tpb.saturating_mul(4);
+    whole
+        .checked_shr(u32::from(denominator_power))
+        .unwrap_or(0)
+        .max(1)
 }
 
 /// Generates expected beat positions (in seconds) from the MIDI tempo map.
@@ -1736,6 +1736,34 @@ mod tests {
     }
 
     // ── beat_step_ticks tests ─────────────────────────────────────────────────
+
+    /// A bar is the grid's beats of the grid's step, and a simple metre's
+    /// step is the click's pulse; a compound metre's grid counts eighths.
+    #[test]
+    fn grid_step_ticks_count_the_grids_beats() {
+        let tpb = 480u64;
+        for (numerator, power) in [(4u8, 2u8), (3, 2), (2, 1), (6, 3), (7, 3), (12, 3), (5, 4)] {
+            let signature = TimeSignature::new(u32::from(numerator), 1 << power);
+            let bar = tpb as f64 * signature.beats_per_measure();
+            let step = grid_step_ticks(numerator, power, tpb);
+            assert_eq!(
+                (step * u64::from(signature.grid_beats_per_measure())) as f64,
+                bar,
+                "{numerator}/{}",
+                1 << power
+            );
+        }
+        for (numerator, power) in [(4u8, 2u8), (2, 1), (7, 3), (5, 4)] {
+            for tpb in [480, 25, 97] {
+                assert_eq!(
+                    grid_step_ticks(numerator, power, tpb),
+                    beat_step_ticks(numerator, power, tpb)
+                );
+            }
+        }
+        assert_eq!(grid_step_ticks(6, 3, 25), 12);
+        assert_eq!(grid_step_ticks(4, 200, 480), 1);
+    }
 
     #[test]
     fn beat_step_ticks_simple_meters() {

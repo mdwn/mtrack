@@ -134,6 +134,23 @@ fn parse_clock_secs(value: &str) -> Option<f64> {
     total
 }
 
+/// One number and a clock unit, the number read as Rust reads any float
+/// (`infs`, `nanms`), in seconds: what the clock refuses but a fade names
+/// as a number not greater than zero.
+fn lone_clock_term_secs(value: &str) -> Option<f64> {
+    let mut keywords: Vec<&str> = [DurationUnit::Ms, DurationUnit::S]
+        .iter()
+        .map(|unit| unit.keyword(2.0))
+        .chain(CLOCK_UNITS.iter().map(|(keyword, _)| *keyword))
+        .collect();
+    // The longest first: `ms` before `s`.
+    keywords.sort_by_key(|keyword| std::cmp::Reverse(keyword.len()));
+    keywords.into_iter().find_map(|keyword| {
+        let number = value.trim().strip_suffix(keyword)?.trim().parse().ok()?;
+        clock_unit_secs(number, keyword)
+    })
+}
+
 /// A length of time as a config writes it (see [`parse_clock_secs`]):
 /// the one reading, for every field that takes one. `None` for text that
 /// is no length, or a negative one or one too long to hold; the field
@@ -210,16 +227,23 @@ impl LoopCrossfade {
             }
             Ok(n)
         };
-        let (number, unit) = split_unit(value);
-        let count = || number.trim().parse().map_err(|_| invalid());
-        match DurationUnit::from_keyword(unit) {
-            Some(DurationUnit::Beats) => Ok(LoopCrossfade::Beats(bounded(count()?)?)),
-            Some(DurationUnit::Measures) => Ok(LoopCrossfade::Measures(bounded(count()?)?)),
-            _ => {
-                let secs = bounded(parse_clock_secs(value).ok_or_else(invalid)?)?;
-                Ok(LoopCrossfade::Time(Duration::from_secs_f64(secs)))
-            }
+        // A unit is the suffix it is spelled with, the number all before it.
+        let count_of = |unit: DurationUnit| {
+            [unit.keyword(2.0), unit.keyword(1.0)]
+                .into_iter()
+                .find_map(|keyword| value.strip_suffix(keyword))
+                .map(|number| number.trim().parse::<f64>().map_err(|_| invalid()))
+        };
+        if let Some(measures) = count_of(DurationUnit::Measures) {
+            return Ok(LoopCrossfade::Measures(bounded(measures?)?));
         }
+        if let Some(beats) = count_of(DurationUnit::Beats) {
+            return Ok(LoopCrossfade::Beats(bounded(beats?)?));
+        }
+        let secs = parse_clock_secs(value)
+            .or_else(|| lone_clock_term_secs(value))
+            .ok_or_else(invalid)?;
+        Ok(LoopCrossfade::Time(Duration::from_secs_f64(bounded(secs)?)))
     }
 }
 
@@ -268,6 +292,10 @@ mod tests {
         assert_eq!(at("1m30s"), Some(Duration::from_secs(90)));
         assert_eq!(at(" 1 m 30 s "), Some(Duration::from_secs(90)));
         assert_eq!(at("1e3ms"), Some(Duration::from_secs(1)));
+        assert_eq!(at("1e2s"), Some(Duration::from_secs(100)));
+        assert_eq!(at("+2s"), Some(Duration::from_secs(2)));
+        assert_eq!(at("5.s"), Some(Duration::from_secs(5)));
+        assert_eq!(at(".5s"), Some(Duration::from_millis(500)));
         assert_eq!(at("0s"), Some(Duration::ZERO));
         assert_eq!(at("-0s"), Some(Duration::ZERO));
         for refused in [
@@ -335,7 +363,17 @@ mod tests {
         assert!(err("-2s").contains("must be greater than zero"));
         assert!(err("2000000s").contains("longer than any song"));
         assert!(err("soon").contains("invalid length"));
-        for cut in ["0", "0s", "0ms", "0m", " 0 s "] {
+        for not_positive in ["infs", "nans", "nanms", "infbeats", "-0.5s"] {
+            assert!(
+                err(not_positive).contains("must be greater than zero"),
+                "{not_positive:?}"
+            );
+        }
+        assert_eq!(
+            LoopCrossfade::parse("1 000ms"),
+            Ok(LoopCrossfade::Time(Duration::from_secs(1)))
+        );
+        for cut in ["0", "0s", "0ms", "0m", " 0 s ", "00s", "-0s"] {
             assert!(parse_length("fade_out", cut).unwrap().is_cut(), "{cut:?}");
         }
     }

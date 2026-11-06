@@ -156,16 +156,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard's next-up line show the gap to the millisecond, as a fade's length is shown
   (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`).
 - **One clock for config lengths of time**: `auto_play`, the ambient `delay`/`fade_in`/`fade_out`,
-  `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one
-  parser: decimal numbers with `ms`, `s`, `m` (minutes) or `h`, summed (`1m30s`); fades take
-  `beats` and `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere the
-  `duration_string` crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a
-  fade of none, and fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which
-  was "longer than any song"; the bound is now 1,000,000 seconds in every unit). No longer
-  accepted: the crate's `ns`, `us`, `d`, `w` and `y` units (`playback_delay: 100us`), and a fade of
-  `0mm` or `0ss`, which read as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as
-  `1.5s`, not `1500ms`; a `playback_delay` the clock refuses now says
-  `playback_delay '<text>' is not a valid duration`. The `duration-string` dependency is gone.
+  `playback_delay` and the time of a `loop_crossfade` or playlist fade are all read by one parser:
+  decimal numbers with `ms`, `s`, `m` (minutes) or `h`, summed (`1m30s`); fades take `beats` and
+  `measures` as well. Newly accepted: `auto_play: 1.5s` (and `1.5s` anywhere the `duration_string`
+  crate read integers only), `fade_out: 2m` (two minutes), `0.0s` or `0h` as a fade of none, and
+  fade times from 1,000 to 1,000,000 seconds written in ms (`2000000ms`, which was "longer than any
+  song"; the bound is now 1,000,000 seconds in every unit). No longer accepted: the crate's `ns`,
+  `us`, `d`, `w` and `y` units (`playback_delay: 100us`), and a fade of `0mm` or `0ss`, which read
+  as none. A YAML number for `auto_play` (`auto_play: 1.5`) is kept as `1.5s`, not `1500ms`; a
+  `playback_delay` the clock refuses now says `playback_delay '<text>' is not a valid duration`. The
+  `duration-string` dependency is gone. The clock reads a number as Rust reads a decimal, so `1e2s`,
+  `+2s`, `-0s` (none), `5.s` and `.5s` are now taken in every clock field. A fade of `00s` or `-0s`
+  is now none (a cut) and `1 000ms` (a space in the number) is one second; both were refused.
 - **Dark is no light emitted**: a fixture counts as lit when the light it emits is above zero --
   its dimmer times its brightest emitter (red, green, blue, white, amber, UV, ...); a dimmer-only
   fixture follows its dimmer and one without a dimmer its colour. On a fixture that mixes
@@ -356,7 +358,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the click track's in dotted quarters, two to a 6/8 bar, while the click grid counts six
   eighths, so a correct 6/8 map from a click in eighths scored about 200 ms off (at 120 BPM) and the
   tempo editor showed its alignment warning. The score now counts the grid's beats (one per
-  denominator note); where beat 1 falls is still found by the dotted-quarter pulse.
+  denominator note); where beat 1 falls is still found by the dotted-quarter pulse. Other metres the
+  score now counts differently: 3/8 (three eighths a bar, where it was one dotted quarter), a
+  whole-note denominator (one whole note, where it was a quarter) and denominators of 32 and above
+  (one denominator note, where it was a quarter).
 - **The editor takes as many sequence passes as the player**: setting a sequence's `loop` count
   in the timeline refused counts past 4,294,967,295 that the player reads; it now asks the
   player's own rule, which reads a count as a 64-bit number on every target (a 32-bit build, such
