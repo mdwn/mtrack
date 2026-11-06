@@ -352,6 +352,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A 6/8 MIDI tempo guess no longer warns of a poor fit**: the MIDI file's beats were scored
+  against the click track's in dotted quarters, two to a 6/8 bar, while the click grid counts six
+  eighths, so a correct 6/8 map from a click in eighths scored about 200 ms off (at 120 BPM) and the
+  tempo editor showed its alignment warning. The score now counts the grid's beats (one per
+  denominator note); where beat 1 falls is still found by the dotted-quarter pulse.
 - **The editor takes as many sequence passes as the player**: setting a sequence's `loop` count
   in the timeline refused counts past 4,294,967,295 that the player reads; it now asks the
   player's own rule.
