@@ -4040,11 +4040,11 @@ impl McpServer {
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
-                // The same default the loader uses: `playlists/` beside the
-                // config when no `playlists_dir` is configured.
-                let dir = sources
-                    .playlists_dir
-                    .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
+                // The directory the loader reads: `SongSources` already
+                // defaults it to `playlists/` beside the config.
+                let dir = sources.playlists_dir.ok_or_else(|| {
+                    McpError::invalid_params("no playlists directory configured", None)
+                })?;
                 crate::playlist::playlist_file(&dir, n)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))
             }

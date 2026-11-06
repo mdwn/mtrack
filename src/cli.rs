@@ -202,8 +202,12 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg(short = 'H', long)]
         host_port: Option<String>,
-        /// The name of the playlist to switch to: "all_songs" or any playlist loaded from
-        /// `playlists_dir`. Refused while a song is playing.
+        // The player's own playlist is named through its constant.
+        #[arg(help = format!(
+            "The name of the playlist to switch to: \"{}\" or any playlist loaded from \
+             `playlists_dir`. Refused while a song is playing.",
+            crate::playlist::ALL_SONGS
+        ))]
         playlist_name: String,
     },
     /// Gets the current status of the player from the gRPC server.
