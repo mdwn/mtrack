@@ -14,6 +14,7 @@
 
 import type { Vec3 } from "../../src/gen/rules/mtrack_rules";
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 // The Venues plan's selection, arrange and aim tools (design §10). Every test
 // routes its own venue file, fixture types and metadata with `page.route` and
@@ -49,12 +50,6 @@ const HOUSE: [string, Vec3][] = [
 ];
 
 let counter = 0;
-
-async function sendWs(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 function houseVenue(extra: FixtureBody[] = []): VenueBody {
   return {

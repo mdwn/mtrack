@@ -352,16 +352,8 @@ fn difference(a: &[DarkWindow], b: &[DarkWindow]) -> Vec<DarkWindow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::parser::parse_light_shows;
 
-    fn shows(source: &str) -> Vec<LightShow> {
-        let mut parsed: Vec<_> = parse_light_shows(source)
-            .expect("test show should parse")
-            .into_values()
-            .collect();
-        parsed.sort_by(|a, b| a.name.cmp(&b.name));
-        parsed
-    }
+    use crate::testutil::lighting::sorted_shows as shows;
 
     fn diff(a: &str, b: &str) -> ShowDiff {
         diff_shows(shows(a), shows(b), None, None)

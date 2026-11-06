@@ -13,6 +13,7 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 // A fixture test drives a venue fixture: the state stream carries the
 // test's bytes for it and names it in `under_test`. The plot draws that
@@ -65,12 +66,6 @@ const RELEASED = {
 
 const plot = (page: Page) => page.locator(".stage-card__viewport > canvas");
 
-async function send(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
-
 /** The plot's pixel at a fixture's centre. */
 async function pixelAt(page: Page, name: string): Promise<number[]> {
   return plot(page).evaluate((canvas: HTMLCanvasElement, fixture) => {
@@ -113,9 +108,9 @@ test("the venue's stage shows what a fixture test sends, and says so", async ({
   });
 
   await page.goto(`/?wsId=${wsId}#/lighting/venues/built-in`);
-  await send(page, wsId, METADATA);
+  await sendWs(page, wsId, METADATA);
   await expect(plot(page)).toHaveAttribute("data-positions", /house-par/);
-  await send(page, wsId, TESTED);
+  await sendWs(page, wsId, TESTED);
 
   // The plot: the test's colour on the fixture it covers, and the badge.
   await expect(plot(page)).toHaveAttribute("data-under-test", "house-par");
@@ -144,7 +139,7 @@ test("the venue's stage shows what a fixture test sends, and says so", async ({
   await page.getByTestId("stage-test-output-stop").click();
   await expect.poll(() => deletes.length).toBe(1);
   await expect(line).toHaveCount(0);
-  await send(page, wsId, RELEASED);
+  await sendWs(page, wsId, RELEASED);
   await expect(plot(page)).toHaveAttribute("data-under-test", "");
   await expect.poll(() => pixelAt(page, "house-par")).toEqual([0, 0, 255]);
 });

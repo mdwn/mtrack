@@ -13,25 +13,18 @@
 //
 
 import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
+import { sendWs } from "../support/ws";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
-
-async function sendWsMessage(
-  page: import("@playwright/test").Page,
-  wsId: string,
-  msg: object,
-) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 function playbackWithSections(
   wsId: string,
   overrides: Record<string, unknown> = {},
 ) {
   return {
-    type: "playback",
+    ...PLAYBACK_STATE,
     is_playing: true,
     elapsed_ms: 3000,
     song_name: "Test Song Beta",
@@ -62,16 +55,7 @@ test.describe("Section Loop Controls", () => {
     // per-worker counters can otherwise collide within the same millisecond.
     wsId = `section-loop-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: {
-          "content-type": "application/grpc-web+proto",
-          "grpc-status": "0",
-        },
-        body: Buffer.alloc(0),
-      });
-    });
+    await stubPlayerService(page);
 
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toContainText(
@@ -83,7 +67,7 @@ test.describe("Section Loop Controls", () => {
     page,
   }) => {
     // Put into playing state with sections.
-    await sendWsMessage(page, wsId, playbackWithSections(wsId));
+    await sendWs(page, wsId, playbackWithSections(wsId));
 
     // Each section chip has a dedicated loop button next to the name.
     const verseGroup = page.locator(".section-chip-group", {
@@ -101,7 +85,7 @@ test.describe("Section Loop Controls", () => {
   test("clicking a section chip name sends SeekToSection gRPC call", async ({
     page,
   }) => {
-    await sendWsMessage(page, wsId, playbackWithSections(wsId));
+    await sendWs(page, wsId, playbackWithSections(wsId));
 
     const verseChip = page.locator(".section-chip", { hasText: "verse" });
     await expect(verseChip).toBeVisible();
@@ -116,11 +100,7 @@ test.describe("Section Loop Controls", () => {
   test("loop button is disabled while stopped, seek chip is not", async ({
     page,
   }) => {
-    await sendWsMessage(
-      page,
-      wsId,
-      playbackWithSections(wsId, { is_playing: false }),
-    );
+    await sendWs(page, wsId, playbackWithSections(wsId, { is_playing: false }));
 
     const verseGroup = page.locator(".section-chip-group", {
       hasText: "verse",
@@ -133,7 +113,7 @@ test.describe("Section Loop Controls", () => {
     page,
   }) => {
     // Put into playing state with an active section loop.
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -153,7 +133,7 @@ test.describe("Section Loop Controls", () => {
 
   test("active chip clears after section loop stops", async ({ page }) => {
     // Start with active loop.
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -163,7 +143,7 @@ test.describe("Section Loop Controls", () => {
     await expect(page.locator(".section-chip.badge--active")).toBeVisible();
 
     // Simulate stop — server clears active section.
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackWithSections(wsId, { active_section: null }),
@@ -174,7 +154,7 @@ test.describe("Section Loop Controls", () => {
   });
 
   test("active section chip shows section name", async ({ page }) => {
-    await sendWsMessage(
+    await sendWs(
       page,
       wsId,
       playbackWithSections(wsId, {
@@ -186,8 +166,8 @@ test.describe("Section Loop Controls", () => {
   });
 
   test("section chips hidden when song has no sections", async ({ page }) => {
-    await sendWsMessage(page, wsId, {
-      type: "playback",
+    await sendWs(page, wsId, {
+      ...PLAYBACK_STATE,
       is_playing: true,
       elapsed_ms: 1000,
       song_name: "Test Song Alpha",

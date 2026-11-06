@@ -261,7 +261,7 @@ fn project() -> Project {
     }
     std::fs::write(
         base.join("lighting/library/mover.gdtf"),
-        build_zip(&[("description.xml", SYNTHETIC_DESCRIPTION.as_bytes())]),
+        crate::testutil::lighting::synthetic_gdtf(),
     )
     .unwrap();
     std::fs::write(

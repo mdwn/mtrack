@@ -181,10 +181,7 @@ mod tests {
     /// fixture type.
     #[test]
     fn scene_to_embedded_gdtf_to_distilled_fixture() {
-        let gdtf_bytes = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf_bytes = crate::testutil::lighting::synthetic_gdtf();
         let mvr_bytes = crate::lighting::gdtf::build_zip(&[
             (
                 "GeneralSceneDescription.xml",

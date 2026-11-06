@@ -12,16 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import type { LightingFileRefusal } from "../../src/gen/rules/mtrack_rules";
-
-/** The card of one named type. The mock serves three, in all three forms,
- *  so position no longer identifies one. */
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
+import { card } from "../support/locators";
 
 test.describe("Fixture Types Management", () => {
   test.beforeEach(async ({ page }) => {

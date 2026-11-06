@@ -13,6 +13,7 @@
 //
 
 import { type Page } from "@playwright/test";
+import { card } from "../support/locators";
 import { api, expect, synthGdtf, test } from "./harness";
 
 // The venue form against the real binary: a save shows on the page at once,
@@ -27,10 +28,6 @@ const PAR = `fixture_type "Par" {
 }
 `;
 
-const card = (page: Page, name: string) =>
-  page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
 const rows = (page: Page) => page.getByTestId("venue-fixture-row");
 const save = (page: Page) =>
   page.locator(".editor-form").getByRole("button", { name: "Save" }).click();

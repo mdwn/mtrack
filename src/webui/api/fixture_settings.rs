@@ -656,10 +656,7 @@ mod test {
         std::fs::create_dir_all(&library).unwrap();
         std::fs::write(
             library.join("synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf(),
         )
         .unwrap();
         std::fs::create_dir_all(root.join("types")).unwrap();
@@ -887,10 +884,7 @@ mod test {
     fn library_project(root: &FsPath) {
         let library = root.join("lighting/library");
         std::fs::create_dir_all(&library).unwrap();
-        let archive = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let archive = crate::testutil::lighting::synthetic_gdtf();
         std::fs::write(library.join("synth.gdtf"), &archive).unwrap();
         std::fs::write(library.join("twin.gdtf"), &archive).unwrap();
         std::fs::create_dir_all(root.join("types")).unwrap();

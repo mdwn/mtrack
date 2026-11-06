@@ -828,10 +828,7 @@ mod tests {
     fn a_rig_that_cannot_distill_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DistillCache::new(dir.path().join(".cache"));
-        let archive = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let archive = crate::testutil::lighting::synthetic_gdtf();
         let description = crate::lighting::gdtf::parse_archive(&archive).unwrap();
         let err = cache
             .ensure_rig(&archive, "No Such Mode", || Ok(&description))

@@ -1101,42 +1101,9 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    /// Helper function to create a test source using MemorySampleSource wrapped in ChannelMappedSource
-    fn create_test_source(
-        samples: Vec<f32>,
-        channel_count: u16,
-        mappings: Vec<Vec<String>>,
-    ) -> Box<dyn ChannelMappedSampleSource> {
-        let memory_source =
-            crate::audio::sample_source::MemorySampleSource::new(samples, channel_count, 44100);
-        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
-            Box::new(memory_source),
-            mappings,
-            channel_count,
-        ))
-    }
-
-    /// Helper to build an ActiveSource with common defaults.
-    fn make_active_source(
-        id: u64,
-        source: Box<dyn ChannelMappedSampleSource>,
-        track_mappings: HashMap<String, Vec<u16>>,
-    ) -> ActiveSource {
-        ActiveSource {
-            id,
-            source,
-            track_mappings,
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 0,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-            break_envelope: None,
-        }
-    }
+    use crate::testutil::mixer::{
+        active_source_uncached as make_active_source, memory_source as create_test_source,
+    };
 
     #[test]
     fn test_basic_mixing() {

@@ -23,6 +23,8 @@
 //! cargo test --test gdtf_strict_corpus -- --ignored --nocapture
 //! ```
 
+mod common;
+
 use std::collections::{BTreeMap, HashSet};
 
 use mtrack::lighting::gdtf;
@@ -31,16 +33,7 @@ use mtrack::lighting::mvr;
 #[test]
 #[ignore = "bring-your-own corpus: put .mvr files in tests/mvr-corpus/ and run with --ignored"]
 fn every_corpus_gdtf_is_read_strictly() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mvr-corpus");
-    assert!(dir.is_dir(), "no corpus at {}", dir.display());
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("readable corpus dir")
-        .filter_map(|e| {
-            let p = e.expect("entry").path();
-            (p.extension().is_some_and(|x| x == "mvr")).then_some(p)
-        })
-        .collect();
-    files.sort();
+    let files = common::corpus_files("mvr-corpus", "mvr", common::Listing::MayBeEmpty);
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut clean = 0usize;

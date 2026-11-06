@@ -13,15 +13,12 @@
 //
 
 import { type Page } from "@playwright/test";
+import { card } from "../support/locators";
 import { expect, synthGdtf, test } from "./harness";
 
 // A fixture's page and a venue's form are addresses, against the real
 // server: Back, the section's link and a reload land where they say.
 
-const card = (page: Page, name: string) =>
-  page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
 const sectionLink = (page: Page, name: string) =>
   page.locator(".lighting__tabs").getByRole("link", { name });
 

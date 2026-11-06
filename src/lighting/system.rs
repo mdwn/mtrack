@@ -1614,10 +1614,7 @@ mod tests {
         std::fs::create_dir_all(&ft_dir).expect("mkdir");
         std::fs::write(
             library.join("synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf(),
         )
         .expect("write gdtf");
         std::fs::write(
@@ -1694,10 +1691,7 @@ mod tests {
         }
         std::fs::write(
             base.join("lighting/library/synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf(),
         )
         .expect("write gdtf");
         std::fs::write(base.join("lighting/fixture_types/types.fixture"), types).expect("write");
@@ -1867,10 +1861,7 @@ mod tests {
         }
         std::fs::write(
             base.join("lighting/library/synth.gdtf"),
-            crate::lighting::gdtf::build_zip(&[(
-                "description.xml",
-                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-            )]),
+            crate::testutil::lighting::synthetic_gdtf(),
         )
         .expect("write gdtf");
         std::fs::write(
@@ -3096,10 +3087,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let gdtf = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let mvr = crate::lighting::gdtf::build_zip(&[
             (
                 "GeneralSceneDescription.xml",

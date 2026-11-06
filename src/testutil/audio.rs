@@ -55,10 +55,16 @@ pub fn write_wav_with_bits<S: hound::Sample + Copy + 'static>(
         },
     )?;
 
-    // Write a simple set of samples to the wav file.
-    for channel_samples in &samples {
-        for sample in channel_samples {
-            writer.write_sample(*sample)?;
+    // Interleaved, frame by frame, as WAV stores them: `samples` holds one
+    // vector per channel, all the same length.
+    let frames = samples.first().map_or(0, Vec::len);
+    assert!(
+        samples.iter().all(|channel| channel.len() == frames),
+        "every channel needs the same number of samples"
+    );
+    for frame in 0..frames {
+        for channel_samples in &samples {
+            writer.write_sample(channel_samples[frame])?;
         }
     }
 

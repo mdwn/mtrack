@@ -13,17 +13,13 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { card } from "../support/locators";
 
 // Leaving a Lighting form with unsaved edits asks first, through the app's
 // guard: staying keeps the edits and the address, leaving discards them, a
 // clean form leaves without asking, and a save clears the question. Saves
 // are caught with page.route, so the shared mock is untouched.
 
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 const sectionLink = (page: Page, name: string) =>
   page.locator(".lighting__tabs").getByRole("link", { name });
 const dialog = (page: Page) => page.locator(".dialog-overlay");

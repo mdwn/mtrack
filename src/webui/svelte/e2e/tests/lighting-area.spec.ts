@@ -13,14 +13,9 @@
 //
 
 import { test, expect, type Page } from "@playwright/test";
+import { sendWs } from "../support/ws";
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
 
 /** Two profiles, both with lighting, so the Groups picker has a choice. The
  *  mock reports `test-host` as the running profile. Each test routes its own
@@ -382,7 +377,7 @@ test.describe("Lighting area: Config and the dashboard link across", () => {
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       type: "metadata",
       fixtures: {
         "front-left": {
@@ -444,7 +439,7 @@ test.describe("Lighting area: Venues stage plot", () => {
       await page.setViewportSize(size);
       await page.goto(`/?wsId=${wsId}#/lighting/venues`);
       const name = `venue-${wsId}`;
-      await sendWsMessage(page, wsId, GEOMETRY(name));
+      await sendWs(page, wsId, GEOMETRY(name));
       await expect(page.locator(".stage-card--geometry")).toBeVisible();
       await expect(page.getByTestId("stage-venue-label")).toHaveText(
         `Current venue: ${name} · live`,

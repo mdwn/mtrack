@@ -1447,7 +1447,7 @@ mod tests {
     use crate::lighting::mvr::SYNTHETIC_SCENE;
 
     fn gdtf_bytes() -> Vec<u8> {
-        build_zip(&[("description.xml", SYNTHETIC_DESCRIPTION.as_bytes())])
+        crate::testutil::lighting::synthetic_gdtf()
     }
 
     /// An MVR embedding the synthetic PB15 and patching a few of them.

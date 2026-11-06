@@ -14,6 +14,7 @@
 
 import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
+import { card } from "../support/locators";
 import { api, expect, synthGdtf, synthMvr, test } from "./harness";
 
 // The Lighting area against the real binary: each journey does what a user
@@ -45,12 +46,6 @@ const withBricks = (venue: string) => ({
   "lighting/fixture_types/brick.fixture": BRICK,
   "lighting/venues/house.venue": venue,
 });
-
-function card(page: Page, name: string) {
-  return page.locator(".item-card").filter({
-    has: page.locator(".item-name", { hasText: new RegExp(`^${name}$`) }),
-  });
-}
 
 const confirmDialog = (page: Page) => page.locator(".dialog-overlay");
 

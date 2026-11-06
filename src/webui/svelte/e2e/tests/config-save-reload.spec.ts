@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { PLAYBACK_STATE } from "../mock-server/test-data";
+import { sendWs } from "../support/ws";
 
 test.describe("Config Save and Reload", () => {
   test.beforeEach(async ({ page }) => {
@@ -252,14 +253,11 @@ async function sendReloads(
   refused: { generation: number; error: string }[] = [],
   processId = "process-a",
 ) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: {
-      ...PLAYBACK_STATE,
-      hardware_reload_started: started,
-      hardware_reload_refused: refused,
-      process_id: processId,
-      _wsId: wsId,
-    },
+  await sendWs(page, wsId, {
+    ...PLAYBACK_STATE,
+    hardware_reload_started: started,
+    hardware_reload_refused: refused,
+    process_id: processId,
   });
 }
 

@@ -31,6 +31,8 @@
 //! cargo test --test gdtf_model_size_corpus -- --ignored --nocapture
 //! ```
 
+mod common;
+
 use std::collections::{BTreeMap, HashSet};
 
 use mtrack::lighting::gdtf;
@@ -212,7 +214,6 @@ fn mesh_extent(bytes: &[u8]) -> Option<[f64; 3]> {
 
 /// Every GDTF archive of the corpus, deduplicated by content, with a name.
 fn corpus_archives() -> Vec<(String, Vec<u8>)> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut out = Vec::new();
     let mut add = |name: String, bytes: Vec<u8>| {
@@ -220,22 +221,11 @@ fn corpus_archives() -> Vec<(String, Vec<u8>)> {
             out.push((name, bytes));
         }
     };
-    let list = |dir: &std::path::Path, ext: &str| -> Vec<std::path::PathBuf> {
-        let mut files: Vec<_> = std::fs::read_dir(dir)
-            .map(|d| {
-                d.filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|x| x == ext))
-                    .collect()
-            })
-            .unwrap_or_default();
-        files.sort();
-        files
-    };
-    for path in list(&root.join("gdtf-corpus"), "gdtf") {
+    for path in common::corpus_files("gdtf-corpus", "gdtf", common::Listing::Lenient) {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         add(name, std::fs::read(&path).expect("readable gdtf"));
     }
-    for path in list(&root.join("mvr-corpus"), "mvr") {
+    for path in common::corpus_files("mvr-corpus", "mvr", common::Listing::Lenient) {
         let bytes = std::fs::read(&path).expect("readable mvr");
         let Ok(entries) = mvr::list_gdtf_entries(&bytes) else {
             continue;

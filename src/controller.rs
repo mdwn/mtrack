@@ -637,9 +637,7 @@ mod test {
     };
     use tracing::error;
 
-    use crate::{
-        config, player::Player, playlist, playlist::Playlist, songs, testutil::eventually,
-    };
+    use crate::{config, player::Player, playlist, songs, testutil::eventually};
 
     use super::Driver;
 
@@ -730,31 +728,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_grpc() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
 
         // Use port 0 to let the OS pick an available port.
@@ -769,31 +743,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_mcp() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
 
         // Use port 0 to let the OS pick an available port.
@@ -810,22 +760,9 @@ mod test {
     /// start or stop; the rest keep running, until a forced restart.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_change_to_one_controller_leaves_the_others_running() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         let grpc = || config::Controller::Grpc(config::GrpcController::new(0));
         let mcp = || config::Controller::Mcp(config::McpController::new(0));
@@ -865,22 +802,9 @@ mod test {
 
     /// A player with no controllers of its own, for tests that run some.
     async fn make_controllerless_player() -> Result<Arc<Player>, Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         Ok(player)
     }
@@ -1081,9 +1005,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_changed_controller_binds_the_port_it_had() -> Result<(), Box<dyn Error>> {
         let player = make_controllerless_player().await?;
-        let port = std::net::TcpListener::bind("127.0.0.1:0")?
-            .local_addr()?
-            .port();
+        let port = crate::testutil::net::free_tcp_port();
         let mcp = |token: &str| {
             config::Controller::Mcp(config::McpController::with_bearer_token(port, token))
         };
@@ -1377,31 +1299,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_empty_config() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
 
         // Empty config vec should produce a controller with no drivers.
@@ -1414,31 +1312,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_osc() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
 
         let osc_config = config::OscController::new();
@@ -1452,31 +1326,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
@@ -1569,31 +1419,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_shutdown() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), playlist);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                None,
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player().build()?;
         player.await_hardware_ready().await;
 
         let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));

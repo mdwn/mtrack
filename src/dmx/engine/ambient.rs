@@ -752,6 +752,7 @@ mod tests {
 
     use super::*;
     use crate::config;
+    use crate::dmx::engine::pass::TestClock;
     use crate::dmx::ola_client::OlaClientFactory;
 
     /// A fade of no time is at its end at once, exactly there; one of some
@@ -1700,22 +1701,23 @@ mod tests {
         )
     }
 
-    /// Renders frames for `secs`, asserting the mover's pan never steps
-    /// further than its slowest fade could carry it in the time between
-    /// two frames (`per_sec`), plus a little: a stalled machine waits
-    /// longer between frames, not a jump.
-    fn assert_pan_glides(engine: &Engine, secs: f64, per_sec: f64) {
-        let started = std::time::Instant::now();
-        let mut last = (pan(engine), std::time::Instant::now());
+    /// Renders frames 20 ms apart for `secs`, asserting the mover's pan
+    /// never steps further than its slowest fade could carry it in 20 ms
+    /// (`per_sec`), plus a little. The fades run on `clock`, moved on 20 ms
+    /// a frame, not on the wall clock: every frame is at the time it says,
+    /// however slow the machine, so a loaded runner cannot make one look
+    /// like a jump (#654).
+    fn assert_pan_glides(engine: &Engine, clock: &TestClock, secs: f64, per_sec: f64) {
+        const FRAME: Duration = Duration::from_millis(20);
+        let mut last = pan(engine);
         let mut song = engine.get_song_time().as_secs_f64();
-        while started.elapsed().as_secs_f64() < secs {
-            sleep(Duration::from_millis(20));
-            song += 0.02;
+        for _ in 0..(secs / FRAME.as_secs_f64()).ceil() as usize {
+            clock.advance(FRAME);
+            song += FRAME.as_secs_f64();
             song_frame(engine, song);
-            let now = (pan(engine), std::time::Instant::now());
-            let step = (now.0 - last.0).abs();
-            let allowed = 6.0 + per_sec * now.1.duration_since(last.1).as_secs_f64();
-            assert!(step <= allowed, "pan stepped {} to {}", last.0, now.0);
+            let now = pan(engine);
+            let allowed = 6.0 + per_sec * FRAME.as_secs_f64();
+            assert!((now - last).abs() <= allowed, "pan stepped {last} to {now}");
             last = now;
         }
     }
@@ -1725,6 +1727,7 @@ mod tests {
         // A mover's pan, held by a newer fade that ended before an older
         // one, jumped as that newer fade went.
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let clock = TestClock::start();
         add_mover(&engine);
         // A pans to 80%, then breaks into B (20%) over 2 s; B breaks into
         // GREEN, which does not drive the mover, over 300 ms.
@@ -1735,13 +1738,13 @@ mod tests {
         engine.stop_lighting_timeline();
         start_song(&engine, &pan_show("20%"));
         song_frame(&engine, 0.1);
-        sleep(Duration::from_millis(200));
+        clock.advance(Duration::from_millis(200));
         song_frame(&engine, 0.3);
         engine.begin_break_fade(Duration::from_millis(300));
         engine.stop_lighting_timeline();
         start_song(&engine, GREEN);
         // The 300 ms fade moves it fastest: 153 over 0.3 s.
-        assert_pan_glides(&engine, 0.8, 520.0);
+        assert_pan_glides(&engine, &clock, 0.8, 520.0);
         Ok(())
     }
 
@@ -1754,6 +1757,7 @@ mod tests {
         let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @5.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
         for next in ["end", "break", "pass", "stop", "seek"] {
             let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+            let clock = TestClock::start();
             add_mover(&engine);
             start_song(&engine, &pan_show("80%"));
             song_frame(&engine, 0.5);
@@ -1762,7 +1766,7 @@ mod tests {
             start_song(&engine, b);
             song_frame(&engine, 0.1);
             // A third of the way out, A and B are well apart.
-            sleep(Duration::from_millis(1000));
+            clock.advance(Duration::from_millis(1000));
             song_frame(&engine, 1.1);
             // B loops into a pass that does not drive the mover, over 500 ms;
             // only the 3 s fade moves the pan meanwhile (153 over 3 s).
@@ -1772,7 +1776,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(500),
             );
-            assert_pan_glides(&engine, 0.15, 100.0);
+            assert_pan_glides(&engine, &clock, 0.15, 100.0);
             match next {
                 "end" => {}
                 "break" => {
@@ -1792,7 +1796,7 @@ mod tests {
                     engine.start_lighting_timeline_at(Duration::from_secs(10));
                 }
             }
-            assert_pan_glides(&engine, 0.8, 100.0);
+            assert_pan_glides(&engine, &clock, 0.8, 100.0);
             // B's 0% cue would leave it near 70; the fade alone, past 100.
             assert!(pan(&engine) > 85.0, "{next}: no cue of B's fired");
         }
@@ -1950,6 +1954,7 @@ mod tests {
         // A's fade long after B had faded out.
         let b = "show \"song\" {\n    @0.000\n    mover: static, pan: 20%, duration: 60s\n    @1.000\n    mover: static, pan: 0%, duration: 60s\n}\n";
         let (_dir, engine) = ambient_engine(BLUE, ("0s", "0s", "100ms"))?;
+        let clock = TestClock::start();
         add_mover(&engine);
         start_song(&engine, &pan_show("80%"));
         song_frame(&engine, 0.5);
@@ -1961,7 +1966,7 @@ mod tests {
         engine.stop_lighting_timeline();
         start_song(&engine, GREEN);
         // Past B's fade and its cue: only A's 6 s fade moves the pan.
-        assert_pan_glides(&engine, 1.5, 100.0);
+        assert_pan_glides(&engine, &clock, 1.5, 100.0);
         let fades = engine.break_fades.lock();
         assert_eq!(fades.len(), 2);
         assert!(fades[1].is_held(), "B's fade, over, is held");

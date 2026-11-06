@@ -762,15 +762,7 @@ mod sample_source_tests {
         );
     }
 
-    /// Calculate RMS (Root Mean Square) of a signal
-    fn calculate_rms(samples: &[f32]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-
-        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
-        (sum_squares / samples.len() as f32).sqrt()
-    }
+    use crate::testutil::audio_test_utils::calculate_rms;
 
     #[test]
     fn test_resampling_empty_input() {
@@ -1882,18 +1874,20 @@ mod sample_source_tests {
 
         // Verify the samples are interleaved correctly (L, R, L, R, L, R)
         let expected_samples = [
-            1000.0 / (1 << 31) as f32,  // Left channel, sample 1
-            -1000.0 / (1 << 31) as f32, // Right channel, sample 1
-            2000.0 / (1 << 31) as f32,  // Left channel, sample 2
-            -2000.0 / (1 << 31) as f32, // Right channel, sample 2
-            3000.0 / (1 << 31) as f32,  // Left channel, sample 3
-            -3000.0 / (1 << 31) as f32, // Right channel, sample 3
+            1000.0 / (1_u32 << 31) as f32,  // Left channel, sample 1
+            -1000.0 / (1_u32 << 31) as f32, // Right channel, sample 1
+            2000.0 / (1_u32 << 31) as f32,  // Left channel, sample 2
+            -2000.0 / (1_u32 << 31) as f32, // Right channel, sample 2
+            3000.0 / (1_u32 << 31) as f32,  // Left channel, sample 3
+            -3000.0 / (1_u32 << 31) as f32, // Right channel, sample 3
         ];
 
         for (i, (actual, expected)) in read_samples.iter().zip(expected_samples.iter()).enumerate()
         {
             assert!(
-                (actual - expected).abs() < 0.0001,
+                // To a fraction of the smallest sample (~5e-7): 0.0001 let
+                // any of these through, in any order.
+                (actual - expected).abs() < 1e-9,
                 "Sample {} mismatch: expected {}, got {}",
                 i,
                 expected,
@@ -2352,24 +2346,26 @@ mod sample_source_tests {
 
         // Verify interleaving: samples should be in order channel_0[0], channel_1[0], channel_2[0], channel_3[0], channel_0[1], etc.
         let expected_samples = [
-            1000.0 / (1 << 31) as f32,   // channel_0[0]
-            4000.0 / (1 << 31) as f32,   // channel_1[0]
-            7000.0 / (1 << 31) as f32,   // channel_2[0]
-            10000.0 / (1 << 31) as f32,  // channel_3[0]
-            -2000.0 / (1 << 31) as f32,  // channel_0[1]
-            -5000.0 / (1 << 31) as f32,  // channel_1[1]
-            -8000.0 / (1 << 31) as f32,  // channel_2[1]
-            -11000.0 / (1 << 31) as f32, // channel_3[1]
-            3000.0 / (1 << 31) as f32,   // channel_0[2]
-            6000.0 / (1 << 31) as f32,   // channel_1[2]
-            9000.0 / (1 << 31) as f32,   // channel_2[2]
-            12000.0 / (1 << 31) as f32,  // channel_3[2]
+            1000.0 / (1_u32 << 31) as f32,   // channel_0[0]
+            4000.0 / (1_u32 << 31) as f32,   // channel_1[0]
+            7000.0 / (1_u32 << 31) as f32,   // channel_2[0]
+            10000.0 / (1_u32 << 31) as f32,  // channel_3[0]
+            -2000.0 / (1_u32 << 31) as f32,  // channel_0[1]
+            -5000.0 / (1_u32 << 31) as f32,  // channel_1[1]
+            -8000.0 / (1_u32 << 31) as f32,  // channel_2[1]
+            -11000.0 / (1_u32 << 31) as f32, // channel_3[1]
+            3000.0 / (1_u32 << 31) as f32,   // channel_0[2]
+            6000.0 / (1_u32 << 31) as f32,   // channel_1[2]
+            9000.0 / (1_u32 << 31) as f32,   // channel_2[2]
+            12000.0 / (1_u32 << 31) as f32,  // channel_3[2]
         ];
 
         for (i, (actual, expected)) in samples_read.iter().zip(expected_samples.iter()).enumerate()
         {
             assert!(
-                (actual - expected).abs() < 0.0001,
+                // To a fraction of the smallest sample (~5e-7): 0.0001 let
+                // any of these through, in any order.
+                (actual - expected).abs() < 1e-9,
                 "Sample {} mismatch: expected {}, got {}",
                 i,
                 expected,
@@ -2426,16 +2422,16 @@ mod sample_source_tests {
         // Verify interleaving: samples should be in order channel_0[0], channel_1[0], ..., channel_5[0], channel_0[1], etc.
         let expected_samples = [
             1000.0 / (1 << 23) as f32,   // channel_0[0] - Front Left
-            -2000.0 / (1 << 23) as f32,  // channel_0[1] - Front Left
             3000.0 / (1 << 23) as f32,   // channel_1[0] - Front Right
-            -4000.0 / (1 << 23) as f32,  // channel_1[1] - Front Right
             5000.0 / (1 << 23) as f32,   // channel_2[0] - Center
-            -6000.0 / (1 << 23) as f32,  // channel_2[1] - Center
             7000.0 / (1 << 23) as f32,   // channel_3[0] - LFE
-            -8000.0 / (1 << 23) as f32,  // channel_3[1] - LFE
             9000.0 / (1 << 23) as f32,   // channel_4[0] - Rear Left
-            -10000.0 / (1 << 23) as f32, // channel_4[1] - Rear Left
             11000.0 / (1 << 23) as f32,  // channel_5[0] - Rear Right
+            -2000.0 / (1 << 23) as f32,  // channel_0[1] - Front Left
+            -4000.0 / (1 << 23) as f32,  // channel_1[1] - Front Right
+            -6000.0 / (1 << 23) as f32,  // channel_2[1] - Center
+            -8000.0 / (1 << 23) as f32,  // channel_3[1] - LFE
+            -10000.0 / (1 << 23) as f32, // channel_4[1] - Rear Left
             -12000.0 / (1 << 23) as f32, // channel_5[1] - Rear Right
         ];
 

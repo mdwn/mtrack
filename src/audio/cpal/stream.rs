@@ -477,45 +477,15 @@ pub(super) mod test {
 
     use super::super::CondvarNotify;
     use super::*;
-    use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
-    use crate::playsync::CancelHandle;
+    use crate::audio::mixer::AudioMixer;
+
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    fn make_test_source(
-        samples: Vec<f32>,
-        channels: u16,
-        labels: Vec<Vec<String>>,
-    ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
-        let memory_source =
-            crate::audio::sample_source::MemorySampleSource::new(samples, channels, 44100);
-        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
-            Box::new(memory_source),
-            labels,
-            channels,
-        ))
-    }
-
-    fn make_active_source(
-        source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
-        track_mappings: HashMap<String, Vec<u16>>,
-    ) -> MixerActiveSource {
-        MixerActiveSource {
-            id: crate::audio::next_source_id(),
-            cached_source_channel_count: source.source_channel_count(),
-            source,
-            track_mappings,
-            channel_mappings: Vec::new(),
-            cancel_handle: CancelHandle::new(),
-            is_finished: Arc::new(AtomicBool::new(false)),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-            break_envelope: None,
-        }
-    }
+    use crate::testutil::mixer::{
+        active_source as make_active_source, memory_source as make_test_source,
+    };
 
     /// A mock output stream that stays alive until dropped.
     struct MockOutputStream {

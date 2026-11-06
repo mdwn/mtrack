@@ -9195,10 +9195,7 @@ show "test" {
         }
         let songs = song_registry(root, songs);
 
-        let dead_port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
+        let dead_port = crate::testutil::net::free_tcp_port();
         let universe_yaml: String = universes
             .iter()
             .map(|u| format!("  - universe: {u}\n    name: u{u}\n"))

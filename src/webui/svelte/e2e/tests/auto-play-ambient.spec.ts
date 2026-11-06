@@ -12,36 +12,16 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import { stubPlayerService } from "../support/grpc";
 import { fromBinary } from "@bufbuild/protobuf";
 import { PlaylistEditorPage } from "../pages/playlist-editor.page.js";
 import { SetAmbientModeRequestSchema } from "../../src/gen/player/v1/player_pb";
+import { sendWs } from "../support/ws";
+import { capturePlaylistPut } from "../support/playlists";
+import { PLAYBACK_STATE } from "../mock-server/test-data";
 
 let testCounter = 0;
-
-async function sendWsMessage(page: Page, wsId: string, msg: object) {
-  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: { ...msg, _wsId: wsId },
-  });
-}
-
-/** Captures the next PUT to the setlist, answering it as saved. */
-async function capturePlaylistPut(page: Page) {
-  const bodies: Record<string, unknown>[] = [];
-  await page.route("**/api/playlists/setlist", async (route) => {
-    if (route.request().method() === "PUT") {
-      bodies.push(route.request().postDataJSON());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "saved", name: "setlist" }),
-      });
-    } else {
-      await route.continue();
-    }
-  });
-  return bodies;
-}
 
 test.describe("Playlist editor: auto play and ambient light", () => {
   let playlists: PlaylistEditorPage;
@@ -349,7 +329,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -364,7 +344,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
       persisted_playlist_name: "setlist",
       locked: false,
     };
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
       ambient: {
@@ -387,7 +367,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ambient-source")).toHaveCount(0);
 
     // The entry's own settings are up: the badge says whose.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       auto_play: { song: "Test Song Beta", starts_in_ms: 2400 },
       ambient: {
@@ -400,7 +380,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ambient-badge")).toHaveText(
       "Ambient light · this song's",
     );
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       ambient: {
         mode: "auto",
@@ -415,7 +395,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
 
     // A status read of the DMX engine that did not answer says so, rather
     // than passing for no DMX engine; the mode is not known, so no buttons.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       ambient: {
         available: false,
@@ -427,7 +407,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     );
     await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
 
-    await sendWsMessage(page, wsId, { ...frame, is_playing: true });
+    await sendWs(page, wsId, { ...frame, is_playing: true });
     await expect(page.getByTestId("auto-play-countdown")).toHaveCount(0);
     await expect(page.getByTestId("ambient-badge")).toHaveCount(0);
   });
@@ -441,7 +421,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
     await expect(page.getByTestId("ending-fade")).toHaveCount(0);
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Beta",
@@ -456,7 +436,7 @@ test.describe("Dashboard: auto play and ambient light", () => {
       persisted_playlist_name: "setlist",
       locked: false,
     };
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       ending: { song: "Test Song Beta", remaining_ms: 3600 },
     });
@@ -470,35 +450,21 @@ test.describe("Dashboard: auto play and ambient light", () => {
       page.getByRole("button", { name: "Stop", exact: true }),
     ).toBeEnabled();
 
-    await sendWsMessage(page, wsId, { ...frame, ending: null });
+    await sendWs(page, wsId, { ...frame, ending: null });
     await expect(page.getByTestId("ending-fade")).toHaveCount(0);
   });
 });
 
 test.describe("Dashboard: ambient light mode", () => {
   test("the mode shows, and a click sets it over gRPC", async ({ page }) => {
-    // A well-formed grpc-web unary reply: an empty message frame followed by
-    // a trailers frame.
-    const trailers = Buffer.from("grpc-status: 0\r\n");
-    const grpcWebBody = Buffer.concat([
-      Buffer.from([0x00, 0, 0, 0, 0]),
-      Buffer.from([0x80, 0, 0, 0, trailers.length]),
-      trailers,
-    ]);
-    await page.route("**/player.v1.PlayerService/**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "application/grpc-web+proto" },
-        body: grpcWebBody,
-      });
-    });
+    await stubPlayerService(page, { reply: "framed" });
 
     const wsId = `ambient-mode-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toBeVisible();
 
     const frame = {
-      type: "playback",
+      ...PLAYBACK_STATE,
       is_playing: false,
       elapsed_ms: 0,
       song_name: "Test Song Alpha",
@@ -514,7 +480,7 @@ test.describe("Dashboard: ambient light mode", () => {
       // Locked: ambient mode is a show control, open like transport.
       locked: true,
     };
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       ambient: { mode: "off", show: "/p/lighting/ambient.light", state: "off" },
     });
@@ -537,7 +503,7 @@ test.describe("Dashboard: ambient light mode", () => {
     );
 
     // On with no show to play says so.
-    await sendWsMessage(page, wsId, {
+    await sendWs(page, wsId, {
       ...frame,
       ambient: { mode: "on", show: null, state: "unavailable" },
     });
@@ -550,7 +516,7 @@ test.describe("Dashboard: ambient light mode", () => {
     );
 
     // No DMX engine: no control.
-    await sendWsMessage(page, wsId, { ...frame, ambient: null });
+    await sendWs(page, wsId, { ...frame, ambient: null });
     await expect(page.getByTestId("ambient-mode")).toHaveCount(0);
   });
 });

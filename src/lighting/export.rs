@@ -839,10 +839,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let gdtf = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
-        )]);
+        let gdtf = crate::testutil::lighting::synthetic_gdtf();
         let bytes = crate::lighting::gdtf::build_zip(&[
             ("GeneralSceneDescription.xml", SCENE.as_bytes()),
             ("Astera_PB15.gdtf", gdtf.as_slice()),
@@ -1324,12 +1321,9 @@ mod tests {
         // directory, and a type that uses it.
         let other_dir = project.join("lighting/library/other");
         std::fs::create_dir_all(&other_dir).unwrap();
-        let other = crate::lighting::gdtf::build_zip(&[(
-            "description.xml",
-            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
-                .replace("Synth Brick", "Other Brick")
-                .as_bytes(),
-        )]);
+        let other = crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.replace("Synth Brick", "Other Brick"),
+        );
         std::fs::write(other_dir.join("Astera_PB15.gdtf"), &other).unwrap();
         std::fs::create_dir_all(project.join("lighting/fixture_types")).unwrap();
         std::fs::write(

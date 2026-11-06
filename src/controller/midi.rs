@@ -167,16 +167,12 @@ impl super::Driver for Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path};
+    use std::error::Error;
 
     use crate::{
         config::{self, midi::ToMidiEvent, MidiController},
         controller::Controller,
         midi::Device,
-        player::Player,
-        playlist,
-        playlist::Playlist,
-        songs,
         testutil::eventually,
     };
 
@@ -212,31 +208,9 @@ mod test {
         playlist_event.to_midi_event()?.write(&mut playlist_buf)?;
         unrecognized_event.write(&mut unrecognized_buf)?;
 
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let pl = Playlist::new(
-            "playlist",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
-        let mut playlists = HashMap::new();
-        playlists.insert(
-            "all_songs".to_string(),
-            playlist::from_songs(songs.clone())?,
-        );
-        playlists.insert("playlist".to_string(), pl);
-        let player = Player::new(
-            playlists,
-            "playlist".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-midi-device")
+            .build()?;
         player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
@@ -426,22 +400,10 @@ mod test {
     /// started for it ran on, and nothing could watch the device again.
     #[tokio::test(flavor = "current_thread")]
     async fn a_driver_aborted_before_it_runs_stops_its_watch() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-aborted-driver", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-aborted-driver")
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         let device = player.midi_device().expect("midi device");
         let driver = super::Driver::new(
@@ -478,22 +440,10 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_watch_the_device_lets_go_ends_the_driver_with_an_error() -> Result<(), Box<dyn Error>>
     {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let mut playlists = HashMap::new();
-        playlists.insert("all_songs".to_string(), playlist::from_songs(songs)?);
-        let player = Player::new(
-            playlists,
-            "all_songs".to_string(),
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-watch-let-go", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
-            None,
-        )?;
+        let player = crate::testutil::player::assets_player()
+            .midi("mock-watch-let-go")
+            .all_songs_only()
+            .build()?;
         player.await_hardware_ready().await;
         let device = player.midi_device().expect("midi device");
         let driver = super::Driver::new(
