@@ -23,7 +23,7 @@ import type {
   FadeConfig,
 } from "../gen/rules/mtrack_rules";
 import type { AutoPlay, PlaylistAmbient } from "./api/config";
-import { formatFadeLength } from "./util/format";
+import { formatFadeLength, formatGapMs } from "./util/format";
 import { rules } from "./rules";
 
 /** The ambient picker's choice: inherited (null), none (false), or its own. */
@@ -74,12 +74,17 @@ export function entrySummary(
 ): string {
   const out = fadeLength(entry.fades?.fade_out);
   const fadeIn = fadeLength(entry.fades?.fade_in);
+  // The gap as the player reads one (`rules.auto_play_gap_ms`); a gap of
+  // none is no gap, and text that is no gap shows as written.
+  const gapText =
+    typeof entry.autoPlay === "string" ? entry.autoPlay.trim() : "";
+  const gapMs = gapText ? rules.auto_play_gap_ms(gapText) : undefined;
   const gap =
-    typeof entry.autoPlay === "string" &&
-    entry.autoPlay.trim() &&
-    !rules.fade_is_cut(entry.autoPlay)
-      ? formatFadeLength(entry.autoPlay)
-      : null;
+    gapMs === undefined
+      ? gapText || null
+      : gapMs > 0
+        ? formatGapMs(gapMs)
+        : null;
   const ambient = entry.ambient ?? null;
   return [
     out && tr("playlists.fadeOutSummary", { values: { length: out } }),

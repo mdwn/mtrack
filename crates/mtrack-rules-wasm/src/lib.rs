@@ -1190,11 +1190,15 @@ pub fn fade_length_text(text: &str) -> Option<String> {
         .map(|length| length.text())
 }
 
-/// Whether a fade length as written is none (`parse_length`: `0`, `0s`,
-/// `0ms`): a cut.
+/// The gap an entry's `auto_play` written as `text` waits before its song
+/// (`AutoPlayConfig::parse`, the player's reading of a gap: `2s`, `500ms`,
+/// `2m`), in milliseconds; `None` for text that is no gap.
 #[wasm_bindgen]
-pub fn fade_is_cut(text: &str) -> bool {
-    config::length::parse_length("length", text).is_ok_and(|length| length.is_cut())
+pub fn auto_play_gap_ms(text: &str) -> Option<f64> {
+    let gap = config::AutoPlayConfig::Gap(text.to_string())
+        .parse()
+        .ok()??;
+    Some(gap.as_secs_f64() * 1000.0)
 }
 
 // ── Positions ───────────────────────────────────────────────────────────────

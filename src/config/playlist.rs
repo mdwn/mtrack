@@ -69,19 +69,6 @@ pub struct ConfiguredEntry {
     pub ambient: Option<super::ambient::PlaylistAmbient>,
 }
 
-impl AutoPlayConfig {
-    /// The gap before the song starts, `None` for no auto play.
-    pub fn parse(&self) -> Result<Option<std::time::Duration>, String> {
-        match self {
-            AutoPlayConfig::On(false) => Ok(None),
-            AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
-            AutoPlayConfig::Gap(gap) => super::parse_duration_string(gap).map(Some).map_err(|_| {
-                format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
-            }),
-        }
-    }
-}
-
 /// By hand rather than untagged: a song called `1999` reaches us as a
 /// number, which an untagged string variant would turn away.
 impl<'de> Deserialize<'de> for PlaylistEntry {

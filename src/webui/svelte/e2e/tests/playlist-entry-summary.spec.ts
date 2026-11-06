@@ -51,10 +51,12 @@ test.describe("entrySummary", () => {
     expect(entrySummary({ autoPlay: "0s" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "0ms" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "2s" }, tr)).toBe("2s gap");
-    // `parse_length` takes `0m` for none too, which the page did not.
+    // A gap is read as the player reads one (`AutoPlayConfig::parse`):
+    // any zero is none, and `2m` is two minutes.
     expect(entrySummary({ autoPlay: "0m" }, tr)).toBe("");
-    // A length shows as the player reads it.
+    expect(entrySummary({ autoPlay: "0h" }, tr)).toBe("");
     expect(entrySummary({ autoPlay: "500ms" }, tr)).toBe("0.5s gap");
+    expect(entrySummary({ autoPlay: "2m" }, tr)).toBe("120s gap");
   });
 
   test("the ambient light: none, or its own", () => {

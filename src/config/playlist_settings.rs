@@ -140,6 +140,19 @@ pub enum AutoPlayConfig {
     Gap(String),
 }
 
+impl AutoPlayConfig {
+    /// The gap before the song starts, `None` for no auto play.
+    pub fn parse(&self) -> Result<Option<std::time::Duration>, String> {
+        match self {
+            AutoPlayConfig::On(false) => Ok(None),
+            AutoPlayConfig::On(true) => Ok(Some(std::time::Duration::ZERO)),
+            AutoPlayConfig::Gap(gap) => super::parse_duration_string(gap).map(Some).map_err(|_| {
+                format!("auto_play: '{gap}' is not true, false or a gap (e.g. 2s, 500ms)")
+            }),
+        }
+    }
+}
+
 /// By hand: a bool or a gap, a bare number being seconds.
 impl<'de> Deserialize<'de> for AutoPlayConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
