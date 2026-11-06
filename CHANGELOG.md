@@ -391,6 +391,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A venue or fixture type save or delete acts only on a file holding its name**: one rule
+  decides which file a save or delete of a venue or fixture type may act on, in the web UI and the
+  MVR import alike: only one that declares the name. A file at the name's stem (in any case) that
+  holds another venue or type is refused with 409 and left as it is: a venue saved as text over a
+  `club.venue` holding `Other` replaced it, and a delete removed it. A file that does not read (a
+  half-edited `par.light`) is refused too, and the web UI says so, "par.light doesn't read: ...
+  Replace it?" (or "Remove it?" for a delete); confirmed, the request is sent again with
+  `?replace_broken=par.light`, which lets the save replace, or the delete remove, exactly that one
+  broken file, never one that reads. A fixture type save checks the file found for the name as a
+  venue save does, whatever form it is saved in: a broken `Par.light` saved with `ext=fixture` got
+  a `Par.fixture` beside it with 200. A refused delete says the file "would be removed". The MVR
+  import names a new venue's file as the web UI does: "Club-2" is `club-2.venue` (it was
+  `club_2.venue`), and its re-import finds and refuses the same file at the name's stem.
 - **A song kept as `song.yml` gets no `song.yaml` beside it**: uploading a track or a sample to
   such a song, creating a song in its directory from the web UI's file browser, or creating it
   under its name wrote (or refused only on) a `song.yaml`, so a generated config sat beside the
@@ -398,7 +411,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holding a song config under any name keeps it (the browser's create answers 409). Saving a song
   the player does not know by that name, from the web UI's song editor or MCP `write_song`,
   writes its folder's `song.yml` when that is the folder's config, and is refused when the folder
-  holds another song's config; it wrote a `song.yaml` beside them.
+  holds another song's config; it wrote a `song.yaml` beside them. `DELETE /api/songs/{name}` for
+  such a song likewise finds its folder's `song.yml`, and refuses (409, "cannot be deleted") a
+  folder holding another song's config, which it looked for a `song.yaml` in.
 - **One rule for a file's kind by its extension**: a media, MIDI or lighting file's extension is
   read in any case (`Bass.WAV`, `Show.LIGHT`, `Club.VENUE`, `Par.FIXTURE`, and GDTF, MVR and GLB
   files as before), and a config's name stays lowercase: a song, playlist or profile config, and
@@ -406,8 +421,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before (`Set.YAML` is no playlist). With both `<name>.yaml` and `<name>.yml`, the `.yaml` is
   the one read and edited (for a playlist, the player loaded the `.yml`; see the `.yml` playlist
   entry). A venue's or fixture type's file is found at its name's stem in any case (`Club.venue`
-  for `club`), and a save or delete acts on it only when it declares that name (see the fixture
-  type entry). MCP takes a song loaded from `song.yml` as one in its own
+  for `club`), and a save or delete acts on it only when it declares that name (see "A venue or
+  fixture type save or delete acts only on a file holding its name" below). MCP takes a song loaded from `song.yml` as one in its own
   directory, as it took `song.yaml`: `write_song_lighting` refused it a new lighting file as "in
   flat layout".
 - **A light show file's extension is read in any case, and hidden directories are passed over**:
@@ -428,12 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saved as raw text over a file at its stem that holds only other types (`par.light` holding
   `Spot`) is refused with 409, as the form already refused it; it overwrote the file. A type's
   file is found at its name in any case (`Par` beside a `Par.light`), so on a filesystem that
-  ignores case such a save is refused rather than written into that file. One rule now decides
-  which file a venue or fixture type save or delete may act on: only one that declares the name.
-  A file at the name's stem (in any case) that does not parse, or holds another venue or type, is
-  refused with 409 and left as it is: a venue saved as text over a `club.venue` holding `Other`
-  replaced it, and a fixture type saved or deleted over a broken `par.light` (a half-edited
-  `Spot`) replaced or removed it. The web UI's
+  ignores case such a save is refused rather than written into that file. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`), as the song loader does. The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
