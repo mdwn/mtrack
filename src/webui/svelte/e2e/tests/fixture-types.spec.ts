@@ -464,6 +464,9 @@ test.describe("Fixture Types Management", () => {
           file: "par.light",
           broken: true,
           parse_error: "line 3: expected }",
+          broken_files: [
+            { file: "par.light", parse_error: "line 3: expected }" },
+          ],
         } satisfies LightingFileRefusal),
       });
     });

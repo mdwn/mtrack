@@ -872,39 +872,47 @@ fn plan(
     })
 }
 
-/// Finds a venue file of this name in the venues directory: `.venue` first,
-/// then the v1 `.light`. The file must hold the named venue.
+/// Finds the venue file of this name in the venues directory by the one
+/// locate rule the web UI's venue editor takes
+/// (`project_files::locate_venue`): the file at any depth that declares it,
+/// else the file at the name's stem, else a broken file opening a block for
+/// it (one an older stem named). A file found that does not hold the venue
+/// is refused by the one rule for the file a save acts on
+/// (`project_files::may_act_on`), as the web UI's save refuses it.
 fn find_existing_venue(
     project: &Path,
     venues_dir: &str,
     venue_name: &str,
 ) -> Result<Option<(PathBuf, Venue)>, Box<dyn Error>> {
-    // Wherever the venue lives — any file, any depth — as the lighting
-    // system finds it; a merge must patch that file, not seed a twin.
-    let venues = crate::lighting::project_files::venues(&project.join(venues_dir));
-    if let Some(declared) = venues.get(venue_name) {
-        return Ok(Some((declared.file.clone(), declared.item.clone())));
-    }
-    // The file the venue would be written to, at its name's stem as the web
-    // UI's venue save finds it, holds something else: other venues, or text
-    // that does not parse. The one rule for the file a save acts on
-    // (`project_files::may_act_on`) refuses it, as the web UI's does.
+    use crate::lighting::project_files::{display_in, locate_venue, may_act_on};
     let dir = project.join(venues_dir);
-    if let Some(path) = crate::lighting::project_files::venue_file_at_stem(&dir, venue_name) {
-        let declares = crate::lighting::project_files::venues_declared(&path);
-        if let Err(refusal) =
-            crate::lighting::project_files::may_act_on(venue_name, &path, &declares, None)
-        {
-            return Err(format!(
-                "{} does not define a venue named \"{venue_name}\" ({}); import under a \
-                 different --name, or fix or move the file by hand",
-                path.display(),
-                refusal.why
-            )
-            .into());
-        }
+    let Some(found) = locate_venue(&dir, venue_name)? else {
+        return Ok(None);
+    };
+    if let Err(refusal) = may_act_on(
+        venue_name,
+        &display_in(&dir, &found.path),
+        &found.declares,
+        &[],
+    ) {
+        return Err(format!(
+            "{} does not define a venue named \"{venue_name}\" ({}); import under a \
+             different --name, or fix or move the file by hand",
+            found.path.display(),
+            refusal.why
+        )
+        .into());
     }
-    Ok(None)
+    let text = crate::util::read_to_string(&found.path)?;
+    let venue = crate::lighting::parser::parse_venues(&text)?
+        .remove(venue_name)
+        .ok_or_else(|| {
+            format!(
+                "{} no longer defines \"{venue_name}\"",
+                found.path.display()
+            )
+        })?;
+    Ok(Some((found.path, venue)))
 }
 
 /// Names a scene's fixtures the way the venue file will state them. Consoles
@@ -2414,5 +2422,14 @@ mod existing_venue_tests {
         assert!(find_existing_venue(dir.path(), "venues", "Nowhere")
             .unwrap()
             .is_none());
+
+        // A broken file an older stem named (`club_2.venue` for "Club-2")
+        // is found by the name it opens, and refused rather than given a
+        // `club-2.venue` twin.
+        std::fs::write(venues.join("club_2.venue"), "venue \"Club-2\" {\n").unwrap();
+        let error = find_existing_venue(dir.path(), "venues", "Club-2")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("club_2.venue"), "{error}");
     }
 }

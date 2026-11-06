@@ -502,85 +502,127 @@ enum Acting {
     Deleting,
 }
 
-/// The one rule for a venue or fixture type file a save or delete of
-/// `name` would act on (`project_files::may_act_on`), as a 409: only a file
-/// that declares `name`, or one that does not read and that the person chose
-/// to replace (`?replace_broken=<file>`, naming exactly it). Nothing is
-/// written or removed when it refuses.
+/// The files a request may replace although they do not read: its
+/// `replace_broken`, comma-separated, each a path in the lighting directory
+/// as a refusal named it.
+fn replace_broken_files(query: &LightingDirQuery) -> Vec<String> {
+    query
+        .replace_broken
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The one rule for the venue or fixture type files a save or delete of
+/// `name` would act on (`project_files::may_act_on`, each named by its path
+/// in `dir`), as one 409: only files that declare `name`, or that do not
+/// read and that the person chose to replace (`?replace_broken=`, naming
+/// exactly each). A refusal of a file that reads names it alone, as nothing
+/// replaces it; else every broken file is named, so one confirmation covers
+/// them all. Nothing is written or removed when it refuses.
 #[allow(clippy::result_large_err)]
 fn require_declares(
     kind: &str,
     name: &str,
-    file: &std::path::Path,
-    declares: &Declares,
-    replace_broken: Option<&str>,
+    dir: &std::path::Path,
+    files: &[(&std::path::Path, &Declares)],
+    replace_broken: &[String],
     acting: Acting,
 ) -> Result<(), axum::response::Response> {
-    let Err(refusal) = lighting::project_files::may_act_on(name, file, declares, replace_broken)
-    else {
+    use crate::webui::wire::fixture_types::{BrokenLightingFile, LightingFileRefusal};
+    let refused: Vec<lighting::project_files::Refusal> = files
+        .iter()
+        .filter_map(|(file, declares)| {
+            let shown = lighting::project_files::display_in(dir, file);
+            lighting::project_files::may_act_on(name, &shown, declares, replace_broken).err()
+        })
+        .collect();
+    let Some(first) = refused.first() else {
         return Ok(());
     };
     let fate = match acting {
         Acting::Saving => "would be replaced",
         Acting::Deleting => "would be removed",
     };
-    let file = refusal.file;
+    let foreign = refused.iter().find(|r| r.parse_error.is_none());
+    let shown: Vec<&lighting::project_files::Refusal> = match foreign {
+        Some(refusal) => vec![refusal],
+        None => refused.iter().collect(),
+    };
+    let lead = foreign.unwrap_or(first);
+    let reasons: Vec<String> = shown
+        .iter()
+        .map(|r| format!("{} does not define {kind} \"{name}\" ({})", r.file, r.why))
+        .collect();
     Err((
         StatusCode::CONFLICT,
-        Json(crate::webui::wire::fixture_types::LightingFileRefusal {
+        Json(LightingFileRefusal {
             error: format!(
-                "{file} does not define {kind} \"{name}\" ({}), and {fate}; fix or move the file \
-                 by hand first",
-                refusal.why
+                "{}, and {fate}; fix or move the file by hand first",
+                reasons.join("; ")
             ),
-            file,
-            broken: refusal.parse_error.is_some(),
-            parse_error: refusal.parse_error,
+            file: lead.file.clone(),
+            broken: foreign.is_none(),
+            parse_error: lead.parse_error.clone(),
+            broken_files: match foreign {
+                Some(_) => Vec::new(),
+                None => refused
+                    .iter()
+                    .map(|r| BrokenLightingFile {
+                        file: r.file.clone(),
+                        parse_error: r.parse_error.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+            },
         }),
     )
         .into_response())
 }
 
-/// [`require_declares`] off the async runtime: the file is read and parsed
-/// on a blocking thread.
+/// [`require_declares`] off the async runtime: the files are read and
+/// parsed on a blocking thread.
 async fn require_declares_blocking(
     kind: &'static str,
     name: &str,
-    file: &std::path::Path,
+    dir: &std::path::Path,
+    files: Vec<std::path::PathBuf>,
     declared: fn(&std::path::Path) -> Declares,
-    replace_broken: Option<&str>,
+    replace_broken: &[String],
     acting: Acting,
 ) -> Result<(), axum::response::Response> {
-    let path = file.to_path_buf();
+    let read = files.clone();
     let declares = super::helpers::spawn_blocking_io("read a lighting file", move || {
-        Ok::<_, String>(declared(&path))
+        Ok::<_, String>(read.iter().map(|path| declared(path)).collect::<Vec<_>>())
     })
     .await?;
-    require_declares(kind, name, file, &declares, replace_broken, acting)
+    let pairs: Vec<(&std::path::Path, &Declares)> = files
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .zip(declares.iter())
+        .collect();
+    require_declares(kind, name, dir, &pairs, replace_broken, acting)
 }
 
-/// The file a fixture type of this name lives in, if one exists, in the
-/// directory or any subdirectory — the file the lighting system loads it
-/// from, by the same reader ([`lighting::project_files::type_files`]). The
-/// file's stem need not match the name: an import writes
-/// `astera_pixelbrick.fixture` for "Astera-PixelBrick", and a file written
-/// by hand is called whatever its author liked. A file at the name's own
-/// stem (`.fixture`, then `.light`) that does not declare it is still the
-/// answer when no file does, so the caller can say what is wrong with it.
+/// The file a fixture type of this name lives in, or would be written to,
+/// by the one locate rule the GDTF import takes too
+/// (`project_files::locate_fixture_type`): the file at any depth that
+/// declares it, as the lighting system loads it (its stem need not match the
+/// name: an import may have written `astera_pixelbrick.fixture` for
+/// "Astera-PixelBrick"); else the file at the name's own stem; else a broken
+/// file that opens a block for it. One that does not declare it is still the
+/// answer, so the caller can say what is wrong with it.
 pub(super) fn existing_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
 ) -> Option<std::path::PathBuf> {
-    if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
-        return Some(declared.file.clone());
-    }
-    crate::util::files_at_stem(
-        dir,
-        &lighting::project_files::name_stem(name),
-        FIXTURE_TYPE_EXTENSIONS,
-    )
-    .into_iter()
-    .next()
+    lighting::project_files::locate_fixture_type(dir, name)
+        .ok()
+        .flatten()
+        .map(|found| found.path)
 }
 
 /// [`existing_fixture_type_file`] with the file it found and the other
@@ -632,12 +674,6 @@ fn shared_fixture_type_file_response(
 /// Venue files: `.venue` (positions, focus points, MVR provenance) and the
 /// v1 `.light`, loaded as peers.
 pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
-
-/// The file a venue of this name lives in, if one exists: `.venue` first,
-/// then `.light`.
-fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    lighting::project_files::venue_file_at_stem(dir, name)
-}
 
 /// Where a save writes a venue or fixture type file: `file`, under `dir`,
 /// held inside it by the one containment rule MCP's tools take
@@ -714,19 +750,12 @@ impl LocatedVenue {
     }
 }
 
-/// Whether some line of `text` opens a block for venue `name`.
-fn mentions_venue(text: &str, name: &str) -> bool {
-    let header = format!("venue \"{name}\"");
-    text.lines().any(|l| l.trim_start().starts_with(&header))
-}
-
-/// Finds the file that defines venue `name` by scanning every venue file (in
-/// the directory and its subdirectories) for the block — the file's stem
-/// need not match the name. A file that mentions
-/// the venue but does not parse (or the file at the venue's own stem, which a
-/// save would otherwise overwrite) comes back with `broken` set, so the
-/// caller can refuse rather than replace it. `None` means a genuinely new
-/// venue.
+/// The venue file `name` lives in, or would be written to, by the one
+/// locate rule the MVR import takes too (`project_files::locate_venue`): the
+/// file at any depth that declares it; else the file at the name's stem;
+/// else a broken file that opens a block for it. One that does not hold the
+/// venue comes back with `broken` set, so the caller can refuse rather than
+/// replace it. `None` means a genuinely new venue.
 pub(super) fn locate_venue_file(
     dir: &std::path::Path,
     name: &str,
@@ -734,48 +763,23 @@ pub(super) fn locate_venue_file(
     if !dir.is_dir() {
         return Ok(None);
     }
-    let stem_file = existing_venue_file(dir, name);
-    // Every venue file at any depth, in path order: the files the lighting
-    // system loads ([`lighting::project_files::venues`]).
-    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS)
-        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-    let mut broken: Option<LocatedVenue> = None;
-    for path in paths {
-        let bytes = crate::util::read_file(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let problem = match std::str::from_utf8(&bytes) {
-            Ok(text) => match lighting::parser::parse_venues(text) {
-                Ok(venues) if venues.contains_key(name) => {
-                    return Ok(Some(LocatedVenue {
-                        path,
-                        bytes,
-                        broken: None,
-                    }))
-                }
-                Ok(_) if stem_file.as_ref() == Some(&path) => {
-                    Some(format!("the file does not define a venue named \"{name}\""))
-                }
-                Ok(_) => None,
-                Err(e) if mentions_venue(text, name) || stem_file.as_ref() == Some(&path) => {
-                    Some(e.to_string())
-                }
-                Err(_) => None,
-            },
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&bytes);
-                (mentions_venue(&lossy, name) || stem_file.as_ref() == Some(&path))
-                    .then(|| "the file is not valid UTF-8".to_string())
-            }
-        };
-        if let (Some(problem), None) = (problem, &broken) {
-            broken = Some(LocatedVenue {
-                path,
-                bytes,
-                broken: Some(problem),
-            });
-        }
-    }
-    Ok(broken)
+    let Some(found) = lighting::project_files::locate_venue(dir, name)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+    else {
+        return Ok(None);
+    };
+    let bytes = crate::util::read_file(&found.path)
+        .map_err(|e| format!("cannot read {}: {e}", found.path.display()))?;
+    let broken = match &found.declares {
+        Ok(names) if names.iter().any(|n| n == name) => None,
+        Ok(_) => Some(format!("the file does not define a venue named \"{name}\"")),
+        Err(e) => Some(e.clone()),
+    };
+    Ok(Some(LocatedVenue {
+        path: found.path,
+        bytes,
+        broken,
+    }))
 }
 
 /// The `If-Match` version a client sent, unquoted.
@@ -806,22 +810,6 @@ pub(super) fn stale_venue_response(
             ),
             "conflict": true,
             "version": current,
-        })),
-    )
-        .into_response()
-}
-
-/// The 409 for a venue file that cannot be patched.
-pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
-            "error": format!(
-                "{file} holds venue \"{name}\" but cannot be edited from here ({why}); fix the \
-                 file by hand first"
-            ),
-            "file": file,
-            "broken": true,
         })),
     )
         .into_response()
@@ -1756,22 +1744,7 @@ pub(super) async fn put_fixture_type(
     // refusal below should land before anything is made on disk.
     let located = locate_fixture_type_file(&dir, &name).await?;
     validate_lighting_name_to_write(&name, located.is_some())?;
-    // The file found for the name must hold it, whatever form the save is
-    // in, as a venue's must: one that does not parse, or holds only other
-    // types, is not replaced, unless the person chose to replace that one
-    // broken file.
-    let replace_broken = query.replace_broken.as_deref();
-    if let Some((path, _)) = &located {
-        require_declares_blocking(
-            "fixture type",
-            &name,
-            path,
-            fixture_types_declared,
-            replace_broken,
-            Acting::Saving,
-        )
-        .await?;
-    }
+    let replace_broken = replace_broken_files(&query);
     // An existing type is saved back to the file it lives in, whatever that
     // file is called; only a new type is named after itself.
     let stem = located
@@ -1899,18 +1872,31 @@ pub(super) async fn put_fixture_type(
         Ok(relative) => lighting_write_path(&dir, &dir.join(relative))?,
         Err(_) => lighting_write_path(&dir, &file_path)?,
     };
+    // The files the save acts on must hold the type, whatever form it is
+    // saved in, as a venue's must: the file found for the name, and the one
+    // written when it is another. One that does not parse, or holds only
+    // other types, is not replaced, unless the person chose to replace it;
+    // every broken one is named at once, so one confirmation covers them.
+    // Each is named by its path in the directory as it was read.
     let located_path = located.as_ref().map(|(path, _)| path.clone());
-    if file_path.exists() && located_path.as_ref() != Some(&file_path) {
-        require_declares_blocking(
-            "fixture type",
-            &name,
-            &file_path,
-            fixture_types_declared,
-            replace_broken,
-            Acting::Saving,
-        )
-        .await?;
+    let target_as_read = file_path
+        .strip_prefix(&dir)
+        .map(|relative| resolved_dir.join(relative))
+        .unwrap_or_else(|_| file_path.clone());
+    let mut acted_on: Vec<std::path::PathBuf> = located_path.iter().cloned().collect();
+    if file_path.exists() && located_path.as_ref() != Some(&target_as_read) {
+        acted_on.push(target_as_read);
     }
+    require_declares_blocking(
+        "fixture type",
+        &name,
+        &resolved_dir,
+        acted_on,
+        fixture_types_declared,
+        &replace_broken,
+        Acting::Saving,
+    )
+    .await?;
     // The other forms of this type are retired, or the loader would register
     // the name twice: each file at the stem in another form that declares
     // this type. One that also declares a type the saved text does not is
@@ -1939,8 +1925,8 @@ pub(super) async fn put_fixture_type(
     // A broken file the person chose to replace, saved in another form, is
     // replaced by the new one: it goes, as a twin does.
     if let Some(path) = located_path.filter(|path| path != &file_path) {
-        let shown = crate::util::filename_display(&path).to_string();
-        if replace_broken == Some(shown.as_str()) && !stale_twins.contains(&path) {
+        let shown = lighting::project_files::display_in(&resolved_dir, &path);
+        if replace_broken.contains(&shown) && !stale_twins.contains(&path) {
             stale_twins.push(path);
         }
     }
@@ -2018,9 +2004,10 @@ pub(super) async fn delete_fixture_type(
     require_declares_blocking(
         "fixture type",
         &name,
-        &file_path,
+        &dir,
+        vec![file_path.clone()],
         fixture_types_declared,
-        query.replace_broken.as_deref(),
+        &replace_broken_files(&query),
         Acting::Deleting,
     )
     .await?;
@@ -2757,7 +2744,7 @@ pub(super) async fn put_venue(
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let saved_in = dir.clone();
     let venue_name = name.clone();
-    let replace_broken = query.replace_broken.clone();
+    let replace_broken = replace_broken_files(&query);
     let outcome = super::helpers::spawn_blocking_io("write venue", move || {
         let name = venue_name;
         let _guard = VENUE_WRITES.blocking_lock();
@@ -2766,21 +2753,6 @@ pub(super) async fn put_venue(
         let located = locate_venue_file(&dir, &name)?;
         if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
             return reply(r);
-        }
-        // The file found for the name must hold it, whichever way the venue
-        // comes: one that does not parse, or holds another venue, is not
-        // replaced.
-        if let Some(l) = &located {
-            if let Err(r) = require_declares(
-                "venue",
-                &name,
-                &l.path,
-                &venues_declared(&l.path),
-                replace_broken.as_deref(),
-                Acting::Saving,
-            ) {
-                return reply(r);
-            }
         }
         if let Some(expected) = &expected {
             let current = located.as_ref().map(LocatedVenue::version);
@@ -2798,10 +2770,14 @@ pub(super) async fn put_venue(
                         Ok(patched) => patched,
                         Err(e) => return reply(bad(e)),
                     },
-                    None => {
-                        let why = l.broken.as_deref().unwrap_or("not valid UTF-8");
-                        return reply(broken_venue_response(&name, &l.file(), why));
-                    }
+                    // A file that does not hold the venue is not patched: the
+                    // venue is written whole, and the rule below decides
+                    // whether that file may be replaced (a broken one the
+                    // person chose to replace) or not.
+                    None => match venue_json_to_dsl(&name, &json_body) {
+                        Ok(dsl) => dsl,
+                        Err(e) => return reply(bad(e)),
+                    },
                 },
                 None => match venue_json_to_dsl(&name, &json_body) {
                     Ok(dsl) => dsl,
@@ -2833,6 +2809,30 @@ pub(super) async fn put_venue(
             Some(l) => l.path.with_extension("venue"),
             None => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
         };
+        // The files the save acts on must hold the venue, whichever way it
+        // comes: the file found for the name, and the one written when it is
+        // another. One that does not parse, or holds another venue, is not
+        // replaced, unless the person chose to replace it; every broken one
+        // is named at once.
+        let mut acted_on: Vec<(std::path::PathBuf, Declares)> = Vec::new();
+        if let Some(l) = &located {
+            acted_on.push((l.path.clone(), venues_declared(&l.path)));
+        }
+        if file_path.exists() && located.as_ref().is_none_or(|l| l.path != file_path) {
+            acted_on.push((file_path.clone(), venues_declared(&file_path)));
+        }
+        let pairs: Vec<(&std::path::Path, &Declares)> =
+            acted_on.iter().map(|(p, d)| (p.as_path(), d)).collect();
+        if let Err(r) = require_declares(
+            "venue",
+            &name,
+            &dir,
+            &pairs,
+            &replace_broken,
+            Acting::Saving,
+        ) {
+            return reply(r);
+        }
         let stale_twin = located
             .as_ref()
             .map(|l| l.path.clone())
@@ -2854,18 +2854,6 @@ pub(super) async fn put_venue(
             Ok(path) => path,
             Err(r) => return reply(r),
         };
-        if file_path.exists() {
-            if let Err(r) = require_declares(
-                "venue",
-                &name,
-                &file_path,
-                &venues_declared(&file_path),
-                replace_broken.as_deref(),
-                Acting::Saving,
-            ) {
-                return reply(r);
-            }
-        }
         config_io::staged_write(&file_path, &dsl)?;
         if let Some(twin) = stale_twin {
             // Best effort: the save is durable already, and a leftover
@@ -3018,9 +3006,9 @@ pub(super) async fn delete_venue(
     require_declares(
         "venue",
         &name,
-        &located.path,
-        &declares,
-        query.replace_broken.as_deref(),
+        &dir,
+        &[(located.path.as_path(), &declares)],
+        &replace_broken_files(&query),
         Acting::Deleting,
     )?;
     // Deleting the file deletes everything in it.
@@ -4944,7 +4932,9 @@ show "test" {
             Some(dir.path().join("par.FIXTURE"))
         );
         assert_eq!(
-            existing_venue_file(dir.path(), "house"),
+            locate_venue_file(dir.path(), "house")
+                .unwrap()
+                .map(|l| l.path),
             Some(dir.path().join("house.VENUE"))
         );
     }
@@ -5241,7 +5231,7 @@ show "test" {
         assert_eq!(parsed["renamed_from"], "Synth Brick");
         let pin = std::fs::read_to_string(
             dir.path()
-                .join("lighting/fixture_types/synth_brick_brick_v2.fixture"),
+                .join("lighting/fixture_types/synth_brick_brick-v2.fixture"),
         )
         .unwrap_or_else(|e| panic!("the newcomer's name is pinned: {e}"));
         assert!(
@@ -7429,7 +7419,7 @@ show "test" {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
-        assert_eq!(parsed["broken"], false);
+        assert_ne!(parsed["broken"], true, "{parsed}");
 
         // Venues: a save and a delete over a broken file; a foreign one.
         let dir = _dir.path().join("v_rb");
@@ -7473,6 +7463,146 @@ show "test" {
                 .contains("would be removed"),
             "{parsed}"
         );
+    }
+
+    /// "Replace it" works for each shape a save comes in: a venue saved as
+    /// JSON (as the web UI saves one) over a broken file writes the venue
+    /// whole; two broken files a fixture type save acts on are named in one
+    /// 409 and replaced together; and a broken file is named by its path in
+    /// the directory, so its namesake in another subdirectory is not it.
+    #[tokio::test]
+    async fn replace_broken_covers_json_twins_and_subdirectories() {
+        let (state, _dir) = test_state();
+        let send = |method: &'static str, uri: String, content_type: &'static str, body: String| {
+            let state = state.clone();
+            async move { fixture_type_request(state, method, uri, content_type, Body::from(body)).await }
+        };
+
+        // A venue saved as JSON over a broken file.
+        let dir = _dir.path().join("v_json");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("club.light"), "venue \"Club\" {\n").unwrap();
+        let form = serde_json::json!({
+            "fixtures": [{"name": "A", "fixture_type": "Par", "universe": 1, "start_channel": 1}]
+        })
+        .to_string();
+        let (status, parsed) = send(
+            "PUT",
+            "/lighting/venues/Club?dir=v_json".into(),
+            "application/json",
+            form.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["broken_files"][0]["file"], "club.light");
+        let (status, parsed) = send(
+            "PUT",
+            "/lighting/venues/Club?dir=v_json&replace_broken=club.light".into(),
+            "application/json",
+            form,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let text = std::fs::read_to_string(dir.join("club.light")).unwrap();
+        assert!(text.contains("venue \"Club\""), "{text}");
+        assert!(lighting::parser::parse_venues(&text).is_ok(), "{text}");
+
+        // Two broken forms of one fixture type: both named, both replaced.
+        let dir = _dir.path().join("ft_two_broken");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Par.fixture"), "fixture_type \"Par\" {\n").unwrap();
+        std::fs::write(
+            dir.join("Par.light"),
+            "fixture_type \"Par\" {\n  channels: 1\n",
+        )
+        .unwrap();
+        let uri = "/lighting/fixture-types/Par?dir=ft_two_broken&ext=light";
+        let (status, parsed) = send(
+            "PUT",
+            uri.into(),
+            "text/plain",
+            sample_fixture_type_dsl("Par"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        let mut named: Vec<String> = parsed["broken_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["file"].as_str().unwrap().to_string())
+            .collect();
+        named.sort();
+        assert_eq!(named, ["Par.fixture", "Par.light"]);
+        let (status, parsed) = send(
+            "PUT",
+            format!("{uri}&replace_broken=Par.fixture,Par.light"),
+            "text/plain",
+            sample_fixture_type_dsl("Par"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Par.light"]);
+
+        // Two broken namesakes in two subdirectories.
+        let dir = _dir.path().join("v_subdirs");
+        for sub in ["a", "b"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+            std::fs::write(dir.join(sub).join("club.light"), "venue \"Club\" {\n").unwrap();
+        }
+        let uri = "/lighting/venues/Club?dir=v_subdirs";
+        let (status, parsed) =
+            send("PUT", uri.into(), "text/plain", sample_venue_dsl("Club")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["file"], "a/club.light");
+        for flag in ["club.light", "b/club.light"] {
+            let (status, _) = send(
+                "PUT",
+                format!("{uri}&replace_broken={flag}"),
+                "text/plain",
+                sample_venue_dsl("Club"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{flag}");
+        }
+        let (status, parsed) = send(
+            "PUT",
+            format!("{uri}&replace_broken=a/club.light"),
+            "text/plain",
+            sample_venue_dsl("Club"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a/club.light")).unwrap(),
+            sample_venue_dsl("Club")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b/club.light")).unwrap(),
+            "venue \"Club\" {\n"
+        );
+
+        // A broken record an older stem named is found by the name it opens.
+        let dir = _dir.path().join("ft_old_stem");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("robe_esprite.fixture"),
+            "fixture_type \"Robe-Esprite\" {\n",
+        )
+        .unwrap();
+        let (status, parsed) = send(
+            "PUT",
+            "/lighting/fixture-types/Robe-Esprite?dir=ft_old_stem&ext=fixture".into(),
+            "text/plain",
+            sample_rich_fixture_type_dsl("Robe-Esprite"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(parsed["file"], "robe_esprite.fixture");
+        assert!(!dir.join("robe-esprite.fixture").exists());
     }
 
     /// A save does not write through a link to nothing, which would create

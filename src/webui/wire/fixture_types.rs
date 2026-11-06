@@ -210,11 +210,25 @@ pub struct TypeVenueFixture {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct LightingFileRefusal {
     pub error: String,
-    /// The file's name.
+    /// The file refused first, by its path in the lighting directory
+    /// (`a/club.light`).
     pub file: String,
-    /// Whether it does not read (and may be replaced).
+    /// Whether every file refused does not read (and may be replaced).
     pub broken: bool,
     pub parse_error: Option<String>,
+    /// Each file that does not read and that the request would act on, to
+    /// name back together in `replace_broken` (comma-separated); empty when
+    /// a file that reads is refused, which nothing replaces.
+    pub broken_files: Vec<BrokenLightingFile>,
+}
+
+/// A lighting file that does not read, by its path in the lighting
+/// directory, and why.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct BrokenLightingFile {
+    pub file: String,
+    pub parse_error: String,
 }
 
 /// A deleted fixture type, and what became of its archive.

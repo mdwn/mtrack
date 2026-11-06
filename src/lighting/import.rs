@@ -70,6 +70,7 @@ pub fn suggested_type_name(name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 pub(crate) use super::mvr_types::fixture_filename_stem;
 
 /// [`crate::util::write_file`] with the path and any deploy hint in the
@@ -361,10 +362,33 @@ pub fn place_in_library(
         }
     };
     let record = if pinned {
-        let mut stem = fixture_filename_stem(&type_name);
+        // The file the name lives in or would be written to, by the one
+        // locate rule the web UI's fixture type editor takes
+        // (`project_files::locate_fixture_type`): one found that does not
+        // hold the type (a broken file an older stem named, half-edited) is
+        // refused by the one rule for the file a save acts on, not given a
+        // twin.
+        if let Some(found) = super::project_files::locate_fixture_type(fixture_dir, &type_name)? {
+            let shown = super::project_files::display_in(fixture_dir, &found.path);
+            if let Err(refusal) =
+                super::project_files::may_act_on(&type_name, &shown, &found.declares, &[])
+            {
+                return Err(format!(
+                    "{} does not define a fixture type named \"{type_name}\" ({}); import under \
+                     another name, or fix or move the file by hand",
+                    found.path.display(),
+                    refusal.why
+                )
+                .into());
+            }
+        }
+        // A new record is named as the web UI names a type's file
+        // (`project_files::name_stem`).
+        let base = super::project_files::name_stem(&type_name);
+        let mut stem = base.clone();
         let mut n = 2;
         while fixture_dir.join(format!("{stem}.fixture")).exists() {
-            stem = format!("{}_{n}", fixture_filename_stem(&type_name));
+            stem = format!("{base}_{n}");
             n += 1;
         }
         let dir_rel = fixture_dir
@@ -595,7 +619,7 @@ mod tests {
         assert_eq!(report.renamed_from.as_deref(), Some("Synth Brick"));
         assert_eq!(
             report.fixture_file.as_deref(),
-            Some("lighting/fixture_types/synth_brick_a_brick_v2.fixture")
+            Some("lighting/fixture_types/synth_brick_a-brick-v2.fixture")
         );
         let library =
             crate::lighting::library::unrecorded_types(&project, Some(&project.join(TYPES)));
@@ -670,6 +694,34 @@ mod tests {
             .to_string();
         assert!(err.contains("already exists"), "{err}");
         assert!(!project.join("lighting/library/other.gdtf").exists());
+    }
+
+    /// A record is named as the web UI names a type's file, and a broken
+    /// file an older stem named for the type (`robe_esprite.fixture` for
+    /// "Robe-Esprite") is found by the name it opens and refused, not given
+    /// a twin.
+    #[test]
+    fn a_named_import_finds_an_old_broken_record_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let a = write_synthetic_gdtf(dir.path());
+
+        let report = import_gdtf(&a, Some("Club-Spot"), &project, TYPES).unwrap();
+        assert_eq!(report.type_name, "Club-Spot");
+        assert!(project.join(TYPES).join("club-spot.fixture").is_file());
+
+        let broken = "fixture_type \"Robe-Esprite\" {\n";
+        std::fs::write(project.join(TYPES).join("robe_esprite.fixture"), broken).unwrap();
+        let err = import_gdtf(&a, Some("Robe-Esprite"), &project, TYPES)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("robe_esprite.fixture"), "{err}");
+        assert!(err.contains("does not read"), "{err}");
+        assert!(!project.join(TYPES).join("robe-esprite.fixture").exists());
+        assert_eq!(
+            std::fs::read_to_string(project.join(TYPES).join("robe_esprite.fixture")).unwrap(),
+            broken
+        );
     }
 
     #[test]

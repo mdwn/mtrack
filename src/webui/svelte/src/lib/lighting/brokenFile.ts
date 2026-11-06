@@ -19,19 +19,20 @@ import { t } from "svelte-i18n";
 import type { LightingFileRefusal } from "../../gen/rules/mtrack_rules";
 import { showConfirm } from "../dialog.svelte";
 
-/** `path` with `replace_broken=<file>` added to its query, when given. */
-export function withReplaceBroken(path: string, file?: string): string {
-  if (!file) return path;
+/** `path` with `replace_broken=<files>` added to its query, when given. */
+export function withReplaceBroken(path: string, files?: string): string {
+  if (!files) return path;
   const join = path.includes("?") ? "&" : "?";
-  return `${path}${join}replace_broken=${encodeURIComponent(file)}`;
+  return `${path}${join}replace_broken=${encodeURIComponent(files)}`;
 }
 
 /**
  * Sends a venue or fixture type save or delete. When the server refuses it
- * because the file it would act on does not read (a 409 carrying the file
- * and its parse error), says so and asks whether to replace (or remove) that
- * file; confirmed, the request goes again naming exactly that file. Any
- * other answer, or a refusal the person keeps, is returned as it came.
+ * because the files it would act on do not read (a 409 naming each, by its
+ * path in the lighting directory, with its parse error), says so and asks
+ * whether to replace (or remove) them; confirmed, the request goes again
+ * naming exactly those files, comma-separated. Any other answer, or a
+ * refusal the person keeps, is returned as it came.
  */
 export async function offeringToReplaceBroken(
   send: (replaceBroken?: string) => Promise<Response>,
@@ -43,24 +44,30 @@ export async function offeringToReplaceBroken(
     .clone()
     .json()
     .catch(() => ({}));
-  if (!body.broken || !body.file || !body.parse_error) return res;
+  const broken = body.broken ? (body.broken_files ?? []) : [];
+  if (broken.length === 0) return res;
   const tr = get(t);
-  const values = { file: body.file, error: body.parse_error };
-  const confirmed = await showConfirm(
-    tr(
+  const [first] = broken;
+  const question =
+    broken.length === 1
+      ? tr(
+          acting === "save"
+            ? "lighting.brokenFileReplace"
+            : "lighting.brokenFileRemove",
+          { values: { file: first.file, error: first.parse_error } },
+        )
+      : tr("lighting.brokenFilesReplace", {
+          values: {
+            files: broken.map((f) => `${f.file} (${f.parse_error})`).join("; "),
+          },
+        });
+  const confirmed = await showConfirm(question, {
+    danger: true,
+    confirmLabel: tr(
       acting === "save"
-        ? "lighting.brokenFileReplace"
-        : "lighting.brokenFileRemove",
-      { values },
+        ? "lighting.brokenFileReplaceLabel"
+        : "lighting.brokenFileRemoveLabel",
     ),
-    {
-      danger: true,
-      confirmLabel: tr(
-        acting === "save"
-          ? "lighting.brokenFileReplaceLabel"
-          : "lighting.brokenFileRemoveLabel",
-      ),
-    },
-  );
-  return confirmed ? send(body.file) : res;
+  });
+  return confirmed ? send(broken.map((f) => f.file).join(",")) : res;
 }

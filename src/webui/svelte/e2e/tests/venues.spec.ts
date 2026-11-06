@@ -13,6 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
+import type { LightingFileRefusal } from "../../src/gen/rules/mtrack_rules";
 
 test.describe("Venues Management", () => {
   test.beforeEach(async ({ page }) => {
@@ -113,6 +114,55 @@ test.describe("Venues Management", () => {
       .getByRole("button", { name: "Save" })
       .click();
     await requestPromise;
+  });
+
+  test("a venue save over files that do not read offers to replace them", async ({
+    page,
+  }) => {
+    // The server names every broken file the save would act on, by its path
+    // in the venues directory; one confirmation names them all back.
+    const puts: string[] = [];
+    await page.route("**/api/lighting/venues/*", async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      const url = route.request().url();
+      puts.push(url);
+      if (url.includes("replace_broken=")) {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "saved" }),
+        });
+      }
+      return route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: 'a/club.light and club.venue do not define venue "Club"',
+          file: "a/club.light",
+          broken: true,
+          parse_error: "line 1: expected }",
+          broken_files: [
+            { file: "a/club.light", parse_error: "line 1: expected }" },
+            { file: "club.venue", parse_error: "line 4: unknown fixture" },
+          ],
+        } satisfies LightingFileRefusal),
+      });
+    });
+
+    await page.locator('[data-testid^="venue-edit-"]').first().click();
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click();
+    const dialog = page.locator(".dialog-overlay");
+    await expect(dialog).toContainText(
+      "These files don't read: a/club.light (line 1: expected }); club.venue (line 4: unknown fixture). Replace them?",
+    );
+    await dialog.getByRole("button", { name: "Replace it" }).click();
+    await expect.poll(() => puts.length).toBe(2);
+    expect(decodeURIComponent(puts[1])).toContain(
+      "replace_broken=a/club.light,club.venue",
+    );
   });
 
   test("cancel button closes venue editor", async ({ page }) => {

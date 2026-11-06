@@ -101,26 +101,20 @@ pub fn files_under(dir: &Path, extensions: &[&str]) -> std::io::Result<Vec<PathB
 }
 
 /// The stem a venue or fixture type file takes for a name, as a new file is
-/// named and an existing one is found at it: lowercase, with spaces and
-/// anything but letters, digits, `_` and `-` as `_` (`Club-2` is `club-2`).
+/// named (by the web UI and the MVR and GDTF imports) and an existing one is
+/// found at it: lowercase, with each run of spaces and anything but letters,
+/// digits and `-` as one `_`, none at either end (`Club-2` is `club-2`,
+/// `Synth Brick (twin)` is `synth_brick_twin`).
 pub fn name_stem(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            ' ' => '_',
-            c if c.is_alphanumeric() || c == '_' || c == '-' => c,
-            _ => '_',
-        })
-        .collect::<String>()
-        .to_lowercase()
-}
-
-/// The venue file at `name`'s stem ([`name_stem`]) directly in `dir`, in
-/// any case (`util::files_at_stem`), `.venue` before `.light`: the file a
-/// save of the venue would write when no file declares it.
-pub fn venue_file_at_stem(dir: &Path, name: &str) -> Option<PathBuf> {
-    crate::util::files_at_stem(dir, &name_stem(name), VENUE_EXTENSIONS)
-        .into_iter()
-        .next()
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() || c == '-' {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_end_matches('_').to_string()
 }
 
 /// What a lighting file declares, or why it does not read.
@@ -146,7 +140,8 @@ pub fn venues_declared(path: &Path) -> Declares {
 /// Why a save or delete of a name may not act on a file ([`may_act_on`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refusal {
-    /// The file's name.
+    /// The file, as the person is shown it and names it back: its path in
+    /// the directory it was found in (`a/club.light`).
     pub file: String,
     /// What is wrong with it: `it holds "Other"`, `it does not read: …`.
     pub why: String,
@@ -157,17 +152,19 @@ pub struct Refusal {
 
 /// The one rule for a venue or fixture type file that a save or delete of
 /// `name` would act on (write over, rewrite or remove), wherever it is
-/// asked: the web UI's saves and deletes, and the MVR import. Only a file
-/// that declares `name`; one that holds only other names is refused, and so
-/// is one that does not read, unless `replace_broken` names exactly that
-/// file (a person who was shown its parse error and chose to replace it).
+/// asked: the web UI's saves and deletes, and the MVR and GDTF imports.
+/// Only a file that declares `name`; one that holds only other names is
+/// refused, and so is one that does not read, unless `replace_broken`
+/// names exactly that file (a person who was shown its parse error and
+/// chose to replace it). `shown` is the file as the person sees it: its
+/// path in its directory ([`display_in`]), so one of two alike-named files
+/// in two subdirectories is never taken for the other.
 pub fn may_act_on(
     name: &str,
-    file: &Path,
+    shown: &str,
     declares: &Declares,
-    replace_broken: Option<&str>,
+    replace_broken: &[String],
 ) -> Result<(), Refusal> {
-    let shown = crate::util::filename_display(file).to_string();
     let (why, parse_error) = match declares {
         Ok(names) if names.iter().any(|n| n == name) => return Ok(()),
         Ok(names) if names.is_empty() => ("it defines nothing".to_string(), None),
@@ -176,14 +173,85 @@ pub fn may_act_on(
             names.sort();
             (format!("it holds {}", names.join(", ")), None)
         }
-        Err(_) if replace_broken == Some(shown.as_str()) => return Ok(()),
+        Err(_) if replace_broken.iter().any(|f| f == shown) => return Ok(()),
         Err(e) => (format!("it does not read: {e}"), Some(e.clone())),
     };
     Err(Refusal {
-        file: shown,
+        file: shown.to_string(),
         why,
         parse_error,
     })
+}
+
+/// A file found for a name ([`locate_venue`], [`locate_fixture_type`]),
+/// and what it declares.
+#[derive(Clone, Debug)]
+pub struct Located {
+    pub path: PathBuf,
+    pub declares: Declares,
+}
+
+/// Whether some line of `text` opens a `keyword "name"` block.
+fn mentions(text: &str, keyword: &str, name: &str) -> bool {
+    let header = format!("{keyword} \"{name}\"");
+    text.lines().any(|l| l.trim_start().starts_with(&header))
+}
+
+/// The one rule for the file a name lives in, or would be written to, in a
+/// lighting directory: the first file at any depth that declares it (as
+/// the lighting system loads it); else the file at the name's stem
+/// ([`name_stem`], in any case); else a file that does not read but opens a
+/// block for the name (one an older stem named, half-edited). `None` is a
+/// name no file holds or claims.
+fn locate(
+    dir: &Path,
+    name: &str,
+    extensions: &[&str],
+    keyword: &str,
+    declared: fn(&Path) -> Declares,
+) -> std::io::Result<Option<Located>> {
+    let mut broken_mention = None;
+    for path in files_under(dir, extensions)? {
+        let declares = declared(&path);
+        match &declares {
+            Ok(names) if names.iter().any(|n| n == name) => {
+                return Ok(Some(Located { path, declares }))
+            }
+            Err(_) if broken_mention.is_none() => {
+                let text = crate::util::read_file(&path).unwrap_or_default();
+                if mentions(&String::from_utf8_lossy(&text), keyword, name) {
+                    broken_mention = Some(Located { path, declares });
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(path) = crate::util::files_at_stem(dir, &name_stem(name), extensions)
+        .into_iter()
+        .next()
+    {
+        let declares = declared(&path);
+        return Ok(Some(Located { path, declares }));
+    }
+    Ok(broken_mention)
+}
+
+/// The venue file `name` lives in, or would be written to ([`locate`]):
+/// for the web UI's venue editor and the MVR import alike.
+pub fn locate_venue(dir: &Path, name: &str) -> std::io::Result<Option<Located>> {
+    locate(dir, name, VENUE_EXTENSIONS, "venue", venues_declared)
+}
+
+/// The fixture type file `name` lives in, or would be written to
+/// ([`locate`]): for the web UI's fixture type editor and the GDTF import.
+pub fn locate_fixture_type(dir: &Path, name: &str) -> std::io::Result<Option<Located>> {
+    locate(
+        dir,
+        name,
+        FIXTURE_TYPE_EXTENSIONS,
+        "fixture_type",
+        fixture_types_declared,
+    )
 }
 
 /// A file that could not be read or parsed, or a name two files declare.
@@ -357,12 +425,50 @@ pub fn fixture_types(project: &Path, types_dir: Option<&Path>) -> ProjectTypes {
 mod tests {
     use super::*;
 
+    /// The one locate rule: a declaring file at any depth, else the file
+    /// at the stem, else a broken file opening a block for the name (as an
+    /// older stem left it: `club_2.venue` for "Club-2").
+    #[test]
+    fn locate_finds_declared_then_stem_then_a_broken_mention() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write(d, "club_2.venue", "venue \"Club-2\" {\n");
+        let found = locate_venue(d, "Club-2").unwrap().expect("found");
+        assert_eq!(found.path, d.join("club_2.venue"));
+        assert!(found.declares.is_err());
+
+        write(d, "club-2.venue", "venue \"Other\" {\n}\n");
+        assert_eq!(
+            locate_venue(d, "Club-2").unwrap().unwrap().path,
+            d.join("club-2.venue")
+        );
+
+        write(d, "tour/x.venue", "venue \"Club-2\" {\n}\n");
+        assert_eq!(
+            locate_venue(d, "Club-2").unwrap().unwrap().path,
+            d.join("tour/x.venue")
+        );
+
+        write(
+            d,
+            "robe_esprite.fixture",
+            "fixture_type \"Robe-Esprite\" {\n",
+        );
+        let found = locate_fixture_type(d, "Robe-Esprite")
+            .unwrap()
+            .expect("found");
+        assert_eq!(found.path, d.join("robe_esprite.fixture"));
+        assert!(locate_venue(d, "Nowhere").unwrap().is_none());
+    }
+
     /// A name's stem, for the web UI's saves and the MVR import alike.
     #[test]
     fn name_stem_keeps_dashes() {
         assert_eq!(name_stem("Club-2"), "club-2");
         assert_eq!(name_stem("Main Hall"), "main_hall");
         assert_eq!(name_stem("a/b.c"), "a_b_c");
+        assert_eq!(name_stem("Synth Brick (twin)"), "synth_brick_twin");
+        assert_eq!(name_stem("my_fixture__01"), "my_fixture_01");
     }
 
     /// The one rule for a file a save or delete acts on: one declaring the
@@ -370,18 +476,21 @@ mod tests {
     /// that reads and holds other names.
     #[test]
     fn may_act_on_a_broken_file_only_when_named() {
-        let file = Path::new("dir/Par.light");
+        let file = "a/Par.light";
         let broken: Declares = Err("line 2: expected }".to_string());
         let foreign: Declares = Ok(vec!["Spot".to_string()]);
         let own: Declares = Ok(vec!["Par".to_string(), "Spot".to_string()]);
+        let named = |files: &[&str]| files.iter().map(|f| f.to_string()).collect::<Vec<_>>();
 
-        assert!(may_act_on("Par", file, &own, None).is_ok());
-        let refused = may_act_on("Par", file, &broken, None).unwrap_err();
-        assert_eq!(refused.file, "Par.light");
+        assert!(may_act_on("Par", file, &own, &[]).is_ok());
+        let refused = may_act_on("Par", file, &broken, &[]).unwrap_err();
+        assert_eq!(refused.file, "a/Par.light");
         assert_eq!(refused.parse_error.as_deref(), Some("line 2: expected }"));
-        assert!(may_act_on("Par", file, &broken, Some("Par.light")).is_ok());
-        assert!(may_act_on("Par", file, &broken, Some("Other.light")).is_err());
-        let refused = may_act_on("Par", file, &foreign, Some("Par.light")).unwrap_err();
+        assert!(may_act_on("Par", file, &broken, &named(&["b/x.light", "a/Par.light"])).is_ok());
+        // Named by its path in the directory: another subdirectory's file
+        // of that name is not it.
+        assert!(may_act_on("Par", file, &broken, &named(&["Par.light", "b/Par.light"])).is_err());
+        let refused = may_act_on("Par", file, &foreign, &named(&["a/Par.light"])).unwrap_err();
         assert_eq!(refused.parse_error, None);
         assert!(refused.why.contains("\"Spot\""), "{refused:?}");
     }
