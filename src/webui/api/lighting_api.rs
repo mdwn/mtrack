@@ -1786,10 +1786,17 @@ pub(super) async fn put_fixture_type(
         .map(|(path, _)| path.clone())
         .filter(|path| is_form(path))
         .or_else(|| at_stem.iter().find(|path| is_form(path)).cloned());
+    // Only the type's own file is its to rewrite whole; a file at its stem
+    // that does not declare it (`existing_fixture_type_file`'s fallback)
+    // holds someone else's types.
+    let own_file = located
+        .as_ref()
+        .map(|(path, _)| path)
+        .filter(|path| declared_fixture_types(path).contains(&name));
     if let Some(path) = &in_form {
         let mut others = declared_fixture_types(path);
         others.retain(|n| n != &name);
-        if !others.is_empty() && located.as_ref().is_none_or(|(l, _)| l != path) {
+        if !others.is_empty() && own_file != Some(path) {
             others.sort();
             return Err(shared_fixture_type_file_response(
                 &name,
@@ -6983,6 +6990,40 @@ show "test" {
             std::fs::read_to_string(ft_dir.join("Par.light")).unwrap(),
             both
         );
+    }
+
+    /// A new type does not overwrite a file at its stem that holds another
+    /// type, as raw text or from the form.
+    #[tokio::test]
+    async fn a_new_type_does_not_overwrite_a_stray_file_at_its_stem() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_stray");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("par.light"), sample_fixture_type_dsl("Spot")).unwrap();
+
+        let form = serde_json::json!({"channels": {"red": 1}});
+        for (content_type, body) in [
+            ("text/plain", Body::from(sample_fixture_type_dsl("par"))),
+            (
+                "application/json",
+                Body::from(serde_json::to_vec(&form).unwrap()),
+            ),
+        ] {
+            let (status, parsed) = fixture_type_request(
+                state.clone(),
+                "PUT",
+                "/lighting/fixture-types/par?dir=ft_stray".to_string(),
+                content_type,
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{content_type}: {parsed}");
+            assert_eq!(
+                std::fs::read_to_string(ft_dir.join("par.light")).unwrap(),
+                sample_fixture_type_dsl("Spot"),
+                "{content_type}"
+            );
+        }
     }
 
     /// A form already at the stem in another spelling is written in place,
