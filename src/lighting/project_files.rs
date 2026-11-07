@@ -102,16 +102,6 @@ impl<T> Declarations<T> {
     pub fn get(&self, name: &str) -> Option<&Declared<T>> {
         self.items.iter().find(|d| d.name == name)
     }
-
-    /// The names every file declares, including the one the duplicate
-    /// rule set aside — what a file holds, for a caller rewriting it whole.
-    pub fn names_in(&self, file: &Path) -> Vec<String> {
-        self.items
-            .iter()
-            .filter(|d| d.file == file)
-            .map(|d| d.name.clone())
-            .collect()
-    }
 }
 
 /// How a file is shown in a problem: relative to the directory read, so a
@@ -126,8 +116,9 @@ pub fn display_in(dir: &Path, file: &Path) -> String {
 fn declarations<T>(
     dir: &Path,
     extensions: &[&str],
-    kind: &str,
-    parse: impl Fn(&str) -> Result<HashMap<String, T>, Box<dyn std::error::Error>>,
+    noun: &str,
+    kind: super::parser::ItemKind,
+    parse: impl Fn(&str) -> super::parser::Listed<T>,
 ) -> Declarations<T> {
     let mut out = Declarations::default();
     let mut duplicates = Vec::new();
@@ -136,8 +127,8 @@ fn declarations<T>(
         let parsed = crate::util::read_to_string(&file)
             .map_err(|e| e.to_string())
             .and_then(|text| parse(&text).map_err(|e| e.to_string()));
-        let declared = match parsed {
-            Ok(declared) => declared,
+        let (declared, listed) = match parsed {
+            Ok(parsed) => parsed,
             Err(error) => {
                 out.record.push(file.clone(), Err(error.clone()));
                 out.problems.push(FileProblem { file, error });
@@ -147,14 +138,24 @@ fn declarations<T>(
         // A file's own declarations in name order, so the result does not
         // depend on hash order.
         let declared: BTreeMap<String, T> = declared.into_iter().collect();
-        out.record
-            .push(file.clone(), Ok(declared.keys().cloned().collect()));
+        // Every block of this kind by name, a repeat included (the parse
+        // kept its last), and every other item: what says whether the file
+        // is one name's alone.
+        let (names, others): (Vec<_>, Vec<_>) =
+            listed.into_iter().partition(|item| item.kind == kind);
+        out.record.push(
+            file.clone(),
+            Ok(super::files::Contents {
+                names: names.into_iter().filter_map(|item| item.name).collect(),
+                others,
+            }),
+        );
         for (name, item) in declared {
             if let Some(first) = taken.get(&name) {
                 duplicates.push(FileProblem {
                     file: file.clone(),
                     error: format!(
-                        "{kind} \"{name}\" is defined in both {} and {}",
+                        "{noun} \"{name}\" is defined in both {} and {}",
                         display_in(dir, first),
                         display_in(dir, &file)
                     ),
@@ -175,16 +176,24 @@ fn declarations<T>(
 
 /// The fixture type files under `dir`, recursively.
 pub fn type_files(dir: &Path) -> Declarations<FixtureType> {
-    declarations(dir, FIXTURE_TYPE_EXTENSIONS, "fixture type", |text| {
-        super::parser::parse_fixture_types(text)
-    })
+    declarations(
+        dir,
+        FIXTURE_TYPE_EXTENSIONS,
+        "fixture type",
+        super::parser::ItemKind::FixtureType,
+        super::parser::parse_fixture_types_listed,
+    )
 }
 
 /// The venue files under `dir`, recursively.
 pub fn venues(dir: &Path) -> Declarations<Venue> {
-    declarations(dir, VENUE_EXTENSIONS, "venue", |text| {
-        super::parser::parse_venues(text)
-    })
+    declarations(
+        dir,
+        VENUE_EXTENSIONS,
+        "venue",
+        super::parser::ItemKind::Venue,
+        super::parser::parse_venues_listed,
+    )
 }
 
 /// The project's fixture types: every type file under `types_dir` and every

@@ -890,20 +890,18 @@ fn find_existing_venue(
         return Ok(Some((declared.file.clone(), declared.item.clone())));
     }
     // The file the venue would be written to holds something else: other
-    // venues, or text that does not parse (a file that parsed declares its
-    // names, whichever rule set them aside).
+    // venues, or text that does not parse, as the read recorded it.
     let stem = crate::lighting::files::stem(venue_name);
     for extension in ["venue", "light"] {
         let path = project.join(venues_dir).join(format!("{stem}.{extension}"));
         if !path.exists() {
             continue;
         }
-        let holds = venues.names_in(&path);
-        if holds.is_empty() {
-            if let Some(problem) = venues.problems.iter().find(|p| p.file == path) {
-                return Err(format!("{} does not parse: {}", path.display(), problem.error).into());
-            }
+        let read = venues.record.files().iter().find(|read| read.file == path);
+        if let Some(Err(error)) = read.map(|read| &read.declared) {
+            return Err(format!("{} does not parse: {error}", path.display()).into());
         }
+        let holds = venues.record.names_in(&path).unwrap_or_default();
         return Err(format!(
             "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
              import under a different --name",

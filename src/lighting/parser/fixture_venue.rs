@@ -26,13 +26,91 @@ use super::utils::{items, split_unit};
 use pest::iterators::Pair;
 use pest::Parser;
 
+/// The kind of one top-level item of a lighting file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Include,
+    FixtureType,
+    Venue,
+    Show,
+    Sequence,
+    Tempo,
+}
+
+impl ItemKind {
+    /// The keyword the item starts with.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ItemKind::Include => "include",
+            ItemKind::FixtureType => "fixture_type",
+            ItemKind::Venue => "venue",
+            ItemKind::Show => "show",
+            ItemKind::Sequence => "sequence",
+            ItemKind::Tempo => "tempo",
+        }
+    }
+}
+
+/// One top-level item of a lighting file, in file order: its kind and its
+/// name (an include's path; none for a tempo or an unnamed show).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileItem {
+    pub kind: ItemKind,
+    pub name: Option<String>,
+}
+
+impl std::fmt::Display for FileItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "{} \"{name}\"", self.kind.keyword()),
+            None => f.write_str(self.kind.keyword()),
+        }
+    }
+}
+
+/// A file's blocks of one kind by name, and every top-level item it holds.
+pub type Listed<T> = Result<(HashMap<String, T>, Vec<FileItem>), Box<dyn Error>>;
+
+/// The top-level item `pair` is, if it is one.
+fn file_item(pair: &Pair<Rule>) -> Option<FileItem> {
+    let kind = match pair.as_rule() {
+        Rule::include => ItemKind::Include,
+        Rule::fixture_type => ItemKind::FixtureType,
+        Rule::venue => ItemKind::Venue,
+        Rule::light_show => ItemKind::Show,
+        Rule::sequence => ItemKind::Sequence,
+        Rule::tempo => ItemKind::Tempo,
+        _ => return None,
+    };
+    let name = pair
+        .clone()
+        .into_inner()
+        .next()
+        .filter(|inner| {
+            matches!(
+                inner.as_rule(),
+                Rule::string | Rule::fixture_type_name | Rule::show_name | Rule::sequence_name
+            )
+        })
+        .map(extract_string);
+    Some(FileItem { kind, name })
+}
+
 pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
+    parse_fixture_types_listed(content).map(|(types, _)| types)
+}
+
+/// [`parse_fixture_types`], with every top-level item of the file in file
+/// order — a repeated type twice, though only its last block is kept.
+pub fn parse_fixture_types_listed(content: &str) -> Listed<FixtureType> {
     let mut fixture_types = HashMap::new();
+    let mut listed = Vec::new();
 
     let pairs = LightingParser::parse(Rule::file, content)
         .map_err(|e| describe_pest_error_in("Fixture types DSL", &e, content))?;
 
     for pair in items(pairs) {
+        listed.extend(file_item(&pair));
         if pair.as_rule() == Rule::fixture_type {
             let fixture_type = parse_fixture_type_definition(pair)
                 .map_err(|e| format!("Failed to parse fixture type definition: {}", e))?;
@@ -40,16 +118,24 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
         }
     }
 
-    Ok(fixture_types)
+    Ok((fixture_types, listed))
 }
 
 pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
+    parse_venues_listed(content).map(|(venues, _)| venues)
+}
+
+/// [`parse_venues`], with every top-level item of the file in file order —
+/// a repeated venue twice, though only its last block is kept.
+pub fn parse_venues_listed(content: &str) -> Listed<Venue> {
     let mut venues = HashMap::new();
+    let mut listed = Vec::new();
 
     let pairs = LightingParser::parse(Rule::file, content)
         .map_err(|e| describe_pest_error_in("Venues DSL", &e, content))?;
 
     for pair in items(pairs) {
+        listed.extend(file_item(&pair));
         if pair.as_rule() == Rule::venue {
             let venue = parse_venue_definition(pair)
                 .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
@@ -57,7 +143,7 @@ pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Err
         }
     }
 
-    Ok(venues)
+    Ok((venues, listed))
 }
 
 fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dyn Error>> {

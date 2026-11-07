@@ -167,6 +167,18 @@ fn not_a_file(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Says which files declare a name twice: the parse keeps the last block,
+/// as it always has, and the file is read-only to the web UI.
+fn warn_of_repeats(record: &files::Record, noun: &str) {
+    for (file, name) in record.repeats() {
+        warn!(
+            file = %file.display(),
+            name,
+            "The file declares this {noun} more than once; the last one loads"
+        );
+    }
+}
+
 /// Why [`LightingSystem::type_in_mode`] has no type to drive.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeInModeError {
@@ -567,6 +579,7 @@ impl LightingSystem {
     fn load_fixture_types_directory(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
         not_a_file(dir)?;
         let read = super::project_files::type_files(dir);
+        warn_of_repeats(&read.record, "fixture type");
         self.fixture_type_record = read.record;
         for declared in read.items {
             self.load_fixture_type(declared.name, declared.item, &declared.file);
@@ -594,6 +607,7 @@ impl LightingSystem {
     fn load_venues_directory(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
         not_a_file(dir)?;
         let read = super::project_files::venues(dir);
+        warn_of_repeats(&read.record, "venue");
         self.venue_record = read.record;
         for declared in read.items {
             info!(venue = declared.name.as_str(), "Loading venue");

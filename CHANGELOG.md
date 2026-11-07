@@ -152,14 +152,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **One file name rule for venues and fixture types** (`lighting::files::stem`): lowercase;
-  letters, digits and `-` kept; any other run of characters one `_`; no `_` at either end;
-  `untitled` when nothing is left. It replaces the web UI's rule and the importers' rule, which
+- **One file name rule for venues and fixture types** (`lighting::files::stem`): the name is
+  NFC-normalised, so "Café Par" typed on a Mac (decomposed, `e` and a combining accent) and
+  elsewhere give one stem, `café_par`; lowercase; letters, digits and `-` kept; any other run of
+  characters one `_`; no `_` at either end; at most 247 bytes, cut on a character boundary, so
+  the file name with `.fixture` fits in 255 bytes (a 300-letter name gives a 247-letter stem);
+  `untitled` when nothing is left. A letter whose lowercase adds a mark keeps only the letter:
+  "İstanbul" gives `istanbul`. It replaces the web UI's rule and the importers' rule, which
   differed. Files already there load and are found by what they declare, as before; only the
   name a new file is given, and the file looked at for a name no file declares, change:
   - A new fixture type saved in the web UI (`PUT /api/lighting/fixture-types/<name>`) and a new
     venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: "Wash (Front)" is
     written as `wash_front.light` (or `.fixture`, `.venue`), where it was `wash__front_.light`.
+    A name of nothing but punctuation ("///") is written as `untitled.light`, where it was
+    `___.light`. A name too long for a file name is cut to fit, where the save failed.
   - A GDTF imported under a pinned name (`mtrack import-gdtf --name`, the web UI's GDTF import,
     MCP `import_gdtf`) and a record the Fixture settings save writes for a library fixture keep
     `-` and letters outside ASCII: "Astera-PixelBrick" is written as
