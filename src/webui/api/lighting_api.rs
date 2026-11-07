@@ -182,8 +182,9 @@ pub(super) struct GdtfImportQuery {
 /// its modes straight away. Answers the import report
 /// (`already_imported` when the same archive was imported before and
 /// nothing was written; `renamed_from` when the archive's fixture name was
-/// taken). A different archive of the same file name already in the library
-/// is a 409; anything else refused is a 400.
+/// taken). A different archive of the same file name already in the library,
+/// or a record name or file that is taken, is a 409; anything else refused
+/// is a 400.
 pub(super) async fn import_gdtf(
     State(state): State<WebUiState>,
     Query(query): Query<GdtfImportQuery>,
@@ -207,7 +208,10 @@ pub(super) async fn import_gdtf(
                 DEFAULT_FIXTURE_TYPES_DIR,
             )
             .map_err(|e| {
-                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
+                // A taken archive file name or record name is a conflict.
+                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some()
+                    || e.downcast_ref::<lighting::files::Refusal>().is_some()
+                {
                     StatusCode::CONFLICT
                 } else {
                     StatusCode::BAD_REQUEST
@@ -4523,8 +4527,8 @@ show "test" {
             .exists());
         assert!(dir.path().join("lighting/.cache").is_dir());
 
-        // A name another fixture has is the caller's error, not a server
-        // fault.
+        // A name another fixture has is a conflict naming its file, not a
+        // server fault; so is a name whose file another type has.
         let other = crate::lighting::gdtf::build_zip(&[(
             "description.xml",
             crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
@@ -4532,10 +4536,18 @@ show "test" {
                 .as_bytes(),
         )]);
         let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
-        assert!(
-            parsed["error"].as_str().unwrap().contains("already exists"),
-            "{parsed}"
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "fixture type \"Brick\" is already declared in brick.fixture; choose another name"
+        );
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=BRICK%201").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=brick_1").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "brick_1.fixture is taken by \"BRICK 1\"; choose another name"
         );
     }
 

@@ -254,6 +254,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The harness's files stay editable where they are: `astera_pixelbrick.fixture` (declaring
     "Astera-PixelBrick", whose own file would be `astera-pixelbrick.fixture`), `built-in.venue` and
     `test.venue`.
+- **The importers and fixture settings write venue and fixture type files by the web UI's
+  rules**: a new record or venue is claimed at its own file, an existing one is written only
+  where its file is its alone, and nothing is suffixed. What changes:
+  - A GDTF import that pins a name (`mtrack import-gdtf --name`, `POST /api/lighting/gdtf/import?name=`,
+    MCP `import_gdtf`, an MVR import's `Name (stem)`) writes its record at `<stem>.fixture` only
+    if that file, and every file of its stem in another case, is free: importing "Par" when
+    `par.fixture` holds "Old Par" is refused with "par.fixture is taken by "Old Par"; choose
+    another name", where it wrote `par_2.fixture`; "wash" when `Wash.fixture` is there is refused
+    too, where Linux wrote `wash.fixture` beside it. A name another type declares (in any case)
+    is refused naming its file ("fixture type "Brick" is already declared in brick.fixture"), and
+    the web import answers these with 409, where it answered 400. The record is made with
+    `create_new`, never written over one made meanwhile. The library's own naming of an
+    unrecorded archive ("Synth Brick (v2)", `#2`) is unchanged.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

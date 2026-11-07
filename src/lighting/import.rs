@@ -327,10 +327,12 @@ pub fn place_in_library(
                 .any(|t| t.name == candidate && t.archive != archive)
     };
     let (type_name, renamed_from, pinned) = match name {
+        // Whether a name given is free is the record's claim's to say.
         Some(name) => {
-            if taken(name, claimed) {
+            if claimed.contains(name) {
                 return Err(format!(
-                    "a fixture called \"{name}\" already exists; import it under another name"
+                    "this import already names another fixture \"{name}\"; import it under \
+                     another name"
                 )
                 .into());
             }
@@ -358,18 +360,21 @@ pub fn place_in_library(
             }
         }
     };
+    // A pinned name's record is a new file, claimed by the one rule for
+    // new type files: at `<stem>.fixture`, refused (naming the file) when
+    // the name is declared, another archive's library name, or its file
+    // (in any case) is there. Never a suffixed file beside it.
     let record = if pinned {
-        let mut stem = super::files::stem(&type_name);
-        let mut n = 2;
-        while fixture_dir.join(format!("{stem}.fixture")).exists() {
-            stem = format!("{}_{n}", super::files::stem(&type_name));
-            n += 1;
-        }
-        let dir_rel = fixture_dir
-            .strip_prefix(project)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| fixture_dir.to_string_lossy().into_owned());
-        Some(format!("{}/{stem}.fixture", dir_rel.trim_end_matches('/')))
+        let claim =
+            super::files::claim_record_for(fixture_dir, &archive, &type_name, &library.types)?;
+        Some(
+            claim
+                .path()
+                .strip_prefix(project)
+                .unwrap_or(claim.path())
+                .to_string_lossy()
+                .into_owned(),
+        )
     } else {
         None
     };
@@ -406,7 +411,15 @@ pub fn write_library_entry(
         if !parsed.contains_key(&entry.name) {
             return Err(format!("the record for \"{}\" did not read back", entry.name).into());
         }
-        write(&path, text.as_bytes())?;
+        // Made new, as it was claimed: one there by now is refused, never
+        // written over.
+        crate::util::write_new_file(&path, text.as_bytes()).map_err(|e| -> Box<dyn Error> {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("{record} is there now; choose another name").into()
+            } else {
+                annotate(crate::util::WriteTarget::File(&path), e)
+            }
+        })?;
     }
     Ok(())
 }
@@ -657,8 +670,130 @@ mod tests {
         let err = import_gdtf_bytes(&bytes, "other.gdtf", Some("Twin"), &project, TYPES)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("already exists"), "{err}");
+        assert!(
+            err.contains("\"Twin\" is already declared in twin.fixture"),
+            "{err}"
+        );
         assert!(!project.join("lighting/library/other.gdtf").exists());
+    }
+
+    /// The files in the types directory, by name.
+    fn type_files_in(project: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(project.join(TYPES))
+            .map(|entries| {
+                entries
+                    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_pinned_name_whose_file_is_taken_is_refused_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let gdtf = write_synthetic_gdtf(dir.path());
+        std::fs::create_dir_all(project.join(TYPES)).unwrap();
+        // `par.fixture` holds another type: the name "Par" is free, its
+        // file is not.
+        std::fs::write(
+            project.join(TYPES).join("par.fixture"),
+            "fixture_type \"Old Par\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .unwrap();
+
+        let err = import_gdtf(&gdtf, Some("Par"), &project, TYPES)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            err,
+            "par.fixture is taken by \"Old Par\"; choose another name"
+        );
+        assert_eq!(type_files_in(&project), ["par.fixture"], "no par_2.fixture");
+        assert!(
+            !project.join("lighting/library").exists(),
+            "nothing is written when the record is refused"
+        );
+    }
+
+    #[test]
+    fn a_pinned_name_whose_file_is_there_in_another_case_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let gdtf = write_synthetic_gdtf(dir.path());
+        std::fs::create_dir_all(project.join(TYPES)).unwrap();
+        std::fs::write(
+            project.join(TYPES).join("Wash.fixture"),
+            "fixture_type \"Big Wash\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+        )
+        .unwrap();
+
+        let err = import_gdtf(&gdtf, Some("wash"), &project, TYPES)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            err,
+            "Wash.fixture is taken by \"Big Wash\"; choose another name"
+        );
+        assert_eq!(type_files_in(&project), ["Wash.fixture"]);
+    }
+
+    #[test]
+    fn a_pinned_name_another_archive_has_in_the_library_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let first = write_synthetic_gdtf(dir.path());
+        import_gdtf(&first, None, &project, TYPES).unwrap();
+
+        let other = synthetic_bytes("Other Brick");
+        let err = import_gdtf_bytes(&other, "other.gdtf", Some("Synth Brick"), &project, TYPES)
+            .unwrap_err();
+
+        assert!(err
+            .downcast_ref::<crate::lighting::files::Refusal>()
+            .is_some());
+        assert_eq!(
+            err.to_string(),
+            "\"Synth Brick\" is the GDTF library type in lighting/library/synth.gdtf; choose \
+             another name"
+        );
+        assert!(!project.join("lighting/library/other.gdtf").exists());
+        assert_eq!(type_files_in(&project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_newcomer_s_stem_name_whose_file_is_taken_is_refused_not_suffixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let first = write_synthetic_gdtf(dir.path());
+        import_gdtf(&first, None, &project, TYPES).unwrap();
+        std::fs::create_dir_all(project.join(TYPES)).unwrap();
+        std::fs::write(
+            project.join(TYPES).join("synth_brick_v2.fixture"),
+            "# notes kept by hand\n",
+        )
+        .unwrap();
+
+        // The library names the newcomer "Synth Brick (v2)", as before; its
+        // record's file is taken, so the import is refused.
+        let other = crate::testutil::lighting::synthetic_gdtf_of(
+            &crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("mtrack synthetic", "mtrack synthetic v2"),
+        );
+        let err = import_gdtf_bytes(&other, "v2.gdtf", None, &project, TYPES)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            err,
+            "synth_brick_v2.fixture already exists; choose another name"
+        );
+        assert_eq!(type_files_in(&project), ["synth_brick_v2.fixture"]);
+        assert!(!project.join("lighting/library/v2.gdtf").exists());
     }
 
     #[test]
