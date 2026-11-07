@@ -614,7 +614,7 @@ pub(super) async fn locate_fixture_type_file(
 /// hold it from their read to their write, or a save made between the two
 /// would be lost (#578). The saves here run on a blocking thread, and take
 /// it with `blocking_lock`.
-pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static VENUE_WRITES: super::write_lock::WriteLock = super::write_lock::WriteLock::new();
 
 /// The version of a venue file: a hash of its bytes. A client sends back the
 /// one it read (`If-Match`); a save whose version is no longer the file's is

@@ -3799,6 +3799,7 @@ async fn mcp_playlist_writes_take_turns_with_the_web_ui() -> Result<(), Box<dyn 
     let before = std::fs::read_to_string(&path)?;
 
     let web_save = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+    let asked = crate::webui::api::playlists::PLAYLIST_WRITES.asked();
     let good = "kind: playlist\nsongs:\n- DSL Light Show Song\n- DSL Light Show Song\n";
     let write = tokio::spawn({
         let (client, url, session) = (client.clone(), url.clone(), session.clone());
@@ -3814,7 +3815,10 @@ async fn mcp_playlist_writes_take_turns_with_the_web_ui() -> Result<(), Box<dyn 
             .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The tool is waiting on the lock this test holds.
+    crate::webui::api::playlists::PLAYLIST_WRITES
+        .wait_for_another(asked)
+        .await;
     assert_eq!(std::fs::read_to_string(&path)?, before, "written mid-save");
     drop(web_save);
     write.await?;
@@ -3845,6 +3849,7 @@ async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
     // The web delete, as delete_song does it.
     let song_writes = crate::webui::api::songs_api::SONG_WRITES.lock().await;
     let web_delete = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+    let asked = crate::webui::api::playlists::PLAYLIST_WRITES.asked();
     let yaml = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
     let write = tokio::spawn({
         let (client, url, session) = (client.clone(), url.clone(), session.clone());
@@ -3860,7 +3865,10 @@ async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
             .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The tool is waiting on the lock this test holds.
+    crate::webui::api::playlists::PLAYLIST_WRITES
+        .wait_for_another(asked)
+        .await;
     std::fs::remove_file(fixture.root.join("songs/dsl-light-show-song/song.yaml"))?;
     std::fs::write(&path, "kind: playlist\nsongs: []\n")?;
     player.reload_songs().await?;
@@ -5344,6 +5352,7 @@ async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn
 
     // A save from the web UI under way, as its song PUT holds the lock.
     let saving = crate::webui::api::songs_api::SONG_WRITES.lock().await;
+    let asked = crate::webui::api::songs_api::SONG_WRITES.asked();
     let patch = {
         let (client, url, session) = (client.clone(), url.clone(), session.clone());
         tokio::spawn(async move {
@@ -5362,7 +5371,10 @@ async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The tool is waiting on the lock this test holds.
+    crate::webui::api::songs_api::SONG_WRITES
+        .wait_for_another(asked)
+        .await;
     let saved = format!("# saved from the web UI\n{loaded}");
     crate::util::write_file(&path, saved.as_bytes())?;
     drop(saving);
@@ -5400,6 +5412,7 @@ async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> 
 
     // A save from the web UI under way, as its fixture type PUT holds the lock.
     let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let asked = crate::webui::api::lighting_api::VENUE_WRITES.asked();
     let import = {
         let (client, url, session) = (client.clone(), url.clone(), session.clone());
         tokio::spawn(async move {
@@ -5414,7 +5427,10 @@ async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> 
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The tool is waiting on the lock this test holds.
+    crate::webui::api::lighting_api::VENUE_WRITES
+        .wait_for_another(asked)
+        .await;
     let record = fixture.root.join("lighting/fixture_types/brick.fixture");
     assert!(!record.exists(), "written mid-save");
     drop(saving);
@@ -5470,6 +5486,7 @@ async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), B
     // A save from the web UI under way, as its venue PUT holds the lock. The
     // re-import moves the origin, so its merge rewrites the position.
     let saving = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
+    let asked = crate::webui::api::lighting_api::VENUE_WRITES.asked();
     let import = {
         let (client, url, session) = (client.clone(), url.clone(), session.clone());
         tokio::spawn(async move {
@@ -5484,7 +5501,10 @@ async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), B
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The tool is waiting on the lock this test holds.
+    crate::webui::api::lighting_api::VENUE_WRITES
+        .wait_for_another(asked)
+        .await;
     let saved = format!("# saved from the web UI\n{loaded}");
     crate::util::write_file(&path, saved.as_bytes())?;
     drop(saving);

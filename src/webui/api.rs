@@ -25,6 +25,7 @@ pub(crate) mod playlists;
 pub(crate) mod profiles;
 pub(crate) mod songs_api;
 pub(crate) mod status;
+pub(crate) mod write_lock;
 
 use axum::{
     body::Bytes,
