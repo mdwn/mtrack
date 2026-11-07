@@ -5308,8 +5308,11 @@ show "test" {
         );
     }
 
-    /// A fixture types directory holding one file, named as `import-gdtf`
-    /// names it — which is not how this API spells the same name.
+    /// A fixture types directory holding one file, named by the older stem
+    /// rule (`fixture_filename_stem`: how `import-gdtf` named a record
+    /// before it took `project_files::name_stem`, and how an MVR export
+    /// still names its file) — not the stem this API gives the same name,
+    /// so the file is found by what it declares, not by its name.
     fn imported_fixture_type_dir(
         project: &std::path::Path,
         rel: &str,
