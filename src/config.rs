@@ -83,7 +83,7 @@ pub use self::hostname::resolve_hostname;
 pub use self::notification::{
     section_key, NotificationConfig, NotificationKind, SongNotificationConfig,
 };
-pub(crate) use self::player::list_profile_files;
+pub(crate) use self::player::{list_profile_files, profile_file};
 pub use self::profile::Profile;
 #[allow(unused_imports)]
 pub use self::samples::{

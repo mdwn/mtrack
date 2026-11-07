@@ -34,32 +34,22 @@ fn default_active_playlist() -> String {
 }
 
 /// Lists the profile YAML files in a profiles directory in load order
-/// (sorted by file name). Shared by config load and by gain persistence so
-/// both sides agree on which file owns the active profile.
+/// (sorted by file name), one for each name, the one [`profile_file`] takes
+/// (`util::yaml_files_in`). Shared by config load, gain persistence and the
+/// web UI's list so all agree on which file owns the active profile.
 pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
+    crate::util::yaml_files_in(dir).map_err(|source| ConfigError::Io {
         path: dir.to_path_buf(),
         source,
-    })?;
+    })
+}
 
-    let mut yaml_paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| ConfigError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "yaml" || ext == "yml" {
-                    yaml_paths.push(path);
-                }
-            }
-        }
-    }
-    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    Ok(yaml_paths)
+/// The file in the profiles directory `dir` that holds the profile file
+/// `name` (`util::yaml_file_at`: `<name>.yaml`, else `<name>.yml`, else a new
+/// `<name>.yaml`). `name` is not checked for path safety here.
+pub(crate) fn profile_file(dir: &Path, name: &str) -> PathBuf {
+    crate::util::yaml_file_at(dir, name)
 }
 
 /// The configuration for the multitrack player.
@@ -1682,6 +1672,44 @@ profiles:
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
+    }
+
+    /// With both `pi-a.yaml` and `pi-a.yml`, the profile file `pi-a` is the
+    /// `.yaml` (`profile_file`) and the `.yml` is not loaded, even broken.
+    #[test]
+    fn test_profiles_dir_loads_a_names_yaml_over_its_yml() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            let profiles = dir.join("profiles");
+            std::fs::create_dir(&profiles).unwrap();
+            write_profile(
+                &profiles,
+                "pi-a.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(&profiles, "pi-a.yml", "audio: [not, a, profile\n");
+            write_profile(
+                &profiles,
+                "pi-b.yml",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [1]\n",
+            );
+            assert_eq!(
+                super::profile_file(&profiles, "pi-a"),
+                profiles.join("pi-a.yaml")
+            );
+            assert_eq!(
+                super::profile_file(&profiles, "pi-b"),
+                profiles.join("pi-b.yml")
+            );
+            assert_eq!(
+                super::profile_file(&profiles, "pi-c"),
+                profiles.join("pi-c.yaml")
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+        assert_eq!(profiles[1].hostname(), Some("pi-b"));
     }
 
     #[test]
