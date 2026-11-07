@@ -415,6 +415,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     /api/songs/Ballad` and MCP `write_song` (`name: Ballad`) into that `song.yml`, and
     `DELETE /api/songs/Ballad` deletes it; the saves wrote a new `song.yaml` beside it, and the
     delete answered 404 "song.yaml not found for this song".
+- **A hidden file is passed over by one rule** (`songs::is_hidden`): a name starting with a dot
+  (`.git`, `.draft.light`), the AppleDouble files macOS writes beside each file (`._Bass.wav`)
+  among them. The songs walk passes over hidden directories and the file browser and bulk import
+  hidden entries, as before; a hidden config is still loaded (`Ballad/.song.yaml`). What changes:
+  - A new song config (`songs --init`, the web UI's create-song from a folder and bulk import,
+    the config a track upload writes) leaves hidden files out. A folder holding `._Bass.wav`
+    beside `Bass.wav` now gets a config with the one track; the init failed, reading the
+    AppleDouble file as audio. A `.click.wav` is no longer taken as a track, nor a `.draft.light`
+    as a light show.
+  - The song files listing (`GET /api/songs/Ballad/files`, the song editor's file list) leaves
+    hidden files out: `.draft.light` and `._Bass.wav` were listed.
 - **A trigger hit's velocity is held to 1-127 by one rule, whatever its curve**
   (`config::trigger::TRIGGER_VELOCITY`): the `linear` curve could give 0, which plays nothing (a
   peak of 0.006 over `threshold: 0.005`); it now plays at 1, as the `logarithmic` curve's lowest

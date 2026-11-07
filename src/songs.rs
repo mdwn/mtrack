@@ -587,6 +587,11 @@ impl Song {
         let mut midi_playback = None;
         let mut tracks = vec![];
         for entry in song_files {
+            // A hidden file (`.draft.light`, the AppleDouble `._Bass.wav`)
+            // is left out of the new config.
+            if is_hidden(&entry.path()) {
+                continue;
+            }
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
@@ -2135,12 +2140,9 @@ pub fn get_all_songs_with_defaults(
         let path = entry.path();
 
         if path.is_dir() {
-            // Skip hidden directories (.git, .claude, etc.).
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with('.'))
-            {
+            // Skip hidden directories (.git, .claude, etc.). A hidden file
+            // is read: `Foo/.song.yaml` loads, as it always has.
+            if is_hidden(&path) {
                 continue;
             }
 
@@ -2283,6 +2285,17 @@ fn is_song_config(path: &Path) -> bool {
         SongYaml::Untyped => config::Song::deserialize(path).is_ok(),
         SongYaml::NotOne => false,
     }
+}
+
+/// Whether `path` is hidden: its name starts with a dot (`.git`,
+/// `.draft.light`), the AppleDouble files macOS writes beside each file on
+/// a disk it does not own (`._Bass.wav`) among them. The one hidden rule:
+/// the songs walk passes over hidden directories, and `songs --init`, the
+/// song files listing and the file browser hidden files and directories.
+pub fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
 }
 
 /// The stem of a song directory's own config file: `song.yaml`, else
@@ -4786,6 +4799,62 @@ pilot:
 
         assert!(songs.list().is_empty());
         assert!(songs.failures().is_empty());
+        Ok(())
+    }
+
+    /// A name is hidden when it starts with a dot, AppleDouble files too.
+    #[test]
+    fn is_hidden_is_a_leading_dot() {
+        for name in [".git", ".draft.light", "._Bass.wav", "Song/.song.yaml"] {
+            assert!(super::is_hidden(Path::new(name)), "{name}");
+        }
+        for name in ["Bass.wav", "a.b", ".git/song.yaml", "Song"] {
+            assert!(!super::is_hidden(Path::new(name)), "{name}");
+        }
+    }
+
+    /// The loader passes over a hidden directory but reads a hidden config.
+    #[test]
+    fn get_all_songs_passes_over_hidden_dirs_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        for (dir, file, name) in [
+            (".git", "song.yaml", "Git"),
+            ("Shown", ".song.yaml", "Shown"),
+        ] {
+            fs::create_dir(tempdir.path().join(dir))?;
+            fs::write(
+                tempdir.path().join(dir).join(file),
+                format!("name: {name}\ntracks: []\n"),
+            )?;
+        }
+        let songs = get_all_songs(tempdir.path())?;
+        let names: Vec<_> = songs.list().iter().map(|s| s.name().to_string()).collect();
+        assert_eq!(names, ["Shown"]);
+        Ok(())
+    }
+
+    /// A new config leaves hidden files out: a hidden track, a draft light
+    /// show, and an AppleDouble file, which is no audio and failed the init.
+    #[test]
+    fn initialize_leaves_hidden_files_out() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("song");
+        fs::create_dir(&song_dir)?;
+        for name in ["track.wav", ".click.wav"] {
+            crate::testutil::write_wav(song_dir.join(name), vec![vec![1_i32, 2, 3]], 44100)?;
+        }
+        fs::write(song_dir.join("._track.wav"), [0_u8, 5, 22, 7])?;
+        fs::write(song_dir.join(".draft.light"), "show \"Draft\" {}\n")?;
+
+        let config = super::Song::initialize(&song_dir)?.get_config();
+
+        let tracks: Vec<_> = config
+            .tracks()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(tracks, ["track"]);
+        assert!(config.lighting().is_none());
         Ok(())
     }
 

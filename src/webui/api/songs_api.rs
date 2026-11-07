@@ -530,8 +530,8 @@ pub(super) async fn get_song_files(
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            // Skip the song's config file
-            if songs::is_song_config_name(&path) {
+            // Skip the song's config file, and hidden files
+            if songs::is_song_config_name(&path) || songs::is_hidden(&path) {
                 continue;
             }
             files.push(SongFile {
@@ -2516,14 +2516,16 @@ mod test {
     }
 
     /// The listing hides the song's config by name, `song.yml` as well as
-    /// `song.yaml`.
+    /// `song.yaml`, and hidden files.
     #[tokio::test]
-    async fn get_song_files_hides_a_song_yml_config() {
+    async fn get_song_files_hides_a_song_yml_config_and_hidden_files() {
         let (state, _dir) = test_state();
         let song_dir = state.songs_path().join("YmlFiles");
         std::fs::create_dir(&song_dir).unwrap();
         std::fs::write(song_dir.join("song.yml"), "name: YmlFiles\ntracks: []\n").unwrap();
         std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        std::fs::write(song_dir.join(".draft.light"), "draft").unwrap();
+        std::fs::write(song_dir.join("._readme.txt"), "fork").unwrap();
         state.player.reload_songs().await.unwrap();
 
         let response = router()
