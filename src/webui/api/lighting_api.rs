@@ -918,6 +918,9 @@ pub(super) async fn get_fixture_types(
                             &owner,
                         )
                     }),
+                    form_editable: crate::util::read_to_string(&declared.file).is_ok_and(|text| {
+                        lighting::fixture_patch::form_expresses(&text, &declared.name)
+                    }),
                     gdtf: None,
                     dsl: None,
                 },
@@ -956,6 +959,7 @@ pub(super) async fn get_fixture_types(
                     file: None,
                     extension: None,
                     owner: None,
+                    form_editable: false,
                     gdtf: None,
                     dsl: None,
                 },
@@ -1049,6 +1053,7 @@ pub(super) async fn get_fixture_type(
                     file: None,
                     extension: None,
                     owner: None,
+                    form_editable: false,
                     gdtf: None,
                     dsl: Some(None),
                 }),
@@ -1077,6 +1082,7 @@ pub(super) async fn get_fixture_type(
                     .to_string(),
             ),
             owner: Some(owner),
+            form_editable: lighting::fixture_patch::form_expresses(&content, &name),
             gdtf: None,
             dsl: Some(Some(content)),
         }),
@@ -1536,23 +1542,31 @@ pub(super) async fn put_fixture_type(
             return reply(r);
         }
         if let Some(existing) = project.files.get(save.subject()) {
-            // The channel-map form cannot say what a rich or GDTF type
-            // holds, so saving one through it would silently drop its rich
-            // channels or its GDTF reference.
-            let item = &existing.item;
-            if from_form && (item.uses_rich_channels() || item.source().is_some()) {
-                return reply(
-                    (
-                        StatusCode::CONFLICT,
-                        Json(json!({"error": format!(
-                            "fixture type \"{}\" in {} uses what the channel-map editor cannot \
-                             express — edit this type as text",
-                            save.subject(),
-                            lighting::project_files::display_in(&dir, &existing.file)
-                        )})),
-                    )
-                        .into_response(),
-                );
+            // The channel-map form saves only a type it can say all of:
+            // anything more (comments, a strobe curve, special cases,
+            // movement limits, rich channels, a GDTF source) would be lost.
+            if from_form {
+                let expresses = plan
+                    .current
+                    .as_deref()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .is_some_and(|text| {
+                        lighting::fixture_patch::form_expresses(text, save.subject())
+                    });
+                if !expresses {
+                    return reply(
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": format!(
+                                "fixture type \"{}\" in {} holds more than the channel-map \
+                                 editor can express; edit this type as text",
+                                save.subject(),
+                                lighting::project_files::display_in(&dir, &existing.file)
+                            )})),
+                        )
+                            .into_response(),
+                    );
+                }
             }
             let is_fixture = existing
                 .file
@@ -5133,7 +5147,7 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_json_refuses_a_fixture_file() {
+    async fn put_fixture_type_json_refuses_a_rich_type() {
         let (state, _dir) = test_state();
         let ft_dir = _dir.path().join("ft_form_refusal");
         std::fs::create_dir(&ft_dir).unwrap();
@@ -5157,7 +5171,7 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_body(response).await;
         assert!(body.contains("as text"), "{body}");
         // The rich definition is untouched.

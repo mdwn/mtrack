@@ -30,6 +30,57 @@ use super::parser::utils::items;
 use super::types::{MovementLimits, StrobeCurve};
 
 /// What the fixture page's settings form owns in a type's file.
+/// Whether the web UI's channel-map form can say everything `text`, a
+/// fixture type file, says about the type `name`, so that a form save loses
+/// nothing: the file holds that one type and nothing else, no comment, and
+/// the type is its channel map and the three strobe numbers alone (no rich
+/// channel, GDTF source, movement limits, strobe curve, special cases or
+/// anything else the form does not carry). The one rule for which editor a
+/// type opens in, and for whether a form save of it is taken.
+pub fn form_expresses(text: &str, name: &str) -> bool {
+    use super::files::{Contents, Editable, Kind};
+    let alone = Contents::parse(Kind::FixtureType, text)
+        .ok()
+        .and_then(|contents| contents.alone(name))
+        == Some(Editable::Editable);
+    let commented = text
+        .lines()
+        .any(|line| super::venue_patch::split_comment(line).1.is_some());
+    if !alone || commented {
+        return false;
+    }
+    let Ok(pairs) = LightingParser::parse(Rule::file, text) else {
+        return false;
+    };
+    let Some(declaration) = items(pairs)
+        .filter(|p| p.as_rule() == Rule::fixture_type)
+        .find(|p| {
+            p.clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::fixture_type_name)
+                .is_some_and(|n| n.as_str().trim_matches('"') == name)
+        })
+    else {
+        return false;
+    };
+    // What the form writes, and nothing else: no GDTF source, and in the
+    // body only the channel count, the map and the three strobe numbers.
+    declaration.into_inner().all(|child| match child.as_rule() {
+        Rule::fixture_type_name => true,
+        Rule::fixture_type_content => child.into_inner().all(|field| {
+            matches!(
+                field.as_rule(),
+                Rule::channels
+                    | Rule::channel_map
+                    | Rule::max_strobe_frequency
+                    | Rule::min_strobe_frequency
+                    | Rule::strobe_dmx_offset
+            )
+        }),
+        _ => false,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureSettings {
     /// The type's name: what venue fixture lines and shows call it.
@@ -413,5 +464,48 @@ mod tests {
                 .unwrap_err()
                 .contains("not GDTF-sourced")
         );
+    }
+
+    #[test]
+    fn the_form_expresses_only_a_plain_type_alone_in_its_file() {
+        let plain = "fixture_type \"Par\" {\n  channels: 2\n  channel_map: { \"dimmer\": 1, \"strobe\": 2 }\n  max_strobe_frequency: 20.0\n  min_strobe_frequency: 0.5\n  strobe_dmx_offset: 7\n}\n";
+        assert!(form_expresses(plain, "Par"));
+        let with = |line: &str| {
+            plain.replace(
+                "  strobe_dmx_offset: 7\n",
+                &format!("  strobe_dmx_offset: 7\n  {line}\n"),
+            )
+        };
+        for (what, text) in [
+            ("a comment line", format!("# mine\n{plain}")),
+            (
+                "a trailing comment",
+                plain.replace("channels: 2", "channels: 2 // two"),
+            ),
+            ("a strobe curve", with("strobe_curve: linear")),
+            ("special cases", with("special_cases: [\"Wash\"]")),
+            (
+                "movement limits",
+                with("movement { max_pan_speed: 90deg/s }"),
+            ),
+            (
+                "a rich channel",
+                "fixture_type \"Par\" {\n  channel \"pan\" @ 1 fine 2\n}\n".to_string(),
+            ),
+            (
+                "another type",
+                format!("{plain}{}", plain.replace("\"Par\"", "\"Wash\"")),
+            ),
+            (
+                "a GDTF source",
+                "fixture_type \"Par\" from gdtf(\"lighting/library/x.gdtf\") {\n}\n".to_string(),
+            ),
+        ] {
+            assert!(!form_expresses(&text, "Par"), "{what}: {text}");
+        }
+        // A `#` inside a name is not a comment.
+        let hash = plain.replace("\"Par\"", "\"Par #3\"");
+        assert!(form_expresses(&hash, "Par #3"));
+        assert!(!form_expresses(plain, "Other"));
     }
 }

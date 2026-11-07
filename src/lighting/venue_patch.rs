@@ -49,7 +49,7 @@ enum Kind {
 
 /// The text before a `#` that is outside quotes, and the comment from the
 /// `#` on.
-fn split_comment(line: &str) -> (&str, Option<&str>) {
+pub(super) fn split_comment(line: &str) -> (&str, Option<&str>) {
     let mut quoted = false;
     for (i, c) in line.char_indices() {
         match c {
@@ -112,30 +112,34 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
     patch_venue_with(content, name, desired, &PatchNotes::default())
 }
 
+/// The line that opens venue `name`'s block: the first that starts (after
+/// its indent) with `venue "<name>"` and holds its `{`.
+fn header_line(lines: &[&str], name: &str) -> Option<usize> {
+    let header = format!("venue \"{name}\"");
+    lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&header) && l.contains('{'))
+}
+
 /// Renames the venue `old` in `content` to `new`: the name in its opening
-/// line, as [`patch_venue`] finds it; everything else is kept.
+/// line, as [`patch_venue`] finds it ([`header_line`]); everything else is
+/// kept.
 pub fn rename_venue(content: &str, old: &str, new: &str) -> Result<String, String> {
-    let header = format!("venue \"{old}\"");
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let at = header_line(&lines, old)
+        .ok_or_else(|| format!("cannot find the block of venue \"{old}\" to rename"))?;
+    let line = lines[at];
+    let indent = line.len() - line.trim_start().len();
+    let rest = &line[indent + format!("venue \"{old}\"").len()..];
     let mut out = String::with_capacity(content.len() + new.len());
-    let mut found = false;
-    for line in content.split_inclusive('\n') {
-        let indent = line.len() - line.trim_start().len();
-        if !found && line[indent..].starts_with(&header) && line.contains('{') {
-            found = true;
-            out.push_str(&line[..indent]);
-            out.push_str(&format!("venue \"{new}\""));
-            out.push_str(&line[indent + header.len()..]);
+    for (i, l) in lines.iter().enumerate() {
+        if i == at {
+            out.push_str(&format!("{}venue \"{new}\"{rest}", &line[..indent]));
         } else {
-            out.push_str(line);
+            out.push_str(l);
         }
     }
-    if found {
-        Ok(out)
-    } else {
-        Err(format!(
-            "cannot find the block of venue \"{old}\" to rename"
-        ))
-    }
+    Ok(out)
 }
 
 /// [`patch_venue`] that also writes `notes` alongside what it adds.
@@ -146,10 +150,7 @@ pub fn patch_venue_with(
     notes: &PatchNotes,
 ) -> Result<String, String> {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let header = format!("venue \"{name}\"");
-    let open = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with(&header) && l.contains('{'))
+    let open = header_line(&lines, name)
         .ok_or_else(|| format!("cannot find the block of venue \"{name}\" to patch"))?;
     let close = lines[open + 1..]
         .iter()

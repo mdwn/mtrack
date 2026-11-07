@@ -269,9 +269,10 @@ fixture_type "Name" {
 
     // A fixture from a GDTF is its page: no file, no text.
     if (entry.referential) return;
-    // What the channel map cannot express opens as text, whatever the
-    // file's extension: a new type from the form is a `.fixture` too.
-    if (entry.rich) {
+    // Only a type the channel map can say all of opens in it (the
+    // player's own rule, `form_editable`); anything more opens as text,
+    // so a form save never drops a comment, a curve or a limit.
+    if (!entry.form_editable) {
       await openFtAsText(name);
       return;
     }
@@ -977,7 +978,7 @@ fixture_type "Name" {
                 {:else}
                   <span class="card-spacer"></span>
                 {/if}
-                {#if !entry.referential && !entry.rich}
+                {#if entry.form_editable}
                   <!-- The channel map is the default way in; this is the
                            way out of it, and the only path from v1 to the
                            rich form. -->

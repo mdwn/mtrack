@@ -76,6 +76,11 @@ pub struct FixtureTypeEntry {
     /// The type's file and whether it may be written; `null` for a GDTF in
     /// the library with no record (its archive is deleted, not edited).
     pub owner: Option<LightingOwner>,
+    /// Whether the channel-map form can say everything the type's file
+    /// says (`fixture_patch::form_expresses`): it opens in the form only
+    /// then, as text otherwise, and a form save of anything else is
+    /// refused.
+    pub form_editable: bool,
     /// A GDTF type's archive in brief, for its card; `null` when the
     /// archive is missing or does not parse.
     #[serde(skip_serializing_if = "Option::is_none")]
