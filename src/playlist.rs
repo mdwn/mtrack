@@ -567,6 +567,34 @@ pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
     Ok(crate::util::yaml_file_at(dir, name))
 }
 
+/// A playlist file in the playlists directory, as [`playlist_files`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistFile {
+    /// The playlist's name: the file's stem.
+    pub name: String,
+    /// The file that holds it ([`playlist_file`]).
+    pub path: PathBuf,
+    /// The name's other file, not read: a `.yml` beside its `.yaml`.
+    pub unread: Option<PathBuf>,
+}
+
+/// The playlist files in `dir`, one for each name (`util::yaml_files_by_name`:
+/// the file [`playlist_file`] takes), sorted by file name. The reserved name
+/// has none, so an `all_songs.yaml` is not one.
+pub fn playlist_files(dir: &Path) -> std::io::Result<Vec<PlaylistFile>> {
+    Ok(crate::util::yaml_files_by_name(dir)?
+        .into_iter()
+        .filter_map(|(path, unread)| {
+            let name = path.file_stem()?.to_str()?.to_string();
+            (!name.is_empty() && !is_reserved_name(&name)).then_some(PlaylistFile {
+                name,
+                path,
+                unread,
+            })
+        })
+        .collect())
+}
+
 /// Creates an alphabetized playlist from all available songs.
 pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
@@ -614,6 +642,38 @@ mod test {
         );
         assert!(super::is_reserved_name("all_songs"));
         assert!(!super::is_reserved_name("All_Songs"));
+    }
+
+    /// The playlist files are one per name, the `.yaml` over the `.yml`
+    /// (named as not read), and never the reserved name's.
+    #[test]
+    fn playlist_files_are_one_per_name_and_not_all_songs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        for file in [
+            "set.yaml",
+            "set.yml",
+            "old.yml",
+            "all_songs.yaml",
+            "loud.YAML",
+        ] {
+            std::fs::write(dir.join(file), "songs: []\n").unwrap();
+        }
+        assert_eq!(
+            super::playlist_files(dir).unwrap(),
+            vec![
+                super::PlaylistFile {
+                    name: "old".to_string(),
+                    path: dir.join("old.yml"),
+                    unread: None,
+                },
+                super::PlaylistFile {
+                    name: "set".to_string(),
+                    path: dir.join("set.yaml"),
+                    unread: Some(dir.join("set.yml")),
+                },
+            ]
+        );
     }
 
     fn two_song_playlist(registry: Arc<Songs>) -> Arc<super::Playlist> {

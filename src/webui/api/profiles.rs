@@ -884,10 +884,10 @@ mod test {
             .contains("dev-b"));
     }
 
-    /// A profile's file is its `.yaml`, else its `.yml`, for every lookup:
-    /// the list names a profile once, by the file the config loads; a read
-    /// and a delete take the `.yaml` while both are there, then the `.yml`;
-    /// a save keeps the `.yml`'s sections the body leaves out.
+    /// Addressed by name, a profile's file is its `.yaml`, else its `.yml`:
+    /// a read and a delete take the `.yaml` while both are there, then the
+    /// `.yml`; a save keeps the `.yml`'s sections the body leaves out. The
+    /// list shows every file the config loads, both of them here.
     #[tokio::test]
     async fn every_profile_lookup_takes_the_names_file() {
         let (mut state, dir) = test_state();
@@ -918,13 +918,17 @@ mod test {
 
         assert_eq!(
             crate::config::list_profile_files(&profiles_dir).unwrap(),
-            vec![profiles_dir.join("host-a.yaml")]
+            vec![
+                profiles_dir.join("host-a.yaml"),
+                profiles_dir.join("host-a.yml")
+            ]
         );
         let (status, body) = call("GET", "/profiles").await;
         assert_eq!(status, StatusCode::OK);
         let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(listed.as_array().unwrap().len(), 1, "{body}");
+        assert_eq!(listed.as_array().unwrap().len(), 2, "{body}");
         assert_eq!(listed[0]["has_midi"], false, "{body}");
+        assert_eq!(listed[1]["has_midi"], true, "{body}");
 
         let (status, body) = call("GET", "/profiles/host-a").await;
         assert_eq!(status, StatusCode::OK);

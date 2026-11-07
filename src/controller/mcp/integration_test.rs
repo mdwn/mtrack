@@ -4098,23 +4098,36 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
     std::fs::write(&yml, "songs: []\n")?;
     let yaml = "songs:\n- DSL Light Show Song\n";
 
-    let response = call_tool(
-        &client,
-        &url,
-        &session,
-        1630,
-        "write_playlist",
-        json!({"name": "all_songs", "yaml": yaml}),
-    )
-    .await;
-    assert!(refused(&response), "all_songs: {response}");
-    assert!(!dir.join("all_songs.yaml").exists());
+    // An `all_songs.yaml` on disk is not the player's playlist either.
+    std::fs::write(dir.join("all_songs.yaml"), "songs: []\n")?;
+    let all_songs = [
+        ("write_playlist", json!({"name": "all_songs", "yaml": yaml})),
+        ("read_playlist", json!({"name": "all_songs"})),
+        (
+            "patch_playlist",
+            json!({"name": "all_songs", "old_string": "songs:", "new_string": "songs:"}),
+        ),
+    ];
+    for (id, (tool, args)) in (1630..).zip(all_songs) {
+        let response = call_tool(&client, &url, &session, id, tool, args).await;
+        assert!(refused(&response), "{tool} all_songs: {response}");
+        assert!(
+            response
+                .to_string()
+                .contains("'all_songs' is the player's own playlist and has no file"),
+            "{tool}: {response}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("all_songs.yaml"))?,
+        "songs: []\n"
+    );
 
     let response = call_tool(
         &client,
         &url,
         &session,
-        1631,
+        1640,
         "write_playlist",
         json!({"name": "old", "yaml": yaml}),
     )
@@ -4128,7 +4141,7 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
             &client,
             &url,
             &session,
-            1632,
+            1641,
             "read_playlist",
             json!({"name": "old"}),
         )
@@ -4141,7 +4154,7 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
         &client,
         &url,
         &session,
-        1633,
+        1642,
         "patch_playlist",
         json!({"name": "old", "old_string": "songs:", "new_string": "# kept\nsongs:"}),
     )

@@ -885,11 +885,15 @@ fn remove_song_from_playlists(
 ) {
     let mut files_to_check: Vec<std::path::PathBuf> = Vec::new();
 
-    // Each playlist's file, as the loader reads it (`util::yaml_files_in`).
+    // Each playlist's file, as the loader reads it (`playlist::playlist_files`).
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            if let Ok(files) = crate::util::yaml_files_in(dir) {
-                files_to_check.extend(files);
+            match crate::playlist::playlist_files(dir) {
+                Ok(files) => files_to_check.extend(files.into_iter().map(|file| file.path)),
+                Err(e) => tracing::warn!(
+                    "{}: the playlists could not be listed, so \"{song_name}\" stays on them: {e}",
+                    dir.display()
+                ),
             }
         }
     }
@@ -1005,13 +1009,20 @@ mod test {
 
     /// A deleted song comes off each playlist's file as the loader reads
     /// it: a `.yml` alone is edited, and with both `.yaml` and `.yml` only
-    /// the `.yaml`. `loud.YAML` is no playlist and is left alone.
+    /// the `.yaml`. `loud.YAML` is no playlist and `all_songs.yaml` no file
+    /// of one, so both are left alone.
     #[test]
     fn remove_song_from_playlists_edits_each_names_file() {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         let both = "songs:\n- Gone\n- Kept\n";
-        for file in ["old.yml", "set.yaml", "set.yml", "loud.YAML"] {
+        for file in [
+            "old.yml",
+            "set.yaml",
+            "set.yml",
+            "loud.YAML",
+            "all_songs.yaml",
+        ] {
             std::fs::write(dir.join(file), both).unwrap();
         }
         super::remove_song_from_playlists("Gone", Some(dir), None);
@@ -1022,6 +1033,7 @@ mod test {
         }
         assert_eq!(read("set.yml"), both);
         assert_eq!(read("loud.YAML"), both);
+        assert_eq!(read("all_songs.yaml"), both);
     }
 
     #[tokio::test]

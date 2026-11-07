@@ -403,19 +403,37 @@ mod test {
     }
 
     /// PUTs `{"songs": [<songs>]}` to the playlist `mylist` in a fresh
-    /// state whose playlists directory holds `files`; returns the status and
-    /// the directory.
+    /// state with songs A, B and C on disk and a playlists directory holding
+    /// `files`; returns the status, the directory, and the songs of
+    /// `mylist` as the reloaded player has it.
     async fn put_mylist(
         files: &[(&str, &str)],
         songs: &str,
-    ) -> (StatusCode, std::path::PathBuf, tempfile::TempDir) {
-        let (state, dir) = test_state_with_registry(songs_abc());
+    ) -> (
+        StatusCode,
+        std::path::PathBuf,
+        Vec<String>,
+        tempfile::TempDir,
+    ) {
+        let (state, dir) = test_state();
+        for name in ["A", "B", "C"] {
+            let song_dir = state.songs_path().join(format!("song_{name}"));
+            std::fs::create_dir(&song_dir).unwrap();
+            crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
+                .unwrap();
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: Song {name}\ntracks:\n- name: kick\n  file: kick.wav\n"),
+            )
+            .unwrap();
+        }
         let playlists_dir = state.playlists_dir().clone().unwrap();
         for (file, text) in files {
             std::fs::write(playlists_dir.join(file), text).unwrap();
         }
+        state.player.reload_songs().await.unwrap();
         let status = router()
-            .with_state(state)
+            .with_state(state.clone())
             .oneshot(
                 http::Request::builder()
                     .method("PUT")
@@ -427,24 +445,33 @@ mod test {
             .await
             .unwrap()
             .status();
-        (status, playlists_dir, dir)
+        let loaded = state
+            .player
+            .playlists_snapshot()
+            .get("mylist")
+            .map(|playlist| playlist.songs().clone())
+            .unwrap_or_default();
+        (status, playlists_dir, loaded, dir)
     }
 
     /// A playlist kept as `.yml` is saved into that file, keeping its
-    /// settings, not into a new `.yaml` beside it; with both there, the
-    /// `.yaml` the loader reads is saved and the `.yml` left alone.
+    /// settings, not into a new `.yaml` beside it, and the reloaded player
+    /// plays the songs saved; with both there, the `.yaml` the loader reads
+    /// is saved and the `.yml` left alone.
     #[tokio::test]
     async fn put_playlist_by_name_writes_the_names_file() {
         let old = "songs:\n  - Song A\nambient: false\n";
-        let (status, playlists_dir, _dir) = put_mylist(&[("mylist.yml", old)], r#""Song B""#).await;
+        let (status, playlists_dir, loaded, _dir) =
+            put_mylist(&[("mylist.yml", old)], r#""Song B""#).await;
         assert_eq!(status, StatusCode::OK);
         assert!(!playlists_dir.join("mylist.yaml").exists());
         let written = std::fs::read_to_string(playlists_dir.join("mylist.yml")).unwrap();
         assert!(written.contains("Song B"), "{written}");
         assert!(written.contains("ambient: false"), "{written}");
+        assert_eq!(loaded, ["Song B"]);
 
         let files = [("mylist.yaml", "songs:\n  - Song A\n"), ("mylist.yml", old)];
-        let (status, playlists_dir, _dir) = put_mylist(&files, r#""Song C""#).await;
+        let (status, playlists_dir, loaded, _dir) = put_mylist(&files, r#""Song C""#).await;
         assert_eq!(status, StatusCode::OK);
         let written = std::fs::read_to_string(playlists_dir.join("mylist.yaml")).unwrap();
         assert!(written.contains("Song C"), "{written}");
@@ -452,6 +479,7 @@ mod test {
             std::fs::read_to_string(playlists_dir.join("mylist.yml")).unwrap(),
             old
         );
+        assert_eq!(loaded, ["Song C"]);
     }
 
     /// A delete removes the name's file: its `.yml` when that is all there

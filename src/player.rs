@@ -1516,16 +1516,16 @@ pub fn load_playlists(
     // Load playlists from directory.
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            // Each name's file (`util::yaml_files_in`): with both
+            // Each name's file (`playlist::playlist_files`): with both
             // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
-            for path in crate::util::yaml_files_in(dir)? {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                if name.is_empty() || playlist::is_reserved_name(&name) {
-                    continue;
+            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
+                if let Some(unread) = unread {
+                    warn!(
+                        name = %name,
+                        "Playlist has two files: {} is read, {} is not",
+                        path.display(),
+                        unread.display()
+                    );
                 }
                 match config::Playlist::deserialize(&path) {
                     Ok(playlist_config) => {

@@ -82,70 +82,72 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
-/// The files that may hold the YAML config at `base` (`<dir>/<name>`, no
-/// extension): `<base>.yaml`, then `<base>.yml` (`songs::YAML_EXTENSIONS`,
-/// lowercase as written), those that are there.
-fn yaml_files_of(base: &Path) -> Vec<PathBuf> {
-    crate::songs::YAML_EXTENSIONS
-        .iter()
-        .map(|ext| {
-            let mut file = base.as_os_str().to_owned();
-            file.push(".");
-            file.push(ext);
-            PathBuf::from(file)
-        })
-        .filter(|file| file.is_file())
-        .collect()
-}
-
-/// Warns that every file of `files` past the first, the one taken, is not
-/// read.
-fn warn_unread_yaml(files: &[PathBuf]) {
-    if let [file, others @ ..] = files {
-        for other in others {
-            tracing::warn!(
-                "{} and {} hold the same name; {} is read, {} is not",
-                file.display(),
-                other.display(),
-                filename_display(file),
-                filename_display(other)
-            );
-        }
-    }
-}
-
-/// The YAML file in `dir` that holds `name` (a playlist, a profile):
-/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`. With both
-/// there, `.yaml` is taken and a warning names the other. Every read, write
-/// and delete of the name goes to it, so a `.yml` is saved into itself.
-/// `name` is not checked for path safety here.
-pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
-    let files = yaml_files_of(&dir.join(name));
-    warn_unread_yaml(&files);
-    files
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
-}
-
-/// The YAML config files in `dir`, one for each name: the one
-/// [`yaml_file_at`] takes for it (with a warning for a name with both),
-/// sorted by file name. Names stay lowercase (`songs::is_yaml_config`).
-pub fn yaml_files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+/// The YAML config files in `dir`: every file whose name ends in `.yaml`
+/// or `.yml`, lowercase as written (`songs::is_yaml_config`), by the names
+/// the directory lists, sorted by file name. An entry that cannot be read
+/// is passed over with a warning.
+pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if !path.is_file() || !crate::songs::is_yaml_config(&path) {
-            continue;
-        }
-        let files = yaml_files_of(&path.with_extension(""));
-        if files.first() == Some(&path) {
-            warn_unread_yaml(&files);
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                tracing::warn!("{}: an entry could not be read: {e}", dir.display());
+                continue;
+            }
+        };
+        if path.is_file() && crate::songs::is_yaml_config(&path) {
             found.push(path);
         }
     }
     found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     Ok(found)
+}
+
+/// Of `files` (one directory's [`yaml_config_files`]), those named for
+/// `name`: `<name>.yaml`, then `<name>.yml`, matched against the names as
+/// listed, so a `set.YML` on a case-insensitive filesystem is not `set.yml`.
+fn yaml_files_named<'a>(files: &'a [PathBuf], name: &str) -> Vec<&'a PathBuf> {
+    crate::songs::YAML_EXTENSIONS
+        .iter()
+        .filter_map(|ext| {
+            let file_name = format!("{name}.{ext}");
+            files
+                .iter()
+                .find(|file| file.file_name().and_then(|n| n.to_str()) == Some(&file_name))
+        })
+        .collect()
+}
+
+/// The YAML file in `dir` that holds `name` (a playlist, a profile):
+/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`. Every read,
+/// write and delete of the name goes to it, so a `.yml` is saved into
+/// itself. `name` is not checked for path safety here.
+pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
+    let files = yaml_config_files(dir).unwrap_or_default();
+    yaml_files_named(&files, name)
+        .first()
+        .map(|file| (*file).clone())
+        .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
+}
+
+/// The YAML config files in `dir`, one for each name: the file
+/// [`yaml_file_at`] takes for it, with the other a name has (its `.yml`
+/// beside its `.yaml`), which is not read. Sorted by file name.
+pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
+    let files = yaml_config_files(dir)?;
+    Ok(files
+        .iter()
+        .filter_map(|file| {
+            let name = file.file_stem()?.to_str()?;
+            match yaml_files_named(&files, name).as_slice() {
+                [taken, unread @ ..] if *taken == file => {
+                    Some((file.clone(), unread.first().map(|f| (*f).clone())))
+                }
+                _ => None,
+            }
+        })
+        .collect())
 }
 
 /// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
@@ -1317,30 +1319,50 @@ mod ownership_test {
 mod test {
 
     /// A name's file is `<name>.yaml`, else `<name>.yml`, else a new
-    /// `<name>.yaml`; the listing has each name once, by that file, and
-    /// leaves out a capital extension.
+    /// `<name>.yaml`, matched against the names the directory lists: a
+    /// `set.YML` (which a case-insensitive filesystem would open as
+    /// `set.yml`) is no YAML config, so `set` gets a new `set.yaml`. Each
+    /// name is listed once, by that file, with the other it has.
     #[test]
     fn a_names_yaml_file_is_its_yaml_else_its_yml() {
-        use super::{yaml_file_at, yaml_files_in};
+        use super::{yaml_config_files, yaml_file_at, yaml_files_by_name};
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
+        assert_eq!(
+            yaml_file_at(&dir.join("missing"), "set"),
+            dir.join("missing/set.yaml")
+        );
+        std::fs::write(dir.join("set.YML"), "").unwrap();
         assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
-        assert!(yaml_files_in(dir).unwrap().is_empty());
+        assert!(yaml_files_by_name(dir).unwrap().is_empty());
 
         std::fs::write(dir.join("set.yml"), "").unwrap();
         assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yml"));
-        assert_eq!(yaml_files_in(dir).unwrap(), vec![dir.join("set.yml")]);
+        assert_eq!(
+            yaml_files_by_name(dir).unwrap(),
+            vec![(dir.join("set.yml"), None)]
+        );
 
         std::fs::write(dir.join("set.yaml"), "").unwrap();
         std::fs::write(dir.join("a.b.yml"), "").unwrap();
-        std::fs::write(dir.join("loud.YAML"), "").unwrap();
         std::fs::create_dir(dir.join("folder.yaml")).unwrap();
         assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
         assert_eq!(yaml_file_at(dir, "a.b"), dir.join("a.b.yml"));
         assert_eq!(yaml_file_at(dir, "folder"), dir.join("folder.yaml"));
         assert_eq!(
-            yaml_files_in(dir).unwrap(),
-            vec![dir.join("a.b.yml"), dir.join("set.yaml")]
+            yaml_files_by_name(dir).unwrap(),
+            vec![
+                (dir.join("a.b.yml"), None),
+                (dir.join("set.yaml"), Some(dir.join("set.yml")))
+            ]
+        );
+        assert_eq!(
+            yaml_config_files(dir).unwrap(),
+            vec![
+                dir.join("a.b.yml"),
+                dir.join("set.yaml"),
+                dir.join("set.yml")
+            ]
         );
     }
 
