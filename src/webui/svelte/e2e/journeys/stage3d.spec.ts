@@ -135,14 +135,38 @@ test.describe("3D on the venue card", () => {
     page,
     project,
   }) => {
-    const file = () =>
-      project.read(
-        project.exists("lighting/venues/house.venue")
-          ? "lighting/venues/house.venue"
-          : "lighting/venues/house.light",
-      );
+    // The venue's file: `house.venue` once a save moved it there (its
+    // `.light` set aside after the write), else `house.light`. Read in that
+    // order, so a save landing between the two reads is seen next poll.
+    const file = () => {
+      for (const rel of [
+        "lighting/venues/house.venue",
+        "lighting/venues/house.light",
+      ]) {
+        try {
+          return project.read(rel);
+        } catch {
+          // Not there (yet, or any more): the other one, or the next poll.
+        }
+      }
+      return "";
+    };
     const field = page.getByTestId("inspector-beam-angle");
-    const set = page.getByRole("button", { name: "Set beam angle" });
+    // Each save answered: the engine has reloaded the venue by then, which
+    // a fresh page reads the angle back from.
+    const saved = () =>
+      page.waitForResponse(
+        (res) =>
+          res.url().includes("/api/lighting/venues/house") &&
+          res.request().method() === "PUT",
+      );
+    const set = {
+      click: async () => {
+        const answer = saved();
+        await page.getByRole("button", { name: "Set beam angle" }).click();
+        expect((await answer).ok()).toBe(true);
+      },
+    };
     await page.goto("/#/lighting/venues/house?view=3d");
     await expect(viewport(page)).toHaveAttribute("data-fixtures", "1");
     await page.locator(".inspector").getByLabel("P", { exact: true }).check();
