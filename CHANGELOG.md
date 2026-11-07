@@ -441,10 +441,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `set.yaml` and `set.yml` only `set.yaml` is rewritten (both were), and an `all_songs.yaml`
     is left alone (the song was taken off it). A playlists directory that cannot be listed is
     logged, where the song stayed on every playlist silently.
-  - A directory entry that cannot be read is passed over with a warning by the playlist loader
-    and the web UI's profile list (they passed over it silently), and by the config's profile
-    load and `mtrack migrate`'s profile step: the load failed with an error, and the migrate step
-    left every profile file unmigrated.
+  - A directory entry that cannot be read is passed over with a warning ("unreadable entry")
+    wherever the playlists or profiles directory is listed or a name looked up in it: the
+    playlist loader and the web UI's profile list passed over it silently, the config's profile
+    load failed with an error, and `mtrack migrate`'s profile step left every profile file
+    unmigrated.
   - The web UI's playlist list (`GET /api/playlists`) gives each playlist `reserved`, true for
     `all_songs`; the playlist editor hides the playlist by it, holding no copy of the name.
   - A new playlist or profile whose file would differ only in case from one already there is
@@ -478,7 +479,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `stage.yaml.yaml` already exists"), where it was merged into that file (`stage.yaml` with
     only `stage.yaml.yaml` there, or `stage` with only `stage.yml`).
   - A file that does not parse is listed by `GET /api/profiles`, with `error` saying why and its
-    sections all false, where it was left out of the list though the API still reached it.
+    sections all false, where it was left out of the list though the API still reached it. The
+    config editor shows the row with the error and does not open it; the groups page's picker
+    leaves it out.
   - A link naming no profile file (`#/config/gone.yaml`, `#/lighting/groups?profile=gone`, or a
     name differing only in case) says so and opens none; the groups page opened the running
     profile in its place.

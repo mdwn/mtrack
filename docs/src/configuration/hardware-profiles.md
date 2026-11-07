@@ -173,7 +173,7 @@ by its full file name (`#/config/stage.yml`), and opens, saves and deletes the f
 A row shows the stem, or the full file name when the stem could be taken for another file (one
 sharing it, or one named it: `stage.yaml` beside `stage.yaml.yaml`). An older link by stem
 (`#/config/stage`) opens the stem's `.yaml`, else its `.yml`. A file whose name is not UTF-8 is
-listed read-only, and one that does not parse is listed with why. A link that names no file
+listed read-only, and one that does not parse is listed with why and not opened. A link that names no file
 says so and opens none. A new profile is created as what was typed (`<name>.yaml` for a stem),
 and only created: a name that reaches a file already there (`stage.yaml` with only
 `stage.yaml.yaml`, or `stage` with only `stage.yml`) is refused, as is one whose file would
