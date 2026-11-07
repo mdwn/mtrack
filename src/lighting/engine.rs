@@ -35,6 +35,13 @@ use crate::dmx::midi_dmx_store::MidiDmxStore;
 pub(crate) use crate::lighting::channels::{base_channel, fades_to_dark, is_position_channel};
 use crate::lighting::channels::{dmx_byte, dmx_word, CrossKind};
 
+/// The next [`EffectInstance::start_order`]: process-wide, as a seek's
+/// scratch engine hands its effects to the live one.
+fn next_start_order() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Whether a layer speed master scales its effects' time: 1 does not, and
 /// nor does 0, which freezes the layer instead.
 pub(crate) fn speed_scales(speed: f64) -> bool {
@@ -937,6 +944,7 @@ impl EffectEngine {
 
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
+        effect.start_order = next_start_order();
         self.active_effects.insert(effect.id.clone(), effect);
         self.cache.invalidate();
         Ok(())
@@ -1178,8 +1186,13 @@ impl EffectEngine {
             }
         }
 
-        // Sort effect IDs within each layer by (priority, start_time, cue_time, id)
-        // Using cue_time ensures deterministic ordering when multiple effects start at the same time
+        // Sort effect IDs within each layer by (priority, start_time,
+        // cue_time, start_order). Using cue_time ensures deterministic
+        // ordering when multiple effects start at the same time; the start
+        // order then puts the one started later on top. Not the id: compared
+        // as strings, `song_effect_10000` sorted before `song_effect_9999`,
+        // so same-time cues swapped when the id counter crossed a power of
+        // ten (#669).
         for (_layer, effect_ids) in effects_by_layer.iter_mut() {
             effect_ids.sort_by(|a, b| {
                 let ea = self.active_effects.get(a).unwrap();
@@ -1208,7 +1221,7 @@ impl EffectEngine {
                             (None, None) => std::cmp::Ordering::Equal,
                         }
                     })
-                    .then_with(|| a.cmp(b))
+                    .then_with(|| ea.start_order.cmp(&eb.start_order))
             });
         }
 

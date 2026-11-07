@@ -74,6 +74,11 @@ pub struct EffectInstance {
     /// any: `stop sequence` takes out the effects cued through that
     /// sequence by name, and only those.
     pub sequences: Vec<String>,
+    /// When the engine started this effect, among every effect any engine
+    /// in the process has started: the last tie-break between effects on
+    /// one layer at one priority, start time and cue time, so the one
+    /// started later goes on top (#669). Zero until it starts.
+    pub start_order: u64,
 }
 
 impl EffectInstance {
@@ -108,6 +113,7 @@ impl EffectInstance {
             elapsed_from: Duration::ZERO,
             engine_timed: false,
             sequences: Vec::new(),
+            start_order: 0,
         }
     }
 
