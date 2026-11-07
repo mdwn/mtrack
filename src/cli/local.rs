@@ -65,10 +65,20 @@ fn apply_thread_priority() {
     }
 }
 
-pub fn songs(path: &str, init: bool) -> Result<(), Box<dyn Error>> {
+/// `mtrack songs <path> [--init] [--config <project>]`. With a project (or
+/// player config), init names new songs past every song in its songs
+/// directory, not only those under `path`, as the web UI's bulk import does.
+pub fn songs(path: &str, init: bool, config: Option<&str>) -> Result<(), Box<dyn Error>> {
     if init {
         info!("Initializing songs");
-        let report = songs::initialize_songs(Path::new(path))?;
+        let songs_root = match config {
+            Some(config) => {
+                let player_path = super::migrate::resolve_config_path(config);
+                Some(config::Player::deserialize(&player_path)?.songs(&player_path))
+            }
+            None => None,
+        };
+        let report = songs::initialize_songs_among(Path::new(path), songs_root.as_deref())?;
         for dir in &report.created {
             println!("Created {}", dir.join("song.yaml").display());
         }
@@ -151,12 +161,7 @@ pub async fn start(
 
     // Resolve path: if it's a file or has a YAML extension, use it directly (legacy).
     // Otherwise treat it as a project directory and look for mtrack.yaml inside.
-    let input = Path::new(path);
-    let player_path = &if input.is_file() || crate::songs::is_yaml_config(input) {
-        input.to_path_buf()
-    } else {
-        input.join("mtrack.yaml")
-    };
+    let player_path = &super::migrate::resolve_config_path(path);
 
     // Load or create config
     let player_config = match config::Player::deserialize(player_path) {
@@ -1019,7 +1024,7 @@ mod tests {
         #[test]
         fn empty_directory_reports_no_songs() {
             let tmp = tempfile::tempdir().unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1039,7 +1044,7 @@ mod tests {
                 44100,
             )
             .unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1053,14 +1058,14 @@ mod tests {
                 44100,
             )
             .unwrap();
-            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), true, None).is_ok());
             // init should have created a song.yaml
             assert!(song_dir.join("song.yaml").exists());
         }
 
         #[test]
         fn nonexistent_path_returns_error() {
-            assert!(songs("/nonexistent/path/to/songs", false).is_err());
+            assert!(songs("/nonexistent/path/to/songs", false, None).is_err());
         }
 
         #[test]
@@ -1098,7 +1103,7 @@ mod tests {
             .unwrap();
 
             // This exercises the track dedup via HashSet and sorting
-            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), false, None).is_ok());
         }
 
         #[test]
@@ -1122,7 +1127,7 @@ mod tests {
             )
             .unwrap();
 
-            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            assert!(songs(tmp.path().to_str().unwrap(), true, None).is_ok());
             assert!(song1_dir.join("song.yaml").exists());
             assert!(song2_dir.join("song.yaml").exists());
         }

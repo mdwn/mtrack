@@ -117,6 +117,10 @@ enum Commands {
         /// Initialize song directories with YAML files containing default values.
         #[arg(long)]
         init: bool,
+        /// A project directory or player config whose songs directory new
+        /// songs are named among, so none takes a name a song there has.
+        #[arg(long)]
+        config: Option<String>,
     },
     /// Lists the available audio output devices.
     Devices {},
@@ -484,7 +488,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Songs { path, init } => local::songs(&path, init)?,
+        Commands::Songs { path, init, config } => local::songs(&path, init, config.as_deref())?,
         // `list_device_info` rather than `list_devices`: the latter builds every
         // device, and each one holds an ALSA handle that stops its siblings
         // being described, so it under-reports itself -- 8 of 19 on the test
@@ -1065,7 +1069,7 @@ mod tests {
         fn parse_songs_command() {
             let cli = Cli::try_parse_from(["mtrack", "songs", "/path/to/songs"]).unwrap();
             match cli.command {
-                Commands::Songs { path, init } => {
+                Commands::Songs { path, init, .. } => {
                     assert_eq!(path, "/path/to/songs");
                     assert!(!init);
                 }
