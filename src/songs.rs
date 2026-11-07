@@ -2377,6 +2377,68 @@ fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config:
     }
 }
 
+/// The song config at `path` is another song's than the one being written
+/// or deleted: [`check_song_config_for`] refuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnotherSongsConfig {
+    /// The file.
+    pub path: PathBuf,
+    /// The song asked for.
+    pub name: String,
+    /// The song the file makes, as the loader names it.
+    pub declares: String,
+}
+
+impl std::fmt::Display for AnotherSongsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The file by its folder and name (`Foo/song.yaml`).
+        let mut shown: Vec<_> = self
+            .path
+            .iter()
+            .rev()
+            .take(2)
+            .map(|c| c.to_string_lossy())
+            .collect();
+        shown.reverse();
+        write!(
+            f,
+            "{} is the config of the song \"{}\", not of \"{}\"; it is left as it is",
+            shown.join("/"),
+            self.declares,
+            self.name
+        )
+    }
+}
+
+impl Error for AnotherSongsConfig {}
+
+/// Whether the config at `path` may be written or deleted as song `name`'s:
+/// not when it is a song config the loader names another song (#680: with
+/// `Foo/song.yaml` declaring `name: Bar`, saving "Foo" fell back to the
+/// folder and overwrote Bar). No file there, a file that is no song's, or
+/// one that does not read and so goes by its folder's name, as the loader
+/// records it, is no other song's. The one rule of the web UI's and MCP's
+/// song writes and deletes.
+pub fn check_song_config_for(path: &Path, name: &str) -> Result<(), AnotherSongsConfig> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let declares = match read_song_config(path) {
+        None => return Ok(()),
+        Some(Ok(config)) => config.name().to_string(),
+        Some(Err((declares, _))) => declares,
+    };
+    if declares == name {
+        Ok(())
+    } else {
+        Err(AnotherSongsConfig {
+            path: path.to_path_buf(),
+            name: name.to_string(),
+            declares,
+        })
+    }
+}
+
 /// The names the songs configured under `root` have, loaded or failed, as
 /// the loader names them ([`read_song_config`]), read from their configs
 /// without loading the songs. A folder that cannot be read is passed over
@@ -5933,5 +5995,35 @@ pilot:
             ..song
         };
         assert_eq!(with_audio.length(), Duration::from_secs(200));
+    }
+}
+
+#[cfg(test)]
+mod song_config_for_test {
+    use super::check_song_config_for;
+
+    /// #680: a folder's config may be written or deleted as a song's only
+    /// when it is that song's, or no song's at all.
+    #[test]
+    fn a_config_is_written_only_as_the_song_it_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let config = foo.join("song.yaml");
+        // None there yet.
+        assert_eq!(check_song_config_for(&config, "Foo"), Ok(()));
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Bar"), Ok(()));
+        let refused = check_song_config_for(&config, "Foo").unwrap_err();
+        assert_eq!(refused.declares, "Bar");
+        assert_eq!(
+            refused.to_string(),
+            "Foo/song.yaml is the config of the song \"Bar\", not of \"Foo\"; it is left as it is"
+        );
+        // A song config that does not read goes by its folder, as the
+        // loader records its failure.
+        std::fs::write(&config, "kind: song\nname: Bar\ntracks: 5\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo"), Ok(()));
+        assert!(check_song_config_for(&config, "Bar").is_err());
     }
 }

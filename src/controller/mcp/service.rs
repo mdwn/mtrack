@@ -1214,7 +1214,8 @@ impl McpServer {
     #[tool(
         description = "Write a song's `song.yaml`. Validates the YAML against \
         `config::Song` before writing. If the song doesn't exist yet, creates a \
-        new song directory under the songs root."
+        new song directory under the songs root. A folder of that name whose \
+        `song.yaml` is another song's is refused, and left as it is."
     )]
     async fn write_song(
         &self,
@@ -1253,6 +1254,10 @@ impl McpServer {
                 song_dir.join_filename("song.yaml")
             }
         };
+        // Not over another song's config: a folder named as this song whose
+        // `song.yaml` declares another (#680), by the web UI's rule.
+        crate::songs::check_song_config_for(&yaml_path, &args.name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         staged_write_string(&yaml_path, &args.yaml, false).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.

@@ -811,21 +811,28 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// Resolves an existing song directory by checking the player's registry first
 /// (handles nested paths like `artist/album/song`), then falling back to a
 /// direct path join. Returns an error response if the song isn't found.
-/// The YAML file a song is read from and written to: the one it was loaded
-/// from ([`songs::Song::config_path_or_default`], a failed load's likewise),
-/// or `song.yaml` in its folder for one the registry has not seen; within
-/// the verified song folder, which is within the songs root.
+/// The YAML file a song is written to and deleted from: the one it was
+/// loaded from ([`songs::Song::config_path_or_default`], a failed load's
+/// likewise), or `song.yaml` in its folder for one the registry has not
+/// seen; within the verified song folder, which is within the songs root.
+/// A 409 when that file is another song's config
+/// ([`songs::check_song_config_for`], #680): a folder named as the song
+/// whose `song.yaml` declares another.
 fn song_config_path(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
-    Ok(player
+    let path = player
         .songs()
         .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
-        .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
+        .unwrap_or_else(|| song_dir.join_filename("song.yaml"));
+    songs::check_song_config_for(&path, name).map_err(|e| {
+        Box::new((StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response())
+    })?;
+    Ok(path)
 }
 
 pub(super) fn resolve_song_dir(
@@ -1340,6 +1347,39 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// #680: a folder named as the song whose `song.yaml` declares another
+    /// song is that song's: saving or deleting the folder's name is refused
+    /// (409, naming the song), and the file is left as it is.
+    #[tokio::test]
+    async fn saving_or_deleting_a_folder_whose_config_is_another_songs_is_refused() {
+        let (state, _dir) = test_state();
+        let foo = state.songs_path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let bar = "name: Bar\ntracks: []\n";
+        std::fs::write(foo.join("song.yaml"), bar).unwrap();
+        let app = router().with_state(state);
+        for (method, body) in [("PUT", "name: Foo\ntracks: []\n"), ("DELETE", "")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    http::Request::builder()
+                        .method(method)
+                        .uri("/songs/Foo")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{method}");
+            let body = response_body(response).await;
+            assert!(
+                body.contains("Foo/song.yaml is the config of the song \\\"Bar\\\""),
+                "{method}: {body}"
+            );
+            assert_eq!(std::fs::read_to_string(foo.join("song.yaml")).unwrap(), bar);
+        }
     }
 
     #[tokio::test]

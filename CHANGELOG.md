@@ -745,6 +745,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Saving or deleting a song does not touch another song's config** (#680): with `Foo/song.yaml`
+  declaring `name: Bar`, so that the player loads it as Bar, `PUT /api/songs/Foo` and MCP
+  `write_song{name: "Foo"}` found no song named Foo, fell back to the folder `Foo/` and overwrote
+  Bar's config; `DELETE /api/songs/Foo` deleted it. Each is now refused, the web UI's with a 409
+  and MCP's with an error, naming the song: `Foo/song.yaml is the config of the song "Bar", not of
+  "Foo"; it is left as it is`. One rule (`songs::check_song_config_for`) for both, as the loader
+  names the config's song (a song config that does not read goes by its folder). Writing a song
+  that has its own config, renaming one in it, and writing a new song are as before.
+
 - **A track upload's new song is named past the names already taken** (#674): the config a track
   upload writes for a new song named it after its folder, with no check against the songs already
   loaded or configured, so it could duplicate one and the loader dropped one with a warning:
