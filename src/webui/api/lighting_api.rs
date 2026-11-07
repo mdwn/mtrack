@@ -192,6 +192,9 @@ pub(super) async fn import_gdtf(
 ) -> impl IntoResponse {
     let (filename, bytes) = first_multipart_file(&mut multipart).await?;
     let project = project_root(&state.config_path)?;
+    // Where the engine reads fixture types on this host, as the CLI and MCP
+    // import into (#673): its name check and a pinned record go there.
+    let types_dir = lighting_dir(&state.config_path, None, LightingDir::FixtureTypes)?;
     // The inner Result survives spawn_blocking_io so an import refusal (bad
     // archive, name collision, archive conflict) surfaces as the caller error
     // it is, not a 500.
@@ -205,7 +208,7 @@ pub(super) async fn import_gdtf(
                 &filename,
                 query.name.as_deref(),
                 &project,
-                DEFAULT_FIXTURE_TYPES_DIR,
+                &types_dir,
             )
             .map_err(|e| lighting_writes::import_error(e.as_ref())),
         )
@@ -532,10 +535,41 @@ pub(super) async fn validate_lighting(
 // Fixture Type & Venue CRUD endpoints
 // ---------------------------------------------------------------------------
 
-/// The project's default lighting directories, the engine's own
-/// (`config::lighting`): a request's `?dir=` is the running profile's
-/// configured directory, and without one the engine reads these.
-pub(super) use crate::config::lighting::{DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR};
+/// One of the project's lighting directories. A request names it (`?dir=`
+/// and the like), or it is the one the engine reads on this host, by the
+/// shared reader ([`crate::config::Player::lighting_dirs_at`]) the CLI and
+/// MCP ask (#673): the defaults only where the config sets none.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum LightingDir {
+    FixtureTypes,
+    Venues,
+}
+
+/// The project-relative directory `which` a request names, else the one
+/// the engine reads on this host. A config that does not load is a 500,
+/// as it is to MCP: the defaults might not be where this host's files are.
+#[allow(clippy::result_large_err)]
+pub(super) fn lighting_dir(
+    config_path: &std::path::Path,
+    requested: Option<&str>,
+    which: LightingDir,
+) -> Result<String, axum::response::Response> {
+    if let Some(dir) = requested.filter(|d| !d.is_empty()) {
+        return Ok(dir.to_string());
+    }
+    // codeql[rust/path-injection] config_path is set at startup, not user input.
+    let dirs = crate::config::Player::lighting_dirs_at(config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("the config does not load: {e}")})),
+        )
+            .into_response()
+    })?;
+    Ok(match which {
+        LightingDir::FixtureTypes => dirs.fixture_types,
+        LightingDir::Venues => dirs.venues,
+    })
+}
 
 /// The file a fixture type of this name is declared in, if one is, in the
 /// directory or any subdirectory: the file the lighting system loads it
@@ -612,23 +646,23 @@ pub(super) fn stale_venue_response(name: &str, current: Option<String>) -> light
     }
 }
 
-/// Resolves a lighting directory path relative to the project root.
-/// Uses the provided override (from query param) or falls back to the default.
-/// Returns an error response if the project root cannot be canonicalized or the
-/// resolved path would escape it.
+/// Resolves a lighting directory path relative to the project root: the
+/// one the request names (from a query param), else this host's
+/// ([`lighting_dir`]). Returns an error response if the project root cannot
+/// be canonicalized or the resolved path would escape it.
 #[allow(clippy::result_large_err)]
 pub(super) fn resolve_lighting_dir(
     config_path: &std::path::Path,
     override_dir: Option<&str>,
-    default: &str,
+    which: LightingDir,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
     let root = VerifiedRoot::new(&project_root(config_path)?).map_err(|e| e.into_response())?;
 
-    let relative = crate::config::lighting::resolve_dir(override_dir, default);
+    let relative = lighting_dir(config_path, override_dir, which)?;
 
-    SafePath::validate_relative(relative, &root).map_err(|e| e.into_response())
+    SafePath::validate_relative(&relative, &root).map_err(|e| e.into_response())
 }
 
 /// Checks a referential type's archive the way the lighting system will when
@@ -857,13 +891,13 @@ pub(super) async fn get_fixture_types(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )
     .map_err(|e| e.into_response())?;
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let all = super::helpers::spawn_blocking_io("load fixture types", move || {
@@ -1013,7 +1047,7 @@ pub(super) async fn get_fixture_type(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let found = {
         let (dir, name) = (dir.clone(), name.clone());
@@ -1153,7 +1187,7 @@ pub(super) async fn get_fixture_type_gdtf(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some(source) = gdtf_source_of(&root, &dir, &name).await? else {
@@ -1167,7 +1201,7 @@ pub(super) async fn get_fixture_type_gdtf(
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
 
     // Reading, parsing, distilling every mode and (cold) writing the rig are
@@ -1451,7 +1485,7 @@ pub(super) async fn put_fixture_type(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
 
     let content_type = headers
@@ -1480,7 +1514,7 @@ pub(super) async fn put_fixture_type(
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
     let save = lighting_writes::TypeSave {
         root,
@@ -1553,7 +1587,7 @@ pub(super) async fn delete_fixture_type(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let deleted = name.clone();
@@ -2068,8 +2102,12 @@ pub(super) async fn get_venues(
     State(state): State<WebUiState>,
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)
-        .map_err(|e| e.into_response())?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )
+    .map_err(|e| e.into_response())?;
     if !dir.is_dir() {
         return Ok::<_, axum::response::Response>(
             (
@@ -2136,7 +2174,11 @@ pub(super) async fn get_venue(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let found = {
         let (dir, name) = (dir.clone(), name.clone());
         super::helpers::spawn_blocking_io("read venue file", move || {
@@ -2192,7 +2234,11 @@ pub(super) async fn put_venue(
     if let Some(from) = &query.from {
         validate_lighting_name(from)?;
     }
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
 
     let content_type = headers
         .get("content-type")
@@ -2367,7 +2413,11 @@ pub(super) async fn delete_venue(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let wanted = name.clone();
     super::helpers::spawn_blocking_io("delete venue", move || {
         Ok::<_, String>(lighting_writes::delete_venue(&dir, &wanted))
@@ -2458,12 +2508,15 @@ pub(super) async fn get_venue_patch(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir =
-        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let outcome = super::helpers::spawn_blocking_io("read venue patch", move || {
@@ -2502,12 +2555,15 @@ pub(super) async fn get_venue_scene(
     Query(query): Query<LightingDirQuery>,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir =
-        resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        LightingDir::Venues,
+    )?;
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let outcome = super::helpers::spawn_blocking_io("read venue scene", move || {
@@ -4518,6 +4574,52 @@ show "test" {
             parsed["error"],
             "brick_1.fixture is taken by \"BRICK 1\"; choose another name"
         );
+    }
+
+    /// #673: the import's name check and its pinned record go to the
+    /// fixture types directory this host's profile sets, as the CLI and MCP
+    /// put them, not the default one the player does not read; and the
+    /// other endpoints that default a directory read it there too.
+    #[tokio::test]
+    async fn an_import_goes_to_the_hosts_configured_fixture_types_dir() {
+        let config = "songs: \".\"\nprofiles:\n  - hostname: not-this-host-x9\n    dmx:\n      \
+                      universes: []\n      lighting:\n        directories:\n          \
+                      fixture_types: other/types\n  - dmx:\n      universes: []\n      \
+                      lighting:\n        directories:\n          fixture_types: rig/types\n";
+        let (app, dir) = light_shows_at_the_root(config);
+        std::fs::create_dir_all(dir.path().join("rig/types")).unwrap();
+        let (status, parsed) =
+            import_upload(&app, "synth.gdtf", &synthetic_gdtf_bytes(), "?name=Brick").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert!(dir.path().join("rig/types/brick.fixture").exists());
+        assert!(!dir
+            .path()
+            .join("lighting/fixture_types/brick.fixture")
+            .exists());
+        assert!(!dir.path().join("other/types/brick.fixture").exists());
+        // The list with no `?dir=` is this host's directory's.
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/fixture-types")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("\"Brick\""), "{body}");
+        // Taken there: another archive under the name is a conflict.
+        let other = crate::lighting::gdtf::build_zip(&[(
+            "description.xml",
+            crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
+                .replace("Synth Brick", "Other Brick")
+                .as_bytes(),
+        )]);
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
     }
 
     /// Uploads an archive to the import endpoint; the status and the answer.

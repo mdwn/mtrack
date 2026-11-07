@@ -745,6 +745,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The web UI's lighting endpoints default to this host's lighting directories** (#673): an
+  endpoint given no directory (`?dir=`, `venues_dir`, `fixture_types_dir`) used the default ones,
+  `lighting/fixture_types` and `lighting/venues`, even where this host's profile sets others
+  (`lighting.directories.fixture_types: rig/types`). The GDTF import, which takes no directory,
+  always did: its name check and the record it pins (`?name=Brick`) went to
+  `lighting/fixture_types/brick.fixture`, which the player does not read. They now take the
+  directories this host's profile sets, by the same reader as the CLI and MCP: the GDTF import,
+  the fixture type and venue endpoints, fixture settings, the fixture test and MVR import and
+  export. A directory a request names still wins, and with none configured the defaults are as
+  before. A config that does not load is now a 500 there, as it is to MCP.
+
 - **The position reads the start position while a play from part way in starts** (#634): after
   `play_song_from` with `start_time: "95s"` (or any play, seek or resume from a position), the
   status (dashboard, MCP `status`, gRPC `Status`) gave `elapsed: 0:00.000` with `playing: true` for

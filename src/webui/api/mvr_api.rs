@@ -37,9 +37,9 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use super::lighting_api::{
-    content_version, if_match_version, project_root, reload_if_current_venue, resolve_lighting_dir,
-    stale_venue_response, validate_lighting_name, venue_error_after_save,
-    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
+    content_version, if_match_version, lighting_dir, project_root, reload_if_current_venue,
+    resolve_lighting_dir, stale_venue_response, validate_lighting_name, venue_error_after_save,
+    LightingDir, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::export::{MvrExportOptions, EXPORT_DIR};
@@ -149,19 +149,16 @@ fn parse_origin(text: &str) -> Result<Vec3, Response> {
     }
 }
 
-/// A directory the caller named, or the default, proven to stay in the
+/// A directory the caller named, or this host's, proven to stay in the
 /// project. Returns the project-relative string the library functions take.
 #[allow(clippy::result_large_err)]
 fn checked_dir(
     state: &WebUiState,
     requested: Option<&str>,
-    default: &'static str,
+    which: LightingDir,
 ) -> Result<String, Response> {
-    resolve_lighting_dir(&state.config_path, requested, default)?;
-    Ok(match requested {
-        Some(dir) if !dir.is_empty() => dir.to_string(),
-        _ => default.to_string(),
-    })
+    resolve_lighting_dir(&state.config_path, requested, which)?;
+    lighting_dir(&state.config_path, requested, which)
 }
 
 /// The import options a form asks for, directories checked.
@@ -173,9 +170,9 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
         fixture_types_dir: checked_dir(
             state,
             form.field("fixture_types_dir"),
-            DEFAULT_FIXTURE_TYPES_DIR,
+            LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, form.field("venues_dir"), DEFAULT_VENUES_DIR)?,
+        venues_dir: checked_dir(state, form.field("venues_dir"), LightingDir::Venues)?,
         keep: match form.field("keep") {
             Some(text) => serde_json::from_str(text).map_err(|e| {
                 bad_request(format!(
@@ -348,9 +345,9 @@ fn export_options(state: &WebUiState, query: &ExportQuery) -> Result<MvrExportOp
         fixture_types_dir: checked_dir(
             state,
             query.fixture_types_dir.as_deref(),
-            DEFAULT_FIXTURE_TYPES_DIR,
+            LightingDir::FixtureTypes,
         )?,
-        venues_dir: checked_dir(state, query.venues_dir.as_deref(), DEFAULT_VENUES_DIR)?,
+        venues_dir: checked_dir(state, query.venues_dir.as_deref(), LightingDir::Venues)?,
         ..MvrExportOptions::for_venue(&query.venue)
     })
 }
@@ -521,11 +518,11 @@ pub(super) async fn add_aim_points(
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
-    let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let venues_dir = checked_dir(&state, query.venues_dir.as_deref(), LightingDir::Venues)?;
     let fixture_types_dir = checked_dir(
         &state,
         query.fixture_types_dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let project = project_root(&state.config_path)?;
     let venues_path = project.join(&venues_dir);

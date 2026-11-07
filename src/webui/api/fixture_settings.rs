@@ -44,7 +44,7 @@ use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, if_match_version, locate_fixture_type_file,
     project_root, resolve_lighting_dir, validate_lighting_name, validate_lighting_name_to_write,
-    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
+    LightingDir, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
@@ -82,7 +82,7 @@ pub(super) async fn get_settings(
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let Some(path) = locate_fixture_type_file(&dir, &name).await? else {
@@ -657,12 +657,12 @@ pub(super) async fn post_settings(
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     let expected = if_match_version(&headers);
