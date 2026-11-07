@@ -207,17 +207,7 @@ pub(super) async fn import_gdtf(
                 &project,
                 DEFAULT_FIXTURE_TYPES_DIR,
             )
-            .map_err(|e| {
-                // A taken archive file name or record name is a conflict.
-                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some()
-                    || e.downcast_ref::<lighting::files::Refusal>().is_some()
-                {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::BAD_REQUEST
-                };
-                (status, e.to_string())
-            }),
+            .map_err(|e| (lighting_writes::import_status(e.as_ref()), e.to_string())),
         )
     })
     .await?
@@ -1615,11 +1605,21 @@ pub(super) async fn put_fixture_type(
             }
             None => None,
         };
-        if let Some((_, retype)) = &retype {
-            retype.write()?;
-        }
-        if let Err(r) = lighting_writes::write(&plan, &dsl) {
-            return reply(r);
+        match &retype {
+            // The type and its venues are written together, and put back
+            // together if any write fails.
+            Some((_, retype)) => {
+                if let Err((status, message)) =
+                    super::fixture_settings::write_type_save(&dir, &[], &plan, &dsl, retype)
+                {
+                    return reply((status, Json(json!({"error": message}))).into_response());
+                }
+            }
+            None => {
+                if let Err(r) = lighting_writes::write(&plan, &dsl) {
+                    return reply(r);
+                }
+            }
         }
         Ok(Ok(retype.map(|(old, retype)| retype.summary(&old, &name))))
     })
@@ -1635,12 +1635,12 @@ pub(super) async fn put_fixture_type(
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({
-                "status": "saved",
-                "name": name,
-                "rename": rename,
-                "venue_error": venue_error,
-            })),
+            Json(crate::webui::wire::fixture_types::FixtureTypeSaved {
+                status: "saved".to_string(),
+                name,
+                rename,
+                venue_error,
+            }),
         )
             .into_response(),
     )

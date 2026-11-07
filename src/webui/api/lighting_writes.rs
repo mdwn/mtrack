@@ -67,62 +67,79 @@ pub(super) fn read_only_response(kind: Kind, dir: &Path, owner: &Owner) -> Respo
     (StatusCode::CONFLICT, Json(body)).into_response()
 }
 
-/// The 409 for a name [`files::claim_new`] or [`files::name_free`] refused.
-fn refused_claim(refusal: Refusal) -> Response {
-    let status = match refusal {
-        Refusal::Unreadable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::CONFLICT,
-    };
-    (status, Json(json!({"error": refusal.to_string()}))).into_response()
-}
-
-fn not_found(kind: Kind, name: &str) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(json!({"error": format!("{} \"{name}\" not found", kind.noun())})),
-    )
-        .into_response()
-}
-
-fn server_error(message: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": message})),
-    )
-        .into_response()
-}
-
 pub(super) use crate::lighting::writes::{Plan, Save};
 use crate::lighting::writes::{Refused, WriteError};
 
-/// [`Save::plan`], a refusal answered as the web API answers it: 404 for a
-/// rename of nothing, the read-only 409, the claim's 409, a 409 for a
-/// `.light` upgrade whose file is there, and 500 for a file that cannot be
-/// read.
+/// The status every web answer to a refusal of the one rule takes: 404 for
+/// a rename of a name no file declares, 500 for a file or directory that
+/// cannot be read, 409 for the rest (a read-only file, a taken name or
+/// file, a `.light` upgrade whose file is there).
+pub(crate) fn refused_status(refused: &Refused) -> StatusCode {
+    match refused {
+        Refused::NotFound { .. } => StatusCode::NOT_FOUND,
+        Refused::Claim(refusal) => claim_status(refusal),
+        Refused::Unreadable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        Refused::ReadOnly { .. } | Refused::UpgradeTaken { .. } => StatusCode::CONFLICT,
+    }
+}
+
+/// [`refused_status`] for a name [`files::claim_new`],
+/// [`files::claim_record_for`] or [`files::name_free`] refused.
+pub(crate) fn claim_status(refusal: &Refusal) -> StatusCode {
+    match refusal {
+        Refusal::Unreadable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::CONFLICT,
+    }
+}
+
+/// The status of a failed write: 409 for a file to be made that appeared
+/// since it was claimed, 500 otherwise.
+pub(crate) fn write_status(e: &WriteError) -> StatusCode {
+    match e {
+        WriteError::Exists(_) => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// The status of an importer's error (GDTF or MVR, an inspection too): a
+/// refusal of the one rule, or a write, as [`refused_status`],
+/// [`claim_status`] and [`write_status`] say; a library archive of the same
+/// name with other bytes 409; anything else is the request's 400.
+pub(crate) fn import_status(e: &(dyn std::error::Error + 'static)) -> StatusCode {
+    if let Some(venue) = e.downcast_ref::<lighting::import::VenueRefused>() {
+        refused_status(&venue.refused)
+    } else if let Some(refusal) = e.downcast_ref::<Refusal>() {
+        claim_status(refusal)
+    } else if let Some(record) = e.downcast_ref::<lighting::import::RecordRefused>() {
+        claim_status(&record.refusal)
+    } else if let Some(write) = e.downcast_ref::<WriteError>() {
+        write_status(write)
+    } else if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
+/// [`Save::plan`], a refusal answered as the web API answers it, with the
+/// status [`refused_status`] gives; a read-only file's 409 also carries the
+/// file and what else is in it.
 pub(super) fn plan(save: &Save<'_>) -> Result<Plan, Response> {
     save.plan().map_err(|refused| match refused {
-        Refused::NotFound { kind, name } => not_found(kind, &name),
         Refused::ReadOnly { kind, dir, owner } => read_only_response(kind, &dir, &owner),
-        Refused::Claim(refusal) => refused_claim(refusal),
-        upgrade @ Refused::UpgradeTaken { .. } => (
-            StatusCode::CONFLICT,
-            Json(json!({"error": upgrade.to_string()})),
+        other => (
+            refused_status(&other),
+            Json(json!({"error": other.to_string()})),
         )
             .into_response(),
-        unreadable @ Refused::Unreadable { .. } => server_error(unreadable.to_string()),
     })
 }
 
-/// [`crate::lighting::writes::write`], a failure answered as the web API
-/// answers it: a file to be made that is there by now is a 409, anything
-/// else a 500.
+/// [`crate::lighting::writes::write`], a failure answered with the status
+/// [`write_status`] gives.
 pub(super) fn write(plan: &Plan, content: &str) -> Result<(), Response> {
-    crate::lighting::writes::write(plan, content).map_err(|e| match e {
-        WriteError::Exists(_) => {
-            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
-        }
-        other => server_error(other.to_string()),
-    })
+    crate::lighting::writes::write(plan, content)
+        .map_err(|e| (write_status(&e), Json(json!({"error": e.to_string()}))).into_response())
 }
 
 /// The file a delete of `name` removes: its owner's, when that is the

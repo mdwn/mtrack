@@ -55,7 +55,7 @@ pub use crate::lighting::mvr_types::{
     HandEdit, MvrImport, MvrKeep, MvrPlan, PlannedFixture, PlannedFixtureType, PlannedFocusPoint,
     RemovedFixture,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -475,7 +475,7 @@ fn plan(
     // fixture it already is; a new one is named from its GDTF, and a name
     // another fixture has is pinned with a record as `Name (stem)`.
     let fixture_dir = project.join(&options.fixture_types_dir);
-    let mut claimed: HashSet<String> = HashSet::new();
+    let mut batch = super::Batch::default();
     let mut type_names: HashMap<String, String> = HashMap::new();
     let mut fixture_types = Vec::new();
     let mut gdtf_writes = Vec::new();
@@ -492,8 +492,18 @@ fn plan(
             &item.bytes,
             description,
             None,
-            &mut claimed,
-        )?;
+            &mut batch,
+        )
+        .map_err(|e| -> Box<dyn Error> {
+            match e.downcast::<crate::lighting::files::Refusal>() {
+                Ok(refusal) => Box::new(super::RecordRefused {
+                    gdtf: item.file_name.clone(),
+                    types_dir: options.fixture_types_dir.clone(),
+                    refusal: *refusal,
+                }),
+                Err(other) => other,
+            }
+        })?;
         let mut modes: Vec<String> = resolved
             .iter()
             .filter_map(|(_, k, _)| k.as_ref())
@@ -1802,6 +1812,106 @@ mod tests {
             "{}",
             venue_text(dir.path())
         );
+    }
+
+    /// A hand-written "Synth Brick", so every embedded synthetic GDTF is
+    /// pinned as `Synth Brick (<its file stem>)`.
+    fn with_hand_written_synth_brick(dir: &Path) -> PathBuf {
+        let types = dir.join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(
+            types.join("synth_brick.light"),
+            "fixture_type \"Synth Brick\" {\n  channels: 1\n  channel_map: {\"dimmer\": 1}\n}\n",
+        )
+        .unwrap();
+        types
+    }
+
+    /// Every file under `dir`, relative.
+    fn all_files(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = crate::lighting::project_files::files_under(
+            dir,
+            &["light", "fixture", "venue", "gdtf", "mvr"],
+        )
+        .iter()
+        .map(|p| crate::lighting::project_files::display_in(dir, p))
+        .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn an_embedded_gdtf_whose_record_file_is_taken_refuses_with_what_to_do() {
+        let dir = project();
+        let types = with_hand_written_synth_brick(dir.path());
+        std::fs::write(
+            types.join("synth_brick_astera_pb15.fixture"),
+            "fixture_type \"Other\" {\n  channels: 1\n  channel_map: {\"dimmer\": 1}\n}\n",
+        )
+        .unwrap();
+        let before = all_files(dir.path());
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+
+        let err = import_mvr_bytes(&bytes, "k.mvr", &options(), dir.path()).unwrap_err();
+
+        assert!(err.downcast_ref::<super::super::RecordRefused>().is_some());
+        assert_eq!(
+            err.to_string(),
+            "lighting/fixture_types/synth_brick_astera_pb15.fixture holds \"Other\"; rename or \
+             move that file, or import Astera_PB15.gdtf on its own first under a name of your \
+             own (`mtrack import-gdtf --name <name>`, or the Fixtures page)"
+        );
+        assert_eq!(all_files(dir.path()), before, "nothing written, no _2");
+    }
+
+    #[test]
+    fn three_embedded_gdtfs_whose_records_fold_to_one_file_are_refused_at_plan_time() {
+        let dir = project();
+        with_hand_written_synth_brick(dir.path());
+        // Three archives of one fixture name whose file stems differ only in
+        // case and separators: "Synth Brick (X_1)", "(x 1)" and "(x_1)" all
+        // want `synth_brick_x_1.fixture`.
+        let names = ["X_1.gdtf", "x 1.gdtf", "x_1.gdtf"];
+        let fixtures: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| {
+                format!(
+                    r#"<Fixture name="B{i}"><Matrix>{{1,0,0}}{{0,1,0}}{{0,0,1}}{{0,3500,4200}}</Matrix>
+<GDTFSpec>{spec}</GDTFSpec><GDTFMode>8: RGBS</GDTFMode>
+<Addresses><Address break="0">1.{}</Address></Addresses></Fixture>"#,
+                    1 + i * 10
+                )
+            })
+            .collect();
+        let scene = scene_with(&fixtures.join("\n"), "");
+        let archives: Vec<Vec<u8>> = (0..names.len())
+            .map(|i| {
+                crate::testutil::lighting::synthetic_gdtf_of(
+                    &SYNTHETIC_DESCRIPTION
+                        .replace("mtrack synthetic", &format!("mtrack synthetic {i}")),
+                )
+            })
+            .collect();
+        let mut entries: Vec<(&str, &[u8])> =
+            vec![("GeneralSceneDescription.xml", scene.as_bytes())];
+        for (name, bytes) in names.iter().zip(&archives) {
+            entries.push((name, bytes.as_slice()));
+        }
+        let bytes = build_zip(&entries);
+        let before = all_files(dir.path());
+
+        let err = inspect_mvr_bytes(&bytes, "k.mvr", &options(), dir.path()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "lighting/fixture_types/synth_brick_x_1.fixture would also be the record of \
+             \"Synth Brick (X_1)\", another GDTF in this MVR; import x 1.gdtf on its own first \
+             under a name of your own (`mtrack import-gdtf --name <name>`, or the Fixtures page)"
+        );
+        let err = import_mvr_bytes(&bytes, "k.mvr", &options(), dir.path()).unwrap_err();
+        assert!(err.to_string().contains("synth_brick_x_1.fixture"), "{err}");
+        assert_eq!(all_files(dir.path()), before, "nothing is written");
     }
 
     #[test]

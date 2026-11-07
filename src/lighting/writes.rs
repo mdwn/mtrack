@@ -228,10 +228,11 @@ impl Save<'_> {
     }
 }
 
-/// Why [`write`] failed.
+/// Why a write failed.
 #[derive(Debug)]
 pub enum WriteError {
-    /// The file to be made is there by now; nothing was written.
+    /// The file to be made appeared after it was claimed; it was not
+    /// written over.
     Exists(PathBuf),
     /// The file could not be written.
     Io {
@@ -254,12 +255,14 @@ impl std::fmt::Display for WriteError {
         match self {
             WriteError::Exists(path) => write!(
                 f,
-                "{} already exists; move or remove it by hand, then save again",
+                "{} appeared after it was claimed and was not written over; move or remove it \
+                 by hand, then try again",
                 path.display()
             ),
-            WriteError::Io { path, error } => {
-                f.write_str(&crate::util::write_file_message(path, error))
-            }
+            WriteError::Io { path, error } => f.write_str(&crate::util::write_failure_message(
+                crate::util::WriteTarget::File(path),
+                error,
+            )),
             WriteError::NotRetired {
                 old,
                 error,
@@ -282,40 +285,101 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
-/// Writes `content` as `plan` says. A file to be made that is there by now
-/// is refused, nothing written. When the old file cannot be removed after
-/// a new one is made, the new one is removed again and the save fails, so
-/// a name is never left in two files.
-pub fn write(plan: &Plan, content: &str) -> Result<(), WriteError> {
+/// Makes the new file `path` with `create_new`, as a claim is written: one
+/// that appeared since it was claimed is [`WriteError::Exists`], never
+/// written over.
+pub fn create_new(path: &Path, contents: &[u8]) -> Result<(), WriteError> {
+    crate::util::write_new_file(path, contents).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            WriteError::Exists(path.to_path_buf())
+        } else {
+            WriteError::Io {
+                path: path.to_path_buf(),
+                error,
+            }
+        }
+    })
+}
+
+/// Writes `content` as `plan` says, leaving the file it retires (if any)
+/// for [`retire`]: a writer with more files to write retires the old one
+/// only once all of them are, and can [`undo`] this until then.
+pub fn write_unretired(plan: &Plan, content: &str) -> Result<(), WriteError> {
     match &plan.write {
         Write::Rewrite(path) => {
             crate::util::write_file(path, content.as_bytes()).map_err(|error| WriteError::Io {
                 path: path.clone(),
                 error,
-            })?
+            })
         }
-        Write::Create(path) => match crate::util::write_new_file(path, content.as_bytes()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(WriteError::Exists(path.clone()))
-            }
-            Err(error) => {
-                return Err(WriteError::Io {
-                    path: path.clone(),
-                    error,
-                })
-            }
-        },
+        Write::Create(path) => create_new(path, content.as_bytes()),
     }
+}
+
+/// Removes the file a written `plan` retires; nothing when it retires none.
+pub fn retire(plan: &Plan) -> std::io::Result<()> {
+    match &plan.retire {
+        Some(old) => remove_file(old),
+        None => Ok(()),
+    }
+}
+
+/// Undoes [`write_unretired`]: a file it made is removed, a file it
+/// rewrote is written back as it was (`plan.current`).
+pub fn undo(plan: &Plan) -> std::io::Result<()> {
+    match (&plan.write, &plan.current) {
+        (Write::Create(path), _) => remove_file(path),
+        (Write::Rewrite(path), Some(current)) => crate::util::write_file(path, current),
+        (Write::Rewrite(_), None) => Ok(()),
+    }
+}
+
+/// Writes `content` as `plan` says. A file to be made that is there by now
+/// is refused, nothing written. When the old file cannot be removed after
+/// a new one is made, the new one is removed again and the save fails, so
+/// a name is never left in two files.
+pub fn write(plan: &Plan, content: &str) -> Result<(), WriteError> {
+    write_unretired(plan, content)?;
     if let (Some(old), Write::Create(new)) = (&plan.retire, &plan.write) {
-        if let Err(error) = std::fs::remove_file(old) {
+        if let Err(error) = retire(plan) {
             return Err(WriteError::NotRetired {
                 old: old.clone(),
                 error,
                 new: new.clone(),
-                undone: std::fs::remove_file(new),
+                undone: remove_file(new),
             });
         }
     }
     Ok(())
+}
+
+/// `std::fs::remove_file`, which a test can make fail for a path.
+fn remove_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if test_hook::refuses_removal(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refused by the test",
+        ));
+    }
+    std::fs::remove_file(path)
+}
+
+/// Lets a test make the removal of a file fail, which a directory's
+/// permissions cannot do without failing its creation too.
+#[cfg(test)]
+pub mod test_hook {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static REFUSED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// From now on, removing `path` fails (paths are a test's own).
+    pub fn refuse_removal_of(path: &Path) {
+        REFUSED.lock().unwrap().push(path.to_path_buf());
+    }
+
+    pub(super) fn refuses_removal(path: &Path) -> bool {
+        REFUSED.lock().unwrap().iter().any(|p| p == path)
+    }
 }

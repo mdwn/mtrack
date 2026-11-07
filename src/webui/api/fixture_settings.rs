@@ -168,6 +168,8 @@ pub(super) struct VenueRewrite {
     path: PathBuf,
     file: String,
     content: String,
+    /// The file as it was read, which a failed save puts back.
+    original: String,
     /// (venue, lines changed).
     venues: Vec<(String, usize)>,
 }
@@ -182,16 +184,6 @@ pub(super) struct VenueRetype {
 }
 
 impl VenueRetype {
-    /// Writes the rewrites in place. Each is a venue's own file, so none is
-    /// moved or made.
-    pub fn write(&self) -> Result<(), String> {
-        for rewrite in &self.rewrites {
-            config_io::staged_write(&rewrite.path, &rewrite.content)
-                .map_err(|e| format!("writing {}: {e}", rewrite.file))?;
-        }
-        Ok(())
-    }
-
     /// The rename as the answer says it.
     pub fn summary(&self, from: &str, to: &str) -> Rename {
         let venues = self
@@ -220,6 +212,85 @@ impl VenueRetype {
     }
 }
 
+/// Writes a fixture type's save with what goes with it, in an order that can
+/// be undone: the `pins` (made new), the type's file by its `record` plan
+/// (made or rewritten, its old file kept), the `venues` rewrites, and only
+/// then the old type file retired. A failure before the last step puts back
+/// everything written before it, and the answer says what is left; one at
+/// the last step leaves both type files (a name in two files is read-only,
+/// never lost) and says so.
+pub(super) fn write_type_save(
+    types_dir: &FsPath,
+    pins: &[(PathBuf, String)],
+    record: &lighting::writes::Plan,
+    text: &str,
+    venues: &VenueRetype,
+) -> Result<(), Refusal> {
+    let shown = |path: &FsPath| lighting::project_files::display_in(types_dir, path);
+    let status = super::lighting_writes::write_status;
+    // What was put back, or could not be: the end of every failure's answer.
+    let put_back = |failed: Vec<String>| {
+        if failed.is_empty() {
+            "nothing was saved".to_string()
+        } else {
+            format!(
+                "nothing more was saved, but {} could not be put back",
+                failed.join(", ")
+            )
+        }
+    };
+    let remove_pins = |made: &[(PathBuf, String)], failed: &mut Vec<String>| {
+        for (path, _) in made {
+            if let Err(e) = std::fs::remove_file(path) {
+                failed.push(format!("{} (made, {e})", shown(path)));
+            }
+        }
+    };
+    for (index, (path, pin)) in pins.iter().enumerate() {
+        if let Err(e) = lighting::writes::create_new(path, pin.as_bytes()) {
+            let mut failed = Vec::new();
+            remove_pins(&pins[..index], &mut failed);
+            return Err((status(&e), format!("{e}; {}", put_back(failed))));
+        }
+    }
+    if let Err(e) = lighting::writes::write_unretired(record, text) {
+        let mut failed = Vec::new();
+        remove_pins(pins, &mut failed);
+        return Err((status(&e), format!("{e}; {}", put_back(failed))));
+    }
+    for (index, rewrite) in venues.rewrites.iter().enumerate() {
+        if let Err(e) = config_io::staged_write(&rewrite.path, &rewrite.content) {
+            let mut failed = Vec::new();
+            for done in &venues.rewrites[..index] {
+                if let Err(u) = config_io::staged_write(&done.path, &done.original) {
+                    failed.push(format!("venue file {} ({u})", done.file));
+                }
+            }
+            if let Err(u) = lighting::writes::undo(record) {
+                failed.push(format!("{} ({u})", shown(record.write.path())));
+            }
+            remove_pins(pins, &mut failed);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{e}; {}", put_back(failed)),
+            ));
+        }
+    }
+    if let Err(e) = lighting::writes::retire(record) {
+        let old = record.retire.as_deref().map(shown).unwrap_or_default();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "the fixture type and its venues were saved to {}, but {old} could not be \
+                 removed ({e}): the type is now declared in both, so it is read-only until you \
+                 remove {old} by hand",
+                shown(record.write.path())
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// What a settings save would do, worked out from the files.
 struct Plan {
     /// The record's write: a new record claimed for a library fixture with
@@ -243,16 +314,10 @@ pub(super) type Refusal = (StatusCode, String);
 
 /// A refusal of the one rule for type files, as a settings refusal.
 fn refused(refused: lighting::writes::Refused) -> Refusal {
-    use lighting::writes::Refused;
-    let status = match &refused {
-        Refused::NotFound { .. } => StatusCode::NOT_FOUND,
-        Refused::Unreadable { .. }
-        | Refused::Claim(lighting::files::Refusal::Unreadable { .. }) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-        _ => StatusCode::CONFLICT,
-    };
-    (status, refused.to_string())
+    (
+        super::lighting_writes::refused_status(&refused),
+        refused.to_string(),
+    )
 }
 
 /// A venue with every fixture of type `from` re-typed `to`, and how many.
@@ -387,6 +452,7 @@ pub(super) fn plan_venue_retype(
                 path: path.clone(),
                 file,
                 content: text_now,
+                original: text,
                 venues: touched,
             });
         }
@@ -426,7 +492,7 @@ fn plan(
             ))
         })?;
     }
-    let mut claimed = Vec::new();
+    let mut claimed = lighting::files::Claimed::default();
     // The record, written by the one rule for type files: where its file is
     // its alone (a rename moving one at its own place), or — for a GDTF in
     // the library with none yet — a new one claimed under the name it will
@@ -541,16 +607,16 @@ fn plan(
 
 /// The record the importer would write for a library fixture with none,
 /// under the name `named` (a rename's new one): claimed by the one rule for
-/// a GDTF's record ([`lighting::files::claim_record_for`]), so refused when
-/// the name is declared or another archive's, or its `<stem>.fixture`, in
-/// any case, is there or already `claimed` by this save.
+/// a GDTF's record ([`lighting::files::Claimed::record_for`]), so refused
+/// when the name is declared or another archive's, or its `<stem>.fixture`,
+/// in any case, is there or already `claimed` by this save.
 fn new_record_for(
     root: &FsPath,
     types_dir: &FsPath,
     library_type: &lighting::library::LibraryType,
     named: &str,
     library: &[lighting::library::LibraryType],
-    claimed: &mut Vec<PathBuf>,
+    claimed: &mut lighting::files::Claimed,
 ) -> Result<(PathBuf, String), Refusal> {
     let bytes = crate::util::read_file(&root.join(&library_type.archive)).map_err(|e| {
         (
@@ -564,19 +630,10 @@ fn new_record_for(
             format!("{} is not a readable GDTF: {e}", library_type.file_name),
         )
     })?;
-    let claim = lighting::files::claim_record_for(types_dir, &library_type.archive, named, library)
+    let claim = claimed
+        .record_for(types_dir, &library_type.archive, named, library)
         .map_err(|r| refused(lighting::writes::Refused::Claim(r)))?;
     let path = claim.path().to_path_buf();
-    if claimed.contains(&path) {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "{} would hold two records; choose another name",
-                lighting::project_files::display_in(types_dir, &path)
-            ),
-        ));
-    }
-    claimed.push(path.clone());
     let text = lighting::import::gdtf_definition(
         &library_type.name,
         &library_type.archive,
@@ -680,29 +737,14 @@ pub(super) async fn post_settings(
                 std::fs::create_dir_all(&types_dir)
                     .map_err(|e| format!("creating {}: {e}", types_dir.display()))?;
             }
-            // Each pin and a new record is made new, never over a file made
-            // since it was claimed.
-            let exists = |path: &FsPath| {
-                Ok(Err((
-                    StatusCode::CONFLICT,
-                    format!(
-                        "{} is there now; nothing more was written — make your change again",
-                        lighting::project_files::display_in(&types_dir, path)
-                    ),
-                )))
-            };
-            for (path, text) in &plan.pins {
-                match crate::util::write_new_file(path, text.as_bytes()) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return exists(path),
-                    Err(e) => return Err(config_io::write_message(path, &e)),
-                }
-            }
-            plan.venues.write()?;
-            match lighting::writes::write(&plan.record, &plan.patched) {
-                Ok(()) => {}
-                Err(lighting::writes::WriteError::Exists(path)) => return exists(&path),
-                Err(e) => return Err(e.to_string()),
+            if let Err(refusal) = write_type_save(
+                &types_dir,
+                &plan.pins,
+                &plan.record,
+                &plan.patched,
+                &plan.venues,
+            ) {
+                return Ok(Err(refusal));
             }
         }
         Ok(Ok((plan, request.name.trim().to_string())))
@@ -1361,5 +1403,161 @@ mod test {
         assert_eq!(type_files(root), ["astera_pixelbrick.fixture"]);
         assert!(read(root, "types/astera_pixelbrick.fixture").contains("fixture_type \"PB15\""));
         assert!(read(root, "venues/house.venue").contains("fixture \"B1\" PB15 mode"));
+    }
+
+    /// Every file under `root` (relative) and its text.
+    fn tree(root: &FsPath) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = crate::lighting::project_files::files_under(
+            root,
+            &["light", "fixture", "venue", "gdtf"],
+        )
+        .iter()
+        .map(|p| {
+            (
+                crate::lighting::project_files::display_in(root, p),
+                std::fs::read_to_string(p).unwrap_or_default(),
+            )
+        })
+        .collect();
+        out.sort();
+        out
+    }
+
+    /// Makes `dir` read-only; `false` when that does not stop a write (the
+    /// tests run as root), and the test has nothing to show.
+    fn lock(dir: &FsPath) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let probe = dir.join(".probe");
+        if std::fs::write(&probe, "").is_ok() {
+            std::fs::remove_file(&probe).unwrap();
+            unlock(dir);
+            return false;
+        }
+        true
+    }
+
+    fn unlock(dir: &FsPath) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_venue_write_failing_puts_back_the_type_and_the_venues_written() {
+        let (state, dir) = test_state();
+        project(dir.path());
+        let root = dir.path();
+        // Written after club.light and house.venue, in path order.
+        std::fs::create_dir_all(root.join("venues/locked")).unwrap();
+        std::fs::write(
+            root.join("venues/locked/tour.venue"),
+            "venue \"tour\" {\n  fixture \"T1\" Brick mode \"8: RGBS\" @ 4:1\n}\n",
+        )
+        .unwrap();
+        let before = tree(root);
+        if !lock(&root.join("venues/locked")) {
+            return;
+        }
+
+        let (status, body) = post(
+            state,
+            "Brick",
+            json!({"name": "PixelBrick", "write": true}),
+            None,
+        )
+        .await;
+        unlock(&root.join("venues/locked"));
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("locked/tour.venue"), "{error}");
+        assert!(error.ends_with("; nothing was saved"), "{error}");
+        assert_eq!(tree(root), before, "every file as it was");
+    }
+
+    #[tokio::test]
+    async fn a_type_write_failing_writes_no_venue() {
+        let (state, dir) = test_state();
+        project(dir.path());
+        let root = dir.path();
+        let before = tree(root);
+        if !lock(&root.join("types")) {
+            return;
+        }
+
+        let (status, body) = post(
+            state,
+            "Brick",
+            json!({"name": "PixelBrick", "write": true}),
+            None,
+        )
+        .await;
+        unlock(&root.join("types"));
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("pixelbrick.fixture"), "{error}");
+        assert!(error.ends_with("; nothing was saved"), "{error}");
+        assert_eq!(tree(root), before, "every file as it was");
+    }
+
+    #[tokio::test]
+    async fn an_old_record_that_cannot_be_removed_is_left_beside_the_new_and_said() {
+        let (state, dir) = test_state();
+        project(dir.path());
+        let root = dir.path();
+        let old = root.join("types/brick.fixture");
+        crate::lighting::writes::test_hook::refuse_removal_of(&old);
+        if let Ok(canonical) = old.canonicalize() {
+            crate::lighting::writes::test_hook::refuse_removal_of(&canonical);
+        }
+
+        let (status, body) = post(
+            state,
+            "Brick",
+            json!({"name": "PixelBrick", "write": true}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body["error"],
+            "the fixture type and its venues were saved to pixelbrick.fixture, but brick.fixture \
+             could not be removed (refused by the test): the type is now declared in both, so it \
+             is read-only until you remove brick.fixture by hand"
+        );
+        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
+        assert_eq!(
+            read(root, "types/pixelbrick.fixture"),
+            TYPE_FILE.replace("\"Brick\"", "\"PixelBrick\"")
+        );
+        assert!(read(root, "venues/house.venue").contains("\"B1\" PixelBrick mode"));
+        assert!(read(root, "venues/club.light").contains("\"C1\" PixelBrick mode"));
+    }
+
+    #[tokio::test]
+    async fn a_light_record_moves_to_its_fixture_file_when_saved() {
+        let (state, dir) = test_state();
+        project(dir.path());
+        let root = dir.path();
+        std::fs::rename(
+            root.join("types/brick.fixture"),
+            root.join("types/brick.light"),
+        )
+        .unwrap();
+
+        let (status, body) = post(
+            state,
+            "Brick",
+            json!({"name": "Brick", "write": true,
+                   "movement": {"max_pan_speed": 240, "max_tilt_speed": null}}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(type_files(root), ["brick.fixture"]);
+        assert!(read(root, "types/brick.fixture").contains("max_pan_speed: 240deg/s"));
     }
 }

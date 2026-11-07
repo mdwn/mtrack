@@ -478,11 +478,12 @@ pub fn yaml_source(
     Ok(::config::File::from_str(&text, format))
 }
 
-/// What a failed write of the file `path` says, with the hint for fixing
-/// it ([`write_failure_hint`]).
-pub fn write_file_message(path: &Path, e: &std::io::Error) -> String {
-    let mut message = format!("Failed to write {}: {}", path.display(), e);
-    if let Some(hint) = write_failure_hint(WriteTarget::File(path), e) {
+/// What a failed write of `target` says, naming it, with the hint for
+/// fixing it ([`write_failure_hint`]): the one wording every writer's
+/// failure takes.
+pub fn write_failure_message(target: WriteTarget<'_>, e: &std::io::Error) -> String {
+    let mut message = format!("could not write {}: {e}", target.path().display());
+    if let Some(hint) = write_failure_hint(target, e) {
         message.push_str("\n\n");
         message.push_str(&hint);
     }

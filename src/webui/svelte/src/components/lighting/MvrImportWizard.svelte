@@ -24,7 +24,7 @@
     VenueError,
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import { importMvr, inspectMvr } from "../../lib/api/config";
+  import { importMvr, inspectMvr, MvrRefused } from "../../lib/api/config";
   import {
     defaultVenueName,
     fromPage,
@@ -56,6 +56,9 @@
   let inspection = $state<MvrInspection | null>(null);
   let busy = $state(false);
   let error = $state("");
+  /** The last inspection was refused for the venue's name or file: the
+   *  name field stays, so another name can be checked. */
+  let refused = $state(false);
   let dragging = $state(false);
 
   // The origin, in the file's millimeters, as the three fields hold it.
@@ -104,8 +107,10 @@
       const name = venueName.trim();
       inspection = await inspectMvr(file, name || undefined, dirs);
       inspectedName = name;
+      refused = false;
     } catch (e) {
       inspection = null;
+      refused = e instanceof MvrRefused;
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
@@ -400,7 +405,7 @@
         </p>
       {/if}
 
-      {#if inspection}
+      {#if inspection || (refused && !busy)}
         <div class="field">
           <label for="mvr-venue-name">{$t("lighting.mvr.file.name")}</label>
           <input
@@ -411,7 +416,25 @@
           />
           <span class="hint">{$t("lighting.mvr.file.nameHint")}</span>
         </div>
+      {/if}
 
+      {#if refused && !inspection && !busy}
+        <p class="hint" data-testid="mvr-refused-hint">
+          {$t("lighting.mvr.file.refusedHint")}
+        </p>
+        <div class="actions">
+          <button
+            class="btn btn-primary"
+            onclick={runInspect}
+            disabled={!venueName.trim()}
+            data-testid="mvr-recheck"
+          >
+            {$t("lighting.mvr.file.recheck")}
+          </button>
+        </div>
+      {/if}
+
+      {#if inspection}
         <h4 class="panel__sub">{$t("lighting.mvr.file.holds")}</h4>
         <dl class="facts" data-testid="mvr-holds">
           <div>

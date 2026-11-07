@@ -55,6 +55,7 @@ import type {
   SampleDefinition,
   SampleUploaded,
   SettingsSaved,
+  FixtureTypeSaved,
   StoreSnapshot,
   Vec3,
   Venue,
@@ -380,8 +381,21 @@ export async function inspectMvr(
     method: "POST",
     body: mvrForm(file, { name }, dirs),
   });
+  if (res.status === 409) {
+    const error = await apiError(res, "Failed to read the MVR");
+    throw new MvrRefused(error.message);
+  }
   if (!res.ok) throw await apiError(res, "Failed to read the MVR");
   return res.json();
+}
+
+/** An inspection the lighting files' rule refused (409): the venue's name
+ *  is another file's, or its file is not its alone. Another name may do. */
+export class MvrRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MvrRefused";
+  }
 }
 
 /** The import's plan (`write` false) or its report (`write` true). */
@@ -610,7 +624,7 @@ export async function saveFixtureType(
   dir?: string,
   from?: string | null,
   venuesDir?: string,
-): Promise<void> {
+): Promise<FixtureTypeSaved> {
   const params = saveParams(dir, from, typeRenameParams(from, venuesDir));
   const res = await put(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
@@ -618,6 +632,7 @@ export async function saveFixtureType(
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
   typeSaved(from);
+  return res.json();
 }
 
 /** The venues directory a type's rename retypes the venue lines in. */
@@ -644,7 +659,7 @@ export async function saveFixtureTypeText(
   dir?: string,
   from?: string | null,
   venuesDir?: string,
-): Promise<void> {
+): Promise<FixtureTypeSaved> {
   const params = saveParams(dir, from, {
     ext,
     ...typeRenameParams(from, venuesDir),
@@ -655,6 +670,7 @@ export async function saveFixtureTypeText(
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
   typeSaved(from);
+  return res.json();
 }
 
 /** Deletes a fixture type. For a fixture from a GDTF, its archive goes too

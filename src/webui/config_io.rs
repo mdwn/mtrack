@@ -21,7 +21,8 @@ use crate::util;
 /// recoverable copy if the write is interrupted. See [`crate::util::write_file`],
 /// which this wraps for callers that report errors as strings.
 pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
-    write(path, content, false).map_err(|e| write_message(path, &e))
+    write(path, content, false)
+        .map_err(|e| util::write_failure_message(util::WriteTarget::File(path), &e))
 }
 
 /// Writes `path` as [`staged_write`] does; with `new`, only creates it
@@ -33,11 +34,6 @@ pub fn write(path: &Path, content: &str, new: bool) -> std::io::Result<()> {
     } else {
         util::write_file(path, content.as_bytes())
     }
-}
-
-/// What a failed write of `path` says, with the hint for fixing it.
-pub fn write_message(path: &Path, e: &std::io::Error) -> String {
-    util::write_file_message(path, e)
 }
 
 /// Validates a player config YAML string by attempting to deserialize it.

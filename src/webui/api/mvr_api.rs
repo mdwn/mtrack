@@ -194,7 +194,9 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
 /// fixture's and focus point's position in the file's millimeters, the
 /// scenery and, when the scenery carries a stage floor, its bounds
 /// (`scene.deck_mm`, else null). Writes nothing. A file the importer
-/// refuses (not an MVR, over the caps) is a 400 with the parser's reason.
+/// refuses (not an MVR, over the caps) is a 400 with the parser's reason; a
+/// venue name (or an embedded GDTF's record) the one rule for lighting
+/// files refuses is a 409 with the reason, as the import answers it.
 pub(super) async fn inspect_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -211,14 +213,19 @@ pub(super) async fn inspect_mvr(
                 &options,
                 &project,
             )
-            .map_err(|e| e.to_string())?;
-            let scene =
-                lighting::import::scene_view::scene_view(&form.bytes).map_err(|e| e.to_string())?;
-            Ok::<_, String>((report, scene))
+            .map_err(|e| {
+                (
+                    super::lighting_writes::import_status(e.as_ref()),
+                    e.to_string(),
+                )
+            })?;
+            let scene = lighting::import::scene_view::scene_view(&form.bytes)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok::<_, (StatusCode, String)>((report, scene))
         })())
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
     let (report, scene) = outcome;
     Ok::<_, Response>(
         (
@@ -287,23 +294,15 @@ pub(super) async fn import_mvr(
                 .map(Imported::Plan)
             }
             .map_err(|e| {
-                // A venue whose file is not its alone, or a taken file, is a
-                // conflict; anything else refused is the request's fault.
-                let conflict = e.downcast_ref::<lighting::import::VenueRefused>().is_some()
-                    || e.downcast_ref::<lighting::writes::WriteError>()
-                        .is_some_and(|w| matches!(w, lighting::writes::WriteError::Exists(_)));
-                (conflict, e.to_string())
+                (
+                    super::lighting_writes::import_status(e.as_ref()),
+                    e.to_string(),
+                )
             }),
         )
     })
     .await?
-    .map_err(|(conflict, e)| {
-        if conflict {
-            (StatusCode::CONFLICT, Json(json!({"error": e}))).into_response()
-        } else {
-            bad_request(e)
-        }
-    })?;
+    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
     let report = match outcome {
         Imported::Plan(plan) => {
             let answer = MvrImportAnswer {
@@ -1050,6 +1049,23 @@ mod test {
                  \"Annex\"; edit that file by hand."
             );
         }
+        // The inspection says so too, so the wizard can ask for another name.
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("alongside venue \"Annex\""),
+            "{body}"
+        );
         assert_eq!(
             std::fs::read_to_string(venues.join("all.venue")).unwrap(),
             shared
