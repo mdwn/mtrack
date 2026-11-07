@@ -27,7 +27,11 @@ files on disk to prevent broken references.
 
 Playlists are YAML files stored in a `playlists/` directory (configurable via `playlists_dir`
 in `mtrack.yaml`). Each playlist is named after its filename stem — `my_setlist.yaml` becomes
-the playlist "my_setlist".
+the playlist "my_setlist". The extension is `.yaml` or `.yml`, lowercase. A name has one file:
+with both `my_setlist.yaml` and `my_setlist.yml`, mtrack reads `my_setlist.yaml`, logs a warning
+that `my_setlist.yml` is not read, and the web UI and MCP save to `my_setlist.yaml` too. A
+playlist kept only as `my_setlist.yml` is saved into that file. No file holds `all_songs`: an
+`all_songs.yaml` is ignored, and the web UI and MCP refuse to write one.
 
 ```yaml
 kind: playlist

@@ -167,7 +167,9 @@ profile files does mtrack fall back to the inline list. A missing directory is a
 catch-all profile as a file in the directory (`99-fallback.yaml`) rather than inline.
 
 The web UI's Config page edits profile files in place, and runtime gain changes are written to
-the file the active profile came from.
+the file the active profile came from. Every profile file loads and is listed, even two that
+share a stem (`stage.yaml` and `stage.yml`); the web UI opens, saves and deletes a profile by
+its stem, which is the `.yaml` when both are there.
 
 ## Controllers
 

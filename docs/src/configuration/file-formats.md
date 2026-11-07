@@ -3,7 +3,13 @@
 ## Configuration files
 
 Configuration files are YAML. When mtrack scans a directory (the song repository,
-`profiles_dir`, `playlists_dir`) it reads only files with a `.yaml` or `.yml` extension.
+`profiles_dir`, `playlists_dir`) it reads only files with a `.yaml` or `.yml` extension,
+lowercase (`song.YAML` is not read).
+
+A playlist is named by its file stem, so a name has one file: `set.yaml`, else `set.yml`. With
+both there, `set.yaml` is the playlist and a warning says `set.yml` is not read; saves go to
+`set.yaml` as well. Profiles are matched by the `hostname` inside them, not by their file
+name, so every profile file loads, `stage.yaml` and `stage.yml` alike.
 
 Each configuration file carries a `kind` field that identifies what it is, so that mtrack can
 tell the file types apart when it scans a directory:

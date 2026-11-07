@@ -419,26 +419,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload always took, and the light show's MIDI DMX picker no longer offers `.midi`, which the
   upload refuses and `--init` passes over.
 - **A playlist's or profile's file is found by one rule** (`util::yaml_file_at`,
-  `playlist::playlist_file`, `config::profile_file`): a name's file is `<name>.yaml`, else
-  `<name>.yml`, else a new `<name>.yaml`, for the playlist loader, the web UI's playlist save and
-  delete, MCP `read_playlist`/`write_playlist`/`patch_playlist`, a song delete taking the song off
-  the playlists, the profile list the config loads, and the web UI's profile list, read, save and
-  delete. With both `set.yaml` and `set.yml`, `set.yaml` is the one read and a warning names
-  `set.yml` as not read. What changes:
+  `playlist::playlist_file`, `playlist::playlist_files`, `config::profile_file`): a name's file
+  is `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`, matched against the names the
+  directory lists (so a `set.YML` on a case-insensitive filesystem is not taken for `set.yml`).
+  It is used by the playlist loader, the web UI's playlist save and delete, MCP
+  `read_playlist`/`write_playlist`/`patch_playlist`, a song delete taking the song off the
+  playlists, and the web UI's profile read, save and delete. The profile list the config loads
+  is unchanged: profiles are matched by the `hostname` inside them, so every profile file loads,
+  `stage.yaml` and `stage.yml` alike, and the web UI lists both, as before. What changes:
   - A playlist kept as `set.yml` is saved by the web UI's playlist editor and MCP `write_playlist`
     (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, and the loader went on
     reading `set.yml`, so the save had no effect. MCP `read_playlist` and `patch_playlist`
     (`name: set`) take `set.yml`; they failed, finding no `set.yaml`.
   - With both `set.yaml` and `set.yml` in the playlists directory, the loader now takes
-    `set.yaml`, with the warning; it took `set.yml` (the later file name) without one.
+    `set.yaml` and logs once, as it loads, "Playlist has two files: .../set.yaml is read,
+    .../set.yml is not"; it took `set.yml` (the later file name) without a warning.
   - MCP `write_playlist`, `read_playlist` and `patch_playlist` with `name: all_songs` are refused
     ("'all_songs' is the player's own playlist and has no file"): `write_playlist` wrote an
     `all_songs.yaml` the loader never reads.
-  - With both `set.yaml` and `set.yml`, deleting a song takes it off `set.yaml` only; it rewrote
-    both.
-  - With both `host.yaml` and `host.yml` in `profiles_dir`, the config loads `host.yaml` only,
-    with the warning, and a broken `host.yml` no longer fails the load; both were loaded as two
-    profiles. The web UI's profile list shows `host` once, where it listed it twice.
+  - Deleting a song takes it off each playlist's file as the loader reads it: with both
+    `set.yaml` and `set.yml` only `set.yaml` is rewritten (both were), and an `all_songs.yaml`
+    is left alone (the song was taken off it). A playlists directory that cannot be listed is
+    logged, where the song stayed on every playlist silently.
+  - A directory entry that cannot be read is passed over with a warning by the playlist loader
+    and the web UI's profile list (they passed over it silently), and by the config's profile
+    load and `mtrack migrate`'s profile step: the load failed with an error, and the migrate step
+    left every profile file unmigrated.
+  - The web UI's playlist list (`GET /api/playlists`) gives each playlist `reserved`, true for
+    `all_songs`; the playlist editor hides the playlist by it, holding no copy of the name.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
