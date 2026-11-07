@@ -3261,31 +3261,57 @@ mod test {
 
         /// The wash's (red, green, blue) after a seek to `secs` in `source`.
         fn seek_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
-            let (engine, _cancel_handle) = wash_running(source)?;
+            Ok(seek_engine(source, secs, &mut |_| ())?.2)
+        }
+
+        /// [`seek_frame`], with the engine it seeks; `before` runs just
+        /// before the seek, with its time.
+        fn seek_engine(
+            source: &str,
+            secs: f64,
+            before: &mut dyn FnMut(f64),
+        ) -> Result<Framed, Box<dyn Error>> {
+            let (engine, cancel_handle) = wash_running(source)?;
             let at = Duration::from_secs_f64(secs);
             engine.update_song_time(at);
+            before(secs);
             engine.start_lighting_timeline_at(at);
             engine.update_effects()?;
             let universe = engine.get_universe(5).unwrap();
-            Ok((
+            let frame = (
                 universe.get_target_value(0),
                 universe.get_target_value(1),
                 universe.get_target_value(2),
-            ))
+            );
+            Ok((engine, cancel_handle, frame))
         }
 
         /// The wash's (red, green, blue) at `secs` in `source`, played
         /// through to it in 10 ms frames.
         fn played_frame(source: &str, secs: f64) -> Result<(f64, f64, f64), Box<dyn Error>> {
-            let (engine, _cancel_handle) = wash_running(source)?;
+            Ok(played_engine(source, secs, &mut |_| ())?.2)
+        }
+
+        /// [`played_frame`], with the engine it plays; `before` runs just
+        /// before each frame after the first, with its time.
+        fn played_engine(
+            source: &str,
+            secs: f64,
+            before: &mut dyn FnMut(f64),
+        ) -> Result<Framed, Box<dyn Error>> {
+            let (engine, cancel_handle) = wash_running(source)?;
             let mut at = 1.0;
             let mut frame = frame_at(&engine, at);
             while at + 0.01 <= secs + 1e-9 {
                 at += 0.01;
+                before(at);
                 frame = frame_at(&engine, at);
             }
-            Ok(frame)
+            Ok((engine, cancel_handle, frame))
         }
+
+        /// An engine and the wash's (red, green, blue) in it.
+        type Framed = (Arc<Engine>, CancelHandle, (f64, f64, f64));
 
         const GREEN: (f64, f64, f64) = (0.0, 255.0, 0.0);
         const DARK: (f64, f64, f64) = (0.0, 0.0, 0.0);
@@ -4699,7 +4725,11 @@ mod test {
             // #669: the engine broke the tie by effect id, compared as a
             // string, so with the ids either side of 10^k
             // (`song_effect_9999`, `song_effect_10000`) the earlier cue went
-            // on top. From 9997 the two cues' ids straddle 10000.
+            // on top. Just before the cues fire (or the seek replays them),
+            // the counter moves on to one short of the next power of ten,
+            // never back, as other tests take ids meanwhile. Should one take
+            // some in between, so the two cues' ids miss the boundary, it
+            // tries again at the next.
             let shows = "show \"later\" {\n    @1.500\n    wash: static, color: \"red\", \
                 duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
                 show \"earlier\" {\n    @1.500\n    wash: static, color: \"green\", \
@@ -4708,12 +4738,35 @@ mod test {
                 duration: 5s, layer: midground, blend_mode: replace\n    @1.500\n    \
                 wash: static, color: \"green\", duration: 5s, layer: midground, \
                 blend_mode: replace\n}\n";
+            type Run = fn(&str, f64, &mut dyn FnMut(f64)) -> Result<Framed, Box<dyn Error>>;
+            let runs: [(&str, Run); 2] = [("played", played_engine), ("seek", seek_engine)];
             for show in [shows, one] {
-                for next in [7, 97, 997, 9_997, 99_997, 999_997] {
-                    crate::lighting::timeline::set_effect_id_counter(next);
-                    assert_eq!(played_frame(show, 2.0)?, GREEN, "from {next}\n{show}");
-                    crate::lighting::timeline::set_effect_id_counter(next);
-                    assert_eq!(seek_frame(show, 2.0)?, GREEN, "seek, from {next}\n{show}");
+                for (how, run) in runs {
+                    let mut straddled = false;
+                    for _ in 0..4 {
+                        let mut boundary = None;
+                        let (engine, _cancel_handle, frame) = run(show, 2.0, &mut |at| {
+                            if at + 1e-9 >= 1.5 && boundary.is_none() {
+                                boundary = Some(
+                                    crate::lighting::timeline::advance_effect_id_counter_short_of_power_of_ten(1),
+                                );
+                            }
+                        })?;
+                        let boundary = boundary.unwrap();
+                        assert_eq!(frame, GREEN, "{how}, ids from {boundary}\n{show}");
+                        let ids: Vec<u64> = engine
+                            .effect_engine
+                            .lock()
+                            .get_active_effects()
+                            .keys()
+                            .map(|id| id.trim_start_matches("song_effect_").parse().unwrap())
+                            .collect();
+                        if ids.iter().any(|&n| n < boundary) && ids.iter().any(|&n| n >= boundary) {
+                            straddled = true;
+                            break;
+                        }
+                    }
+                    assert!(straddled, "{how}: the ids never straddled 10^k\n{show}");
                 }
             }
             Ok(())

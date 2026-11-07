@@ -116,10 +116,16 @@
   // Collapsible Notifications section within Config tab
   let notifSectionOpen = $state(false);
 
+  /** Opens song `name`'s page on the tab this one shows. */
+  function goToSong(name: string) {
+    const base = `#/songs/${encodeURIComponent(name)}`;
+    window.location.hash =
+      activeTab === "tracks" ? base : `${base}/${activeTab}`;
+  }
+
   function setTab(tab: TabKey) {
     activeTab = tab;
-    const base = `#/songs/${encodeURIComponent(songName)}`;
-    window.location.hash = tab === "tracks" ? base : `${base}/${tab}`;
+    goToSong(songName);
   }
 
   const tabs: { key: TabKey; labelKey: string }[] = [
@@ -414,6 +420,30 @@
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
+  /**
+   * After an upload: the name the server gave the song, when it is not
+   * this page's (a new song whose name was taken, #674), opens its page,
+   * where the files that follow go. True when it did.
+   */
+  function followUploadedSong(data: { song?: unknown } | null): boolean {
+    const name = data?.song;
+    if (typeof name !== "string" || name === "" || name === songName) {
+      return false;
+    }
+    goToSong(name);
+    return true;
+  }
+
+  /** The song name a config's YAML declares, if it reads and has one. */
+  function declaredName(yaml: string): string | null {
+    try {
+      const name = (YAML.parse(yaml) as { name?: unknown } | null)?.name;
+      return typeof name === "string" && name !== "" ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function load() {
     loading = true;
     error = "";
@@ -606,7 +636,10 @@
         await lightingEditorRef.saveLightingFiles("before");
       }
 
-      // Save song config if dirty.
+      // Save song config if dirty. The name the saved config gives the
+      // song: a rename in the editor makes it another song's page, by its
+      // new name (#680), where the next save or delete goes.
+      let savedName: string | null = null;
       if (configDirty) {
         const res = await updateSong(songName, editedYaml);
         if (!res.ok) {
@@ -615,6 +648,7 @@
             data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
           return;
         }
+        savedName = declaredName(editedYaml);
         rawYaml = editedYaml;
       }
 
@@ -622,6 +656,11 @@
       // once the config no longer names them.
       if (lightingDirty && lightingEditorRef) {
         await lightingEditorRef.saveLightingFiles("after");
+      }
+
+      if (savedName && savedName !== songName) {
+        goToSong(savedName);
+        return;
       }
 
       saveMsg = get(t)("common.saved");
@@ -694,6 +733,7 @@
       }
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";
@@ -737,6 +777,7 @@
         : get(t)("songs.detail.midiUploaded");
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";

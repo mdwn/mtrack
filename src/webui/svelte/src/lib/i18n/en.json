@@ -948,6 +948,7 @@
   "songs.import.midiFileCount": "{count} MIDI",
   "songs.import.lightingFileCount": "{count} lighting",
   "songs.import.songExists": "song.yaml already exists in this directory",
+  "songs.import.nameTaken": "A song named \"{name}\" already exists; choose another name",
   "playlists.title": "Playlists",
   "playlists.new": "New",
   "playlists.namePlaceholder": "Playlist name",

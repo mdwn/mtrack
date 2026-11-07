@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::lighting::parser::grammar::{LightingParser, Rule};
+use crate::lighting::parser::parse_light_shows;
 use pest::Parser;
 
 // ========================================================================
@@ -572,5 +573,26 @@ fn test_tempo_change_with_ss_mmm_format() {
     assert!(
         result.is_ok(),
         "Tempo changes with SS.mmm time format should parse"
+    );
+}
+
+#[test]
+fn a_huge_signature_denominator_is_refused_by_name() {
+    // #635: a measure under 1/4294967295 rounded to nothing, and the show
+    // failed saying the effect needed a duration, after ~15 s.
+    let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 1/4294967295
+}
+
+show "s" {
+    @1/1
+    front_wash: static, color: "red", duration: 1measure
+}"#;
+    let error = parse_light_shows(content).unwrap_err().to_string();
+    assert!(
+        error.contains("1/4294967295") && error.contains("denominator"),
+        "{error}"
     );
 }

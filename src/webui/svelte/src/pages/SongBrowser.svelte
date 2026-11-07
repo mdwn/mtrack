@@ -42,7 +42,12 @@
 </script>
 
 {#if songName}
-  <SongDetail {songName} {initialTab} {initialTimeMs} />
+  <!-- Keyed on the song: going straight from one song's page to another's
+       (Back, Forward, a pasted link) loads the new song, not only its
+       heading (#632). -->
+  {#key songName}
+    <SongDetail {songName} {initialTab} {initialTimeMs} />
+  {/key}
 {:else}
   <SongList
     initialSearch={savedSearch}

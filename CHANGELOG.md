@@ -745,6 +745,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Going from one song's page straight to another's shows the new song** (#632): changing the URL
+  from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
+  `#/songs/Rime/lighting`, as the browser's Back and Forward or a pasted link do) changed the
+  heading and title but kept everything else on the first song: its duration, tracks, beat grid,
+  lighting timeline and config. The song page now loads afresh for each song.
+
+- **Saving or deleting a song does not touch another song's config** (#680): with `Foo/song.yaml`
+  declaring `name: Bar`, so that the player loads it as Bar, `PUT /api/songs/Foo` and MCP
+  `write_song{name: "Foo"}` found no song named Foo, fell back to the folder `Foo/` and overwrote
+  Bar's config; `DELETE /api/songs/Foo` deleted it. Each is now refused, the web UI's with a 409
+  and MCP's with an error, naming the song: `Foo/song.yaml is the config of the song "Bar", not of
+  "Foo"; it is left as it is`. One rule (`songs::check_song_config_for`) for both, as the loader
+  names the config's song (a song config that does not read goes by its folder). A save whose
+  config declares the song the file already does is that song's own edit, and is taken: after the
+  song editor renames Bar to Baz in `Bar/song.yaml`, a save sent as `PUT /api/songs/Bar` with
+  `name: Baz` writes it (a delete as Bar is still refused). The song page moves to the new name's
+  page after a save that renames the song, so its next save or delete goes there. Writing a song
+  that has its own config, renaming one in it, and writing a new song are as before.
+
+- **A rename onto a name another song holds is refused** (#689): saving `Foo/song.yaml` as
+  `name: Bar` while another song is Bar, through `PUT /api/songs/Foo` or MCP `write_song`, was
+  written, leaving two configs that declare Bar (the loader kept one), and the song page then went
+  to Bar's. Each is now refused, the web UI's with create-song's 409 naming the song in `taken`
+  and MCP's with an error, and the file is left as it is. One rule
+  (`songs::check_song_name_free`) for both and for create-song with a name. A save that keeps the
+  name, or renames onto a free one, is as before.
+
+- **A track upload's new song is named past the names already taken** (#674): the config a track
+  upload writes for a new song named it after its folder, with no check against the songs already
+  loaded or configured, so it could duplicate one and the loader dropped one with a warning:
+  `PUT /api/songs/Fresh/tracks/kick.wav` with `Other/song.yaml` declaring `name: Fresh` wrote a
+  second `Fresh`. It now takes the bulk import's naming rule (`songs::new_song`, the one rule of
+  `songs --init` and the bulk import): its folder's name, else its path below the songs folder,
+  else the first free ` (2)`, ` (3)`, …; here `Fresh (2)`. The upload's answer gives the name the
+  song got (`"song": "Fresh (2)"`), and the song page opens that song's page after it. The web
+  UI's create-song from a folder (`POST /api/browse/create-song`) takes the same rule: with no
+  name, the folder's (`Song A/` beside a loaded Song A is `Song A (2)`); a name given that a song
+  loaded or configured under the songs folder has already is a 409 naming it (`a song named
+  "Fresh" already exists; choose another name`), which the import dialog shows, where the
+  config used to be written under it.
+
+- **The web UI's lighting endpoints default to this host's lighting directories** (#673): an
+  endpoint given no directory (`?dir=`, `venues_dir`, `fixture_types_dir`) used the default ones,
+  `lighting/fixture_types` and `lighting/venues`, even where this host's profile sets others
+  (`lighting.directories.fixture_types: rig/types`). The GDTF import, which takes no directory,
+  always did: its name check and the record it pins (`?name=Brick`) went to
+  `lighting/fixture_types/brick.fixture`, which the player does not read. They now take the
+  directories this host's profile sets, by the same reader as the CLI and MCP: the GDTF import,
+  the fixture type and venue endpoints, fixture settings, the fixture test and MVR import and
+  export. A directory a request names still wins, and with none configured the defaults are as
+  before. A config that does not load is now a 500 there, as it is to MCP, and at
+  `PUT /api/lighting/<file>`, whose check that a light show is not in the venues or fixture types
+  directory used to take the defaults then.
+
+- **The position reads the start position while a play from part way in starts** (#634): after
+  `play_song_from` with `start_time: "95s"` (or any play, seek or resume from a position), the
+  status (dashboard, MCP `status`, gRPC `Status`) gave `elapsed: 0:00.000` with `playing: true` for
+  most of a second, until the audio, MIDI and DMX were ready and the clock started, while the
+  lights already showed the show at 95 s. It now reads 1:35.000 from the moment the start goes in
+  until the clock starts, and runs on from there. A start turned down (a lighting show that does
+  not validate) leaves no position, as before.
+
+- **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
+  MIDI-written channel a tick at a time, while a seek's replay worked the level out as
+  `from + rate × ticks`, which rounds differently: a dim from 0 to 35 over 44 ticks was 17 live at
+  tick 22 but 18 after a seek there (some 15,000 of 12 million dims and ticks differed by a byte).
+  The replay now takes the same steps, a whole tick at a time, so it lands on the live run's level
+  exactly; part way into a tick it is where that tick's step left it, so every level it gives is one
+  the live run sends.
+
+- **A strobe's DMX offset holds without a minimum frequency** (#633): on the period curve, a fixture
+  type with `strobe_dmx_offset` but no `min_strobe_frequency` drove its strobe channel to `hz / max`
+  of the whole channel, so a slow strobe landed below the offset, where the fixture does not
+  strobe: with `max_strobe_frequency: 20` and `strobe_dmx_offset: 64`, 0.3 to 5 Hz wrote bytes of
+  64 and under, and the state stream read most of them back as no strobe. Any rate over 0 now writes a
+  byte from the offset to 255 (5 Hz: 112), and the state stream reads it back through the same
+  map. A type with no offset writes what it wrote.
+
+- **A `#` or `//` inside a quoted show, sequence or channel name is part of the name** (#656): the
+  grammar skipped comments inside the quotes of a show's or sequence's name, a fixture type's
+  `channel_map` key and a `special_cases` entry, so `show "Truss #3" { … }` read the name as
+  `"Truss ` and the rest of the line as a comment, and the file failed to parse; `show "A // B"`
+  the same. Those names now read exactly as written, as any other quoted string does, in the
+  player and in the web UI's light-show editor. A `#` in a channel name is still refused by its own
+  rule (it marks a ganged repeat).
+
+- **A light show's time signature has a denominator of at most 64** (#635): a `tempo {}` block
+  took any nonzero signature, and under `time_signature: 1/4294967295` a `1measure` duration
+  rounded to nothing, so the show failed, after some 15 s, with `Effect 'static' requires a
+  'duration'`. A denominator over 64 is now refused, naming the signature: `time signature
+  "1/4294967295" has denominator 4294967295; the most it may be is 64`. Any denominator from 1 to
+  64 is still taken, as before (`4/3`, `4/64`); a song's `tempo:` range is unchanged.
+
+- **A near-flat tempo ramp is timed to the nanosecond** (#638): the time a ramp takes to cover some
+  beats was solved in a form that cancels when the ramp is nearly flat, so `{bpm: 60.000001,
+  transition: 16}` after 60 BPM placed its beats tens of nanoseconds off (and up to microseconds
+  for flatter ramps). The solve now uses the numerically stable form of the same root.
+
 - **Same-time cues stack in the order they start, past every power of ten** (#669): two effects on
   one layer at one priority, cued at the same time, were ordered last by their ids compared as
   strings, and the ids come from a counter that runs all night. Where the two ids straddled 10, 100,

@@ -1033,6 +1033,32 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         foo_yaml
     );
 
+    // --- #680: write_song of "baz", whose folder's `song.yaml` declares
+    //     another song, refuses rather than overwrite that song.
+    let baz_dir = fixture.root.join("songs/baz");
+    std::fs::create_dir(&baz_dir)?;
+    let qux_yaml = new_song_yaml.replace("Brand New Song", "Qux");
+    std::fs::write(baz_dir.join("song.yaml"), &qux_yaml)?;
+    let refused = call_tool(
+        &client,
+        &url,
+        &session,
+        18,
+        "write_song",
+        json!({"name": "baz", "yaml": new_song_yaml.replace("Brand New Song", "baz")}),
+    )
+    .await;
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("the song \"Qux\"")),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(baz_dir.join("song.yaml"))?,
+        qux_yaml
+    );
+
     // The player's in-memory song registry should now include the new song.
     // (Pre-reload behavior was: list_songs still returns the stale set until
     // mtrack restarts.)

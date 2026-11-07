@@ -38,8 +38,7 @@ use serde_json::json;
 
 use super::super::server::WebUiState;
 use super::lighting_api::{
-    canonical_project_root, project_root, resolve_lighting_dir, system_from_files,
-    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR,
+    canonical_project_root, project_root, resolve_lighting_dir, system_from_files, LightingDir,
 };
 use crate::lighting;
 use crate::lighting::fixture_test::{self, TestControls};
@@ -107,12 +106,12 @@ fn test_dirs(
     let types_dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
-        DEFAULT_FIXTURE_TYPES_DIR,
+        LightingDir::FixtureTypes,
     )?;
     let venues_dir = resolve_lighting_dir(
         &state.config_path,
         query.venues_dir.as_deref(),
-        DEFAULT_VENUES_DIR,
+        LightingDir::Venues,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
     Ok((root, types_dir, venues_dir))

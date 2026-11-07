@@ -23,7 +23,7 @@ include = { "include" ~ string }
 // When multiple shows are present, the parser will enforce that each has a name.
 light_show = { "show" ~ show_name? ~ show_content }
 
-show_name = { quoted }
+show_name = @{ quoted }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
@@ -50,7 +50,7 @@ sequence_param_decl = { identifier ~ (":" ~ sequence_arg_value)? }
 
 sequence_length = { "length" ~ ":" ~ time_parameter }
 
-sequence_name = { quoted }
+sequence_name = @{ quoted }
 
 sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
 
@@ -384,7 +384,7 @@ channel_mapping_list = { channel_mapping ~ ("," ~ channel_mapping)* }
 
 channel_mapping = { channel_name ~ ":" ~ channel_number }
 
-channel_name = { quoted }
+channel_name = @{ quoted }
 
 channel_number = { number_value }
 
@@ -392,7 +392,7 @@ special_cases = { "special_cases" ~ ":" ~ "[" ~ special_case_list ~ "]" }
 
 special_case_list = { special_case ~ ("," ~ special_case)* }
 
-special_case = { quoted }
+special_case = @{ quoted }
 
 // Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }

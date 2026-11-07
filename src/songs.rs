@@ -2226,8 +2226,9 @@ impl NewSong {
 /// (`SongA/stems`), and if that is taken too, the first free ` (2)`,
 /// ` (3)`, …, past the names the other new songs keep. So no two songs are
 /// given one name. The one naming rule of
-/// `songs --init` and the bulk import. An unreadable `root` is an error.
-pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<SongDirs> {
+/// `songs --init`, the bulk import and a track upload's new song
+/// ([`new_song`]). An unreadable `root` is an error.
+pub fn new_songs(root: &Path, taken: HashSet<String>) -> std::io::Result<SongDirs> {
     let mut found = SongDirs::default();
     let mut new = Vec::new();
     for dir in song_dirs(root)? {
@@ -2236,6 +2237,54 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
             None => found.kept.push(dir),
         }
     }
+    found.new = name_new_songs(root, new, taken)?;
+    Ok(found)
+}
+
+/// The song folder `dir` under `root`, to give a new config, named by the
+/// rule of [`new_songs`] as the one new song found: its own name, unless a
+/// song configured under `root` or one in `taken` has it. `None` when it
+/// has a config to keep ([`song_config_to_write`]). Both paths are taken as
+/// the file system has them, for the folder's path below `root`, which a
+/// contested name is given. What a track upload to a new song and the
+/// create-song endpoint write (#674).
+pub fn new_song(
+    root: &Path,
+    dir: &Path,
+    taken: HashSet<String>,
+) -> std::io::Result<Option<NewSong>> {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (root, dir) = (canonical(root), canonical(dir));
+    let Some(config_path) = song_config_to_write(&dir) else {
+        return Ok(None);
+    };
+    Ok(name_new_songs(&root, vec![(dir, config_path)], taken)?.pop())
+}
+
+/// The names no new song may be given: those in `taken` (the songs the
+/// player has loaded or failed) and those configured under `songs_root`
+/// ([`configured_song_names`]). An unreadable `songs_root` is passed over
+/// with a warning, leaving `taken` as it is: the one rule of the bulk
+/// import and a new song with a name asked for.
+pub fn taken_song_names(songs_root: &Path, mut taken: HashSet<String>) -> HashSet<String> {
+    match configured_song_names(songs_root) {
+        Ok(names) => taken.extend(names),
+        Err(e) => warn!(
+            dir = %songs_root.display(),
+            error = %e,
+            "Cannot read the songs folder for its song names"
+        ),
+    }
+    taken
+}
+
+/// The naming rule of [`new_songs`], for the new song folders `new` (each
+/// with the file its config goes to) under `root`.
+fn name_new_songs(
+    root: &Path,
+    new: Vec<(PathBuf, PathBuf)>,
+    mut taken: HashSet<String>,
+) -> std::io::Result<Vec<NewSong>> {
     let own_name = |dir: &Path| filename_display(dir).to_string();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for (dir, _) in &new {
@@ -2250,6 +2299,7 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
         .filter(|own| counts[own] == 1 && !taken.contains(own))
         .collect();
     taken.extend(uncontested.iter().cloned());
+    let mut named = Vec::new();
     for (dir, config_path) in new {
         let own = own_name(&dir);
         let name = if !uncontested.contains(&own) {
@@ -2268,13 +2318,13 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
             own
         };
         taken.insert(name.clone());
-        found.new.push(NewSong {
+        named.push(NewSong {
             dir,
             name,
             config_path,
         });
     }
-    Ok(found)
+    Ok(named)
 }
 
 /// What a walk of the songs tree does with a folder below its root that it
@@ -2345,6 +2395,122 @@ fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config:
             Some(Err((name, e)))
         }
         Err(_) => None,
+    }
+}
+
+/// The song config at `path` is another song's than the one being written
+/// or deleted: [`check_song_config_for`] refuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnotherSongsConfig {
+    /// The file.
+    pub path: PathBuf,
+    /// The song asked for.
+    pub name: String,
+    /// The song the file makes, as the loader names it.
+    pub declares: String,
+}
+
+impl std::fmt::Display for AnotherSongsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The file by its folder and name (`Foo/song.yaml`).
+        let mut shown: Vec<_> = self
+            .path
+            .iter()
+            .rev()
+            .take(2)
+            .map(|c| c.to_string_lossy())
+            .collect();
+        shown.reverse();
+        write!(
+            f,
+            "{} is the config of the song \"{}\", not of \"{}\"; it is left as it is",
+            shown.join("/"),
+            self.declares,
+            self.name
+        )
+    }
+}
+
+impl Error for AnotherSongsConfig {}
+
+/// Whether the config at `path` may be written or deleted as song `name`'s:
+/// not when it is a song config the loader names another song (#680: with
+/// `Foo/song.yaml` declaring `name: Bar`, saving "Foo" fell back to the
+/// folder and overwrote Bar). No file there, a file that is no song's, or
+/// one that does not read and so goes by its folder's name, as the loader
+/// records it, is no other song's. A write whose config declares the same
+/// song the file does (`writing`) is that song's own edit, as after a
+/// rename in the editor, whose page still goes by the old name: taken. A
+/// delete has no such config (`None`). The one rule of the web UI's and
+/// MCP's song writes and deletes.
+pub fn check_song_config_for(
+    path: &Path,
+    name: &str,
+    writing: Option<&str>,
+) -> Result<(), AnotherSongsConfig> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let declares = match read_song_config(path) {
+        None => return Ok(()),
+        Some(Ok(config)) => config.name().to_string(),
+        Some(Err((declares, _))) => declares,
+    };
+    if declares == name || writing == Some(declares.as_str()) {
+        Ok(())
+    } else {
+        Err(AnotherSongsConfig {
+            path: path.to_path_buf(),
+            name: name.to_string(),
+            declares,
+        })
+    }
+}
+
+/// A song name another song holds, refused to a new song or a rename
+/// (#674, #689).
+#[derive(Debug)]
+pub struct SongNameTaken(pub String);
+
+impl std::fmt::Display for SongNameTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a song named \"{}\" already exists; choose another name",
+            self.0
+        )
+    }
+}
+
+impl Error for SongNameTaken {}
+
+/// Whether the config at `path` may be written declaring song `writing`:
+/// not when that gives it a name another song holds, one in `taken` or
+/// configured under `songs_root` ([`taken_song_names`]). A config that
+/// already declares `writing` (a save that keeps the name) is the song's
+/// own; one that declares another, or none there yet, takes the name anew.
+/// The one rule of a new song with a name asked for and a rename, in the
+/// web UI and over MCP.
+pub fn check_song_name_free(
+    path: &Path,
+    writing: &str,
+    songs_root: &Path,
+    taken: HashSet<String>,
+) -> Result<(), SongNameTaken> {
+    let declares = path
+        .is_file()
+        .then(|| read_song_config(path))
+        .flatten()
+        .map(|config| match config {
+            Ok(config) => config.name().to_string(),
+            Err((name, _)) => name,
+        });
+    if declares.as_deref() == Some(writing)
+        || !taken_song_names(songs_root, taken).contains(writing)
+    {
+        Ok(())
+    } else {
+        Err(SongNameTaken(writing.to_string()))
     }
 }
 
@@ -4510,6 +4676,33 @@ sections:
         Ok(())
     }
 
+    /// The names no new song may be given are the player's and those
+    /// configured under the songs root; an unreadable root leaves the
+    /// player's alone, with a warning, rather than failing.
+    #[test]
+    fn taken_song_names_adds_configured_names_and_passes_over_a_missing_root(
+    ) -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Old"))?;
+        crate::testutil::write_wav(root.join("Old/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        let loaded = std::collections::HashSet::from(["Loaded".to_string()]);
+
+        assert_eq!(
+            super::taken_song_names(root, loaded.clone()),
+            std::collections::HashSet::from(["Loaded".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            super::taken_song_names(&root.join("missing"), loaded.clone()),
+            loaded
+        );
+        Ok(())
+    }
+
     /// `songs --init` does not follow a symlinked folder, as on main: a song
     /// outside the tree is not written into.
     #[cfg(unix)]
@@ -5904,5 +6097,41 @@ pilot:
             ..song
         };
         assert_eq!(with_audio.length(), Duration::from_secs(200));
+    }
+}
+
+#[cfg(test)]
+mod song_config_for_test {
+    use super::check_song_config_for;
+
+    /// #680: a folder's config may be written or deleted as a song's only
+    /// when it is that song's, or no song's at all.
+    #[test]
+    fn a_config_is_written_only_as_the_song_it_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let foo = dir.path().join("Foo");
+        std::fs::create_dir(&foo).unwrap();
+        let config = foo.join("song.yaml");
+        // None there yet.
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Bar", None), Ok(()));
+        let refused = check_song_config_for(&config, "Foo", None).unwrap_err();
+        assert_eq!(refused.declares, "Bar");
+        assert_eq!(
+            refused.to_string(),
+            "Foo/song.yaml is the config of the song \"Bar\", not of \"Foo\"; it is left as it is"
+        );
+        // A song config that does not read goes by its folder, as the
+        // loader records its failure.
+        std::fs::write(&config, "kind: song\nname: Bar\ntracks: 5\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        assert!(check_song_config_for(&config, "Bar", None).is_err());
+        // A write of Bar's own config, under the folder's name, is Bar's
+        // edit; another song's config over it is not.
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", Some("Bar")), Ok(()));
+        assert!(check_song_config_for(&config, "Foo", Some("Foo")).is_err());
+        assert!(check_song_config_for(&config, "Foo", Some("Qux")).is_err());
     }
 }

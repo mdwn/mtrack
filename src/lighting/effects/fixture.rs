@@ -751,7 +751,7 @@ impl FixtureInfo {
                 None if max > 0.0 && min > 0.0 && dmx_offset > 0 => {
                     StrobeMap::Period { min, max, offset }
                 }
-                None => StrobeMap::Ratio { max },
+                None => StrobeMap::Ratio { max, offset },
             },
         }
     }
@@ -786,8 +786,9 @@ pub enum StrobeMap<'a> {
     /// `period`: the strobe period (1/Hz) runs linearly over
     /// `offset..=1` of the channel, as many fixtures map it.
     Period { min: f64, max: f64, offset: f64 },
-    /// No range to speak of: the rate as a fraction of the maximum.
-    Ratio { max: f64 },
+    /// No range to speak of: the rate as a fraction of the maximum, over
+    /// `offset..=1` of the channel (a period curve with no minimum, #633).
+    Ratio { max: f64, offset: f64 },
 }
 
 impl StrobeMap<'_> {
@@ -831,7 +832,17 @@ impl StrobeMap<'_> {
                 };
                 crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
             }
-            StrobeMap::Ratio { max } => (hz / max).min(1.0),
+            StrobeMap::Ratio { max, offset } => {
+                // Not a number is full rate, as the map had it before it
+                // clamped below.
+                let fraction = hz / max;
+                let fraction = if fraction.is_nan() {
+                    1.0
+                } else {
+                    fraction.clamp(0.0, 1.0)
+                };
+                crate::lighting::channels::lerp(offset, 1.0, fraction)
+            }
         }
     }
 
@@ -870,7 +881,7 @@ impl StrobeMap<'_> {
                 let period = max_period - from_fraction(offset)? * (max_period - min_period);
                 Some(1.0 / period)
             }
-            StrobeMap::Ratio { max } => (byte > 0.0).then(|| (byte / 255.0 * max).min(max)),
+            StrobeMap::Ratio { max, offset } => Some(from_fraction(offset)? * max),
         }
     }
 }
@@ -1208,6 +1219,19 @@ mod tests {
         let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
         assert!(result.contains_key("white"));
         assert!((result["white"].value - 200.0 / 255.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn strobe_ratio_map_clamps_its_fraction() {
+        let map = StrobeMap::Ratio {
+            max: 20.0,
+            offset: 0.2,
+        };
+        assert_eq!(map.normalized(-5.0), 0.2);
+        assert!((map.normalized(10.0) - 0.6).abs() < 1e-9);
+        assert_eq!(map.normalized(40.0), 1.0);
+        // Not a number is full rate, as before the fraction was clamped below.
+        assert_eq!(map.normalized(f64::NAN), 1.0);
     }
 
     // ── apply_strobe ─────────────────────────────────────────────────

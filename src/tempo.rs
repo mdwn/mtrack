@@ -68,6 +68,10 @@ impl TimeSignature {
 pub const SONG_DENOMINATORS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 /// The largest numerator a song's time signature may have.
 pub const SONG_MAX_NUMERATOR: u32 = 64;
+/// The largest denominator a light show's time signature may have. Past
+/// it a beat is too short to cue (#635: at `1/4294967295` a measure
+/// rounded to nothing and the show failed with an unrelated error).
+pub const LIGHT_MAX_DENOMINATOR: u32 = 64;
 
 /// What a time signature may be: what a song's `tempo:` block takes, or
 /// what a light show's `tempo {}` block takes.
@@ -75,7 +79,7 @@ pub const SONG_MAX_NUMERATOR: u32 = 64;
 pub enum SignatureRange {
     /// A numerator from 1 to 64 over a power of two up to 32.
     Song,
-    /// Any numerator over any denominator, neither zero.
+    /// Any numerator over a denominator up to 64, neither zero.
     Light,
 }
 
@@ -112,6 +116,12 @@ pub fn parse_signature_in(raw: &str, range: SignatureRange) -> Result<TimeSignat
             if numerator == 0 || denominator == 0 {
                 return Err(format!(
                     "time signature {raw:?} must not have a zero numerator or denominator"
+                ));
+            }
+            if denominator > LIGHT_MAX_DENOMINATOR {
+                return Err(format!(
+                    "time signature {raw:?} has denominator {denominator}; \
+                     the most it may be is {LIGHT_MAX_DENOMINATOR}"
                 ));
             }
         }
@@ -190,7 +200,18 @@ impl TransitionCurve {
                     }
                 } else {
                     let discriminant = b * b - 4.0 * a * c;
-                    (discriminant >= 0.0).then(|| (-b + discriminant.sqrt()) / (2.0 * a))
+                    (discriminant >= 0.0).then(|| {
+                        // The root that starts at dt = 0 and grows with
+                        // `beats`. With b > 0, `-b + sqrt` cancels when `a`
+                        // is tiny (a near-flat ramp, #638), so take the same
+                        // root as 2c / (-b - sqrt), which doesn't.
+                        let root = discriminant.sqrt();
+                        if b > 0.0 {
+                            2.0 * c / (-b - root)
+                        } else {
+                            (-b + root) / (2.0 * a)
+                        }
+                    })
                 }
             }
         }
@@ -1693,7 +1714,7 @@ mod tests {
 
     /// A song's range is a numerator up to 64 over a power of two up to
     /// 32, with the errors its config has always given; a light show's
-    /// takes the rest, bar a zero.
+    /// takes the rest, bar a zero or a denominator over 64.
     #[test]
     fn a_songs_signature_range_is_narrower_than_a_light_shows() {
         for raw in ["4/3", "65/4", "4/64"] {
@@ -1706,6 +1727,17 @@ mod tests {
                 "{raw:?}"
             );
         }
+        for raw in ["1/65", "1/4294967295"] {
+            assert!(
+                parse_signature_in(raw, SignatureRange::Light).is_err(),
+                "{raw:?}"
+            );
+        }
+        assert_eq!(
+            parse_signature_in("1/4294967295", SignatureRange::Light).unwrap_err(),
+            "time signature \"1/4294967295\" has denominator 4294967295; \
+             the most it may be is 64"
+        );
         let song = |raw| parse_signature_in(raw, SignatureRange::Song).unwrap_err();
         assert_eq!(song("0/4"), "time signature numerator 0 out of range");
         assert_eq!(
@@ -1836,6 +1868,24 @@ mod tests {
             let dt_output = ramp.secs_for_beats(beats, 160.0);
             assert!((3.0 - dt_output).abs() < 1e-6, "{elapsed} in: {dt_output}");
         }
+    }
+
+    /// A near-flat ramp's `a` is tiny but over the linear cut-off; the
+    /// solve keeps its precision there rather than cancelling (#638).
+    #[test]
+    fn a_near_flat_ramp_solves_without_cancelling() {
+        let (old, new, beats) = (60.000001, 60.0, 16.0);
+        let curve = TransitionCurve::Linear;
+        let total = curve.duration_for_beats(old, new, beats);
+        let solved = curve
+            .solve_duration_for_beats(old, new, total, 0.0, beats)
+            .unwrap();
+        assert!((solved - total).abs() < 1e-9, "{solved} vs {total}");
+        // Part way in, too.
+        let part = ramp(old, new, total, 4.0).secs_for_beats(6.0, new);
+        let back = ramp(old, new, total, 4.0).beats_in_secs(part, new);
+        assert!((back - 6.0).abs() < 1e-9, "{back}");
+        assert!((part - 6.0).abs() < 1e-6, "{part}");
     }
 
     #[test]
