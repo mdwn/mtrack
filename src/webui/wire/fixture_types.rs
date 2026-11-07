@@ -32,6 +32,20 @@ pub struct LightingFileError {
     pub error: String,
 }
 
+/// The file a venue or fixture type is declared in, and whether the web UI
+/// may write it: only a file that parses and holds that one block and
+/// nothing else is editable. `reason` says why one is not.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LightingOwner {
+    /// Relative to the directory listed.
+    pub file: String,
+    pub editable: bool,
+    /// `null` when editable; otherwise the file and what else it holds, or
+    /// where else the name is declared.
+    pub reason: Option<String>,
+}
+
 /// `GET /api/lighting/fixture-types`: every fixture type, by name, and the
 /// files that did not read.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
@@ -59,6 +73,9 @@ pub struct FixtureTypeEntry {
     /// The type's file; `null` for a GDTF in the library with no record.
     pub file: Option<String>,
     pub extension: Option<String>,
+    /// The type's file and whether it may be written; `null` for a GDTF in
+    /// the library with no record (its archive is deleted, not edited).
+    pub owner: Option<LightingOwner>,
     /// A GDTF type's archive in brief, for its card; `null` when the
     /// archive is missing or does not parse.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -291,6 +308,8 @@ pub struct RenamedLines {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VenueList {
     pub venues: HashMap<String, Venue>,
+    /// Each venue's file and whether it may be written.
+    pub owners: HashMap<String, LightingOwner>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<LightingFileError>>,
     #[serde(skip_serializing_if = "Option::is_none")]

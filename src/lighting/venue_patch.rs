@@ -112,6 +112,32 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
     patch_venue_with(content, name, desired, &PatchNotes::default())
 }
 
+/// Renames the venue `old` in `content` to `new`: the name in its opening
+/// line, as [`patch_venue`] finds it; everything else is kept.
+pub fn rename_venue(content: &str, old: &str, new: &str) -> Result<String, String> {
+    let header = format!("venue \"{old}\"");
+    let mut out = String::with_capacity(content.len() + new.len());
+    let mut found = false;
+    for line in content.split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        if !found && line[indent..].starts_with(&header) && line.contains('{') {
+            found = true;
+            out.push_str(&line[..indent]);
+            out.push_str(&format!("venue \"{new}\""));
+            out.push_str(&line[indent + header.len()..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    if found {
+        Ok(out)
+    } else {
+        Err(format!(
+            "cannot find the block of venue \"{old}\" to rename"
+        ))
+    }
+}
+
 /// [`patch_venue`] that also writes `notes` alongside what it adds.
 pub fn patch_venue_with(
     content: &str,
@@ -522,5 +548,16 @@ venue "house" {
         let v = venue(FILE);
         assert!(patch_venue(&bad, "house", &v).is_err());
         assert!(patch_venue(FILE, "other", &v).is_err());
+    }
+
+    #[test]
+    fn rename_venue_changes_only_the_opening_line() {
+        let renamed = rename_venue(FILE, "house", "Club (Main)").unwrap();
+        assert_eq!(
+            renamed,
+            FILE.replacen("venue \"house\" {", "venue \"Club (Main)\" {", 1)
+        );
+        assert!(parse_venues(&renamed).unwrap().contains_key("Club (Main)"));
+        assert!(rename_venue(FILE, "nowhere", "x").is_err());
     }
 }

@@ -32,7 +32,9 @@ use serde_json::json;
 
 use super::super::config_io;
 use super::super::server::WebUiState;
+use super::lighting_writes;
 use crate::lighting;
+use crate::lighting::files::Kind;
 
 /// The canonical project root the lighting endpoints write into.
 #[allow(clippy::result_large_err)]
@@ -492,101 +494,37 @@ pub(super) async fn validate_lighting(
 /// configured directory, and without one the engine reads these.
 pub(super) use crate::config::lighting::{DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR};
 
-/// Fixture type files: `.fixture` (rich channels, GDTF records) and the v1
-/// `.light`, loaded as peers — the same pair the lighting system reads.
-const FIXTURE_TYPE_EXTENSIONS: &[&str] = lighting::project_files::FIXTURE_TYPE_EXTENSIONS;
-
-/// The fixture type names a file declares; none if it cannot be read or
-/// does not parse.
-fn declared_fixture_types(path: &std::path::Path) -> Vec<String> {
-    crate::util::read_to_string(path)
-        .ok()
-        .and_then(|content| lighting::parser::parse_fixture_types(&content).ok())
-        .map(|types| types.into_keys().collect())
-        .unwrap_or_default()
-}
-
-/// The file a fixture type of this name lives in, if one exists, in the
-/// directory or any subdirectory — the file the lighting system loads it
+/// The file a fixture type of this name is declared in, if one is, in the
+/// directory or any subdirectory: the file the lighting system loads it
 /// from, by the same reader ([`lighting::project_files::type_files`]). The
 /// file's stem need not match the name: an import writes
 /// `astera_pixelbrick.fixture` for "Astera-PixelBrick", and a file written
-/// by hand is called whatever its author liked. A file at the name's own
-/// stem (`.fixture`, then `.light`) that does not declare it is still the
-/// answer when no file does, so the caller can say what is wrong with it.
+/// by hand is called whatever its author liked. A file that does not parse
+/// is never searched for it.
 pub(super) fn existing_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
 ) -> Option<std::path::PathBuf> {
-    if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
-        return Some(declared.file.clone());
-    }
-    let stem = lighting::files::stem(name);
-    ["fixture", "light"]
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
+    lighting::project_files::type_files(dir)
+        .get(name)
+        .map(|declared| declared.file.clone())
 }
 
-/// [`existing_fixture_type_file`] with the file it found and the other
-/// fixture types that file declares, off the async runtime. Saving or
-/// deleting one type rewrites or removes its whole file, so a caller that
-/// cannot carry the others must refuse.
+/// [`existing_fixture_type_file`], off the async runtime.
 pub(super) async fn locate_fixture_type_file(
     dir: &std::path::Path,
     name: &str,
-) -> Result<Option<(std::path::PathBuf, Vec<String>)>, axum::response::Response> {
+) -> Result<Option<std::path::PathBuf>, axum::response::Response> {
     let (dir, name) = (dir.to_path_buf(), name.to_string());
     super::helpers::spawn_blocking_io("locate fixture type file", move || {
-        Ok::<_, String>(existing_fixture_type_file(&dir, &name).map(|path| {
-            let mut others = declared_fixture_types(&path);
-            others.retain(|n| n != &name);
-            others.sort();
-            (path, others)
-        }))
+        Ok::<_, String>(existing_fixture_type_file(&dir, &name))
     })
     .await
-}
-
-/// The 409 for a save or delete that would take a file's other fixture
-/// types with it.
-fn shared_fixture_type_file_response(
-    name: &str,
-    path: &std::path::Path,
-    others: &[String],
-    action: &str,
-) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"error": format!(
-            "fixture type \"{}\" lives in {}, which also defines {}; {} would remove them — \
-             edit the file as text instead",
-            name,
-            crate::util::filename_display(path),
-            others
-                .iter()
-                .map(|n| format!("\"{n}\""))
-                .collect::<Vec<_>>()
-                .join(", "),
-            action
-        )})),
-    )
-        .into_response()
 }
 
 /// Venue files: `.venue` (positions, focus points, MVR provenance) and the
 /// v1 `.light`, loaded as peers.
 pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
-
-/// The file a venue of this name lives in, if one exists: `.venue` first,
-/// then `.light`.
-fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let stem = lighting::files::stem(name);
-    ["venue", "light"]
-        .iter()
-        .map(|extension| dir.join(format!("{stem}.{extension}")))
-        .find(|path| path.is_file())
-}
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
 /// interleave between the version check and the write; and every write of a
@@ -604,96 +542,6 @@ pub(crate) static VENUE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::con
 pub(super) fn content_version(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
-}
-
-/// A venue file found on disk, whatever it is called.
-pub(super) struct LocatedVenue {
-    pub path: std::path::PathBuf,
-    pub bytes: Vec<u8>,
-    /// Why the file cannot be patched, when it cannot (it does not parse, is
-    /// not UTF-8, or does not define the venue after all).
-    pub broken: Option<String>,
-}
-
-impl LocatedVenue {
-    pub fn version(&self) -> String {
-        content_version(&self.bytes)
-    }
-
-    pub fn file(&self) -> String {
-        crate::util::filename_display(&self.path).to_string()
-    }
-
-    /// The file's text, when it parses and defines the venue.
-    pub fn text(&self) -> Option<&str> {
-        if self.broken.is_some() {
-            return None;
-        }
-        std::str::from_utf8(&self.bytes).ok()
-    }
-}
-
-/// Whether some line of `text` opens a block for venue `name`.
-fn mentions_venue(text: &str, name: &str) -> bool {
-    let header = format!("venue \"{name}\"");
-    text.lines().any(|l| l.trim_start().starts_with(&header))
-}
-
-/// Finds the file that defines venue `name` by scanning every venue file (in
-/// the directory and its subdirectories) for the block — the file's stem
-/// need not match the name. A file that mentions
-/// the venue but does not parse (or the file at the venue's own stem, which a
-/// save would otherwise overwrite) comes back with `broken` set, so the
-/// caller can refuse rather than replace it. `None` means a genuinely new
-/// venue.
-pub(super) fn locate_venue_file(
-    dir: &std::path::Path,
-    name: &str,
-) -> Result<Option<LocatedVenue>, String> {
-    if !dir.is_dir() {
-        return Ok(None);
-    }
-    let stem_file = existing_venue_file(dir, name);
-    // Every venue file at any depth, in path order: the files the lighting
-    // system loads ([`lighting::project_files::venues`]).
-    let paths = lighting::project_files::files_under(dir, VENUE_EXTENSIONS);
-    let mut broken: Option<LocatedVenue> = None;
-    for path in paths {
-        let bytes = crate::util::read_file(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let problem = match std::str::from_utf8(&bytes) {
-            Ok(text) => match lighting::parser::parse_venues(text) {
-                Ok(venues) if venues.contains_key(name) => {
-                    return Ok(Some(LocatedVenue {
-                        path,
-                        bytes,
-                        broken: None,
-                    }))
-                }
-                Ok(_) if stem_file.as_ref() == Some(&path) => {
-                    Some(format!("the file does not define a venue named \"{name}\""))
-                }
-                Ok(_) => None,
-                Err(e) if mentions_venue(text, name) || stem_file.as_ref() == Some(&path) => {
-                    Some(e.to_string())
-                }
-                Err(_) => None,
-            },
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(&bytes);
-                (mentions_venue(&lossy, name) || stem_file.as_ref() == Some(&path))
-                    .then(|| "the file is not valid UTF-8".to_string())
-            }
-        };
-        if let (Some(problem), None) = (problem, &broken) {
-            broken = Some(LocatedVenue {
-                path,
-                bytes,
-                broken: Some(problem),
-            });
-        }
-    }
-    Ok(broken)
 }
 
 /// The `If-Match` version a client sent, unquoted.
@@ -724,22 +572,6 @@ pub(super) fn stale_venue_response(
             ),
             "conflict": true,
             "version": current,
-        })),
-    )
-        .into_response()
-}
-
-/// The 409 for a venue file that cannot be patched.
-pub(super) fn broken_venue_response(name: &str, file: &str, why: &str) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
-            "error": format!(
-                "{file} holds venue \"{name}\" but cannot be edited from here ({why}); fix the \
-                 file by hand first"
-            ),
-            "file": file,
-            "broken": true,
         })),
     )
         .into_response()
@@ -855,44 +687,13 @@ fn resolve_referential_archive(
     Ok(canonical)
 }
 
-/// The name the URL asks for must be the name the DSL declares: the webui
-/// resolves a type or venue by its file stem, so a body that renames the
-/// declaration would write `oldname.fixture` holding `newname` — a file no
-/// later GET, PUT or DELETE can reach.
-#[allow(clippy::result_large_err)]
-fn require_declared_name<T>(
-    kind: &str,
-    name: &str,
-    parsed: &std::collections::HashMap<String, T>,
-) -> Result<(), axum::response::Response> {
-    if parsed.contains_key(name) {
-        return Ok(());
-    }
-    let mut declared: Vec<&str> = parsed.keys().map(String::as_str).collect();
-    declared.sort_unstable();
-    let found = if declared.is_empty() {
-        "it declares none".to_string()
-    } else {
-        format!("it declares \"{}\"", declared.join("\", \""))
-    };
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error": format!(
-            "the DSL declares no {} named \"{}\" ({}); rename the {} in the Name field, not in \
-             the text",
-            kind, name, found, kind
-        )})),
-    )
-        .into_response())
-}
-
 /// Query parameters for lighting endpoints — allows overriding the directory.
 #[derive(serde::Deserialize, Default)]
 pub(super) struct LightingDirQuery {
     dir: Option<String>,
-    /// The extension a *new* fixture type is written with (`light` or
-    /// `fixture`). An existing file keeps its own, so this only decides
-    /// which form a type is born in.
+    /// The form a fixture type is saved in: `fixture` moves a `.light` to
+    /// a `.fixture`; `light` keeps a `.light` one. A new type is always a
+    /// `.fixture`, and a `.fixture` never goes back to `.light`.
     ext: Option<String>,
     /// The venues directory, for the fixture-type endpoints that say which
     /// venue fixtures use a type (default `lighting/venues`).
@@ -900,6 +701,8 @@ pub(super) struct LightingDirQuery {
     /// The fixture types directory, for the venue endpoints that need the
     /// types (default `lighting/fixture_types`).
     fixture_types_dir: Option<String>,
+    /// A save's old name: the save renames that venue or fixture type.
+    from: Option<String>,
 }
 
 /// Validates that a fixture type or venue name is safe for use as a filename.
@@ -1108,6 +911,13 @@ pub(super) async fn get_fixture_types(
                             .unwrap_or_default()
                             .to_string(),
                     ),
+                    owner: project.files.record.owner(&declared.name).map(|owner| {
+                        lighting_writes::wire_owner(
+                            lighting::files::Kind::FixtureType,
+                            &dir,
+                            &owner,
+                        )
+                    }),
                     gdtf: None,
                     dsl: None,
                 },
@@ -1145,6 +955,7 @@ pub(super) async fn get_fixture_types(
                     fixture_type: declared,
                     file: None,
                     extension: None,
+                    owner: None,
                     gdtf: None,
                     dsl: None,
                 },
@@ -1198,7 +1009,24 @@ pub(super) async fn get_fixture_type(
         query.dir.as_deref(),
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
-    let Some((file_path, _)) = locate_fixture_type_file(&dir, &name).await? else {
+    let found = {
+        let (dir, name) = (dir.clone(), name.clone());
+        super::helpers::spawn_blocking_io("read fixture type", move || {
+            let read = lighting::project_files::type_files(&dir);
+            let (Some(declared), Some(owner)) = (read.get(&name), read.record.owner(&name)) else {
+                return Ok(None);
+            };
+            let content = crate::util::read_to_string(&declared.file)?;
+            Ok::<_, std::io::Error>(Some((
+                declared.item.clone(),
+                declared.file.clone(),
+                lighting_writes::wire_owner(lighting::files::Kind::FixtureType, &dir, &owner),
+                content,
+            )))
+        })
+        .await?
+    };
+    let Some((ft, file_path, owner, content)) = found else {
         // A GDTF in the library with no record: a fixture with no file.
         let root = canonical_project_root(&project_root(&state.config_path)?)?;
         let (types_dir, wanted) = (dir.clone(), name.clone());
@@ -1220,6 +1048,7 @@ pub(super) async fn get_fixture_type(
                     fixture_type: declared,
                     file: None,
                     extension: None,
+                    owner: None,
                     gdtf: None,
                     dsl: Some(None),
                 }),
@@ -1232,45 +1061,27 @@ pub(super) async fn get_fixture_type(
                 .into_response()),
         };
     };
-    let fp = file_path.clone();
-    let content = super::helpers::spawn_blocking_io("read fixture type", move || {
-        crate::util::read_to_string(&fp)
-    })
-    .await?;
-    let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse fixture type: {}", e)})),
-        )
-            .into_response()
-    })?;
-    match types.get(&name) {
-        Some(ft) => Ok((
-            StatusCode::OK,
-            Json(FixtureTypeEntry {
-                referential: ft.source().is_some(),
-                footprint: None,
-                rich: ft.uses_rich_channels(),
-                fixture_type: ft.clone(),
-                file: Some(crate::util::filename_display(&file_path).to_string()),
-                extension: Some(
-                    file_path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
-                gdtf: None,
-                dsl: Some(Some(content)),
-            }),
-        )
-            .into_response()),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Fixture type '{}' not found in file", name)})),
-        )
-            .into_response()),
-    }
+    Ok((
+        StatusCode::OK,
+        Json(FixtureTypeEntry {
+            referential: ft.source().is_some(),
+            footprint: None,
+            rich: ft.uses_rich_channels(),
+            fixture_type: ft,
+            file: Some(crate::util::filename_display(&file_path).to_string()),
+            extension: Some(
+                file_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            owner: Some(owner),
+            gdtf: None,
+            dsl: Some(Some(content)),
+        }),
+    )
+        .into_response())
 }
 
 /// The GDTF source of a fixture type: its record's, or — for a GDTF in the
@@ -1282,7 +1093,7 @@ async fn gdtf_source_of(
     dir: &std::path::Path,
     name: &str,
 ) -> Result<Option<lighting::types::GdtfSource>, axum::response::Response> {
-    if let Some((file_path, _)) = locate_fixture_type_file(dir, name).await? {
+    if let Some(file_path) = locate_fixture_type_file(dir, name).await? {
         let content = super::helpers::spawn_blocking_io("read fixture type", move || {
             crate::util::read_to_string(&file_path)
         })
@@ -1604,9 +1415,17 @@ fn gdtf_list_summary(
     }
 }
 
-/// PUT /api/lighting/fixture-types/:name — creates or updates a fixture type.
+/// PUT /api/lighting/fixture-types/:name — creates, updates or renames a
+/// fixture type.
 ///
-/// Accepts either JSON (structured) or plain text (raw DSL).
+/// Accepts either JSON (the channel-map form) or plain text (the whole
+/// file's DSL, which must declare this one type and nothing else). By the
+/// one rule for type files ([`super::lighting_writes`]): a new name is
+/// claimed at `<fixture types dir>/<stem>.fixture`; an existing one is
+/// written only where its file is that type's alone, and refused (409, with
+/// the file and why) otherwise. `?from=<old>` renames, as for venues. A
+/// `.light` whose new text needs a `.fixture` (rich channels, a GDTF
+/// reference, or `?ext=fixture`) moves to `<stem>.fixture`.
 pub(super) async fn put_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1615,6 +1434,9 @@ pub(super) async fn put_fixture_type(
     body: Bytes,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
+    if let Some(from) = &query.from {
+        validate_lighting_name(from)?;
+    }
     let dir = resolve_lighting_dir(
         &state.config_path,
         query.dir.as_deref(),
@@ -1629,10 +1451,11 @@ pub(super) async fn put_fixture_type(
     let from_form = content_type.contains("application/json");
 
     // Whatever form the body is in, an `ext` naming no known form is a
-    // mistake worth reporting rather than quietly writing a `.light`.
-    let requested_extension = match query.ext.as_deref() {
+    // mistake worth reporting rather than quietly ignored.
+    let requested_extension: Option<&'static str> = match query.ext.as_deref() {
         None | Some("") => None,
-        Some(known @ ("light" | "fixture")) => Some(known),
+        Some("light") => Some("light"),
+        Some("fixture") => Some("fixture"),
         Some(other) => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -1672,122 +1495,91 @@ pub(super) async fn put_fixture_type(
         )
             .into_response()
     })?;
-    require_declared_name("fixture type", &name, &types)?;
+    lighting_writes::require_alone(Kind::FixtureType, &name, &dsl)?;
     validate_referential_archives(&project_root(&state.config_path)?, &types)?;
+    // The extension is the version marker: rich channel syntax or a GDTF
+    // reference in a `.light` file would be saved, then skipped by the
+    // loader, and one missing type fails the whole venue's registration.
+    let needs_new_format = requested_extension == Some("fixture")
+        || types
+            .values()
+            .any(|t| t.uses_rich_channels() || t.source().is_some());
 
-    // Held from finding the file to writing it, as MCP's patch holds it: a
-    // type added to a shared file between the two would pass the check on
-    // the file's other types below, and be lost to the form's save.
-    let _writing = VENUE_WRITES.lock().await;
-    // Read against the resolved directory rather than the created one: every
-    // refusal below should land before anything is made on disk.
-    let located = locate_fixture_type_file(&dir, &name).await?;
-    validate_lighting_name_to_write(&name, located.is_some())?;
-    // An existing type is saved back to the file it lives in, whatever that
-    // file is called; only a new type is named after itself.
-    let stem = located
-        .as_ref()
-        .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
-        .map(str::to_string)
-        .unwrap_or_else(|| lighting::files::stem(&name));
-    let existing_extension = located.as_ref().and_then(|(path, _)| {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_string)
-    });
-
-    // The channel-map form writes one type, so it cannot carry the others a
-    // shared file declares. Raw text is the whole file and says what it means.
-    if from_form {
-        if let Some((path, others)) = located.as_ref().filter(|(_, others)| !others.is_empty()) {
-            return Err(shared_fixture_type_file_response(
-                &name,
-                path,
-                others,
-                "saving this one from the channel-map editor",
-            ));
-        }
-    }
-
-    // The channel-map form cannot say what a `.fixture` file holds, so
-    // saving one through it would silently drop the type's rich channels or
-    // its GDTF reference.
-    if from_form && existing_extension.as_deref() == Some("fixture") {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!(
-                "fixture type \"{}\" lives in {}.fixture, whose form the channel-map editor \
-                 cannot express — edit this type as text",
-                name, stem
-            )})),
-        )
-            .into_response());
-    }
-
-    // An explicit `ext` wins — that is how a `.light` type converts to a
-    // `.fixture`. Without one, an existing file keeps its own extension and
-    // a new type is born a `.light`.
-    let extension = match (requested_extension, existing_extension.as_deref()) {
-        (Some(requested), _) => requested,
-        (None, Some(existing)) => match existing {
-            "fixture" => "fixture",
-            _ => "light",
-        },
-        (None, None) => "light",
-    };
-
-    // The extension is the version marker: rich channel syntax written into
-    // a `.light` file would be saved, then skipped by the loader, and one
-    // missing type fails the whole venue's registration.
-    if extension == "light" {
-        if let Some(rich) = types.values().find(|t| t.uses_rich_channels()) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!(
-                    "fixture type \"{}\" uses rich channel syntax (fine, range, functions), which \
-                     belongs in a .fixture file; this editor writes .light files — save it as \
-                     {}.fixture in the fixture types directory by hand, or through \
-                     `mtrack import-gdtf`",
-                    rich.name(),
-                    stem
-                )})),
-            )
-                .into_response());
-        }
-    }
-
-    // Everything that can refuse the save has: the same helper the playlists
-    // and profiles writes use, so a refusal is reported as the configuration
-    // problem it is rather than a server fault. The file goes under the
-    // directory that was made, not the spelling.
+    let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    // The helper the playlists and profiles writes use, so a refusal is
+    // reported as the configuration problem it is rather than a server
+    // fault. The file goes under the directory that was made.
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
-
-    // An existing type stays in its own folder, at any depth; a new one is
-    // born at the top. A type is one file: whichever form it is saved in, the
-    // other one is retired, or the loader would register the name twice.
-    let folder = located
-        .as_ref()
-        .and_then(|(path, _)| path.parent())
-        .map_or(dir, std::path::Path::to_path_buf);
-    let file_path = folder.join(format!("{stem}.{extension}"));
-    let stale_twin = FIXTURE_TYPE_EXTENSIONS
-        .iter()
-        .map(|extension| folder.join(format!("{stem}.{extension}")))
-        .find(|path| path != &file_path && path.is_file());
-    let fp = file_path;
-    let dsl_owned = dsl;
-    super::helpers::spawn_blocking_io("write fixture type", move || {
-        config_io::staged_write(&fp, &dsl_owned)?;
-        if let Some(twin) = stale_twin {
-            // Best effort: the save is durable already, and a leftover twin
-            // surfaces as a duplicate fixture type name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the fixture type's stale twin");
+    let type_name = name.clone();
+    let from = query.from.clone();
+    let outcome = super::helpers::spawn_blocking_io("write fixture type", move || {
+        let name = type_name;
+        // Held from reading the files to writing one, as MCP's patch holds
+        // it: a type added to the file between the two would be lost.
+        let _guard = VENUE_WRITES.blocking_lock();
+        let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
+        let project = lighting::project_files::fixture_types(&root, Some(&dir));
+        let save = lighting_writes::Save {
+            kind: Kind::FixtureType,
+            dir: &dir,
+            record: &project.files.record,
+            library: &project.library.types,
+            name: &name,
+            from: from.as_deref(),
+            needs_new_format,
+        };
+        let plan = match save.plan() {
+            Ok(plan) => plan,
+            Err(r) => return reply(r),
+        };
+        if let Err(r) = validate_lighting_name_to_write(&name, !plan.names_anew(save.renaming())) {
+            return reply(r);
+        }
+        if let Some(existing) = project.files.get(save.subject()) {
+            // The channel-map form cannot say what a rich or GDTF type
+            // holds, so saving one through it would silently drop its rich
+            // channels or its GDTF reference.
+            let item = &existing.item;
+            if from_form && (item.uses_rich_channels() || item.source().is_some()) {
+                return reply(
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error": format!(
+                            "fixture type \"{}\" in {} uses what the channel-map editor cannot \
+                             express — edit this type as text",
+                            save.subject(),
+                            lighting::project_files::display_in(&dir, &existing.file)
+                        )})),
+                    )
+                        .into_response(),
+                );
+            }
+            let is_fixture = existing
+                .file
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("fixture"));
+            if requested_extension == Some("light") && is_fixture {
+                return reply(
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!(
+                            "fixture type \"{}\" is in {}, a .fixture file; it is not written \
+                             back as a .light",
+                            save.subject(),
+                            lighting::project_files::display_in(&dir, &existing.file)
+                        )})),
+                    )
+                        .into_response(),
+                );
             }
         }
-        Ok::<(), String>(())
+        if let Err(r) = lighting_writes::write(&plan, &dsl) {
+            return reply(r);
+        }
+        Ok(Ok(()))
     })
     .await?;
+    outcome?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -1798,7 +1590,10 @@ pub(super) async fn put_fixture_type(
     )
 }
 
-/// DELETE /api/lighting/fixture-types/:name — deletes a fixture type file.
+/// DELETE /api/lighting/fixture-types/:name — deletes a fixture type file:
+/// only one that is the type's alone (409 otherwise, with the file and
+/// why). A GDTF in the library with no record is its archive, deleted.
+#[allow(clippy::result_large_err)]
 pub(super) async fn delete_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1811,65 +1606,44 @@ pub(super) async fn delete_fixture_type(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
-    // Held from finding the record to deleting it, as MCP's delete does: a
+    // Held from reading the files to deleting one, as MCP's delete does: a
     // save between the two would be deleted unseen (#578).
     let _writing = VENUE_WRITES.lock().await;
-    let Some((file_path, others)) = locate_fixture_type_file(&dir, &name).await? else {
-        // A GDTF in the library with no record is a fixture of its own;
-        // deleting it is deleting the archive.
-        let (types_dir, wanted, root) = (dir.clone(), name.clone(), root.clone());
-        let removed = super::helpers::spawn_blocking_io("delete a GDTF", move || {
-            let library = lighting::library::unrecorded_types(&root, Some(&types_dir));
-            match library.get(&wanted) {
-                Some(found) => std::fs::remove_file(root.join(&found.archive))
-                    .map(|()| Some(found.archive.clone())),
-                None => Ok(None),
-            }
-        })
-        .await?;
-        return match removed {
-            Some(archive) => Ok((
-                StatusCode::OK,
-                Json(FixtureTypeDeleted {
-                    status: "deleted".to_string(),
-                    name,
-                    archive_removed: Some(archive),
-                    archive_kept: false,
-                }),
-            )
-                .into_response()),
-            None => Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Fixture type not found: {}", name)})),
-            )
-                .into_response()),
-        };
-    };
-    if !others.is_empty() {
-        return Err(shared_fixture_type_file_response(
-            &name,
-            &file_path,
-            &others,
-            "deleting this one",
-        ));
-    }
-    let fp = file_path;
     let deleted = name.clone();
-    let (archive_removed, archive_kept) =
-        super::helpers::spawn_blocking_io("delete fixture type", move || {
-            // A GDTF fixture's archive is mtrack's to keep, not the user's:
-            // read which one this type uses before its record goes.
-            let archive = crate::util::read_to_string(&fp)
-                .ok()
-                .and_then(|text| lighting::parser::parse_fixture_types(&text).ok())
-                .and_then(|types| types.get(&deleted).and_then(|t| t.source().cloned()));
-            std::fs::remove_file(&fp)?;
-            Ok::<_, std::io::Error>(match archive {
-                Some(source) => remove_unused_archive(&root, &dir, &source.path),
-                None => (None, false),
-            })
-        })
-        .await?;
+    let outcome = super::helpers::spawn_blocking_io("delete fixture type", move || {
+        let read = lighting::project_files::type_files(&dir);
+        let file = match lighting_writes::deletable(Kind::FixtureType, &dir, &read.record, &deleted)
+        {
+            Ok(file) => file,
+            Err(r) => return Ok(Err(r)),
+        };
+        let Some(file) = file else {
+            // A GDTF in the library with no record is a fixture of its own;
+            // deleting it is deleting the archive.
+            let library = lighting::library::unrecorded_types(&root, Some(&dir));
+            return match library.get(&deleted) {
+                Some(found) => std::fs::remove_file(root.join(&found.archive))
+                    .map(|()| Ok((Some(found.archive.clone()), false))),
+                None => Ok(Err((
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": format!("Fixture type not found: {}", deleted)})),
+                )
+                    .into_response())),
+            };
+        };
+        // A GDTF fixture's archive is mtrack's to keep, not the user's:
+        // read which one this type uses before its record goes.
+        let archive = read
+            .get(&deleted)
+            .and_then(|declared| declared.item.source().cloned());
+        std::fs::remove_file(&file)?;
+        Ok::<_, std::io::Error>(Ok(match archive {
+            Some(source) => remove_unused_archive(&root, &dir, &source.path),
+            None => (None, false),
+        }))
+    })
+    .await?;
+    let (archive_removed, archive_kept) = outcome?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -2428,6 +2202,7 @@ pub(super) async fn get_venues(
                 StatusCode::OK,
                 Json(VenueList {
                     venues: Default::default(),
+                    owners: Default::default(),
                     errors: None,
                     versions: None,
                 }),
@@ -2441,9 +2216,16 @@ pub(super) async fn get_venues(
         let read = lighting::project_files::venues(&dir);
         let mut all = std::collections::HashMap::new();
         let mut versions = std::collections::HashMap::new();
+        let mut owners = std::collections::HashMap::new();
         for declared in read.items {
             if let Ok(bytes) = crate::util::read_file(&declared.file) {
                 versions.insert(declared.name.clone(), content_version(&bytes));
+            }
+            if let Some(owner) = read.record.owner(&declared.name) {
+                owners.insert(
+                    declared.name.clone(),
+                    lighting_writes::wire_owner(Kind::Venue, &dir, &owner),
+                );
             }
             all.insert(declared.name, declared.item);
         }
@@ -2455,14 +2237,15 @@ pub(super) async fn get_venues(
                 error: p.error.clone(),
             })
             .collect();
-        Ok::<_, String>((all, errors, versions))
+        Ok::<_, String>((all, owners, errors, versions))
     })
     .await?;
-    let (all, errors, versions) = all;
+    let (all, owners, errors, versions) = all;
     Ok((
         StatusCode::OK,
         Json(VenueList {
             venues: all,
+            owners,
             errors: Some(errors),
             versions: Some(versions),
         }),
@@ -2470,7 +2253,9 @@ pub(super) async fn get_venues(
         .into_response())
 }
 
-/// GET /api/lighting/venues/:name — returns a single venue.
+/// GET /api/lighting/venues/:name — returns a single venue, from the file
+/// the loader read it from. A file that does not parse is never searched
+/// for it.
 pub(super) async fn get_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -2478,62 +2263,50 @@ pub(super) async fn get_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    let located = {
+    let found = {
         let (dir, name) = (dir.clone(), name.clone());
-        super::helpers::spawn_blocking_io("locate venue file", move || {
-            locate_venue_file(&dir, &name)
+        super::helpers::spawn_blocking_io("read venue file", move || {
+            let read = lighting::project_files::venues(&dir);
+            let Some(declared) = read.get(&name) else {
+                return Ok(None);
+            };
+            crate::util::read_file(&declared.file)
+                .map(|bytes| Some((declared.item.clone(), bytes)))
+                .map_err(|e| format!("cannot read {}: {e}", declared.file.display()))
         })
         .await?
     };
-    let Some(located) = located else {
+    let Some((venue, bytes)) = found else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Venue not found: {}", name)})),
         )
             .into_response());
     };
-    if let Some(why) = &located.broken {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse venue: {} ({})", why, located.file())})),
-        )
-            .into_response());
-    }
-    let version = located.version();
-    let content = String::from_utf8_lossy(&located.bytes).into_owned();
-    let venues = lighting::parser::parse_venues(&content).map_err(|e| {
+    Ok::<_, axum::response::Response>(
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse venue: {}", e)})),
-        )
-            .into_response()
-    })?;
-    match venues.get(&name) {
-        Some(v) => Ok((
             StatusCode::OK,
             Json(VenueDetail {
-                venue: v.clone(),
-                dsl: content,
-                version,
+                venue,
+                version: content_version(&bytes),
+                dsl: String::from_utf8_lossy(&bytes).into_owned(),
             }),
         )
-            .into_response()),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Venue '{}' not found in file", name)})),
-        )
-            .into_response()),
-    }
+            .into_response(),
+    )
 }
 
-/// PUT /api/lighting/venues/:name — creates or updates a venue.
+/// PUT /api/lighting/venues/:name — creates, updates or renames a venue.
 ///
-/// The file is found by scanning every venue file for the block, so a venue
-/// defined in a file whose stem differs from its name is patched in place. A
-/// JSON body patches the file (never regenerates an existing one); a file
-/// that does not parse is refused (409) rather than overwritten. An
-/// `If-Match` version, when sent, must be the file's current one (409
-/// otherwise); the response carries the new `version`.
+/// By the one rule for venue files ([`super::lighting_writes`]): a new name
+/// is claimed at `<venues dir>/<stem>.venue`; an existing one is written
+/// only where its file is that venue's alone, and refused (409, with the
+/// file and why) otherwise. `?from=<old>` renames: a file at the old name's
+/// canonical place moves to the new name's, any other is renamed in place.
+/// A JSON body patches the file (never regenerates an existing one); a DSL
+/// body is the whole file, and must declare this one venue and nothing
+/// else. An `If-Match` version, when sent, must be the file's current one
+/// (409 otherwise); the response carries the new `version`.
 pub(super) async fn put_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -2542,6 +2315,9 @@ pub(super) async fn put_venue(
     body: Bytes,
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
+    if let Some(from) = &query.from {
+        validate_lighting_name(from)?;
+    }
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
 
     let content_type = headers
@@ -2554,6 +2330,7 @@ pub(super) async fn put_venue(
         Json(serde_json::Value, lighting::types::Venue),
         Dsl(String),
     }
+    let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
     let incoming = if content_type.contains("application/json") {
         let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
             (
@@ -2562,104 +2339,97 @@ pub(super) async fn put_venue(
             )
                 .into_response()
         })?;
-        let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
         let venue = venue_from_json(&name, &json_body).map_err(bad)?;
         Incoming::Json(json_body, venue)
     } else {
-        Incoming::Dsl(String::from_utf8(body.to_vec()).map_err(|_| {
+        let text = String::from_utf8(body.to_vec()).map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": "Invalid UTF-8"})),
             )
                 .into_response()
-        })?)
+        })?;
+        lighting_writes::require_alone(Kind::Venue, &name, &text)?;
+        Incoming::Dsl(text)
+    };
+    let needs_new_format = match &incoming {
+        Incoming::Json(_, venue) => needs_venue_extension(venue),
+        Incoming::Dsl(text) => lighting::parser::parse_venues(text)
+            .map_err(|e| bad(format!("Invalid venue DSL: {e}")))?
+            .values()
+            .any(needs_venue_extension),
     };
 
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let saved_in = dir.clone();
     let venue_name = name.clone();
+    let from = query.from.clone();
     let outcome = super::helpers::spawn_blocking_io("write venue", move || {
         let name = venue_name;
         let _guard = VENUE_WRITES.blocking_lock();
         let reply = |r: axum::response::Response| Ok::<_, String>(Err(r));
         let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
-        let located = locate_venue_file(&dir, &name)?;
-        if let Err(r) = validate_lighting_name_to_write(&name, located.is_some()) {
+        let record = lighting::project_files::venues(&dir).record;
+        let save = lighting_writes::Save {
+            kind: Kind::Venue,
+            dir: &dir,
+            record: &record,
+            library: &[],
+            name: &name,
+            from: from.as_deref(),
+            needs_new_format,
+        };
+        let plan = match save.plan() {
+            Ok(plan) => plan,
+            Err(r) => return reply(r),
+        };
+        if let Err(r) = validate_lighting_name_to_write(&name, !plan.names_anew(save.renaming())) {
             return reply(r);
         }
         if let Some(expected) = &expected {
-            let current = located.as_ref().map(LocatedVenue::version);
+            let current = plan.current.as_deref().map(content_version);
             if current.as_deref() != Some(expected.as_str()) {
-                return reply(stale_venue_response(&name, current));
+                return reply(stale_venue_response(save.subject(), current));
             }
         }
         let dsl = match incoming {
             Incoming::Dsl(text) => text,
             // An existing file is patched, not regenerated: comments, TODO
             // lines and the file's own layout survive a save from the UI.
-            Incoming::Json(json_body, venue) => match &located {
-                Some(l) => match l.text() {
-                    Some(text) => match lighting::venue_patch::patch_venue(text, &name, &venue) {
+            Incoming::Json(json_body, _) => match &plan.current {
+                Some(bytes) => {
+                    let Ok(text) = std::str::from_utf8(bytes) else {
+                        return reply(bad("the venue's file is not valid UTF-8".to_string()));
+                    };
+                    // Patched under the name it has, then renamed.
+                    let patched = venue_from_json(save.subject(), &json_body)
+                        .and_then(|as_is| {
+                            lighting::venue_patch::patch_venue(text, save.subject(), &as_is)
+                        })
+                        .and_then(|patched| {
+                            if save.renaming() {
+                                lighting::venue_patch::rename_venue(&patched, save.subject(), &name)
+                            } else {
+                                Ok(patched)
+                            }
+                        });
+                    match patched {
                         Ok(patched) => patched,
                         Err(e) => return reply(bad(e)),
-                    },
-                    None => {
-                        let why = l.broken.as_deref().unwrap_or("not valid UTF-8");
-                        return reply(broken_venue_response(&name, &l.file(), why));
                     }
-                },
+                }
                 None => match venue_json_to_dsl(&name, &json_body) {
                     Ok(dsl) => dsl,
                     Err(e) => return reply(bad(e)),
                 },
             },
         };
-
-        // Validate the DSL parses correctly
-        let venues = match lighting::parser::parse_venues(&dsl) {
-            Ok(v) => v,
-            Err(e) => return reply(bad(format!("Invalid venue DSL: {e}"))),
-        };
-        if let Err(r) = require_declared_name("venue", &name, &venues) {
+        // What is written is this venue's file alone, whichever way it came.
+        if let Err(r) = lighting_writes::require_alone(Kind::Venue, &name, &dsl) {
             return reply(r);
         }
-        let typed = venues.values().any(needs_venue_extension);
-
-        // The extension is the version marker: a venue using positions,
-        // focus points or MVR provenance is a `.venue`; anything else stays
-        // `.light`. An existing file keeps its name and extension unless the
-        // content outgrows `.light`, in which case it moves to `.venue` and
-        // the `.light` original is retired after the durable write.
-        let stem = lighting::files::stem(&name);
-        let file_path = match &located {
-            Some(l) if !typed || l.path.extension().is_some_and(|e| e == "venue") => l.path.clone(),
-            Some(l) => l.path.with_extension("venue"),
-            None => dir.join(format!("{stem}.{}", if typed { "venue" } else { "light" })),
-        };
-        let stale_twin = located
-            .as_ref()
-            .map(|l| l.path.clone())
-            .filter(|path| path != &file_path);
-        if stale_twin.is_some() && file_path.exists() {
-            return reply(
-                (
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": format!(
-                        "{} already exists; it would have to be replaced to keep this venue's \
-                         new fields",
-                        crate::util::filename_display(&file_path)
-                    )})),
-                )
-                    .into_response(),
-            );
-        }
-        config_io::staged_write(&file_path, &dsl)?;
-        if let Some(twin) = stale_twin {
-            // Best effort: the save is durable already, and a leftover
-            // `.light` twin surfaces as a duplicate venue name at load.
-            if let Err(e) = std::fs::remove_file(&twin) {
-                tracing::warn!(file = %twin.display(), error = %e, "could not retire the venue's .light twin");
-            }
+        if let Err(r) = lighting_writes::write(&plan, &dsl) {
+            return reply(r);
         }
         Ok::<_, String>(Ok(content_version(dsl.as_bytes())))
     })
@@ -2766,7 +2536,8 @@ pub(super) async fn reload_if_current_venue(state: &WebUiState, name: &str) -> b
     }
 }
 
-/// DELETE /api/lighting/venues/:name — deletes a venue file.
+/// DELETE /api/lighting/venues/:name — deletes a venue file: only one that
+/// is the venue's alone (409 otherwise, with the file and why).
 pub(super) async fn delete_venue(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -2774,51 +2545,27 @@ pub(super) async fn delete_venue(
 ) -> impl IntoResponse {
     validate_lighting_name(&name)?;
     let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
-    // Held from reading the file to deleting it, as MCP's delete does: a
+    // Held from reading the files to deleting one, as MCP's delete does: a
     // save adding another venue to it between the two would be lost (#578).
     let _writing = VENUE_WRITES.lock().await;
-    // By declaration, as GET and PUT find it: an MVR import names the file by
-    // its own rule, so the stem need not be this API's spelling of the name.
-    let located = {
-        let (dir, name) = (dir.clone(), name.clone());
-        super::helpers::spawn_blocking_io("locate venue file", move || {
-            locate_venue_file(&dir, &name)
-        })
-        .await?
-    };
-    let Some(located) = located else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Venue not found: {}", name)})),
-        )
-            .into_response());
-    };
-    // Deleting the file deletes everything in it.
-    let mut others: Vec<String> = located
-        .text()
-        .and_then(|text| lighting::parser::parse_venues(text).ok())
-        .map(|venues| venues.into_keys().filter(|n| n != &name).collect())
-        .unwrap_or_default();
-    if !others.is_empty() {
-        others.sort();
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({"error": format!(
-                "venue \"{}\" lives in {}, which also defines {}; deleting this one would remove \
-                 them — edit the file by hand instead",
-                name,
-                located.file(),
-                others
-                    .iter()
-                    .map(|n| format!("\"{n}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )})),
-        )
-            .into_response());
-    }
-    let fp = located.path;
-    super::helpers::spawn_blocking_io("delete venue", move || std::fs::remove_file(&fp)).await?;
+    let (dir, wanted) = (dir.clone(), name.clone());
+    let deleted = super::helpers::spawn_blocking_io("delete venue", move || {
+        let record = lighting::project_files::venues(&dir).record;
+        let path = match lighting_writes::deletable(Kind::Venue, &dir, &record, &wanted) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                return Ok(Err((
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": format!("Venue not found: {}", wanted)})),
+                )
+                    .into_response()))
+            }
+            Err(r) => return Ok(Err(r)),
+        };
+        std::fs::remove_file(&path).map(Ok)
+    })
+    .await?;
+    deleted?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -4703,7 +4450,7 @@ show "test" {
         assert_eq!(parsed["name"], "MyFixture");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myfixture.light");
+        let file_path = _dir.path().join(rel).join("myfixture.fixture");
         assert!(file_path.exists());
     }
 
@@ -4995,7 +4742,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonfixture.light");
+        let file_path = _dir.path().join(rel).join("jsonfixture.fixture");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let types = lighting::parser::parse_fixture_types(&content).unwrap();
@@ -5286,7 +5033,7 @@ show "test" {
         assert_eq!(parsed["name"], "MyVenue");
 
         // Verify file was created.
-        let file_path = _dir.path().join(rel).join("myvenue.light");
+        let file_path = _dir.path().join(rel).join("myvenue.venue");
         assert!(file_path.exists());
     }
 
@@ -5330,7 +5077,7 @@ show "test" {
         assert_eq!(parsed["status"], "saved");
 
         // Verify the file was created and contains valid DSL.
-        let file_path = _dir.path().join(rel).join("jsonvenue.light");
+        let file_path = _dir.path().join(rel).join("jsonvenue.venue");
         assert!(file_path.exists());
         let content = std::fs::read_to_string(&file_path).unwrap();
         let venues = lighting::parser::parse_venues(&content).unwrap();
@@ -5338,7 +5085,7 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_refuses_rich_channel_syntax() {
+    async fn a_new_rich_fixture_type_is_a_fixture_file() {
         let (state, _dir) = test_state();
         let rel = "ft_rich";
         let app = router().with_state(state);
@@ -5355,9 +5102,9 @@ show "test" {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        assert!(body.contains(".fixture"), "{body}");
+        // A new type is always born a `.fixture`, rich or not.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(_dir.path().join(rel).join("mover.fixture").exists());
         assert!(!_dir.path().join(rel).join("mover.light").exists());
     }
 
@@ -6648,12 +6395,13 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_fixture_type_retires_the_stale_twin() {
+    async fn a_type_in_two_files_is_read_only() {
         let (state, _dir) = test_state();
         let ft_dir = _dir.path().join("ft_twin");
         std::fs::create_dir(&ft_dir).unwrap();
         // A GDTF import can land a `.fixture` beside a hand-written `.light`
-        // of the same name; the next save resolves the pair to one file.
+        // of the same name: the name is declared twice, so neither file is
+        // its alone, and the save is refused rather than guessing which.
         std::fs::write(ft_dir.join("mover.light"), sample_fixture_type_dsl("Mover")).unwrap();
         std::fs::write(
             ft_dir.join("mover.fixture"),
@@ -6675,9 +6423,15 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["read_only"], true);
+        assert_eq!(
+            body["files"],
+            serde_json::json!(["mover.fixture", "mover.light"])
+        );
         assert!(ft_dir.join("mover.fixture").exists());
-        assert!(!ft_dir.join("mover.light").exists());
+        assert!(ft_dir.join("mover.light").exists());
     }
 
     #[tokio::test]
@@ -6686,24 +6440,13 @@ show "test" {
         let rel = "v_put_geometry";
         let app = router().with_state(state);
 
-        // First a plain venue: it is a .light.
-        let plain = serde_json::json!({
-            "fixtures": [{"name": "Spot1", "fixture_type": "GenericPar", "universe": 1, "start_channel": 1}]
-        });
-        let response = app
-            .clone()
-            .oneshot(
-                http::Request::builder()
-                    .method("PUT")
-                    .uri(format!("/lighting/venues/Geo?dir={}", rel))
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&plain).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(_dir.path().join(rel).join("geo.light").exists());
+        // First a plain venue, written by hand as a .light.
+        std::fs::create_dir_all(_dir.path().join(rel)).unwrap();
+        std::fs::write(
+            _dir.path().join(rel).join("geo.light"),
+            "venue \"Geo\" {\n  fixture \"Spot1\" GenericPar @ 1:1\n}\n",
+        )
+        .unwrap();
 
         // Then the same venue gains a position and a focus point: it moves
         // to .venue and the .light twin is retired.
@@ -6842,19 +6585,14 @@ show "test" {
     async fn a_light_venue_that_gains_a_mode_moves_to_venue() {
         let (state, _dir) = test_state();
         let rel = "v_put_mode_ext";
-        let plain = serde_json::json!({
-            "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1, "start_channel": 1}]
-        });
-        let uri = format!("/lighting/venues/Rig?dir={rel}");
-        let status = put_venue_body(
-            state.clone(),
-            uri.clone(),
-            "application/json",
-            serde_json::to_vec(&plain).unwrap(),
+        // A `.light` venue written by hand (a new one is a `.venue`).
+        std::fs::create_dir_all(_dir.path().join(rel)).unwrap();
+        std::fs::write(
+            _dir.path().join(rel).join("rig.light"),
+            "venue \"Rig\" {\n  fixture \"B1\" Brick @ 1:1\n}\n",
         )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(_dir.path().join(rel).join("rig.light").exists());
+        .unwrap();
+        let uri = format!("/lighting/venues/Rig?dir={rel}");
 
         let moded = serde_json::json!({
             "fixtures": [{"name": "B1", "fixture_type": "Brick", "universe": 1,
@@ -8519,22 +8257,38 @@ mod venue_file_tests {
     }
 
     #[tokio::test]
-    async fn a_broken_file_is_refused_and_left_byte_identical() {
+    async fn a_broken_file_is_never_searched_and_left_byte_identical() {
         let (state, dir) = test_state();
         let d = venues_dir(&dir);
         let broken = "// mine\nvenue \"House\" {\n  fixture \"A\" brick @ !!!\n}\n";
         std::fs::write(d.join("rig.venue"), broken).unwrap();
         let app = router().with_state(state);
 
+        // Nothing is guessed from a file that does not parse: "House" is
+        // declared nowhere, so it is new, at its own canonical file.
+        let (status, _) = put(&app, None, body_for(1.0)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(d.join("rig.venue")).unwrap(),
+            broken
+        );
+        assert!(d.join("house.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn a_broken_file_at_the_canonical_path_is_refused_and_left_byte_identical() {
+        let (state, dir) = test_state();
+        let d = venues_dir(&dir);
+        let broken = "// mine\nvenue \"House\" {\n  fixture \"A\" brick @ !!!\n}\n";
+        std::fs::write(d.join("house.venue"), broken).unwrap();
+        let app = router().with_state(state);
+
         let (status, body) = put(&app, None, body_for(1.0)).await;
         assert_eq!(status, StatusCode::CONFLICT);
         let msg = body["error"].as_str().unwrap();
-        assert!(
-            msg.contains("rig.venue") && msg.contains("by hand"),
-            "{msg}"
-        );
+        assert!(msg.contains("house.venue"), "{msg}");
         assert_eq!(
-            std::fs::read_to_string(d.join("rig.venue")).unwrap(),
+            std::fs::read_to_string(d.join("house.venue")).unwrap(),
             broken
         );
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 use super::library::LibraryType;
-use super::parser::FileItem;
+use super::parser::{FileItem, ItemKind};
 use super::project_files::{display_in, FIXTURE_TYPE_EXTENSIONS, VENUE_EXTENSIONS};
 
 /// The two kinds of lighting file this rule is for.
@@ -60,6 +60,14 @@ impl Kind {
         match self {
             Kind::Venue => "venue",
             Kind::FixtureType => "fixture type",
+        }
+    }
+
+    /// The parser's item of this kind.
+    pub fn item_kind(self) -> ItemKind {
+        match self {
+            Kind::Venue => ItemKind::Venue,
+            Kind::FixtureType => ItemKind::FixtureType,
         }
     }
 }
@@ -162,6 +170,42 @@ pub struct Contents {
     pub others: Vec<FileItem>,
 }
 
+impl Contents {
+    /// What a file's top-level `items` (in file order) hold, for `kind`.
+    pub fn of(kind: Kind, items: Vec<FileItem>) -> Self {
+        let (names, others): (Vec<_>, Vec<_>) = items
+            .into_iter()
+            .partition(|item| item.kind == kind.item_kind());
+        Contents {
+            names: names.into_iter().filter_map(|item| item.name).collect(),
+            others,
+        }
+    }
+
+    /// What `text`, the whole of a file of `kind`, holds; why it does not
+    /// parse otherwise.
+    pub fn parse(kind: Kind, text: &str) -> Result<Self, String> {
+        let items = match kind {
+            Kind::Venue => super::parser::parse_venues_listed(text).map(|(_, items)| items),
+            Kind::FixtureType => {
+                super::parser::parse_fixture_types_listed(text).map(|(_, items)| items)
+            }
+        };
+        items
+            .map(|items| Contents::of(kind, items))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether these contents are `name`'s alone, as an [`Owner`]'s file
+    /// must be to be [`Editable::Editable`]: the rule a file's new text is
+    /// held to before it is written. `None` when they do not declare it.
+    pub fn alone(&self, name: &str) -> Option<Editable> {
+        let mut record = Record::default();
+        record.push(PathBuf::new(), Ok(self.clone()));
+        record.owner(name).map(|owner| owner.editable)
+    }
+}
+
 /// One file the loader read, and what it holds, or why it did not parse.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileRead {
@@ -191,6 +235,85 @@ pub struct Record {
 pub struct Owner {
     pub path: PathBuf,
     pub editable: Editable,
+}
+
+impl Owner {
+    /// Why the owner's file is read-only, as the editor and a refused write
+    /// say it, with files shown relative to `dir`; `None` when editable.
+    pub fn reason(&self, kind: Kind, dir: &Path) -> Option<String> {
+        let Editable::ReadOnly(why) = &self.editable else {
+            return None;
+        };
+        let file = display_in(dir, &self.path);
+        let quoted = |names: &[String]| {
+            names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        Some(match why {
+            ReadOnly::Duplicate { files } => {
+                let shown: Vec<String> =
+                    unique(&files.iter().map(|f| display_in(dir, f)).collect::<Vec<_>>());
+                if shown.len() == 1 {
+                    format!(
+                        "Defined {} times in {file}; edit that file by hand.",
+                        files.len()
+                    )
+                } else {
+                    format!(
+                        "Defined more than once, in {}; edit those files by hand.",
+                        shown.join(", ")
+                    )
+                }
+            }
+            ReadOnly::Shared { others } => {
+                let noun = if others.len() == 1 {
+                    kind.noun().to_string()
+                } else {
+                    format!("{}s", kind.noun())
+                };
+                format!(
+                    "Defined in {file} alongside {noun} {}; edit that file by hand.",
+                    quoted(others)
+                )
+            }
+            ReadOnly::Mixed { others } => format!(
+                "Defined in {file} alongside {}; edit that file by hand.",
+                others
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ReadOnly::Unparseable { error } => {
+                format!("{file} does not parse ({error}); edit that file by hand.")
+            }
+        })
+    }
+
+    /// Whether the owner's file is where a new file of `name` would be
+    /// written: in `dir` itself, with `name`'s [`stem`] (in any case) and
+    /// one of the kind's extensions. Only such a file follows a rename.
+    pub fn at_canonical_place(&self, kind: Kind, dir: &Path, name: &str) -> bool {
+        self.path.parent() == Some(dir) && has_stem_of_kind(&self.path, kind, &stem(name))
+    }
+}
+
+/// Whether `path` is a file of `kind` whose stem folds to `wanted`.
+fn has_stem_of_kind(path: &Path, kind: Kind, wanted: &str) -> bool {
+    let (Some(file_stem), Some(extension)) = (
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) else {
+        return false;
+    };
+    fold(file_stem) == wanted
+        && kind
+            .extensions()
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(extension))
 }
 
 /// Whether an [`Owner`]'s file can be rewritten as this one name's.
@@ -473,17 +596,34 @@ pub fn unique(names: &[String]) -> Vec<String> {
     out
 }
 
-fn claim(
+/// Whether `name` may be given to a `kind` in `dir` at all: the first two
+/// of [`claim_new`]'s refusals (declared anywhere; for a fixture type, an
+/// unrecorded library type's name). A rename that keeps its file asks only
+/// this; a new file is [`claim_new`]ed.
+pub fn name_free(
+    kind: Kind,
+    dir: &Path,
+    name: &str,
+    library: &[LibraryType],
+) -> Result<(), Refusal> {
+    name_free_in(&read_record(kind, dir), kind, dir, name, library, None)
+}
+
+fn read_record(kind: Kind, dir: &Path) -> Record {
+    match kind {
+        Kind::Venue => super::project_files::venues(dir).record,
+        Kind::FixtureType => super::project_files::type_files(dir).record,
+    }
+}
+
+fn name_free_in(
+    record: &Record,
     kind: Kind,
     dir: &Path,
     name: &str,
     library: &[LibraryType],
     own_archive: Option<&str>,
-) -> Result<Claim, Refusal> {
-    let record = match kind {
-        Kind::Venue => super::project_files::venues(dir).record,
-        Kind::FixtureType => super::project_files::type_files(dir).record,
-    };
+) -> Result<(), Refusal> {
     if let Some(file) = record.file_declaring_same(name) {
         return Err(Refusal::Declared {
             kind,
@@ -502,6 +642,18 @@ fn claim(
             });
         }
     }
+    Ok(())
+}
+
+fn claim(
+    kind: Kind,
+    dir: &Path,
+    name: &str,
+    library: &[LibraryType],
+    own_archive: Option<&str>,
+) -> Result<Claim, Refusal> {
+    let record = read_record(kind, dir);
+    name_free_in(&record, kind, dir, name, library, own_archive)?;
     let path = canonical_path(kind, dir, name);
     let wanted = stem(name);
     let entries = match std::fs::read_dir(dir) {
@@ -514,22 +666,9 @@ fn claim(
             })
         }
     };
-    let same_stem = |entry: &PathBuf| {
-        let (Some(file_stem), Some(extension)) = (
-            entry.file_stem().and_then(|s| s.to_str()),
-            entry.extension().and_then(|e| e.to_str()),
-        ) else {
-            return false;
-        };
-        fold(file_stem) == wanted
-            && kind
-                .extensions()
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(extension))
-    };
     let taken = entries
         .into_iter()
-        .find(same_stem)
+        .find(|entry| has_stem_of_kind(entry, kind, &wanted))
         .or_else(|| path.symlink_metadata().is_ok().then(|| path.clone()));
     if let Some(file) = taken {
         return Err(Refusal::Taken {
@@ -804,6 +943,119 @@ mod tests {
                 error: "expected venue_name".into()
             })
         );
+    }
+
+    #[test]
+    fn each_read_only_owner_says_its_file_and_why() {
+        let dir = Path::new("/v");
+        let owner = |editable| Owner {
+            path: PathBuf::from("/v/tour/all.light"),
+            editable,
+        };
+        let reason = |editable| owner(editable).reason(Kind::Venue, dir);
+        assert_eq!(reason(Editable::Editable), None);
+        assert_eq!(
+            reason(Editable::ReadOnly(ReadOnly::Shared {
+                others: vec!["Arena".into()]
+            }))
+            .unwrap(),
+            "Defined in tour/all.light alongside venue \"Arena\"; edit that file by hand."
+        );
+        assert_eq!(
+            reason(Editable::ReadOnly(ReadOnly::Shared {
+                others: vec!["A".into(), "B".into()]
+            }))
+            .unwrap(),
+            "Defined in tour/all.light alongside venues \"A\", \"B\"; edit that file by hand."
+        );
+        assert_eq!(
+            reason(Editable::ReadOnly(ReadOnly::Mixed {
+                others: vec![FileItem {
+                    kind: ItemKind::Show,
+                    name: Some("S".into())
+                }]
+            }))
+            .unwrap(),
+            "Defined in tour/all.light alongside show \"S\"; edit that file by hand."
+        );
+        assert_eq!(
+            reason(Editable::ReadOnly(ReadOnly::Duplicate {
+                files: vec!["/v/tour/all.light".into(), "/v/b.venue".into()]
+            }))
+            .unwrap(),
+            "Defined more than once, in tour/all.light, b.venue; edit those files by hand."
+        );
+        assert_eq!(
+            reason(Editable::ReadOnly(ReadOnly::Duplicate {
+                files: vec!["/v/tour/all.light".into(), "/v/tour/all.light".into()]
+            }))
+            .unwrap(),
+            "Defined 2 times in tour/all.light; edit that file by hand."
+        );
+    }
+
+    #[test]
+    fn only_a_file_in_the_directory_with_the_names_stem_is_at_its_canonical_place() {
+        let dir = Path::new("/v");
+        let at = |path: &str, name: &str| {
+            Owner {
+                path: PathBuf::from(path),
+                editable: Editable::Editable,
+            }
+            .at_canonical_place(Kind::Venue, dir, name)
+        };
+        assert!(at("/v/club_main.venue", "Club (Main)"));
+        assert!(at("/v/club_main.light", "Club (Main)"));
+        assert!(at("/v/Club_Main.venue", "Club (Main)"));
+        assert!(!at("/v/tour/club_main.venue", "Club (Main)"));
+        assert!(!at("/v/club.venue", "Club (Main)"));
+        assert!(!at("/v/club_main.fixture", "Club (Main)"));
+        // The harness's record is not at "Astera-PixelBrick"'s.
+        let astera = Owner {
+            path: PathBuf::from("/t/astera_pixelbrick.fixture"),
+            editable: Editable::Editable,
+        };
+        assert!(!astera.at_canonical_place(
+            Kind::FixtureType,
+            Path::new("/t"),
+            "Astera-PixelBrick"
+        ));
+    }
+
+    #[test]
+    fn a_text_is_one_names_alone_by_the_editable_rule() {
+        let alone =
+            |text: &str, name: &str| Contents::parse(Kind::Venue, text).unwrap().alone(name);
+        assert_eq!(alone(VENUE, "house"), Some(Editable::Editable));
+        assert_eq!(alone(VENUE, "other"), None);
+        assert_eq!(
+            alone(&format!("{VENUE}venue \"annex\" {{\n}}\n"), "house"),
+            Some(Editable::ReadOnly(ReadOnly::Shared {
+                others: vec!["annex".into()]
+            }))
+        );
+        assert!(matches!(
+            alone(&format!("{VENUE}{VENUE}"), "house"),
+            Some(Editable::ReadOnly(ReadOnly::Duplicate { .. }))
+        ));
+        assert!(Contents::parse(Kind::Venue, "venue {").is_err());
+    }
+
+    #[test]
+    fn name_free_refuses_a_declared_name_but_not_a_taken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "house.venue", VENUE);
+        write(dir.path(), "annex.venue", "venue \"other\" {\n}\n");
+        assert!(matches!(
+            name_free(Kind::Venue, dir.path(), "house", &[]),
+            Err(Refusal::Declared { .. })
+        ));
+        // `annex.venue` is taken for a new file, but the name is free.
+        assert!(name_free(Kind::Venue, dir.path(), "annex", &[]).is_ok());
+        assert!(matches!(
+            claim_new(Kind::Venue, dir.path(), "annex", &[]),
+            Err(Refusal::Taken { .. })
+        ));
     }
 
     /// The owner of the one venue in `text`, read as the loader reads it.

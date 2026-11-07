@@ -116,8 +116,7 @@ pub fn display_in(dir: &Path, file: &Path) -> String {
 fn declarations<T>(
     dir: &Path,
     extensions: &[&str],
-    noun: &str,
-    kind: super::parser::ItemKind,
+    kind: super::files::Kind,
     parse: impl Fn(&str) -> super::parser::Listed<T>,
 ) -> Declarations<T> {
     let mut out = Declarations::default();
@@ -141,21 +140,15 @@ fn declarations<T>(
         // Every block of this kind by name, a repeat included (the parse
         // kept its last), and every other item: what says whether the file
         // is one name's alone.
-        let (names, others): (Vec<_>, Vec<_>) =
-            listed.into_iter().partition(|item| item.kind == kind);
-        out.record.push(
-            file.clone(),
-            Ok(super::files::Contents {
-                names: names.into_iter().filter_map(|item| item.name).collect(),
-                others,
-            }),
-        );
+        out.record
+            .push(file.clone(), Ok(super::files::Contents::of(kind, listed)));
         for (name, item) in declared {
             if let Some(first) = taken.get(&name) {
                 duplicates.push(FileProblem {
                     file: file.clone(),
                     error: format!(
-                        "{noun} \"{name}\" is defined in both {} and {}",
+                        "{} \"{name}\" is defined in both {} and {}",
+                        kind.noun(),
                         display_in(dir, first),
                         display_in(dir, &file)
                     ),
@@ -179,8 +172,7 @@ pub fn type_files(dir: &Path) -> Declarations<FixtureType> {
     declarations(
         dir,
         FIXTURE_TYPE_EXTENSIONS,
-        "fixture type",
-        super::parser::ItemKind::FixtureType,
+        super::files::Kind::FixtureType,
         super::parser::parse_fixture_types_listed,
     )
 }
@@ -190,8 +182,7 @@ pub fn venues(dir: &Path) -> Declarations<Venue> {
     declarations(
         dir,
         VENUE_EXTENSIONS,
-        "venue",
-        super::parser::ItemKind::Venue,
+        super::files::Kind::Venue,
         super::parser::parse_venues_listed,
     )
 }

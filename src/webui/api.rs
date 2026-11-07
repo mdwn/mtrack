@@ -19,6 +19,7 @@ pub(crate) mod fixture_settings;
 pub(crate) mod fixture_test;
 pub(crate) mod helpers;
 pub(crate) mod lighting_api;
+pub(crate) mod lighting_writes;
 pub(crate) mod mvr_api;
 pub(crate) mod playlists;
 pub(crate) mod profiles;

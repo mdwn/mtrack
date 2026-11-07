@@ -87,7 +87,7 @@ pub(super) async fn get_settings(
         DEFAULT_FIXTURE_TYPES_DIR,
     )?;
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
-    let Some((path, _)) = locate_fixture_type_file(&dir, &name).await? else {
+    let Some(path) = locate_fixture_type_file(&dir, &name).await? else {
         let (dir, wanted, project) = (dir.clone(), name.clone(), root.clone());
         let archive = super::helpers::spawn_blocking_io("read the GDTF library", move || {
             Ok::<_, String>(
