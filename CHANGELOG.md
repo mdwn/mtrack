@@ -418,6 +418,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their lists from the same rule: the notification sound picker now offers `.mp4`, which the
   upload always took, and the light show's MIDI DMX picker no longer offers `.midi`, which the
   upload refuses and `--init` passes over.
+- **A playlist's or profile's file is found by one rule** (`util::yaml_file_at`,
+  `playlist::playlist_file`, `config::profile_file`): a name's file is `<name>.yaml`, else
+  `<name>.yml`, else a new `<name>.yaml`, for the playlist loader, the web UI's playlist save and
+  delete, MCP `read_playlist`/`write_playlist`/`patch_playlist`, a song delete taking the song off
+  the playlists, the profile list the config loads, and the web UI's profile list, read, save and
+  delete. With both `set.yaml` and `set.yml`, `set.yaml` is the one read and a warning names
+  `set.yml` as not read. What changes:
+  - A playlist kept as `set.yml` is saved by the web UI's playlist editor and MCP `write_playlist`
+    or `patch_playlist` (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, which
+    the loader then passed over, so the edit was lost.
+  - With both `set.yaml` and `set.yml` in the playlists directory, the loader now takes
+    `set.yaml`, with the warning; it took `set.yml` (the later file name) without one.
+  - MCP `write_playlist`, `read_playlist` and `patch_playlist` with `name: all_songs` are refused
+    ("'all_songs' is the player's own playlist and has no file"): `write_playlist` wrote an
+    `all_songs.yaml` the loader never reads.
+  - With both `set.yaml` and `set.yml`, deleting a song takes it off `set.yaml` only; it rewrote
+    both.
+  - With both `host.yaml` and `host.yml` in `profiles_dir`, the config loads `host.yaml` only,
+    with the warning, and a broken `host.yml` no longer fails the load; both were loaded as two
+    profiles. The web UI's profile list shows `host` once, where it listed it twice.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
