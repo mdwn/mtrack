@@ -258,13 +258,35 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
-    // Write atomically, off the async runtime.
+    // Write atomically, off the async runtime. A new playlist is created as
+    // new (`config_io::staged_create`): a file made since the lookup, or one
+    // the filesystem takes for this name, is refused, never written over.
     let fp = file_path.clone();
     let yaml_owned = yaml;
-    super::helpers::spawn_blocking_io("write playlist", move || {
-        config_io::staged_write(&fp, &yaml_owned)
+    let new = !file.exists();
+    let created = super::helpers::spawn_blocking_io("write playlist", move || {
+        if !new {
+            return config_io::staged_write(&fp, &yaml_owned).map(|()| true);
+        }
+        match config_io::staged_create(&fp, &yaml_owned) {
+            Ok(()) => Ok(true),
+            Err(config_io::CreateFailure::Exists) => Ok(false),
+            Err(config_io::CreateFailure::Write(e)) => Err(e),
+        }
     })
     .await?;
+    if !created {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!(
+                    "a playlist file `{}` already exists",
+                    crate::util::filename_display(&file_path)
+                )
+            })),
+        )
+            .into_response());
+    }
 
     // Reload songs to pick up the new playlist.
     super::helpers::reload_songs(&state).await?;

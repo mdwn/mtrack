@@ -31,6 +31,31 @@ pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
     })
 }
 
+/// Why [`staged_create`] did not create a file.
+#[derive(Debug)]
+pub enum CreateFailure {
+    /// A file is there already (`util::write_new_file`): nothing was written.
+    Exists,
+    /// The write failed, with what [`staged_write`] would say.
+    Write(String),
+}
+
+/// Creates `path` with `content` (`util::write_new_file`), refusing a file
+/// already there, as [`staged_write`] writes one.
+pub fn staged_create(path: &Path, content: &str) -> Result<(), CreateFailure> {
+    util::write_new_file(path, content.as_bytes()).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return CreateFailure::Exists;
+        }
+        let mut message = format!("Failed to write {}: {}", path.display(), e);
+        if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), &e) {
+            message.push_str("\n\n");
+            message.push_str(&hint);
+        }
+        CreateFailure::Write(message)
+    })
+}
+
 /// Validates a player config YAML string by attempting to deserialize it.
 pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
     let player = config::Player::deserialize_from_str(yaml).map_err(|e| vec![format!("{}", e)])?;

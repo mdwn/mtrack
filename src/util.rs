@@ -82,40 +82,48 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
+/// What a listing does with a directory entry it cannot read: it is passed
+/// over either way, with a warning only where the files are loaded (the
+/// config's profiles, the playlists), so a per-request lookup or listing
+/// stays quiet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreadable {
+    Warn,
+    Skip,
+}
+
 /// The regular files in `dir`, as it lists them, sorted by file name: the
 /// one listing every lookup and list of named files below works from. Names
 /// are kept as the filesystem has them, UTF-8 or not. An entry that cannot
-/// be read is passed over with a warning.
-pub fn files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+/// be read is passed over ([`Unreadable`]).
+pub fn files_in(dir: &Path, unreadable: Unreadable) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         match entry {
             Ok(entry) if entry.path().is_file() => found.push(entry.path()),
             Ok(_) => {}
-            Err(e) => tracing::warn!("{}: an entry could not be read: {e}", dir.display()),
+            Err(e) if unreadable == Unreadable::Warn => {
+                tracing::warn!("{}: an entry could not be read: {e}", dir.display())
+            }
+            Err(_) => {}
         }
     }
     found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     Ok(found)
 }
 
-/// [`files_in`] for a lookup by name: a directory that is not there lists
-/// nothing (the name's file is new), and one that cannot be listed lists
-/// nothing too, with a warning.
+/// [`files_in`] for a lookup by name, quiet as every per-request lookup
+/// is: a directory that is not there, or cannot be listed, lists nothing
+/// (the name's file is new; its write then fails if the directory does).
 pub fn files_to_look_up(dir: &Path) -> Vec<PathBuf> {
-    files_in(dir).unwrap_or_else(|e| {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("{}: could not be listed: {e}", dir.display());
-        }
-        Vec::new()
-    })
+    files_in(dir, Unreadable::Skip).unwrap_or_default()
 }
 
 /// The YAML config files in `dir` ([`files_in`]): every file whose name
 /// ends in `.yaml` or `.yml`, lowercase as written (`songs::is_yaml_config`),
 /// sorted by file name.
-pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    Ok(files_in(dir)?
+pub fn yaml_config_files(dir: &Path, unreadable: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    Ok(files_in(dir, unreadable)?
         .into_iter()
         .filter(|path| crate::songs::is_yaml_config(path))
         .collect())
@@ -222,8 +230,11 @@ pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
 /// [`yaml_file_at`] takes for it ([`yaml_files_named`]), with the other a
 /// name has (its `.yml` beside its `.yaml`), which is not read. Sorted by
 /// file name.
-pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
-    let files = files_in(dir)?;
+pub fn yaml_files_by_name(
+    dir: &Path,
+    unreadable: Unreadable,
+) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
+    let files = files_in(dir, unreadable)?;
     Ok(files
         .iter()
         .filter(|file| crate::songs::is_yaml_config(file))
@@ -338,6 +349,19 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// the new content is staged, so a write that fails before then (a full
 /// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_file_as(path, contents, false)
+}
+
+/// [`write_file`] for a file that must not be there yet: the destination is
+/// opened with `create_new`, so the filesystem itself refuses one already
+/// there (`ErrorKind::AlreadyExists`), including one a case-insensitive or
+/// normalization-insensitive filesystem takes for the same name, and one
+/// made since it was looked up. Nothing is written over it.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_file_as(path, contents, true)
+}
+
+fn write_file_as(path: &Path, contents: &[u8], new: bool) -> std::io::Result<()> {
     use std::io::Write;
 
     // Take turns from before staging: a writer staging while another
@@ -379,7 +403,8 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     // claim to the file.
     let claim = || -> std::io::Result<std::fs::File> {
         let destination = std::fs::OpenOptions::new()
-            .create(true)
+            .create(!new)
+            .create_new(new)
             .write(true)
             .truncate(false)
             .open(path)?;
@@ -1474,7 +1499,7 @@ mod test {
 
     /// The listing keeps a name that is not UTF-8 as the filesystem has it,
     /// and the one rule finds its YAML file by it.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_listing_keeps_a_name_that_is_not_utf8() {
         use std::os::unix::ffi::OsStrExt;
@@ -1482,10 +1507,38 @@ mod test {
         let dir = dir.path();
         let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
         std::fs::write(dir.join(name), "").unwrap();
-        assert_eq!(super::files_in(dir).unwrap(), vec![dir.join(name)]);
         assert_eq!(
-            super::yaml_files_by_name(dir).unwrap(),
+            super::files_in(dir, super::Unreadable::Skip).unwrap(),
+            vec![dir.join(name)]
+        );
+        assert_eq!(
+            super::yaml_files_by_name(dir, super::Unreadable::Skip).unwrap(),
             vec![(dir.join(name), None)]
+        );
+    }
+
+    /// A create is only a create: a file made between the lookup and the
+    /// write (here, after `yaml_file_at` said `New`) is refused by the
+    /// filesystem and left as it was.
+    #[test]
+    fn a_create_racing_a_new_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let file = super::yaml_file_at(dir, "set").unwrap();
+        assert_eq!(file, super::NamedFile::New(dir.join("set.yaml")));
+        std::fs::write(dir.join("set.yaml"), "theirs").unwrap();
+        let error = super::write_new_file(file.path(), b"ours").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("set.yaml")).unwrap(),
+            "theirs"
+        );
+        assert!(!super::staged_path(file.path()).exists());
+
+        super::write_new_file(&dir.join("new.yaml"), b"ours").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("new.yaml")).unwrap(),
+            "ours"
         );
     }
 
@@ -1515,14 +1568,14 @@ mod test {
             Ok(NamedFile::New(dir.join("folder.yaml")))
         );
         assert_eq!(
-            yaml_files_by_name(dir).unwrap(),
+            yaml_files_by_name(dir, super::Unreadable::Skip).unwrap(),
             vec![
                 (dir.join("a.b.yml"), None),
                 (dir.join("set.yaml"), Some(dir.join("set.yml")))
             ]
         );
         assert_eq!(
-            yaml_config_files(dir).unwrap(),
+            yaml_config_files(dir, super::Unreadable::Skip).unwrap(),
             vec![
                 dir.join("a.b.yml"),
                 dir.join("set.yaml"),

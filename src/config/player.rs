@@ -38,9 +38,12 @@ fn default_active_playlist() -> String {
 /// profile is matched by the `hostname` inside it, not by its file name.
 /// Shared by config load, gain persistence and the web UI's list so all
 /// agree on which file owns the active profile.
-pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+pub(crate) fn list_profile_files(
+    dir: &Path,
+    unreadable: crate::util::Unreadable,
+) -> Result<Vec<PathBuf>, ConfigError> {
     // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-    crate::util::yaml_config_files(dir).map_err(|source| ConfigError::Io {
+    crate::util::yaml_config_files(dir, unreadable).map_err(|source| ConfigError::Io {
         path: dir.to_path_buf(),
         source,
     })
@@ -366,7 +369,7 @@ impl Player {
             None => return Ok(()),
         };
 
-        let yaml_paths = list_profile_files(&dir_path)?;
+        let yaml_paths = list_profile_files(&dir_path, crate::util::Unreadable::Warn)?;
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {
@@ -377,6 +380,8 @@ impl Player {
                     path: path.clone(),
                     source,
                 })?;
+            let mut profile = profile;
+            profile.set_source_file(path.file_name().and_then(|n| n.to_str()).map(String::from));
             dir_profiles.push(profile);
         }
 
@@ -1744,6 +1749,16 @@ profiles:
             .map(|p| p.audio_config().unwrap().audio().device().to_string())
             .collect();
         assert_eq!(devices, ["device-b", "device-a", "catch-all"]);
+        // Each remembers its file, which the web UI links the running one by.
+        let files: Vec<_> = player
+            .all_profiles()
+            .iter()
+            .map(|p| p.source_file())
+            .collect();
+        assert_eq!(
+            files,
+            [Some("pi-b.yml"), Some("stage.yaml"), Some("stage.yml")]
+        );
     }
 
     /// A full file name the directory does not list is tried as a stem:

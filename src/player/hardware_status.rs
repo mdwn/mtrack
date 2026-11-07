@@ -90,6 +90,9 @@ pub struct HardwareStatusSnapshot {
     pub init_done: bool,
     pub hostname: Option<String>,
     pub profile: Option<String>,
+    /// The file the active profile was loaded from (`stage.yml`), which the
+    /// web UI links it by; none for an inline profile.
+    pub profile_file: Option<String>,
     pub audio: SubsystemStatus,
     /// Runtime output health, when the audio device can report it.
     pub audio_output: Option<AudioOutputHealth>,

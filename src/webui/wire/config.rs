@@ -87,12 +87,16 @@ pub struct ProfileFileInfo {
     /// keys a profile file by and addresses it by, as two files may share
     /// a stem.
     pub file: String,
-    /// The file's stem (`stage`), for clients that address a profile by it.
+    /// The file's stem (`stage`): display and backward compatibility only,
+    /// never an address, since two files may share it. Address by `file`.
     pub filename: String,
     /// Whether `/api/profiles/{file}` reaches this file: false for a name
     /// that is not UTF-8 (`file` is then shown with replacement characters)
     /// or not safe in a URL path, which the web UI shows read-only.
     pub addressable: bool,
+    /// Why the file does not parse as a profile; none when it does. Such a
+    /// file is listed (its sections all false) as the lookups reach it.
+    pub error: Option<String>,
     pub hostname: Option<String>,
     pub has_audio: bool,
     pub has_midi: bool,

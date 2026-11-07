@@ -169,6 +169,12 @@ pub struct Profile {
     /// Status events — MIDI events emitted on player state changes.
     #[serde(default)]
     status_events: Option<super::statusevents::StatusEvents>,
+
+    /// The file in `profiles_dir` this profile was loaded from, as its file
+    /// name (`stage.yml`): none for an inline profile, or a name that is not
+    /// UTF-8. Not part of the file.
+    #[serde(skip)]
+    source_file: Option<String>,
 }
 
 /// A list that may be written as `null`, read as empty.
@@ -247,7 +253,18 @@ impl Profile {
             controllers: Vec::new(),
             notifications: None,
             status_events: None,
+            source_file: None,
         }
+    }
+
+    /// The file in `profiles_dir` this profile was loaded from, if it was.
+    pub fn source_file(&self) -> Option<&str> {
+        self.source_file.as_deref()
+    }
+
+    /// Records the file this profile was loaded from.
+    pub fn set_source_file(&mut self, file: Option<String>) {
+        self.source_file = file;
     }
 
     /// Returns the optional hostname constraint.

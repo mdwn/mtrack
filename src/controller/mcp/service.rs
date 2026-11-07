@@ -1310,7 +1310,14 @@ impl McpServer {
             }
             _ => path,
         };
-        staged_write_string(&path, &args.yaml).await?;
+        // A new playlist is created as new: never written over a file made
+        // since the lookup.
+        match &target {
+            PlaylistTarget::Named(crate::util::NamedFile::New(_)) => {
+                staged_create_string(&path, &args.yaml).await?
+            }
+            _ => staged_write_string(&path, &args.yaml).await?,
+        }
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
         self.reload_player_songs().await?;
@@ -4299,6 +4306,20 @@ pub(crate) async fn staged_write_string(
     path: &std::path::Path,
     content: &str,
 ) -> Result<(), McpError> {
+    write_string(path, content, false).await
+}
+
+/// [`staged_write_string`] for a file that must not be there yet
+/// (`util::write_new_file`): one there already, made since it was looked up
+/// or one the filesystem takes for this name, is refused, not written over.
+pub(crate) async fn staged_create_string(
+    path: &std::path::Path,
+    content: &str,
+) -> Result<(), McpError> {
+    write_string(path, content, true).await
+}
+
+async fn write_string(path: &std::path::Path, content: &str, new: bool) -> Result<(), McpError> {
     let owned = path.to_path_buf();
     let content = content.to_string();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
@@ -4306,11 +4327,24 @@ pub(crate) async fn staged_write_string(
             .parent()
             .ok_or_else(|| std::io::Error::other("path has no parent"))?;
         crate::util::create_dir_all(parent)?;
-        crate::util::write_file(&owned, content.as_bytes())
+        if new {
+            crate::util::write_new_file(&owned, content.as_bytes())
+        } else {
+            crate::util::write_file(&owned, content.as_bytes())
+        }
     })
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return McpError::invalid_params(
+                format!(
+                    "a file `{}` already exists",
+                    crate::util::filename_display(path)
+                ),
+                None,
+            );
+        }
         let mut message = format!("write failed: {e}");
         if let Some(hint) =
             crate::util::write_failure_hint(crate::util::WriteTarget::File(path), &e)

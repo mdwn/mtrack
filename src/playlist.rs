@@ -589,8 +589,11 @@ pub struct PlaylistFile {
 /// The playlist files in `dir`, one for each name (`util::yaml_files_by_name`:
 /// the file [`playlist_file`] takes), sorted by file name. The reserved name
 /// has none, so an `all_songs.yaml` is not one.
-pub fn playlist_files(dir: &Path) -> std::io::Result<Vec<PlaylistFile>> {
-    Ok(crate::util::yaml_files_by_name(dir)?
+pub fn playlist_files(
+    dir: &Path,
+    unreadable: crate::util::Unreadable,
+) -> std::io::Result<Vec<PlaylistFile>> {
+    Ok(crate::util::yaml_files_by_name(dir, unreadable)?
         .into_iter()
         .filter_map(|(path, unread)| {
             let name = path.file_stem()?.to_str()?.to_string();
@@ -676,7 +679,7 @@ mod test {
             std::fs::write(dir.join(file), "songs: []\n").unwrap();
         }
         assert_eq!(
-            super::playlist_files(dir).unwrap(),
+            super::playlist_files(dir, crate::util::Unreadable::Skip).unwrap(),
             vec![
                 super::PlaylistFile {
                     name: "old".to_string(),

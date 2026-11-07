@@ -110,6 +110,20 @@ fn profile_path(
     )
 }
 
+/// The answer to a create of a profile file that is there already.
+fn profile_exists(file: &crate::util::NamedFile) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!(
+                "a profile file `{}` already exists",
+                crate::util::filename_display(file.path())
+            )
+        })),
+    )
+        .into_response()
+}
+
 /// The profile currently in `filename`, if there is one and it parses.
 async fn existing_profile(profiles_dir: &std::path::Path, filename: &str) -> Option<Profile> {
     let path = profile_path(profiles_dir, filename)
@@ -169,7 +183,8 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
     let result = spawn_blocking_io("read profiles dir", move || {
         // The profile files the config loads, as it lists them.
         let mut items: Vec<ProfileFileInfo> = Vec::new();
-        for path in crate::config::list_profile_files(&profiles_dir)? {
+        for path in crate::config::list_profile_files(&profiles_dir, crate::util::Unreadable::Skip)?
+        {
             // A name the API cannot take back as written is listed, but
             // not as one to act on: a lossy name would reach another file.
             let name = path.file_name().unwrap_or_default();
@@ -183,28 +198,27 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
                 .unwrap_or("")
                 .to_string();
 
-            // Parse the profile; skip unparseable files.
-            let Ok(source) = crate::util::yaml_source(&path) else {
-                continue;
+            // Parse the profile. One that does not parse is still a file
+            // the lookups reach, so it is listed, with why.
+            let parsed = crate::util::yaml_source(&path)
+                .and_then(|source| Config::builder().add_source(source).build())
+                .and_then(|c| c.try_deserialize::<Profile>());
+            let (profile, error) = match parsed {
+                Ok(profile) => (Some(profile), None),
+                Err(e) => (None, Some(e.to_string())),
             };
-            let profile = match Config::builder()
-                .add_source(source)
-                .build()
-                .and_then(|c| c.try_deserialize::<Profile>())
-            {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let profile = profile.as_ref();
 
             items.push(ProfileFileInfo {
                 file,
                 addressable,
-                hostname: profile.hostname().map(str::to_string),
-                has_audio: profile.audio_config().is_some(),
-                has_midi: profile.midi().is_some(),
-                has_dmx: profile.dmx().is_some(),
-                has_trigger: profile.trigger().is_some(),
-                has_controllers: !profile.controllers().is_empty(),
+                error,
+                hostname: profile.and_then(|p| p.hostname()).map(str::to_string),
+                has_audio: profile.is_some_and(|p| p.audio_config().is_some()),
+                has_midi: profile.is_some_and(|p| p.midi().is_some()),
+                has_dmx: profile.is_some_and(|p| p.dmx().is_some()),
+                has_trigger: profile.is_some_and(|p| p.trigger().is_some()),
+                has_controllers: profile.is_some_and(|p| !p.controllers().is_empty()),
                 filename,
             });
         }
@@ -331,19 +345,35 @@ pub(super) async fn put_profile(
     // codeql[rust/path-injection] filename is validated; path is verified via profile_path.
     let file = profile_path(&profiles_dir, &filename)?;
     validate_resource_name_to_write(&filename, "profile", file.exists())?;
+    // A create (`If-None-Match: *`, as the web UI sends for a new profile)
+    // is only ever a create: a name that reaches a file already there (by a
+    // stem, `stage.yaml` reaching `stage.yaml.yaml`) is refused, not merged.
+    let creating = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .is_some_and(|value| value == "*");
+    if creating && file.exists() {
+        return Err(profile_exists(&file));
+    }
+    let new = !file.exists();
     let file_path = file.path().to_path_buf();
 
     // Write the file off the async runtime. The version check and the write
-    // happen under one lock so two saves cannot both pass the check.
+    // happen under one lock so two saves cannot both pass the check. A new
+    // file is created as new (`config_io::staged_create`), so one made since
+    // the lookup is refused by the filesystem, never written over.
     let expected = if_match_version(&headers);
     let fp = file_path;
     let outcome = spawn_blocking_io("write profile", move || {
         let _guard = PROFILE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
-        let old = crate::util::read_file(&fp).ok();
+        let old = if new {
+            None
+        } else {
+            crate::util::read_file(&fp).ok()
+        };
         if let Some(expected) = &expected {
             let current = old.as_deref().map(content_version);
             if current.as_deref() != Some(expected.as_str()) {
-                return Ok::<_, String>(Err(current));
+                return Ok::<_, String>(Err(Some(current)));
             }
         }
         let mut merged = new_json;
@@ -351,13 +381,22 @@ pub(super) async fn put_profile(
             carry_unknown_keys(old, &mut merged);
         }
         let yaml = crate::util::to_yaml_string(&merged).map_err(|e| e.to_string())?;
-        config_io::staged_write(&fp, &yaml)?;
+        if new {
+            match config_io::staged_create(&fp, &yaml) {
+                Ok(()) => {}
+                Err(config_io::CreateFailure::Exists) => return Ok(Err(None)),
+                Err(config_io::CreateFailure::Write(e)) => return Err(e),
+            }
+        } else {
+            config_io::staged_write(&fp, &yaml)?;
+        }
         Ok(Ok(content_version(yaml.as_bytes())))
     })
     .await?;
     let version = match outcome {
         Ok(version) => version,
-        Err(current) => {
+        Err(None) => return Err(profile_exists(&file)),
+        Err(Some(current)) => {
             return Err((
                 StatusCode::CONFLICT,
                 Json(json!({
@@ -934,7 +973,8 @@ mod test {
         };
 
         assert_eq!(
-            crate::config::list_profile_files(&profiles_dir).unwrap(),
+            crate::config::list_profile_files(&profiles_dir, crate::util::Unreadable::Skip)
+                .unwrap(),
             vec![
                 profiles_dir.join("host-a.yaml"),
                 profiles_dir.join("host-a.yml")
@@ -1054,7 +1094,7 @@ mod test {
         let profiles_dir = dir.path().join("profiles");
         std::fs::create_dir(&profiles_dir).unwrap();
         write_profile_file(&profiles_dir, "stage.yaml.yaml", HOST_A);
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             use std::os::unix::ffi::OsStrExt;
             let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
@@ -1111,13 +1151,93 @@ mod test {
             ("stage.yaml.yaml".to_string(), serde_json::json!(true)),
             ("x.yml".to_string(), serde_json::json!(true)),
         ];
-        if cfg!(unix) {
+        if cfg!(target_os = "linux") {
             expected.insert(
                 0,
                 ("caf\u{fffd}.yaml".to_string(), serde_json::json!(false)),
             );
         }
         assert_eq!(addressable, expected, "{body}");
+    }
+
+    /// A create (`If-None-Match: *`) is only a create: `stage.yaml` with
+    /// only `stage.yaml.yaml` there, or `stage` with only `stage.yml`, is
+    /// refused (409) and the file there left alone; a name with no file is
+    /// created. A file that does not parse is listed, with why.
+    #[tokio::test]
+    async fn a_create_never_rewrites_another_profile() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(&profiles_dir, "stage.yaml.yaml", HOST_A);
+        write_profile_file(&profiles_dir, "solo.yml", HOST_A);
+        write_profile_file(&profiles_dir, "broken.yaml", "audio: [not, a, profile\n");
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+        let create = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        http::Request::builder()
+                            .method("PUT")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .header("if-none-match", "*")
+                            .body(Body::from(
+                                r#"{"audio": {"device": "dev-new", "track_mappings": {"drums": [1]}}}"#,
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), response_body(response).await)
+            }
+        };
+
+        for (uri, file) in [
+            ("/profiles/stage.yaml", "stage.yaml.yaml"),
+            ("/profiles/solo", "solo.yml"),
+        ] {
+            let (status, body) = create(uri).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{uri}: {body}");
+            assert!(
+                body.contains(&format!("a profile file `{file}` already exists")),
+                "{uri}: {body}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(profiles_dir.join(file)).unwrap(),
+                HOST_A
+            );
+        }
+        assert!(!profiles_dir.join("stage.yaml").exists());
+
+        let (status, body) = create("/profiles/fresh").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(std::fs::read_to_string(profiles_dir.join("fresh.yaml"))
+            .unwrap()
+            .contains("dev-new"));
+
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .uri("/profiles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let listed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let broken = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["file"] == "broken.yaml")
+            .expect("the broken file is listed");
+        assert!(broken["error"].is_string(), "{broken}");
+        assert_eq!(broken["has_audio"], false, "{broken}");
     }
 
     #[tokio::test]

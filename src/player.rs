@@ -140,6 +140,9 @@ struct HardwareState {
     song_change_notifiers: Vec<Arc<dyn SongChangeNotifier>>,
     /// The hostname of the active hardware profile (None if no profile matched).
     profile_name: Option<String>,
+    /// The file the active profile was loaded from (`stage.yml`); None for
+    /// an inline profile, or none matched.
+    profile_file: Option<String>,
     /// The resolved machine hostname used for profile matching.
     hostname: Option<String>,
     /// Subsystems whose init gave up, keyed by name, with the reason.
@@ -653,6 +656,7 @@ impl Player {
             clock_source,
             song_change_notifiers: Vec::new(),
             profile_name: None,
+            profile_file: None,
             hostname: None,
             init_errors: HashMap::new(),
         };
@@ -1518,7 +1522,9 @@ pub fn load_playlists(
         if dir.is_dir() {
             // Each name's file (`playlist::playlist_files`): with both
             // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
-            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
+            for playlist::PlaylistFile { name, path, unread } in
+                playlist::playlist_files(dir, crate::util::Unreadable::Warn)?
+            {
                 if let Some(unread) = unread {
                     warn!(
                         name = %name,
