@@ -391,6 +391,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A file's kind is read by one rule, in any case** (`songs::FileKind`): an audio, MIDI or
+  `.light` file's extension now counts whatever its case everywhere on the song side, as the
+  song file listing and the file browser already read it. `songs --init`, a web song create or
+  bulk import, and the song config an upload writes take `Bass.WAV` as a track, `Song.MID` as
+  the MIDI playback, `dmx_Lights.MID` as a MIDI DMX light show and `Show.LIGHT` as a light show;
+  each was passed over as an unknown extension. A track upload or server import of `Bass.WAV`,
+  `Notes.MID` or `Show.LIGHT`, and a sample upload of `Kick.WAV`, are taken; each was refused as
+  an unsupported file type. A song, playlist or profile config's `.yaml`/`.yml` stays lowercase:
+  `song.YAML` is not a song config, as before. The web UI's file pickers take their lists from
+  the same rule: the notification sound picker now offers `.mp4`, which the upload always took;
+  the light show's MIDI DMX picker no longer offers `.midi`, which the upload refuses and
+  `--init` passes over; and a MIDI DMX import from the server of `Show.MID` is named
+  `dmx_Show.MID`, as `show.mid` is named `dmx_show.mid`.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need

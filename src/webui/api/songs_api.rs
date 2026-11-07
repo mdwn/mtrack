@@ -535,7 +535,7 @@ pub(super) async fn get_song_files(
                 continue;
             }
             files.push(SongFile {
-                kind: file_kind(&path),
+                kind: FileKind::of(&path),
                 name: filename,
             });
         }
@@ -550,24 +550,6 @@ pub(super) async fn get_song_files(
     files.sort_by(|a, b| a.name.cmp(&b.name));
 
     (StatusCode::OK, Json(SongFiles { files })).into_response()
-}
-
-/// What a file is to the player, by its extension.
-pub(super) fn file_kind(path: &std::path::Path) -> FileKind {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if songs::is_supported_audio_extension(&ext) {
-        FileKind::Audio
-    } else if ext == "mid" {
-        FileKind::Midi
-    } else if ext == "light" {
-        FileKind::Lighting
-    } else {
-        FileKind::Other
-    }
 }
 
 /// Held by each write of a song's `song.yaml` or one of its lighting files,
@@ -1006,11 +988,9 @@ pub(super) fn validate_track_filename(
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext != "mid" && ext != "light" && !songs::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if FileKind::of(path) == FileKind::Other {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -1541,6 +1521,54 @@ mod test {
         assert!(state.songs_path().join("NewSong/song.yaml").exists());
     }
 
+    /// An extension in capitals is the same audio type: `Bass.WAV` is taken
+    /// and becomes a track, as the file listing calls it audio.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/NewSong/tracks/Bass.WAV")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let config = std::fs::read_to_string(state.songs_path().join("NewSong/song.yaml")).unwrap();
+        assert!(config.contains("Bass.WAV"), "{config}");
+    }
+
+    /// A MIDI upload's extension is read in any case: `Notes.MID` is taken.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_midi_extension() {
+        let (state, _dir) = test_state();
+        let midi = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+        )
+        .unwrap();
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/MidiSong/tracks/Notes.MID")
+                    .body(Body::from(midi))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.songs_path().join("MidiSong/Notes.MID").exists());
+    }
+
     #[tokio::test]
     async fn upload_track_single_path_traversal_rejected() {
         let (state, _dir) = test_state();
@@ -1955,6 +1983,44 @@ mod test {
             .exists());
     }
 
+    /// An import's name is read in any case: `dmx_Lights.MID` is a MIDI
+    /// file. `.midi` is not one to the player, so it is refused.
+    #[tokio::test]
+    async fn import_file_to_song_reads_extensions_in_any_case() {
+        let (state, dir) = test_state();
+        let source_path = dir.path().join("original.mid");
+        std::fs::copy(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+            &source_path,
+        )
+        .unwrap();
+        let source = source_path.canonicalize().unwrap();
+
+        for (filename, expected) in [
+            ("dmx_Lights.MID", StatusCode::OK),
+            ("dmx_lights.midi", StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({
+                "path": source.to_str().unwrap(),
+                "filename": filename,
+            });
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri("/songs/TestSong/import")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_string(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{filename}");
+        }
+        assert!(state.songs_path().join("TestSong/dmx_Lights.MID").exists());
+    }
+
     #[tokio::test]
     async fn import_file_to_song_rejects_unsupported_extension() {
         let (state, dir) = test_state();
@@ -2271,6 +2337,8 @@ mod test {
         std::fs::copy(&midi_source, song_dir.join("notes.mid")).unwrap();
         std::fs::write(song_dir.join("show.light"), "show \"Test\" {}\n").unwrap();
         std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        std::fs::copy(&midi_source, song_dir.join("Other.MID")).unwrap();
+        std::fs::write(song_dir.join("Bass.WAV"), "not read").unwrap();
         std::fs::write(
             song_dir.join("song.yaml"),
             "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
@@ -2295,8 +2363,9 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let files = parsed["files"].as_array().unwrap();
 
-        // Should have track1.wav, notes.mid, show.light, readme.txt (song.yaml is skipped)
-        assert_eq!(files.len(), 4);
+        // Should have track1.wav, notes.mid, show.light, readme.txt,
+        // Other.MID and Bass.WAV (song.yaml is skipped)
+        assert_eq!(files.len(), 6);
 
         // Verify type classification
         let find_file = |name: &str| files.iter().find(|f| f["name"] == name).unwrap();
@@ -2304,6 +2373,8 @@ mod test {
         assert_eq!(find_file("notes.mid")["type"], "midi");
         assert_eq!(find_file("show.light")["type"], "lighting");
         assert_eq!(find_file("readme.txt")["type"], "other");
+        assert_eq!(find_file("Other.MID")["type"], "midi");
+        assert_eq!(find_file("Bass.WAV")["type"], "audio");
     }
 
     #[tokio::test]

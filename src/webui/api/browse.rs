@@ -127,7 +127,7 @@ pub(super) async fn browse_directory(
                     kind: if is_dir {
                         FileKind::Directory
                     } else {
-                        super::songs_api::file_kind(&path)
+                        FileKind::of(&path)
                     },
                     path: to_relative(&path),
                     name,
@@ -365,10 +365,8 @@ fn bulk_import_recursive(
             if !name.starts_with('.') {
                 subdirs.push(path);
             }
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if songs::is_supported_audio_extension(&ext.to_lowercase()) {
-                has_audio = true;
-            }
+        } else if FileKind::of(&path) == FileKind::Audio {
+            has_audio = true;
         }
     }
     subdirs.sort();
@@ -582,6 +580,10 @@ mod test {
         std::fs::write(subdir.join("notes.mid"), "midi data").unwrap();
         std::fs::write(subdir.join("show.light"), "light data").unwrap();
         std::fs::write(subdir.join("readme.txt"), "text data").unwrap();
+        std::fs::write(subdir.join("Bass.WAV"), &wav_bytes).unwrap();
+        std::fs::write(subdir.join("Notes.MID"), "midi data").unwrap();
+        std::fs::write(subdir.join("Show.LIGHT"), "light data").unwrap();
+        std::fs::write(subdir.join("notes.midi"), "midi data").unwrap();
 
         let app = router().with_state(state);
         let response = app
@@ -604,6 +606,10 @@ mod test {
         assert_eq!(find_entry("notes.mid")["type"], "midi");
         assert_eq!(find_entry("show.light")["type"], "lighting");
         assert_eq!(find_entry("readme.txt")["type"], "other");
+        assert_eq!(find_entry("Bass.WAV")["type"], "audio");
+        assert_eq!(find_entry("Notes.MID")["type"], "midi");
+        assert_eq!(find_entry("Show.LIGHT")["type"], "lighting");
+        assert_eq!(find_entry("notes.midi")["type"], "other");
     }
 
     #[tokio::test]
@@ -779,6 +785,37 @@ mod test {
         assert!(song_a.join("song.yaml").exists());
         assert!(song_b.join("song.yaml").exists());
         assert!(!song_c.join("song.yaml").exists());
+    }
+
+    /// A directory whose only audio is `Bass.WAV` is imported with that
+    /// track: the import and `Song::initialize` read the extension by the
+    /// same rule.
+    #[tokio::test]
+    async fn bulk_import_reads_extensions_in_any_case() {
+        let (state, _dir) = test_state();
+        let song = _dir.path().join("loud").join("Shout");
+        std::fs::create_dir_all(&song).unwrap();
+        std::fs::write(song.join("Bass.WAV"), create_test_wav()).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/loud"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["created"], serde_json::json!(["Shout"]), "{body}");
+        let config = std::fs::read_to_string(song.join("song.yaml")).unwrap();
+        assert!(config.contains("Bass.WAV"), "{config}");
     }
 
     #[tokio::test]

@@ -23,6 +23,7 @@
   import FileUpload from "../songs/FileUpload.svelte";
   import { uploadSampleFile } from "../../lib/api/config";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
@@ -289,7 +290,7 @@
             </div>
             <div class="upload-area">
               <FileUpload
-                accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+                accept={audioAccept()}
                 label={uploading
                   ? $t("common.uploading")
                   : $t("samples.dropAudio")}
@@ -605,7 +606,7 @@
                         </div>
                         <div class="upload-area">
                           <FileUpload
-                            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+                            accept={audioAccept()}
                             label={uploading
                               ? $t("common.uploading")
                               : $t("samples.dropAudio")}
