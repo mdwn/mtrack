@@ -196,8 +196,11 @@ impl<E> TransportBindings<E> {
 /// end, and its replacement would wait on it for good while reading "running".
 #[cfg(not(test))]
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// In tests, as long as it takes: those replaced always go, if slowly on a
+/// loaded runner, and one that gave up waiting on them never started (#622).
+/// Tests of a stuck controller give their own wait to [`Entry::run`].
 #[cfg(test)]
-const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const STOP_WAIT: std::time::Duration = std::time::Duration::MAX;
 
 /// Aborts a child task when the owning controller task is cancelled.
 ///
@@ -256,13 +259,15 @@ struct Entry {
 impl Entry {
     /// Runs `driver` on a task of its own, once `after` is cancelled: the
     /// controllers stopped before it may still hold the port it binds. If
-    /// they are not gone within [`STOP_WAIT`], it does not run, and fails.
+    /// they are not gone within `stop_wait` ([`STOP_WAIT`]), it does not
+    /// run, and fails.
     fn run(
         driver: Arc<dyn Driver>,
         after: Option<CancellationToken>,
         fingerprint: Option<String>,
         midi: bool,
         midi_device: Option<Arc<dyn crate::midi::Device>>,
+        stop_wait: std::time::Duration,
     ) -> Entry {
         let stop = CancellationToken::new();
         let failure = Arc::new(parking_lot::Mutex::new(None));
@@ -277,7 +282,7 @@ impl Entry {
                     // A stop ends the wait at once: those started after
                     // this one wait for `after` as well as for its end.
                     let gone = tokio::select! {
-                        gone = tokio::time::timeout(STOP_WAIT, after.cancelled()) => gone.is_ok(),
+                        gone = tokio::time::timeout(stop_wait, after.cancelled()) => gone.is_ok(),
                         _ = stop.cancelled() => return Ok(()),
                     };
                     // Not started at all: one still holding its port or its
@@ -286,7 +291,7 @@ impl Entry {
                     if !gone {
                         let e = format!(
                             "not started: the controller it replaces had not stopped after {}s",
-                            STOP_WAIT.as_secs()
+                            stop_wait.as_secs()
                         );
                         tracing::warn!(error = %e, "Controller not started");
                         *failure.lock() = Some(e.clone());
@@ -555,7 +560,7 @@ impl Controller {
         };
         let (entry, status) = match result {
             Ok(driver) => (
-                Entry::run(driver, after, fingerprint, midi, midi_device),
+                Entry::run(driver, after, fingerprint, midi, midi_device, STOP_WAIT),
                 ControllerStatus {
                     kind,
                     status: "running".to_string(),
@@ -598,7 +603,7 @@ impl Controller {
         Controller {
             entries: drivers
                 .iter()
-                .map(|driver| Entry::run(driver.clone(), None, None, false, None))
+                .map(|driver| Entry::run(driver.clone(), None, None, false, None, STOP_WAIT))
                 .collect(),
             statuses: drivers
                 .iter()
@@ -1104,6 +1109,9 @@ mod test {
         Ok(())
     }
 
+    /// How long a controller waits on a stuck one in the tests of one.
+    const STUCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
     /// A driver whose first listener is stuck in blocking code holding its
     /// port for a while, and which notes a later one started while it still
     /// holds it.
@@ -1124,7 +1132,7 @@ mod test {
                 self.held.store(true, Ordering::SeqCst);
                 let held = self.held.clone();
                 tokio::spawn(async move {
-                    std::thread::sleep(super::STOP_WAIT * 3);
+                    std::thread::sleep(STUCK_WAIT * 3);
                     held.store(false, Ordering::SeqCst);
                     Ok(())
                 })
@@ -1146,14 +1154,14 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        let a = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![a]);
-        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let stopped = super::Entry::stop_all(vec![b]);
-        let c = super::Entry::run(driver.clone(), stopped, None, false, None);
-        tokio::time::sleep(super::STOP_WAIT * 2).await;
+        let c = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
+        tokio::time::sleep(STUCK_WAIT * 2).await;
         let c_failure = c.failure.lock().clone();
         super::Entry::stop_all(vec![c]);
         assert!(
@@ -1174,13 +1182,13 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        let a = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![a]);
-        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         crate::testutil::eventually(|| b.failure.lock().is_some(), "B never gave up");
         let stopped = super::Entry::stop_all(vec![b]);
-        let retry = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let retry = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         crate::testutil::eventually(
             || retry.failure.lock().is_some() || driver.starts.load(Ordering::SeqCst) > 1,
             "the retry neither started nor gave up",
@@ -1241,10 +1249,10 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![old]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(
             !overlapped.load(Ordering::SeqCst),
@@ -1271,13 +1279,14 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![old]);
-        let waiting = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let waiting =
+            super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
         // The second update, before the first's replacement has started.
         let stopped = super::Entry::stop_all(vec![waiting]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let started = driver.held.load(Ordering::SeqCst);
         super::Entry::stop_all(vec![new]);
@@ -1299,7 +1308,7 @@ mod test {
             self.starts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async {
-                std::thread::sleep(super::STOP_WAIT * 3);
+                std::thread::sleep(STUCK_WAIT * 3);
                 Ok(())
             })
         }
@@ -1316,16 +1325,16 @@ mod test {
         let driver = Arc::new(Stuck {
             starts: starts.clone(),
         });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        let old = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![old]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         let waited = std::time::Instant::now();
         crate::testutil::eventually(
             || new.failure.lock().is_some(),
             "the replacement waited on for good",
         );
-        assert!(waited.elapsed() < super::STOP_WAIT * 2);
+        assert!(waited.elapsed() < STUCK_WAIT * 2);
         assert!(new
             .failure
             .lock()
