@@ -2024,3 +2024,35 @@ show "S" {{
         assert!((at - want_secs).abs() < 1e-6, "{transition}: {at}");
     }
 }
+
+// ===================================================================
+// A `#` or `//` inside a quoted show or sequence name is part of the name
+// (#656), as it is inside any other quoted string.
+// ===================================================================
+
+#[test]
+fn a_comment_marker_inside_a_quoted_show_or_sequence_name_is_part_of_it() {
+    for name in ["Truss #3", "A // B"] {
+        let content = format!(
+            "sequence \"{name}\" {{\n    @0.000\n    front_wash: static, color: \"red\", \
+             duration: 1s\n}}\n\nshow \"{name}\" {{\n    @0.000\n    sequence \"{name}\"\n    \
+             @2.000\n    front_wash: static, color: \"blue\", duration: 1s # a comment\n}}\n"
+        );
+        let shows = parse_light_shows(&content).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let show = shows
+            .get(name)
+            .unwrap_or_else(|| panic!("{name}: {shows:?}"));
+        assert_eq!(show.cues.len(), 2, "{name}");
+
+        // The editor's document model reads the same names, and no comment
+        // but the one after the last cue.
+        let document = crate::lighting::parser::document::document(&content, None)
+            .document
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(document.shows[0].name, name, "{name}");
+        assert_eq!(document.sequences[0].name, name, "{name}");
+        let json = serde_json::to_string(&document).unwrap();
+        assert_eq!(json.matches("# a comment").count(), 1, "{name}: {json}");
+        assert!(!json.contains("\"#3"), "{name}: {json}");
+    }
+}

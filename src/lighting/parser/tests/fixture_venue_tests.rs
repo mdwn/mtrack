@@ -705,3 +705,28 @@ fn a_v1_type_without_the_statement_is_period_and_serialises_unchanged() {
     assert_eq!(types["Par"].effective_strobe_curve(), StrobeCurve::Period);
     assert_eq!(types["Par"].to_string(), v1);
 }
+
+#[test]
+fn a_comment_marker_inside_a_quoted_channel_name_is_part_of_it() {
+    // #656: `channel_name` and `special_case` skipped comments inside
+    // their quotes, as a show's name did. (`#` is refused in a channel
+    // name by its own rule, so a `//` stands for both markers there.)
+    let content = "fixture_type \"Par\" {\n    channels: 2\n    channel_map: {\n        \
+                   \"dimmer\": 1,\n        \"red // main\": 2\n    }\n    \
+                   special_cases: [\"RGB #2\", \"Dimmer\"]\n}\n";
+    let types = parse_fixture_types(content).expect("parses");
+    let channels = types["Par"].channels();
+    assert_eq!(channels.get("dimmer"), Some(&1));
+    assert_eq!(channels.get("red // main"), Some(&2));
+    // The form, which does not write special cases, sees no comment in
+    // the channel map.
+    let mapped = content.replace("    special_cases: [\"RGB #2\", \"Dimmer\"]\n", "");
+    assert!(
+        crate::lighting::fixture_patch::form_expresses(&mapped, "Par"),
+        "{mapped}"
+    );
+    assert!(!crate::lighting::fixture_patch::form_expresses(
+        &mapped.replace("\"red // main\": 2", "\"red\": 2 // main"),
+        "Par"
+    ));
+}

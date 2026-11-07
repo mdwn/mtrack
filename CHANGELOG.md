@@ -745,6 +745,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `#` or `//` inside a quoted show, sequence or channel name is part of the name** (#656): the
+  grammar skipped comments inside the quotes of a show's or sequence's name, a fixture type's
+  `channel_map` key and a `special_cases` entry, so `show "Truss #3" { … }` read the name as
+  `"Truss ` and the rest of the line as a comment, and the file failed to parse; `show "A // B"`
+  the same. Those names now read exactly as written, as any other quoted string does, in the
+  player and in the web UI's light-show editor. A `#` in a channel name is still refused by its own
+  rule (it marks a ganged repeat).
+
 - **A light show's time signature has a denominator of at most 64** (#635): a `tempo {}` block
   took any nonzero signature, and under `time_signature: 1/4294967295` a `1measure` duration
   rounded to nothing, so the show failed, after some 15 s, with `Effect 'static' requires a
