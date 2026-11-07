@@ -2110,27 +2110,73 @@ impl Songs {
     }
 }
 
-/// Create default song configurations in a repository of song directories
+/// Create default song configurations in a repository of song directories:
+/// a `song.yaml` in each song folder [`song_dirs`] finds that has no config
+/// to keep ([`keeps_its_config`]). The number of song folders found.
 pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
-    let song_directories = fs::read_dir(start_path)?;
     let mut num_songs_found = 0;
-    for song_directory in song_directories {
-        let entry = song_directory?;
-        let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
+    for song_directory in song_dirs(start_path)? {
+        num_songs_found += 1;
+        if keeps_its_config(&song_directory) {
+            info!(dir = %song_directory.display(), "Song folder has a config; leaving it");
             continue;
         }
-        let song_config = match Song::initialize(&entry.path()) {
-            Ok(song) => {
-                num_songs_found += 1;
-                song.get_config()
-            }
-            Err(error) => return Err(error),
-        };
-        song_config.save(entry.path().join("song.yaml").as_path())?
+        let song_config = Song::initialize(&song_directory)?.get_config();
+        song_config.save(song_directory.join("song.yaml").as_path())?
     }
     info!("Found {num_songs_found} songs");
     Ok(num_songs_found)
+}
+
+/// The song folders under `root`, in name order: each directory below it
+/// that holds an audio track or a MIDI file ([`FileKind`]; not a hidden one,
+/// which [`Song::initialize`] leaves out), or a song config
+/// ([`has_song_config`]). Found at any depth (`artist/album/song`) below
+/// directories that hold none; a song folder is not looked into. Hidden
+/// directories ([`is_hidden`]) are passed over, and `root` itself is never
+/// one. A subdirectory that cannot be read is passed over with a warning;
+/// an unreadable `root` is an error. The one walk `songs --init` and the
+/// web UI's bulk import take; the player's loader has its own.
+pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    /// The entries of `dir` that are not hidden, in name order.
+    fn visible_entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+        // codeql[rust/path-injection] dir is the walked root or one below it.
+        let mut paths = fs::read_dir(dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.retain(|path| !is_hidden(path));
+        paths.sort();
+        Ok(paths)
+    }
+    fn walk(entries: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
+        for dir in entries.into_iter().filter(|path| path.is_dir()) {
+            let entries = match visible_entries(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(dir = %dir.display(), error = %e, "Cannot read a folder; passing over it");
+                    continue;
+                }
+            };
+            let has_media = entries.iter().any(|path| {
+                !path.is_dir() && matches!(FileKind::of(path), FileKind::Audio | FileKind::Midi)
+            });
+            if has_media || has_song_config(&dir) {
+                found.push(dir);
+            } else {
+                walk(entries, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(visible_entries(root)?, &mut found);
+    Ok(found)
+}
+
+/// Whether `songs --init` and the bulk import leave the song folder `dir`
+/// as it is: it has a song config ([`has_song_config`]), or a `song.yaml`
+/// of another kind, which the new config would be written over.
+pub fn keeps_its_config(dir: &Path) -> bool {
+    has_song_config(dir) || dir.join("song.yaml").exists()
 }
 
 /// Recurse into the given path and return all valid songs found.
@@ -4091,6 +4137,134 @@ sections:
         fs::write(tempdir.path().join("readme.txt"), "hello")?;
         let count = initialize_songs(tempdir.path())?;
         assert_eq!(count, 0);
+        Ok(())
+    }
+
+    /// The walk finds the folders holding audio, MIDI or a song config, at
+    /// any depth below folders holding none, in name order. It passes over
+    /// hidden folders, a folder holding only hidden media, a project's
+    /// `lighting/` and `playlists/`, the root itself and what lies below a
+    /// song folder.
+    #[test]
+    fn song_dirs_finds_song_folders_at_any_depth() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            "Cfg/sub",
+            "Hid",
+            "Midi",
+            "artist/album/Song",
+            ".git",
+            "lighting/shows",
+            "playlists",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for file in ["root.wav", "Cfg/sub/b.wav", "Hid/.b.wav", ".git/a.wav"] {
+            crate::testutil::write_wav(root.join(file), vec![vec![1_i32, 2]], 44100)?;
+        }
+        crate::testutil::write_wav(
+            root.join("artist/album/Song/a.WAV"),
+            vec![vec![1_i32]],
+            44100,
+        )?;
+        fs::write(root.join("Midi/notes.mid"), "midi data")?;
+        fs::write(root.join("Cfg/song.yml"), "name: Cfg\ntracks: []\n")?;
+        fs::write(root.join("lighting/shows/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs:\n- Cfg\n",
+        )?;
+
+        assert_eq!(
+            super::song_dirs(root)?,
+            [
+                root.join("Cfg"),
+                root.join("Midi"),
+                root.join("artist/album/Song")
+            ]
+        );
+        Ok(())
+    }
+
+    /// An unreadable subdirectory is passed over; an unreadable root fails.
+    #[cfg(unix)]
+    #[test]
+    fn song_dirs_passes_over_an_unreadable_subdirectory() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Foo", "Locked/Bar"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        assert!(super::song_dirs(&root.join("missing")).is_err());
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(root.join("Locked")).is_ok() {
+            // Running as root: the folder reads all the same.
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+            return Ok(());
+        }
+        let dirs = super::song_dirs(root);
+        let count = initialize_songs(root);
+        let locked = super::song_dirs(&root.join("Locked"));
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+        assert_eq!(dirs?, [root.join("Foo")]);
+        assert_eq!(count?, 1);
+        assert!(locked.is_err());
+        assert!(!root.join("Locked/Bar/song.yaml").exists());
+        Ok(())
+    }
+
+    /// `songs --init .` in a project writes a config into each song folder
+    /// that has none, nested ones too, and nowhere else: not into `.git/`,
+    /// `lighting/` or `playlists/`, and not over a hand-edited `song.yaml`
+    /// or a `song.yaml` of another kind.
+    #[test]
+    fn initialize_songs_writes_into_song_folders_only() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in [
+            ".git",
+            "lighting",
+            "playlists",
+            "songs/Foo",
+            "songs/Bar",
+            "songs/artist/Baz",
+            "songs/Odd",
+        ] {
+            fs::create_dir_all(root.join(dir))?;
+        }
+        for dir in ["songs/Foo", "songs/Bar", "songs/artist/Baz", "songs/Odd"] {
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+        fs::write(root.join("lighting/a.light"), "show \"A\" {}\n")?;
+        fs::write(
+            root.join("playlists/set.yaml"),
+            "kind: playlist\nsongs: []\n",
+        )?;
+        let hand_edited = "# mine\nname: Foo Live\ntracks:\n  - name: t\n    file: t.wav\n";
+        fs::write(root.join("songs/Foo/song.yaml"), hand_edited)?;
+        let other_kind = "kind: playlist\nsongs: []\n";
+        fs::write(root.join("songs/Odd/song.yaml"), other_kind)?;
+
+        assert_eq!(initialize_songs(root)?, 4);
+
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Foo/song.yaml"))?,
+            hand_edited
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("songs/Odd/song.yaml"))?,
+            other_kind
+        );
+        for dir in ["songs/Bar", "songs/artist/Baz"] {
+            assert!(root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
+        for dir in [".git", "lighting", "playlists", "songs", "songs/artist", ""] {
+            assert!(!root.join(dir).join("song.yaml").exists(), "{dir}");
+        }
         Ok(())
     }
 
