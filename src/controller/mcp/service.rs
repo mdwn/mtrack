@@ -1239,7 +1239,11 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PlaylistNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = self
+            .resolve_playlist_path(args.name.as_deref())
+            .await?
+            .path()
+            .to_path_buf();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -1276,7 +1280,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let file = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = file.path().to_path_buf();
         // Taken turns with the web UI's playlist saves, which read the file
         // to keep what the editor does not send.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
@@ -1285,7 +1290,8 @@ impl McpServer {
         // playlist, and a check before it would write the deleted song back.
         self.validate_playlist(&args.yaml)?;
         if let Some(name) = &args.name {
-            validate_name_to_write(&path, name)?;
+            crate::webui::safe_path::SafePath::validate_name_to_write(name, file.exists())
+                .map_err(safepath_err)?;
         }
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
@@ -2580,7 +2586,11 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PatchPlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = self
+            .resolve_playlist_path(args.name.as_deref())
+            .await?
+            .path()
+            .to_path_buf();
         // As write_playlist, with the web UI's saves; held from the read, so
         // a save between it and the write is not lost.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
@@ -3846,11 +3856,12 @@ impl McpServer {
     /// the file in the playlists directory that holds it
     /// (`playlist::playlist_file`: its `.yaml`, else its `.yml`, else a new
     /// `.yaml`), after validating `name`; the player's own `all_songs` has
-    /// none.
+    /// none, and a new file named as one there but for case is refused.
+    /// Whether it exists is the directory listing's answer.
     pub(crate) async fn resolve_playlist_path(
         &self,
         name: Option<&str>,
-    ) -> Result<std::path::PathBuf, McpError> {
+    ) -> Result<crate::util::NamedFile, McpError> {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
         // The playlists the player reloads from, so a playlist written here
@@ -3872,9 +3883,19 @@ impl McpServer {
                 crate::playlist::playlist_file(&dir, n)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))
             }
-            None => sources.legacy_playlist.ok_or_else(|| {
-                McpError::invalid_params("no top-level playlist file configured", None)
-            }),
+            // The one file the config names, not looked up by name.
+            None => sources
+                .legacy_playlist
+                .map(|path| {
+                    if path.is_file() {
+                        crate::util::NamedFile::Found(path)
+                    } else {
+                        crate::util::NamedFile::New(path)
+                    }
+                })
+                .ok_or_else(|| {
+                    McpError::invalid_params("no top-level playlist file configured", None)
+                }),
         }
     }
 }

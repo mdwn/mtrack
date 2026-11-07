@@ -4123,6 +4123,29 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
         "songs: []\n"
     );
 
+    // A new `other` beside `Other.yaml` is refused, not written into it.
+    std::fs::write(dir.join("Other.yaml"), "songs: []\n")?;
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1635,
+        "write_playlist",
+        json!({"name": "other", "yaml": yaml}),
+    )
+    .await;
+    assert!(refused(&response), "{response}");
+    assert!(
+        response
+            .to_string()
+            .contains("`Other.yaml` already exists; names differ only in case"),
+        "{response}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Other.yaml"))?,
+        "songs: []\n"
+    );
+
     let response = call_tool(
         &client,
         &url,

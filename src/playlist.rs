@@ -21,6 +21,8 @@ use crate::songs::{Song, Songs};
 use core::fmt;
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
+
+use crate::util::NamedFile;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -551,20 +553,26 @@ pub fn is_reserved_name(name: &str) -> bool {
     name == ALL_SONGS
 }
 
-/// The name asked for is the player's own playlist ([`is_reserved_name`]).
+/// Why a playlist name has no file to act on.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("'{0}' is the player's own playlist and has no file")]
-pub struct ReservedName(pub String);
+pub enum PlaylistFileError {
+    /// The player's own playlist ([`is_reserved_name`]).
+    #[error("'{0}' is the player's own playlist and has no file")]
+    Reserved(String),
+    /// A new file would be one already there but for case.
+    #[error(transparent)]
+    CaseClash(#[from] crate::util::CaseClash),
+}
 
 /// The file in `dir` that holds the playlist `name` (`util::yaml_file_at`:
-/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`): the loader
-/// reads it, and every write and delete goes to it. The reserved name has
-/// no file. `name` is not checked for path safety here.
-pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
+/// `<name>.yaml`, else `<name>.yml`, as listed, else a new `<name>.yaml`):
+/// the loader reads it, and every write and delete goes to it. The reserved
+/// name has no file. `name` is not checked for path safety here.
+pub fn playlist_file(dir: &Path, name: &str) -> Result<NamedFile, PlaylistFileError> {
     if is_reserved_name(name) {
-        return Err(ReservedName(name.to_string()));
+        return Err(PlaylistFileError::Reserved(name.to_string()));
     }
-    Ok(crate::util::yaml_file_at(dir, name))
+    Ok(crate::util::yaml_file_at(dir, name)?)
 }
 
 /// A playlist file in the playlists directory, as [`playlist_files`] lists it.
@@ -626,19 +634,27 @@ mod test {
     fn playlist_file_is_the_names_yaml_file() {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
+        use crate::util::NamedFile;
         assert_eq!(
-            super::playlist_file(dir, "set").unwrap(),
-            dir.join("set.yaml")
+            super::playlist_file(dir, "set"),
+            Ok(NamedFile::New(dir.join("set.yaml")))
         );
         std::fs::write(dir.join("set.yml"), "songs: []\n").unwrap();
         assert_eq!(
-            super::playlist_file(dir, "set").unwrap(),
-            dir.join("set.yml")
+            super::playlist_file(dir, "set"),
+            Ok(NamedFile::Found(dir.join("set.yml")))
+        );
+        std::fs::write(dir.join("Other.yaml"), "songs: []\n").unwrap();
+        assert_eq!(
+            super::playlist_file(dir, "other"),
+            Err(super::PlaylistFileError::CaseClash(crate::util::CaseClash(
+                "Other.yaml".to_string()
+            )))
         );
         std::fs::write(dir.join("all_songs.yaml"), "songs: []\n").unwrap();
         assert_eq!(
             super::playlist_file(dir, super::ALL_SONGS),
-            Err(super::ReservedName("all_songs".to_string()))
+            Err(super::PlaylistFileError::Reserved("all_songs".to_string()))
         );
         assert!(super::is_reserved_name("all_songs"));
         assert!(!super::is_reserved_name("All_Songs"));

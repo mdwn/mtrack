@@ -46,11 +46,22 @@ pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError
     })
 }
 
-/// The file in the profiles directory `dir` that holds the profile file
-/// `name` (`util::yaml_file_at`: `<name>.yaml`, else `<name>.yml`, else a new
-/// `<name>.yaml`). `name` is not checked for path safety here.
-pub(crate) fn profile_file(dir: &Path, name: &str) -> PathBuf {
-    crate::util::yaml_file_at(dir, name)
+/// The file in the profiles directory `dir` that `name` addresses, by the
+/// directory's listing: a full file name (`stage.yml`) is that file
+/// (`util::file_among`), so two files sharing a stem are each addressed;
+/// a stem (`stage`) is its `.yaml`, else its `.yml`, else a new `.yaml`
+/// (`util::yaml_file_at`). A new file named as one there but for case is
+/// refused. `name` is not checked for path safety here.
+pub(crate) fn profile_file(
+    dir: &Path,
+    name: &str,
+) -> Result<crate::util::NamedFile, crate::util::CaseClash> {
+    let names = crate::util::file_names_in(dir);
+    if crate::songs::is_yaml_config(Path::new(name)) {
+        crate::util::file_among(dir, &names, name)
+    } else {
+        crate::util::yaml_file_among(dir, &names, name)
+    }
 }
 
 /// The configuration for the multitrack player.
@@ -1677,7 +1688,8 @@ profiles:
 
     /// Profiles are matched by the `hostname` inside them, so every profile
     /// file loads: `stage.yaml` (`pi-a`) and `stage.yml` (the catch-all)
-    /// both do. Addressed by name (`profile_file`), `stage` is the `.yaml`.
+    /// both do. Addressed (`profile_file`), `stage` is the `.yaml` and
+    /// `stage.yml` the `.yml`.
     #[test]
     fn test_profiles_dir_loads_both_files_of_a_stem() {
         let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
@@ -1698,17 +1710,23 @@ profiles:
                 "pi-b.yml",
                 "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [1]\n",
             );
+            use crate::util::NamedFile;
+            let file = |name: &str| super::profile_file(&profiles, name).unwrap();
+            assert_eq!(file("stage"), NamedFile::Found(profiles.join("stage.yaml")));
             assert_eq!(
-                super::profile_file(&profiles, "stage"),
-                profiles.join("stage.yaml")
+                file("stage.yaml"),
+                NamedFile::Found(profiles.join("stage.yaml"))
             );
             assert_eq!(
-                super::profile_file(&profiles, "pi-b"),
-                profiles.join("pi-b.yml")
+                file("stage.yml"),
+                NamedFile::Found(profiles.join("stage.yml"))
             );
+            assert_eq!(file("pi-b"), NamedFile::Found(profiles.join("pi-b.yml")));
+            assert_eq!(file("pi-c"), NamedFile::New(profiles.join("pi-c.yaml")));
+            assert_eq!(file("pi-c.yml"), NamedFile::New(profiles.join("pi-c.yml")));
             assert_eq!(
-                super::profile_file(&profiles, "pi-c"),
-                profiles.join("pi-c.yaml")
+                super::profile_file(&profiles, "Stage.yml"),
+                Err(crate::util::CaseClash("stage.yml".to_string()))
             );
         });
 

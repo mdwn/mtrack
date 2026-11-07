@@ -107,44 +107,37 @@ pub(crate) fn require_configured_dir(
     })
 }
 
-/// The YAML file `file` that holds resource `name` in `dir` (a playlist's
-/// or a profile's, as `util::yaml_file_at` found it), resolved as
-/// [`resolve_resource_path`] resolves it, by its own extension.
+/// The file `file` holds a resource by in `dir` (a playlist's or a
+/// profile's, as `util::yaml_file_at` found it in the listing, or the one
+/// to create), held inside `dir`: one the listing has is canonicalized and
+/// checked to stay inside, as symlinks could take it out. Whether
+/// it exists is the listing's answer, not asked of the filesystem again.
+/// A new file named as one there but for case is refused (409).
 #[allow(clippy::result_large_err)]
 pub(crate) fn resolve_named_file(
     dir: &std::path::Path,
-    name: &str,
-    file: &std::path::Path,
-) -> Result<PathBuf, axum::response::Response> {
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
-    resolve_resource_path(dir, name, ext)
-}
-
-/// Resolves a resource file path within a directory, verifying that the result
-/// does not escape via symlinks or other tricks.
-///
-/// For existing files, canonicalizes and verifies containment. For new files,
-/// returns the joined path directly (the name has already been validated).
-#[allow(clippy::result_large_err)]
-pub(crate) fn resolve_resource_path(
-    dir: &std::path::Path,
-    name: &str,
-    ext: &str,
-) -> Result<PathBuf, axum::response::Response> {
+    file: Result<crate::util::NamedFile, crate::util::CaseClash>,
+) -> Result<crate::util::NamedFile, axum::response::Response> {
+    let file = file.map_err(|e| {
+        (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
+    })?;
     let root = VerifiedRoot::new(dir).map_err(|e| e.into_response())?;
-    let file_path = root.as_path().join(format!("{}.{}", name, ext));
-    if file_path.exists() {
-        let safe = super::super::safe_path::SafePath::resolve(&file_path, &root)
+    let joined = match file.path().file_name() {
+        Some(file_name) => root.as_path().join(file_name),
+        None => file.path().to_path_buf(),
+    };
+    if file.exists() {
+        let safe = super::super::safe_path::SafePath::resolve(&joined, &root)
             .map_err(|e| e.into_response())?;
-        Ok(safe.as_path().to_path_buf())
+        Ok(file.with_path(safe.as_path().to_path_buf()))
     } else {
-        Ok(file_path)
+        Ok(file.with_path(joined))
     }
 }
 
 /// Creates a configured directory, before anything canonicalizes it.
 ///
-/// Ordering matters: [`resolve_resource_path`] verifies the root by
+/// Ordering matters: [`resolve_named_file`] verifies the root by
 /// canonicalizing it, which fails outright when the directory is not there. A
 /// creation placed after that call can never run — the request has already
 /// failed with "Root directory not found", which is also what a fresh install

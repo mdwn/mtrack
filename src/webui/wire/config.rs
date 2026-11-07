@@ -83,6 +83,11 @@ pub struct FileSaved {
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ProfileFileInfo {
+    /// The file's name, extension included (`stage.yml`): what the web UI
+    /// keys a profile file by and addresses it by, as two files may share
+    /// a stem.
+    pub file: String,
+    /// The file's stem (`stage`), for clients that address a profile by it.
     pub filename: String,
     pub hostname: Option<String>,
     pub has_audio: bool,

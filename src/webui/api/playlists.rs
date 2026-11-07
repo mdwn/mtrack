@@ -39,21 +39,27 @@ fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
 }
 
 /// The file that holds the playlist `name` in `dir` (`playlist::playlist_file`:
-/// its `.yaml`, else its `.yml`, else a new `.yaml`), checked to be inside
-/// `dir`.
+/// its `.yaml`, else its `.yml`, as listed, else a new `.yaml`), checked to
+/// be inside `dir`. The reserved name is refused (400), and a new file named
+/// as one there but for case (409).
 #[allow(clippy::result_large_err)]
 fn playlist_path(
     dir: &std::path::Path,
     name: &str,
-) -> Result<std::path::PathBuf, axum::response::Response> {
-    let file = crate::playlist::playlist_file(dir, name).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response()
-    })?;
-    super::helpers::resolve_named_file(dir, name, &file)
+) -> Result<crate::util::NamedFile, axum::response::Response> {
+    use crate::playlist::PlaylistFileError;
+    let file = match crate::playlist::playlist_file(dir, name) {
+        Ok(file) => Ok(file),
+        Err(PlaylistFileError::CaseClash(clash)) => Err(clash),
+        Err(e @ PlaylistFileError::Reserved(_)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response())
+        }
+    };
+    super::helpers::resolve_named_file(dir, file)
 }
 
 /// GET /api/playlists — list all playlists with name, song count, and active status.
@@ -155,7 +161,7 @@ pub(super) async fn put_playlist_by_name(
     let playlists_dir =
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
-    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // Before `resolve_named_file`, which canonicalizes the directory and
     // fails if it is missing -- a creation after that call can never run.
     // Created only when it is inside the project: a `playlists_dir:` pointing
     // elsewhere is the operator's to set up, like `songs` and the rest.
@@ -163,13 +169,14 @@ pub(super) async fn put_playlist_by_name(
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in playlist_path.
-    let file_path = playlist_path(&playlists_dir, &name)?;
-    validate_resource_name_to_write(&name, "playlist", file_path.is_file())?;
+    let file = playlist_path(&playlists_dir, &name)?;
+    validate_resource_name_to_write(&name, "playlist", file.exists())?;
+    let file_path = file.path().to_path_buf();
 
     // The editor knows only the songs: an existing playlist keeps its
     // transitions, and each entry its own with the song. One that does not
     // read is not overwritten, which would lose them.
-    let playlist_config = if file_path.is_file() {
+    let playlist_config = if file.exists() {
         match config::Playlist::deserialize(&file_path) {
             Ok(existing) => existing.with_songs(&body.songs),
             Err(e) => {
@@ -284,7 +291,7 @@ pub(super) async fn delete_playlist_by_name(
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
     // verified via canonicalize + starts_with containment in playlist_path.
     let target = playlist_path(&playlists_dir, &name)?;
-    if !target.is_file() {
+    if !target.exists() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Playlist '{}' not found", name)})),
@@ -292,8 +299,10 @@ pub(super) async fn delete_playlist_by_name(
             .into_response());
     }
     // Remove it off the async runtime.
-    super::helpers::spawn_blocking_io("delete playlist", move || std::fs::remove_file(&target))
-        .await?;
+    super::helpers::spawn_blocking_io("delete playlist", move || {
+        std::fs::remove_file(target.path())
+    })
+    .await?;
 
     // Reload songs to remove the playlist.
     super::helpers::reload_songs(&state).await?;
@@ -487,6 +496,41 @@ mod test {
             old
         );
         assert_eq!(loaded, ["Song C"]);
+    }
+
+    /// A new playlist named as a file there but for case (`set` beside
+    /// `Set.yaml`, which a case-insensitive filesystem would open for it)
+    /// is refused, and `Set.yaml` left alone.
+    #[tokio::test]
+    async fn put_playlist_refuses_a_name_differing_only_in_case() {
+        let old = "songs:\n  - Song A\n";
+        let (state, dir) = test_state();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
+        std::fs::write(playlists_dir.join("Set.yaml"), old).unwrap();
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"songs": []}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(
+            body.contains("`Set.yaml` already exists; names differ only in case"),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(playlists_dir.join("Set.yaml")).unwrap(),
+            old
+        );
+        assert!(!playlists_dir.join("set.yaml").exists());
+        drop(dir);
     }
 
     /// A delete removes the name's file: its `.yml` when that is all there

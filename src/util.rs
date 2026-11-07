@@ -119,16 +119,95 @@ fn yaml_files_named<'a>(files: &'a [PathBuf], name: &str) -> Vec<&'a PathBuf> {
         .collect()
 }
 
-/// The YAML file in `dir` that holds `name` (a playlist, a profile):
-/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`. Every read,
-/// write and delete of the name goes to it, so a `.yml` is saved into
-/// itself. `name` is not checked for path safety here.
-pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
-    let files = yaml_config_files(dir).unwrap_or_default();
-    yaml_files_named(&files, name)
-        .first()
-        .map(|file| (*file).clone())
-        .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
+/// A name's file in a directory, by the directory's listing: one it lists
+/// (`Found`), or the one to create (`New`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedFile {
+    Found(PathBuf),
+    New(PathBuf),
+}
+
+impl NamedFile {
+    /// The file's path.
+    pub fn path(&self) -> &Path {
+        match self {
+            NamedFile::Found(path) | NamedFile::New(path) => path,
+        }
+    }
+
+    /// Whether the directory lists it.
+    pub fn exists(&self) -> bool {
+        matches!(self, NamedFile::Found(_))
+    }
+
+    /// The same file, at `path`.
+    pub fn with_path(&self, path: PathBuf) -> NamedFile {
+        match self {
+            NamedFile::Found(_) => NamedFile::Found(path),
+            NamedFile::New(_) => NamedFile::New(path),
+        }
+    }
+}
+
+/// A file to create is named as one already there but for case
+/// (`Set.yaml` for a new `set.yaml`), which a case-insensitive filesystem
+/// takes for the same file: it is refused, not overwritten.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` already exists; names differ only in case")]
+pub struct CaseClash(pub String);
+
+/// The names of the regular files in `dir`, as it lists them: what the
+/// lookups below match against. A directory that cannot be listed lists
+/// none.
+pub fn file_names_in(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
+}
+
+/// The file `file_name` in `dir`, whose regular files are `names`
+/// ([`file_names_in`]): `Found` when listed as written, else `New`, unless
+/// a listed name differs from it only in case ([`CaseClash`]).
+pub fn file_among(dir: &Path, names: &[String], file_name: &str) -> Result<NamedFile, CaseClash> {
+    if names.iter().any(|listed| listed == file_name) {
+        return Ok(NamedFile::Found(dir.join(file_name)));
+    }
+    let folded = file_name.to_lowercase();
+    match names.iter().find(|listed| listed.to_lowercase() == folded) {
+        Some(listed) => Err(CaseClash(listed.clone())),
+        None => Ok(NamedFile::New(dir.join(file_name))),
+    }
+}
+
+/// The YAML file in `dir` (whose regular files are `names`) that holds
+/// `name` (a playlist, a profile): `<name>.yaml`, else `<name>.yml`, as
+/// listed, else a new `<name>.yaml` ([`file_among`]: refused beside a
+/// `Set.yaml`).
+pub fn yaml_file_among(dir: &Path, names: &[String], name: &str) -> Result<NamedFile, CaseClash> {
+    for ext in crate::songs::YAML_EXTENSIONS {
+        let file_name = format!("{name}.{ext}");
+        if names.contains(&file_name) {
+            return Ok(NamedFile::Found(dir.join(file_name)));
+        }
+    }
+    file_among(
+        dir,
+        names,
+        &format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0]),
+    )
+}
+
+/// The YAML file in `dir` that holds `name` ([`yaml_file_among`], by the
+/// directory's listing). Every read, write and delete of the name goes to
+/// it, so a `.yml` is saved into itself. `name` is not checked for path
+/// safety here.
+pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
+    yaml_file_among(dir, &file_names_in(dir), name)
 }
 
 /// The YAML config files in `dir`, one for each name: the file
@@ -1318,37 +1397,86 @@ mod ownership_test {
 #[cfg(test)]
 mod test {
 
-    /// A name's file is `<name>.yaml`, else `<name>.yml`, else a new
-    /// `<name>.yaml`, matched against the names the directory lists: a
-    /// `set.YML` (which a case-insensitive filesystem would open as
-    /// `set.yml`) is no YAML config, so `set` gets a new `set.yaml`. Each
-    /// name is listed once, by that file, with the other it has.
+    /// The lookup by a listing alone (no filesystem): a name's file is
+    /// `<name>.yaml`, else `<name>.yml`, as listed, else a new `<name>.yaml`.
+    /// Only a name as listed is found, so on a case-insensitive filesystem
+    /// a `set.YML` is not `set.yml`; and a new file named as a listed one
+    /// but for case (`Set.yaml`, `set.YAML`) is refused, not written into.
     #[test]
-    fn a_names_yaml_file_is_its_yaml_else_its_yml() {
-        use super::{yaml_config_files, yaml_file_at, yaml_files_by_name};
+    fn a_names_file_is_found_by_the_listing() {
+        use super::{file_among, yaml_file_among, CaseClash, NamedFile};
+        let dir = std::path::Path::new("/p");
+        let names = |listed: &[&str]| listed.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let found = |file: &str| Ok(NamedFile::Found(dir.join(file)));
+        let new = |file: &str| Ok(NamedFile::New(dir.join(file)));
+        let clash = |file: &str| Err(CaseClash(file.to_string()));
+
+        assert_eq!(yaml_file_among(dir, &names(&[]), "set"), new("set.yaml"));
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.yml", "set.yaml"]), "set"),
+            found("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YML", "set.yml.bak"]), "set"),
+            new("set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yaml"]), "set"),
+            clash("Set.yaml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["set.YAML"]), "set"),
+            clash("set.YAML")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["Set.yml", "set.yml"]), "set"),
+            found("set.yml")
+        );
+        assert_eq!(
+            yaml_file_among(dir, &names(&["a.b.yml"]), "a.b"),
+            found("a.b.yml")
+        );
+
+        assert_eq!(
+            file_among(dir, &names(&["stage.yml"]), "stage.yml"),
+            found("stage.yml")
+        );
+        assert_eq!(
+            file_among(dir, &names(&["Stage.YML"]), "stage.yml"),
+            clash("Stage.YML")
+        );
+        assert_eq!(file_among(dir, &names(&[]), "stage.yml"), new("stage.yml"));
+    }
+
+    /// On disk, the lookup lists the directory: regular files only, so a
+    /// folder named `folder.yaml` is not found; one name is listed once, by
+    /// its file, with the other it has.
+    #[test]
+    fn a_names_yaml_file_on_disk() {
+        use super::{yaml_config_files, yaml_file_at, yaml_files_by_name, NamedFile};
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         assert_eq!(
             yaml_file_at(&dir.join("missing"), "set"),
-            dir.join("missing/set.yaml")
+            Ok(NamedFile::New(dir.join("missing/set.yaml")))
         );
-        std::fs::write(dir.join("set.YML"), "").unwrap();
-        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
-        assert!(yaml_files_by_name(dir).unwrap().is_empty());
-
         std::fs::write(dir.join("set.yml"), "").unwrap();
-        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yml"));
-        assert_eq!(
-            yaml_files_by_name(dir).unwrap(),
-            vec![(dir.join("set.yml"), None)]
-        );
-
         std::fs::write(dir.join("set.yaml"), "").unwrap();
         std::fs::write(dir.join("a.b.yml"), "").unwrap();
+        std::fs::write(dir.join("loud.YAML"), "").unwrap();
         std::fs::create_dir(dir.join("folder.yaml")).unwrap();
-        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
-        assert_eq!(yaml_file_at(dir, "a.b"), dir.join("a.b.yml"));
-        assert_eq!(yaml_file_at(dir, "folder"), dir.join("folder.yaml"));
+        assert_eq!(
+            yaml_file_at(dir, "set"),
+            Ok(NamedFile::Found(dir.join("set.yaml")))
+        );
+        assert_eq!(
+            yaml_file_at(dir, "folder"),
+            Ok(NamedFile::New(dir.join("folder.yaml")))
+        );
         assert_eq!(
             yaml_files_by_name(dir).unwrap(),
             vec![
