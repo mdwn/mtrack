@@ -160,46 +160,82 @@ impl MigrationPlan {
         }
     }
 
+    /// Applies the plan: directories first; then the files made new (the
+    /// venue that takes the inline fixtures), so a failure there leaves
+    /// every file it would have rewritten (the profiles losing those
+    /// fixtures) as it was; then a backup of every file about to be
+    /// overwritten, before any is; then the rewrites, the config last; then
+    /// the deletions. A failure after the first backup names the backups
+    /// taken.
     fn apply(&self) -> Result<(), Box<dyn Error>> {
         // Create directories.
         for dir in &self.dirs_to_create {
             crate::util::create_dir_all(dir)?;
         }
 
+        // The new files, before anything is rewritten.
+        for write in self.files_to_write.iter().filter(|w| w.new) {
+            write.write()?;
+        }
+
+        let mut backups = Vec::new();
+        self.apply_rewrites(&mut backups).map_err(|e| {
+            if backups.is_empty() {
+                return e;
+            }
+            let taken: Vec<String> = backups.iter().map(|b| b.display().to_string()).collect();
+            format!("{e} (backups taken: {})", taken.join(", ")).into()
+        })
+    }
+
+    /// [`MigrationPlan::apply`] from the backups on, each backup taken
+    /// pushed to `backups`.
+    fn apply_rewrites(&self, backups: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
+        let rewrites = || self.files_to_write.iter().filter(|w| !w.new);
+
         // Back up every file about to be overwritten, before any is.
-        for write in self.files_to_write.iter().filter(|w| !w.new) {
+        for write in rewrites() {
             if write.path.is_file() {
-                back_up(&write.path)?;
+                backups.push(back_up(&write.path)?);
             }
         }
 
         // Write files, the config last.
-        for write in &self.files_to_write {
-            let copied;
-            let contents = match &write.content {
-                Content::Text(text) => text.as_bytes(),
-                Content::CopyOf(source) => {
-                    copied = crate::util::read_file(source)
-                        .map_err(|e| format!("{}: {e}", source.display()))?;
-                    &copied
-                }
-            };
-            let written = if write.new {
-                crate::util::write_new_file(&write.path, contents)
-            } else {
-                crate::util::write_file(&write.path, contents)
-            };
-            written.map_err(|e| {
-                crate::util::write_failure_message(crate::util::WriteTarget::File(&write.path), &e)
-            })?;
+        for write in rewrites() {
+            write.write()?;
         }
 
         // Delete files (after successful copy).
         for path in &self.files_to_delete {
-            std::fs::remove_file(path)?;
+            std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
         }
 
         Ok(())
+    }
+}
+
+impl FileWrite {
+    /// Writes the file: made new if [`FileWrite::new`], else made or
+    /// rewritten.
+    fn write(&self) -> Result<(), Box<dyn Error>> {
+        let copied;
+        let contents = match &self.content {
+            Content::Text(text) => text.as_bytes(),
+            Content::CopyOf(source) => {
+                copied = crate::util::read_file(source)
+                    .map_err(|e| format!("{}: {e}", source.display()))?;
+                &copied
+            }
+        };
+        let written = if self.new {
+            crate::util::write_new_file(&self.path, contents)
+        } else {
+            crate::util::write_file(&self.path, contents)
+        };
+        written.map_err(|e| {
+            crate::util::write_failure_message(crate::util::WriteTarget::File(&self.path), &e)
+                .into()
+        })
     }
 }
 
@@ -908,6 +944,57 @@ dmx:
         let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
         assert_eq!(read("mtrack.yaml.bak"), "earlier\n");
         assert_eq!(read("mtrack.yaml.bak-2"), original);
+    }
+
+    /// The new venue is made before anything is rewritten: one refused
+    /// (a file there by then) leaves every file to be rewritten as it was,
+    /// with no backup taken.
+    #[test]
+    fn a_refused_new_file_leaves_the_rewrites_undone() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("pi.yaml");
+        let venue = dir.path().join("inline_migrated.venue");
+        std::fs::write(&profile, "fixtures: inline\n").unwrap();
+        std::fs::write(&venue, "someone else's\n").unwrap();
+        let mut plan = MigrationPlan::new();
+        plan.overwrite(
+            "Profiles",
+            profile.clone(),
+            Content::Text("stripped\n".into()),
+        );
+        plan.create(venue.clone(), "venue\n".into());
+
+        assert!(plan.apply().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&profile).unwrap(),
+            "fixtures: inline\n"
+        );
+        assert_eq!(std::fs::read_to_string(&venue).unwrap(), "someone else's\n");
+        assert!(!dir.path().join("pi.yaml.bak").exists(), "no backup taken");
+    }
+
+    /// A failure after the backups names the backups taken.
+    #[test]
+    fn a_failed_rewrite_names_the_backups_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("pi.yaml");
+        std::fs::write(&profile, "old\n").unwrap();
+        let mut plan = MigrationPlan::new();
+        plan.overwrite("Profiles", profile.clone(), Content::Text("new\n".into()));
+        // Copied from a file that is not there: the rewrite fails.
+        plan.overwrite(
+            "Profiles",
+            dir.path().join("other.yaml"),
+            Content::CopyOf(dir.path().join("missing.yaml")),
+        );
+
+        let error = plan.apply().unwrap_err().to_string();
+        let backup = dir.path().join("pi.yaml.bak");
+        assert!(
+            error.contains(&format!("backups taken: {}", backup.display())),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "old\n");
     }
 
     #[test]
