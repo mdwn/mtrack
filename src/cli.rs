@@ -243,12 +243,16 @@ enum Commands {
         /// List the archive's modes and their footprints; import nothing.
         #[arg(long)]
         list_modes: bool,
-        /// Project directory the import writes into.
+        /// The project the import writes into: its directory (its
+        /// mtrack.yaml says where the lighting files are) or its config
+        /// file. The library is the project's lighting/library.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
     },
     /// Imports an MVR venue file: reports what the import would do, or
     /// (with --write) copies the MVR and its embedded GDTFs into the
@@ -269,15 +273,21 @@ enum Commands {
         /// the venue's recorded origin on a re-import, else 0,0,0.
         #[arg(long)]
         origin: Option<String>,
-        /// Project directory the import writes into.
+        /// The project the import writes into: its directory (its
+        /// mtrack.yaml says where the lighting files are) or its config
+        /// file. The library is the project's lighting/library.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
-        /// Venues directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
-        venues_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
+        /// Venues directory, relative to the project (default: the one the
+        /// project's config gives this host's profile, else
+        /// lighting/venues).
+        #[arg(long)]
+        venues_dir: Option<String>,
     },
     /// Exports a venue as an .mvr archive: the patch with positions,
     /// rotations and focus points, every fixture type's GDTF embedded
@@ -292,15 +302,20 @@ enum Commands {
         /// Put each fixture on a layer named after its first tag.
         #[arg(long)]
         layers_from_tags: bool,
-        /// Project directory.
+        /// The project: its directory (its mtrack.yaml says where the
+        /// lighting files are) or its config file.
         #[arg(short, long, default_value = ".")]
         project: String,
-        /// Fixture types directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_FIXTURE_TYPES_DIR)]
-        fixture_types_dir: String,
-        /// Venues directory, relative to the project.
-        #[arg(long, default_value = crate::config::lighting::DEFAULT_VENUES_DIR)]
-        venues_dir: String,
+        /// Fixture types directory, relative to the project (default: the
+        /// one the project's config gives this host's profile, else
+        /// lighting/fixture_types).
+        #[arg(long)]
+        fixture_types_dir: Option<String>,
+        /// Venues directory, relative to the project (default: the one the
+        /// project's config gives this host's profile, else
+        /// lighting/venues).
+        #[arg(long)]
+        venues_dir: Option<String>,
     },
     /// Verifies the syntax of a light show file.
     VerifyLightShow {
@@ -548,7 +563,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             name.as_deref(),
             list_modes,
             &project,
-            &fixture_types_dir,
+            fixture_types_dir,
         )?,
         Commands::ImportMvr {
             mvr_path,

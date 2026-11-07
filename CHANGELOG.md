@@ -430,6 +430,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is spelled (`shows/../lighting/venues/club.light`, a symlink into the directory, another
   case on a file system that folds case), where, with the songs root holding the lighting
   directories (`songs: "."`), it replaced or deleted a venue or type file.
+- **`mtrack import-gdtf`, `import-mvr` and `export-mvr` use the project's configured
+  directories**: without `--fixture-types-dir` or `--venues-dir`, they use the directories the
+  project's `mtrack.yaml` gives this host's profile, as the player, the web UI and MCP do, where
+  they used the defaults: with `directories: {fixture_types: rig/types}`, `import-gdtf
+  x.gdtf --name Brick` writes `rig/types/brick.fixture`, not
+  `lighting/fixture_types/brick.fixture`. `--project` also takes the config file itself
+  (`--project live/mtrack.yaml`). A project with no `mtrack.yaml` keeps the defaults; one whose
+  config does not load is refused, saying why.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,
