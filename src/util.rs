@@ -333,7 +333,7 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// the new content is staged, so a write that fails before then (a full
 /// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    write_file_as(path, contents, false)
+    write_file_tracked(path, contents, false).map_err(|failed| failed.error)
 }
 
 /// [`write_file`] for a file that must not be there yet: the destination is
@@ -342,10 +342,31 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// normalization-insensitive filesystem takes for the same name, and one
 /// made since it was looked up. Nothing is written over it.
 pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    write_file_as(path, contents, true)
+    write_file_tracked(path, contents, true).map_err(|failed| failed.error)
 }
 
-fn write_file_as(path: &Path, contents: &[u8], new: bool) -> std::io::Result<()> {
+/// A failed [`write_file`] or [`write_new_file`], and whether it changed the
+/// destination before failing: made it (`create_new` succeeded) or began
+/// rewriting it (truncated). One that did not leaves the destination as it
+/// was, or as another writer left it; one that did leaves it to be put back.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub error: std::io::Error,
+    pub touched: bool,
+}
+
+/// [`write_file`] (`new` false) or [`write_new_file`] (`new` true), saying
+/// on failure whether the destination was changed ([`WriteFailure`]), so a
+/// writer undoing its changes undoes this one's only when there is one.
+pub fn write_file_tracked(path: &Path, contents: &[u8], new: bool) -> Result<(), WriteFailure> {
+    let untouched = |error| WriteFailure {
+        error,
+        touched: false,
+    };
+    let touched = |error| WriteFailure {
+        error,
+        touched: true,
+    };
     use std::io::Write;
 
     // Take turns from before staging: a writer staging while another
@@ -357,7 +378,7 @@ fn write_file_as(path: &Path, contents: &[u8], new: bool) -> std::io::Result<()>
     // Read the ownership we are aiming for before creating anything, since
     // creating the destination would otherwise answer the question with the
     // freshly created file's own ownership.
-    let intended = intended_ownership(path)?;
+    let intended = intended_ownership(path).map_err(untouched)?;
 
     // Stage the complete new content beside the destination and get it on disk,
     // so the rewrite below always has something to recover from.
@@ -385,16 +406,23 @@ fn write_file_as(path: &Path, contents: &[u8], new: bool) -> std::io::Result<()>
     // Lock before truncating, not as part of the open: opening with
     // truncation would discard another process's content before we had any
     // claim to the file.
-    let claim = || -> std::io::Result<std::fs::File> {
+    // A file it made is this write's from then on, even if what follows
+    // fails; one it only opened is untouched until it is truncated.
+    let claim = || -> Result<std::fs::File, WriteFailure> {
         let destination = std::fs::OpenOptions::new()
             .create(!new)
             .create_new(new)
             .write(true)
             .truncate(false)
-            .open(path)?;
-        destination.lock()?;
+            .open(path)
+            .map_err(untouched)?;
+        let made = |error| WriteFailure {
+            error,
+            touched: new,
+        };
+        destination.lock().map_err(made)?;
         if let Some(ownership) = intended {
-            ownership.apply(&destination, path)?;
+            ownership.apply(&destination, path).map_err(made)?;
         }
         Ok(destination)
     };
@@ -402,21 +430,36 @@ fn write_file_as(path: &Path, contents: &[u8], new: bool) -> std::io::Result<()>
     // Until the truncation the destination is as it was, so a failure up to
     // then takes the sidecar with it: left, it would claim a write that never
     // touched the destination may not have completed (#578).
-    let mut destination = match stage().and_then(|()| claim()) {
+    let mut destination = match stage().map_err(untouched).and_then(|()| claim()) {
         Ok(destination) => destination,
         Err(e) => {
             let _ = std::fs::remove_file(&staged);
             return Err(e);
         }
     };
-    destination.set_len(0)?;
-    destination.write_all(contents)?;
-    destination.sync_all()?;
+    destination.set_len(0).map_err(touched)?;
+    #[cfg(test)]
+    if FAIL_AFTER_TRUNCATING.get() > 0 {
+        FAIL_AFTER_TRUNCATING.set(FAIL_AFTER_TRUNCATING.get() - 1);
+        return Err(touched(std::io::Error::other(
+            "injected failure after truncating",
+        )));
+    }
+    destination.write_all(contents).map_err(touched)?;
+    destination.sync_all().map_err(touched)?;
 
     // The destination is durable, so the staged copy has served its purpose.
     // Leaving it behind would falsely advertise an interrupted write. The
     // lock goes with the file, after.
-    std::fs::remove_file(&staged)
+    std::fs::remove_file(&staged).map_err(touched)
+}
+
+/// Makes the next `times` [`write_file`]s and [`write_new_file`]s on this
+/// thread fail just after truncating the destination: a test's stand-in for
+/// a disk that fills mid-write.
+#[cfg(test)]
+pub fn fail_after_truncating(times: u32) {
+    FAIL_AFTER_TRUNCATING.set(times);
 }
 
 #[cfg(test)]
@@ -424,6 +467,8 @@ thread_local! {
     /// Fails [`write_file`]'s staging on this thread once the sidecar holds
     /// the content, as a full disk would fail its flush.
     static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fails [`write_file`] just after truncating the destination.
+    static FAIL_AFTER_TRUNCATING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Reads all of `path`, as [`write_file`] last wrote it, never the empty or

@@ -474,7 +474,15 @@ pub fn write_library_entry(
         }
         // Made new, as it was claimed: one there by now is refused, never
         // written over.
-        super::writes::create_new(&path, text.as_bytes())?;
+        // A failure takes back what it made of the record; the library copy
+        // written before it stays, as it always has.
+        super::writes::Changes::all_or_nothing(|changes| {
+            changes.create(&path, text.as_bytes(), record.clone())
+        })
+        .map_err(|e| match e {
+            super::writes::WriteError::RolledBack { cause, left } if left.is_empty() => *cause,
+            other => other,
+        })?;
     }
     Ok(())
 }

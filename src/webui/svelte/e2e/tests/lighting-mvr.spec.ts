@@ -185,6 +185,7 @@ test.describe("MVR import wizard", () => {
           body: JSON.stringify({
             error:
               'cannot import venue "Kellys": Defined in all.venue alongside venue "Annex"; edit that file by hand.',
+            kind: "venue",
           }),
         });
       } else {
@@ -214,6 +215,66 @@ test.describe("MVR import wizard", () => {
     await expect(page.getByTestId("mvr-refused-hint")).toHaveCount(0);
     await expect(name).toHaveValue("Kellys 2026");
     expect(names).toEqual(["Kellys", "Kellys 2026"]);
+  });
+
+  test("a refusal that another venue name cannot answer offers no rename", async ({
+    page,
+  }) => {
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error:
+            'lighting/fixture_types/synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name <name>`, or the Fixtures page)',
+          kind: "record",
+        }),
+      });
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+
+    await expect(page.getByTestId("mvr-error")).toContainText(
+      "synth_brick_astera_pb15.fixture holds",
+    );
+    await expect(page.getByTestId("mvr-venue-name")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-refused-hint")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-recheck")).toHaveCount(0);
+  });
+
+  test("an empty venue name can be checked again, as the file's own name", async ({
+    page,
+  }) => {
+    let calls = 0;
+    const names: (string | undefined)[] = [];
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      calls++;
+      names.push(fields(route.request()).name);
+      await route.fulfill(
+        calls === 1
+          ? {
+              status: 409,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: 'cannot import venue "Kellys": Kellys.venue is taken',
+                kind: "venue",
+              }),
+            }
+          : {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify(MVR_INSPECTION),
+            },
+      );
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+    await page.getByTestId("mvr-venue-name").fill("");
+    const recheck = page.getByTestId("mvr-recheck");
+    await expect(recheck).toBeEnabled();
+    await recheck.click();
+    await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
+    expect(names).toEqual(["Kellys", undefined]);
   });
 
   test("step 2 marks the deck suggestion, applies it, and takes a click", async ({

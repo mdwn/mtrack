@@ -381,16 +381,20 @@ export async function inspectMvr(
     method: "POST",
     body: mvrForm(file, { name }, dirs),
   });
-  if (res.status === 409) {
-    const error = await apiError(res, "Failed to read the MVR");
-    throw new MvrRefused(error.message);
+  if (!res.ok) {
+    const body: { error?: string; kind?: string } = await res
+      .json()
+      .catch(() => ({}));
+    const message = body.error || `Failed to read the MVR: ${res.status}`;
+    // Only a refusal of the venue itself is one another name can answer; an
+    // embedded GDTF's record or an archive's file name is not.
+    throw body.kind === "venue" ? new MvrRefused(message) : new Error(message);
   }
-  if (!res.ok) throw await apiError(res, "Failed to read the MVR");
   return res.json();
 }
 
-/** An inspection the lighting files' rule refused (409): the venue's name
- *  is another file's, or its file is not its alone. Another name may do. */
+/** An inspection refused for the venue (`kind: "venue"`): its name is
+ *  another file's, or its file is not its alone. Another name may do. */
 export class MvrRefused extends Error {
   constructor(message: string) {
     super(message);

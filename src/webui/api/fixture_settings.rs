@@ -40,7 +40,6 @@ use axum::{
 };
 use serde_json::json;
 
-use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, if_match_version, locate_fixture_type_file,
@@ -212,13 +211,13 @@ impl VenueRetype {
     }
 }
 
-/// Writes a fixture type's save with what goes with it, in an order that can
-/// be undone: the `pins` (made new), the type's file by its `record` plan
-/// (made or rewritten, its old file kept), the `venues` rewrites, and only
-/// then the old type file retired. A failure before the last step puts back
-/// everything written before it, and the answer says what is left; one at
-/// the last step leaves both type files (a name in two files is read-only,
-/// never lost) and says so.
+/// Writes a fixture type's save with what goes with it: the `pins` (made
+/// new), the type's file by its `record` plan (made or rewritten), the
+/// `venues` rewrites, and last the old type file of a move removed. All or
+/// nothing, by the one rule for writes ([`lighting::writes::Changes`]): a
+/// failure at any step, the last included, puts back everything written
+/// before it and what the failing step changed, and the answer says so,
+/// naming any file that could not be put back.
 pub(super) fn write_type_save(
     types_dir: &FsPath,
     pins: &[(PathBuf, String)],
@@ -226,69 +225,23 @@ pub(super) fn write_type_save(
     text: &str,
     venues: &VenueRetype,
 ) -> Result<(), Refusal> {
-    let shown = |path: &FsPath| lighting::project_files::display_in(types_dir, path);
-    let status = super::lighting_writes::write_status;
-    // What was put back, or could not be: the end of every failure's answer.
-    let put_back = |failed: Vec<String>| {
-        if failed.is_empty() {
-            "nothing was saved".to_string()
-        } else {
-            format!(
-                "nothing more was saved, but {} could not be put back",
-                failed.join(", ")
-            )
+    lighting::writes::Changes::all_or_nothing(|changes| {
+        for (path, pin) in pins {
+            let shown = lighting::project_files::display_in(types_dir, path);
+            changes.create(path, pin.as_bytes(), shown)?;
         }
-    };
-    let remove_pins = |made: &[(PathBuf, String)], failed: &mut Vec<String>| {
-        for (path, _) in made {
-            if let Err(e) = std::fs::remove_file(path) {
-                failed.push(format!("{} (made, {e})", shown(path)));
-            }
+        changes.plan(record, text)?;
+        for rewrite in &venues.rewrites {
+            changes.rewrite(
+                &rewrite.path,
+                rewrite.content.as_bytes(),
+                rewrite.original.as_bytes(),
+                format!("venue file {}", rewrite.file),
+            )?;
         }
-    };
-    for (index, (path, pin)) in pins.iter().enumerate() {
-        if let Err(e) = lighting::writes::create_new(path, pin.as_bytes()) {
-            let mut failed = Vec::new();
-            remove_pins(&pins[..index], &mut failed);
-            return Err((status(&e), format!("{e}; {}", put_back(failed))));
-        }
-    }
-    if let Err(e) = lighting::writes::write_unretired(record, text) {
-        let mut failed = Vec::new();
-        remove_pins(pins, &mut failed);
-        return Err((status(&e), format!("{e}; {}", put_back(failed))));
-    }
-    for (index, rewrite) in venues.rewrites.iter().enumerate() {
-        if let Err(e) = config_io::staged_write(&rewrite.path, &rewrite.content) {
-            let mut failed = Vec::new();
-            for done in &venues.rewrites[..index] {
-                if let Err(u) = config_io::staged_write(&done.path, &done.original) {
-                    failed.push(format!("venue file {} ({u})", done.file));
-                }
-            }
-            if let Err(u) = lighting::writes::undo(record) {
-                failed.push(format!("{} ({u})", shown(record.write.path())));
-            }
-            remove_pins(pins, &mut failed);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("{e}; {}", put_back(failed)),
-            ));
-        }
-    }
-    if let Err(e) = lighting::writes::retire(record) {
-        let old = record.retire.as_deref().map(shown).unwrap_or_default();
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "the fixture type and its venues were saved to {}, but {old} could not be \
-                 removed ({e}): the type is now declared in both, so it is read-only until you \
-                 remove {old} by hand",
-                shown(record.write.path())
-            ),
-        ));
-    }
-    Ok(())
+        changes.retire(record)
+    })
+    .map_err(|e| (super::lighting_writes::write_status(&e), e.to_string()))
 }
 
 /// What a settings save would do, worked out from the files.
@@ -535,6 +488,7 @@ fn plan(
                 &mut claimed,
             )?;
             let record = lighting::writes::Plan {
+                dir: types_dir.to_path_buf(),
                 write: lighting::writes::Write::Create(path),
                 retire: None,
                 current: None,
@@ -1502,10 +1456,11 @@ mod test {
     }
 
     #[tokio::test]
-    async fn an_old_record_that_cannot_be_removed_is_left_beside_the_new_and_said() {
+    async fn an_old_record_that_cannot_be_removed_puts_everything_back() {
         let (state, dir) = test_state();
         project(dir.path());
         let root = dir.path();
+        let before = tree(root);
         let old = root.join("types/brick.fixture");
         crate::lighting::writes::test_hook::refuse_removal_of(&old);
         if let Ok(canonical) = old.canonicalize() {
@@ -1520,20 +1475,14 @@ mod test {
         )
         .await;
 
+        // A rename leaves no stray "Brick" behind: the new record and every
+        // venue rewritten are put back, and the answer says so.
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         assert_eq!(
             body["error"],
-            "the fixture type and its venues were saved to pixelbrick.fixture, but brick.fixture \
-             could not be removed (refused by the test): the type is now declared in both, so it \
-             is read-only until you remove brick.fixture by hand"
+            "cannot remove brick.fixture: refused by the test; nothing was saved"
         );
-        assert_eq!(read(root, "types/brick.fixture"), TYPE_FILE);
-        assert_eq!(
-            read(root, "types/pixelbrick.fixture"),
-            TYPE_FILE.replace("\"Brick\"", "\"PixelBrick\"")
-        );
-        assert!(read(root, "venues/house.venue").contains("\"B1\" PixelBrick mode"));
-        assert!(read(root, "venues/club.light").contains("\"C1\" PixelBrick mode"));
+        assert_eq!(tree(root), before, "every file as it was");
     }
 
     #[tokio::test]

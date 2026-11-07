@@ -95,30 +95,42 @@ pub(crate) fn claim_status(refusal: &Refusal) -> StatusCode {
 /// The status of a failed write: 409 for a file to be made that appeared
 /// since it was claimed, 500 otherwise.
 pub(crate) fn write_status(e: &WriteError) -> StatusCode {
-    match e {
-        WriteError::Exists(_) => StatusCode::CONFLICT,
+    match e.cause() {
+        WriteError::Exists { .. } => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-/// The status of an importer's error (GDTF or MVR, an inspection too): a
-/// refusal of the one rule, or a write, as [`refused_status`],
-/// [`claim_status`] and [`write_status`] say; a library archive of the same
-/// name with other bytes 409; anything else is the request's 400.
-pub(crate) fn import_status(e: &(dyn std::error::Error + 'static)) -> StatusCode {
-    if let Some(venue) = e.downcast_ref::<lighting::import::VenueRefused>() {
-        refused_status(&venue.refused)
-    } else if let Some(refusal) = e.downcast_ref::<Refusal>() {
-        claim_status(refusal)
+/// An importer's error (GDTF or MVR, an inspection too) as the web API
+/// answers it: the status, by [`refused_status`], [`claim_status`] and
+/// [`write_status`] for a refusal of the one rule or a write, 409 for a
+/// library archive of the same name with other bytes, and 400 for anything
+/// else; and `{error, kind}`, `kind` saying which refusal it is so a client
+/// can offer the right way on, never guessing from the status: `venue` (the
+/// venue's name or file: another name may do), `record` (an embedded GDTF's
+/// record file), `library` (an archive file name), `name` (a fixture type
+/// name or its file), `write` (a file that could not be written).
+pub(crate) fn import_error(
+    e: &(dyn std::error::Error + 'static),
+) -> (StatusCode, serde_json::Value) {
+    let (status, kind) = if let Some(venue) = e.downcast_ref::<lighting::import::VenueRefused>() {
+        (refused_status(&venue.refused), Some("venue"))
     } else if let Some(record) = e.downcast_ref::<lighting::import::RecordRefused>() {
-        claim_status(&record.refusal)
+        (claim_status(&record.refusal), Some("record"))
+    } else if let Some(refusal) = e.downcast_ref::<Refusal>() {
+        (claim_status(refusal), Some("name"))
     } else if let Some(write) = e.downcast_ref::<WriteError>() {
-        write_status(write)
+        (write_status(write), Some("write"))
     } else if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
-        StatusCode::CONFLICT
+        (StatusCode::CONFLICT, Some("library"))
     } else {
-        StatusCode::BAD_REQUEST
+        (StatusCode::BAD_REQUEST, None)
+    };
+    let mut body = json!({"error": e.to_string()});
+    if let Some(kind) = kind {
+        body["kind"] = json!(kind);
     }
+    (status, body)
 }
 
 /// [`Save::plan`], a refusal answered as the web API answers it, with the

@@ -426,7 +426,6 @@
           <button
             class="btn btn-primary"
             onclick={runInspect}
-            disabled={!venueName.trim()}
             data-testid="mvr-recheck"
           >
             {$t("lighting.mvr.file.recheck")}

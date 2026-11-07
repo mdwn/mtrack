@@ -33,6 +33,7 @@
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
+  import { typeSavedMessage } from "../../lib/lighting/typeSaved";
   import { rules } from "../../lib/rules";
   import {
     fetchFixtureTypeGdtf,
@@ -88,36 +89,15 @@
   /** What a save says: saved, the venue lines a rename retyped, or that
    *  the current venue no longer loads (kept until the next message). */
   function showSaved(done: FixtureTypeSaved) {
-    const tr = get(t);
-    if (done.venue_error) {
-      ftMsg = tr("lighting.venueError.saved", {
-        values: { ...done.venue_error },
-      });
-      return;
-    }
-    const said = [tr("common.saved")];
-    if (done.rename && done.rename.lines > 0) {
-      said.push(
-        tr("lighting.settings.renamed", {
-          values: {
-            count: done.rename.lines,
-            venues: done.rename.venues
-              .map((v) => `${v.venue} (${v.lines})`)
-              .join(", "),
-          },
-        }),
-      );
-    }
-    const text = said.join(" ");
-    ftSavedMsg = text;
-    ftMsg = text;
-    setTimeout(
-      () => {
-        if (ftMsg === text) ftMsg = "";
-      },
-      2000 + 2000 * (said.length - 1),
-    );
+    const said = typeSavedMessage(done);
+    ftMsg = said.text;
+    if (!said.ok) return;
+    ftSavedMsg = said.text;
+    setTimeout(() => {
+      if (ftMsg === said.text) ftMsg = "";
+    }, 4000);
   }
+
   let editingFt = $state<string | null>(null);
   let editFtName = $state("");
   let editFtChannels = $state<{ name: string; offset: number }[]>([]);

@@ -213,19 +213,14 @@ pub(super) async fn inspect_mvr(
                 &options,
                 &project,
             )
-            .map_err(|e| {
-                (
-                    super::lighting_writes::import_status(e.as_ref()),
-                    e.to_string(),
-                )
-            })?;
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref()))?;
             let scene = lighting::import::scene_view::scene_view(&form.bytes)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-            Ok::<_, (StatusCode, String)>((report, scene))
+                .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error": e.to_string()})))?;
+            Ok::<_, (StatusCode, serde_json::Value)>((report, scene))
         })())
     })
     .await?
-    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     let (report, scene) = outcome;
     Ok::<_, Response>(
         (
@@ -293,16 +288,11 @@ pub(super) async fn import_mvr(
                 )
                 .map(Imported::Plan)
             }
-            .map_err(|e| {
-                (
-                    super::lighting_writes::import_status(e.as_ref()),
-                    e.to_string(),
-                )
-            }),
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     let report = match outcome {
         Imported::Plan(plan) => {
             let answer = MvrImportAnswer {
@@ -1043,6 +1033,7 @@ mod test {
             )
             .await;
             assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["kind"], "venue", "{body}");
             assert_eq!(
                 body["error"],
                 "cannot import venue \"kellys\": Defined in all.venue alongside venue \
@@ -1059,6 +1050,7 @@ mod test {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "venue", "{body}");
         assert!(
             body["error"]
                 .as_str()
@@ -1071,6 +1063,39 @@ mod test {
             shared
         );
         assert!(!venues.join("kellys.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn an_embedded_gdtf_s_taken_record_is_a_record_conflict_not_a_venue_one() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        let par = |name: &str| {
+            format!(
+                "fixture_type \"{name}\" {{\n  channels: 1\n  channel_map: {{\"dimmer\": 1}}\n}}\n"
+            )
+        };
+        std::fs::write(types.join("synth_brick.light"), par("Synth Brick")).unwrap();
+        std::fs::write(types.join("synth_brick_astera_pb15.fixture"), par("Other")).unwrap();
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "record", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with(
+                "lighting/fixture_types/synth_brick_astera_pb15.fixture holds \"Other\""
+            ),
+            "{body}"
+        );
     }
 
     async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {

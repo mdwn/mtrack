@@ -156,10 +156,9 @@ pub(crate) fn written(
             .into_response()),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!(
-                "Failed to write {what}: {}",
-                crate::util::write_failure_message(crate::util::WriteTarget::File(path), &e)
-            )})),
+            Json(json!({
+                "error": crate::util::write_failure_message(crate::util::WriteTarget::File(path), &e)
+            })),
         )
             .into_response()),
     }

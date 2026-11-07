@@ -207,11 +207,11 @@ pub(super) async fn import_gdtf(
                 &project,
                 DEFAULT_FIXTURE_TYPES_DIR,
             )
-            .map_err(|e| (lighting_writes::import_status(e.as_ref()), e.to_string())),
+            .map_err(|e| lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(|(status, e)| (status, Json(json!({"error": e}))).into_response())?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(report)).into_response())
 }
 

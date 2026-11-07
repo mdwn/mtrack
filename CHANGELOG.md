@@ -286,9 +286,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     same way, where the first file's block was patched.
   - An MVR inspection (`POST /api/lighting/mvr/inspect`, MCP `inspect_mvr`) refuses what the
     import would: inspecting "kellys" above answers 409 with the same reason, where it answered
-    with a plan (and the web, with 400 for other refusals). The import wizard keeps the venue name
-    field after such a refusal, with "Check again", so another name can be inspected; it showed
-    only the error.
+    with a plan (and the web, with 400 for other refusals). The web's refusals of an import or
+    inspection carry `kind` (`venue`, `record`, `name`, `library`, `write`). After a `venue`
+    refusal the import wizard keeps the venue name field, with "Check again" (an empty name
+    checks the file's own), so another name can be inspected; it showed only the error. Other
+    refusals show their message alone.
   - An MVR whose embedded GDTF needs a pinned record whose file is taken is refused as a whole,
     with what to do, never written beside it as `_2`: "lighting/fixture_types/
     synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import
@@ -330,18 +332,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the venues were left naming a type that no longer existed. The editor says so as the
     settings form does ("Saved. Renamed in 2 venue lines: club (1), arena (1).", or that the
     current venue no longer loads).
-  - Both renames write the type's new file first, then the venue files, and remove the old type
-    file last. When a venue file cannot be written, the venue files already written and the type
-    are put back and the answer ends "nothing was saved" (or names what could not be put back),
-    where the venues were left renamed and the type not; when the type cannot be written, no
-    venue is. When the old type file cannot be removed, both are left (the type, declared in
-    both, is read-only until one is removed by hand) and the answer says so, where the new file
-    was removed and the venues left renamed.
+  - Every write of venue and fixture type files is all or nothing: a web save, an MVR import's
+    venue, a GDTF import's record, and both renames, which write the type's file, then the venue
+    files, and remove the old type file last. Any failure, the old file's removal included, puts
+    back what was written before it and what the failing write itself changed (a file it made is
+    removed, a file it began rewriting is restored), and never a file someone else made since it
+    was claimed; the answer ends "nothing was saved", or names each file that could not be put
+    back. Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when `brick.fixture` cannot be
+    removed answers 500 "cannot remove brick.fixture: …; nothing was saved", `pixelbrick.fixture`
+    removed and the venues as they were, where the venues were left renamed. A failed venue or
+    type write likewise, where the venues written before it stayed renamed.
   - A file a save claimed that appears before it is written is refused in one wording wherever
-    it happens (a web save, a GDTF record, a settings pin): "<file> appeared after it was claimed
-    and was not written over; move or remove it by hand, then try again". A failed write of a
-    lighting, config or startup file says "could not write <file>: <reason>", where the web said
-    "Failed to write".
+    it happens, shown as its writer's user knows it (relative to the venues or fixture types
+    directory, or the project for a GDTF record): "pixelbrick.fixture appeared after it was
+    claimed and was not written over; move or remove it by hand, then try again", where the web
+    showed the full path and said "already exists" and a settings pin said "is there now". A
+    failed write of a lighting, playlist, profile or startup file says "could not write <file>:
+    <reason>", where the web said "Failed to write <file>" (a playlist or profile, "Failed to
+    write playlist: Failed to write <file>").
+  - A directory that cannot be read while a name is claimed answers 500 wherever it happens,
+    the GDTF import (`POST /api/lighting/gdtf/import?name=`) and the MVR import and inspection
+    included, where those answered 400 for every refusal.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,
