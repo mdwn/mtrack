@@ -18,7 +18,6 @@
   import {
     fetchLightingFile,
     saveLightingFile,
-    deleteLightingFile,
     validateLighting,
     fetchLightingGroups,
   } from "../../lib/api/config";
@@ -564,13 +563,23 @@
   /** Saves the song's lighting files around the song.yaml save, in two
    * calls by the parent's Save button. "before" the config save: files
    * not yet the song's are written and registered, so the reload that
-   * save starts finds them on disk, and removed files are deleted while
-   * the config still names them, which is what makes a `show.dsl` a light
-   * show the server deletes (`songs::is_light_show_file`). "after" it:
-   * files the song already had are written, checked against the tempo the
-   * saved config loads them with. A failure in either leaves the rest for
-   * a retry. "files", for the auto-save before a play-from, writes every
-   * file and deletes nothing. */
+   * save starts finds them on disk. "after" it: files the song already had
+   * are written, checked against the tempo the saved config loads them
+   * with. A failure in either leaves the rest for a retry. Removed files go
+   * with the config save itself ([[removedFiles]]): the server sets them
+   * aside once the config is written, so a failed save removes none.
+   * "files", for the auto-save before a play-from, writes every file. */
+  /** The files removed since the last save, for the config save to remove
+   * with it (paths below the songs root). */
+  export function removedFiles(): string[] {
+    return [...pendingDeletes];
+  }
+
+  /** The config save removed them: none is pending any more. */
+  export function removalsSaved() {
+    pendingDeletes = [];
+  }
+
   export async function saveLightingFiles(phase: "before" | "after" | "files") {
     if (phase !== "after") {
       flushRaw();
@@ -579,12 +588,6 @@
         if (song.lighting_files.includes(lf.path)) continue;
         onaddlightfile?.(lf.path);
         await writeLightFile(lf);
-      }
-    }
-    if (phase === "before") {
-      while (pendingDeletes.length > 0) {
-        await deleteLightingFile(pendingDeletes[0]);
-        pendingDeletes = pendingDeletes.slice(1);
       }
     }
     if (phase !== "before") {

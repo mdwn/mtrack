@@ -190,32 +190,33 @@ test.describe("Song Lighting Editor - Save Integration", () => {
   test("save deletes removed files from disk and cleans up YAML", async ({
     page,
   }) => {
-    // Set up intercepts before performing actions
+    // Set up intercepts before performing actions. The removed file goes
+    // with the config save (`remove_lighting`), never as a DELETE of its
+    // own: the server sets it aside once the config is written.
     let savedYaml = "";
+    let savedUrl = "";
     let deleteCalled = false;
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "PUT") {
-        savedYaml = route.request().postData() ?? "";
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "updated" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
+    await page.route(
+      /\/api\/songs\/Test%20Song%20Alpha(\?.*)?$/,
+      async (route) => {
+        if (route.request().method() === "PUT") {
+          savedYaml = route.request().postData() ?? "";
+          savedUrl = route.request().url();
+          await route.fulfill({
+            json: {
+              status: "saved",
+              name: "Test Song Alpha",
+              kept: ["Test Song Alpha/show.light.replaced-20261106-101500"],
+            } satisfies SongSaved,
+          });
+        } else {
+          await route.continue();
+        }
+      },
+    );
     await page.route("**/api/lighting/show.light", async (route) => {
-      if (route.request().method() === "DELETE") {
-        deleteCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "deleted" }),
-        });
-      } else {
-        await route.continue();
-      }
+      if (route.request().method() === "DELETE") deleteCalled = true;
+      await route.continue();
     });
 
     // Remove the file (deferred — no API call yet)
@@ -229,10 +230,17 @@ test.describe("Song Lighting Editor - Save Integration", () => {
     // Wait for save to complete
     await expect(page.locator(".save-msg")).toBeVisible();
 
-    // DELETE should have been called during save
-    expect(deleteCalled).toBe(true);
+    // The save named the file to remove; nothing deleted it on its own.
+    expect(new URL(savedUrl).searchParams.getAll("remove_lighting")).toEqual([
+      "show.light",
+    ]);
+    expect(deleteCalled).toBe(false);
     // Saved YAML should NOT contain lighting key
     expect(savedYaml).not.toContain("lighting:");
+    // The editor says where the removed file was kept.
+    await expect(dialog).toContainText(
+      "The old file was kept as Test Song Alpha/show.light.replaced-20261106-101500.",
+    );
   });
 });
 
@@ -276,12 +284,12 @@ test.describe("Song Lighting Editor - Implicit file creation", () => {
 });
 
 test.describe("Song Lighting Editor - a show named by another extension", () => {
-  test("removing a named show.dsl deletes it while the config still names it", async ({
+  test("removing a named show.dsl goes with the config save, never before it", async ({
     page,
   }) => {
-    // The song's `lighting:` names `show.dsl`: a light show to the server
-    // only while a song names it, so the delete goes before the config
-    // save that stops naming it.
+    // The song's `lighting:` names `show.dsl`: removed, it is named to the
+    // config save, which sets it aside once the config is written, so a
+    // save that fails leaves it where it is.
     const songs: SongList = {
       ...SONGS,
       songs: SONGS.songs.map((s) =>
@@ -292,26 +300,37 @@ test.describe("Song Lighting Editor - a show named by another extension", () => 
     };
     await page.route("**/api/songs", (route) => route.fulfill({ json: songs }));
     const sent: string[] = [];
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      const method = route.request().method();
-      if (method === "GET") {
-        return route.fulfill({
-          contentType: "text/yaml",
-          body: "name: Test Song Alpha\ntracks:\n  - kick\nlighting:\n  - file: show.dsl\n",
+    let fail = true;
+    await page.route(
+      /\/api\/songs\/Test%20Song%20Alpha(\?.*)?$/,
+      async (route) => {
+        const method = route.request().method();
+        if (method === "GET") {
+          return route.fulfill({
+            contentType: "text/yaml",
+            body: "name: Test Song Alpha\ntracks:\n  - kick\nlighting:\n  - file: show.dsl\n",
+          });
+        }
+        if (method !== "PUT") return route.fallback();
+        const removed = new URL(route.request().url()).searchParams.getAll(
+          "remove_lighting",
+        );
+        sent.push(`PUT removing ${removed.join(",")}`);
+        if (fail) {
+          fail = false;
+          return route.fulfill({ status: 423, json: { error: "locked" } });
+        }
+        await route.fulfill({
+          json: {
+            status: "saved",
+            name: "Test Song Alpha",
+          } satisfies SongSaved,
         });
-      }
-      if (method !== "PUT") return route.fallback();
-      sent.push(
-        `PUT config ${route.request().postData()?.includes("show.dsl")}`,
-      );
-      await route.fulfill({
-        json: { status: "saved", name: "Test Song Alpha" } satisfies SongSaved,
-      });
-    });
+      },
+    );
     await page.route("**/api/lighting/show.dsl", async (route) => {
-      if (route.request().method() !== "DELETE") return route.fallback();
-      sent.push("DELETE show.dsl");
-      await route.fulfill({ json: { status: "deleted" } });
+      if (route.request().method() === "DELETE") sent.push("DELETE show.dsl");
+      await route.fallback();
     });
 
     await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
@@ -321,8 +340,12 @@ test.describe("Song Lighting Editor - a show named by another extension", () => 
       .locator('[role="dialog"]')
       .getByRole("button", { name: "Confirm" })
       .click();
-    await page.getByRole("button", { name: "Save" }).click();
-    await expect(page.locator(".save-msg")).toBeVisible();
-    expect(sent).toEqual(["DELETE show.dsl", "PUT config false"]);
+    const save = page.getByRole("button", { name: "Save" });
+    // Refused: still to remove, sent again with the next save.
+    await save.click();
+    await expect(page.locator(".save-msg")).toContainText("locked");
+    await save.click();
+    await expect(page.locator(".save-msg")).toContainText("Saved");
+    expect(sent).toEqual(["PUT removing show.dsl", "PUT removing show.dsl"]);
   });
 });

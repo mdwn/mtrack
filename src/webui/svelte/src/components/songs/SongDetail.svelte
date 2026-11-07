@@ -42,7 +42,7 @@
   import { fetchLightingFile } from "../../lib/api/config";
   import { rules } from "../../lib/rules";
   import type { TempoSection } from "../../lib/lighting/types";
-  import { showConfirm } from "../../lib/dialog.svelte";
+  import { showAlert, showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
   import { playbackStore } from "../../lib/ws/stores";
   import FileBrowser from "./FileBrowser.svelte";
@@ -77,12 +77,16 @@
       | "config";
     /** Where to put the lighting editor's cursor, from `?t=` in the address. */
     initialTimeMs?: number | null;
+    /** A save renamed the song: called with its new name just before the
+     *  address moves to it. */
+    onrenamed?: (name: string) => void;
   }
 
   let {
     songName: openedAs,
     initialTab,
     initialTimeMs = null,
+    onrenamed,
   }: Props = $props();
   // The name the song is known by: the one it was opened by, until a save
   // renames it. (A song opened by another name is another editor: the page
@@ -600,16 +604,16 @@
     browseTarget = null;
   }
 
-  /** The song is `name` now: this editor goes on under it, and the address
-   * says so without opening the song afresh. */
+  /** The song is `name` now: this editor goes on under it, and the page is
+   * told (`onrenamed`) before the address moves to it, by the router as
+   * every move is, so the page keeps this editor rather than opening the
+   * song afresh. */
   function followRename(name: string) {
     songName = name;
+    onrenamed?.(name);
     const base = `#/songs/${encodeURIComponent(name)}`;
-    history.replaceState(
-      history.state,
-      "",
-      activeTab === "tracks" ? base : `${base}/${activeTab}`,
-    );
+    window.location.hash =
+      activeTab === "tracks" ? base : `${base}/${activeTab}`;
   }
 
   async function save() {
@@ -628,9 +632,12 @@
         await lightingEditorRef.saveLightingFiles("before");
       }
 
-      // Save song config if dirty.
-      if (configDirty) {
-        const res = await updateSong(songName, editedYaml);
+      // Save song config if dirty, with the light shows removed since the
+      // last save: the server sets those aside once the config is written,
+      // so a save that fails removes none.
+      const removed = lightingEditorRef?.removedFiles() ?? [];
+      if (configDirty || removed.length > 0) {
+        const res = await updateSong(songName, editedYaml, removed);
         if (!res.ok) {
           const data = await res.json().catch(() => null);
           saveMsg =
@@ -643,6 +650,15 @@
         // editor (and its address) on that name.
         const saved: SongSaved | null = await res.json().catch(() => null);
         if (saved?.name && saved.name !== songName) followRename(saved.name);
+        lightingEditorRef?.removalsSaved();
+        // The removed shows were set aside, not lost: say where.
+        if (saved?.kept && saved.kept.length > 0) {
+          void showAlert(
+            get(t)("lighting.brokenFileKept", {
+              values: { files: saved.kept.join(", ") },
+            }),
+          );
+        }
       }
 
       // The song's other lighting files, checked against the tempo the

@@ -433,8 +433,13 @@ test.describe("Song Detail - Section Editor", () => {
     );
     await page.getByRole("button", { name: "Delete" }).click();
     await page.getByRole("button", { name: "Save" }).first().click();
+    // Moved by the router, in the same editor: its "Saved" note stays (a
+    // fresh editor would have none), and a tab switch keeps the new name.
     await expect(page).toHaveURL(/#\/songs\/Test%20Song%20Alpha\/sections$/);
     await expect(page.locator(".song-title")).toHaveText("Test Song Alpha");
+    await expect(page.locator(".save-msg")).toContainText("Saved");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await expect(page).toHaveURL(/#\/songs\/Test%20Song%20Alpha\/config$/);
   });
 
   test("deleting a section from its dialog removes it", async ({ page }) => {

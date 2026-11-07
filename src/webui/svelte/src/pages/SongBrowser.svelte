@@ -77,12 +77,31 @@
   });
 
   let savedSearch = $state("");
+
+  // The editor is keyed on the song it opened: another song is another
+  // editor, loaded afresh; a song the editor renamed (`onrenamed`) is the
+  // same one, which goes on under its new name.
+  let renaming: string | null = null;
+  let editorKey = 0;
+  let editorFor: string | null = null;
+  let editor = $derived.by(() => {
+    if (songName !== editorFor) {
+      if (songName !== renaming) editorKey += 1;
+      renaming = null;
+      editorFor = songName;
+    }
+    return editorKey;
+  });
 </script>
 
 {#if songName}
-  <!-- Another song (or a song renamed) is another editor, loaded afresh. -->
-  {#key songName}
-    <SongDetail {songName} {initialTab} {initialTimeMs} />
+  {#key editor}
+    <SongDetail
+      {songName}
+      {initialTab}
+      {initialTimeMs}
+      onrenamed={(name) => (renaming = name)}
+    />
   {/key}
 {:else}
   <SongList

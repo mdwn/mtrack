@@ -42,11 +42,22 @@ export async function createSong(
   return postYaml(`/songs/${encodeURIComponent(name)}`, yaml);
 }
 
+/** Saves a song's config, and removes the light show files
+ *  `removeLighting` names (paths below the songs root) once it is saved:
+ *  the server sets each aside and names it in the reply's `kept`; a save
+ *  that fails removes none. */
 export async function updateSong(
   name: string,
   yaml: string,
+  removeLighting: string[] = [],
 ): Promise<Response> {
-  return putYaml(`/songs/${encodeURIComponent(name)}`, yaml);
+  const query = removeLighting
+    .map((file) => `remove_lighting=${encodeURIComponent(file)}`)
+    .join("&");
+  return putYaml(
+    `/songs/${encodeURIComponent(name)}${query ? `?${query}` : ""}`,
+    yaml,
+  );
 }
 
 export async function uploadTrack(
