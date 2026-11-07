@@ -426,8 +426,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delete. With both `set.yaml` and `set.yml`, `set.yaml` is the one read and a warning names
   `set.yml` as not read. What changes:
   - A playlist kept as `set.yml` is saved by the web UI's playlist editor and MCP `write_playlist`
-    or `patch_playlist` (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, which
-    the loader then passed over, so the edit was lost.
+    (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, and the loader went on
+    reading `set.yml`, so the save had no effect. MCP `read_playlist` and `patch_playlist`
+    (`name: set`) take `set.yml`; they failed, finding no `set.yaml`.
   - With both `set.yaml` and `set.yml` in the playlists directory, the loader now takes
     `set.yaml`, with the warning; it took `set.yml` (the later file name) without one.
   - MCP `write_playlist`, `read_playlist` and `patch_playlist` with `name: all_songs` are refused
