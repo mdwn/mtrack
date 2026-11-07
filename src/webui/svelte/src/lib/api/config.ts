@@ -584,6 +584,20 @@ export async function postFixtureSettings(
   return res.json();
 }
 
+/** The query of a venue or fixture type save: its directory, and the old
+ *  name when the save renames (the server moves or renames the one file). */
+function saveParams(
+  dir: string | undefined,
+  from: string | null | undefined,
+  extra: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams(extra);
+  if (dir) params.set("dir", dir);
+  if (from) params.set("from", from);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 export async function saveFixtureType(
   name: string,
   data: Pick<FixtureType, "channels"> &
@@ -594,8 +608,9 @@ export async function saveFixtureType(
       >
     >,
   dir?: string,
+  from?: string | null,
 ): Promise<void> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const params = saveParams(dir, from);
   const res = await put(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
@@ -604,18 +619,17 @@ export async function saveFixtureType(
   fixtureTypesChanged();
 }
 
-/** Saves a fixture type as raw DSL. `ext` decides the form a *new* type is
- *  born in; an existing file keeps its own extension. */
+/** Saves a fixture type as raw DSL. `ext: "fixture"` moves a `.light` to a
+ *  `.fixture`; a new type is always a `.fixture`. `from` renames. */
 export async function saveFixtureTypeText(
   name: string,
   dsl: string,
   ext: "light" | "fixture",
   dir?: string,
+  from?: string | null,
 ): Promise<void> {
-  const params = new URLSearchParams({ ext });
-  if (dir) params.set("dir", dir);
   const res = await putText(
-    `/lighting/fixture-types/${encodeURIComponent(name)}?${params}`,
+    `/lighting/fixture-types/${encodeURIComponent(name)}${saveParams(dir, from, { ext })}`,
     dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
@@ -712,15 +726,18 @@ export async function saveVenue(
   },
   dir?: string,
   version?: string,
+  /** The venue's old name: the save renames it. */
+  from?: string | null,
 ): Promise<SavedVenue> {
-  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const params = saveParams(dir, from);
   const res = await put(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
     version ? { "If-Match": version } : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save venue");
-  venueChanged(name);
+  // A rename changes two venues' views: every one is stale.
+  venueChanged(from && from !== name ? null : name);
   const body: Partial<VenueSaved> = await res.json().catch(() => ({}));
   return {
     version: body.version ?? null,

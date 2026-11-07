@@ -294,24 +294,25 @@ test.describe("Fixture Types Management", () => {
       .fill('fixture_type "renamed" {\n  channel "pan" @ 1 fine 2\n}\n');
     await expect(nameField).toHaveValue("renamed");
 
-    // The rename goes to the declared name, and the old file is deleted —
-    // the same two steps the channel-map form takes.
+    // The rename is one save under the declared name, from the old one:
+    // the server moves or renames the file, so nothing is deleted after.
+    const deletes: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "DELETE") deletes.push(req.url());
+    });
     const putPromise = page.waitForRequest(
       (req) =>
         req.url().includes("/api/lighting/fixture-types/renamed") &&
         req.method() === "PUT",
     );
-    const deletePromise = page.waitForRequest(
-      (req) =>
-        req.url().includes("/api/lighting/fixture-types/mover") &&
-        req.method() === "DELETE",
-    );
     await page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await putPromise;
-    await deletePromise;
+    const put = await putPromise;
+    expect(new URL(put.url()).searchParams.get("from")).toBe("mover");
+    await page.waitForTimeout(300);
+    expect(deletes).toHaveLength(0);
   });
 
   test("Define a fixture by hand offers both forms", async ({ page }) => {
@@ -319,7 +320,9 @@ test.describe("Fixture Types Management", () => {
       .getByRole("button", { name: "Define a fixture by hand" })
       .click();
     await expect(page.getByTestId("new-ft-choice")).toBeVisible();
-    await page.getByRole("button", { name: ".light (channel map)" }).click();
+    await page
+      .getByRole("button", { name: "Channel map", exact: true })
+      .click();
     await expect(page.locator(".editor-form")).toBeVisible();
     await expect(page.locator("#ft-name")).toHaveValue("");
   });

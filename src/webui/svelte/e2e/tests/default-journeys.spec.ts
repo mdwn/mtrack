@@ -58,7 +58,7 @@ async function catchWrites(page: Page, url: RegExp | string) {
 }
 
 test.describe("Fixture types", () => {
-  test("a new .light type with the defaults: the name is required, then the default channel is sent", async ({
+  test("a new channel-map type with the defaults: the name is required, then the default channel is sent", async ({
     page,
   }) => {
     const writes = await catchWrites(page, /\/api\/lighting\/fixture-types\//);
@@ -66,7 +66,9 @@ test.describe("Fixture types", () => {
     await page
       .getByRole("button", { name: "Define a fixture by hand" })
       .click();
-    await page.getByRole("button", { name: ".light (channel map)" }).click();
+    await page
+      .getByRole("button", { name: "Channel map", exact: true })
+      .click();
     const save = page
       .locator(".editor-form")
       .getByRole("button", { name: "Save" });
@@ -207,7 +209,7 @@ test.describe("Venues", () => {
     expect(body.source).toEqual(venue.source);
   });
 
-  test("a rename saves every fixture under the new name, then deletes the old", async ({
+  test("a rename is one save under the new name, from the old, at its version", async ({
     page,
   }) => {
     const venue = richVenue(unique("rig"));
@@ -219,20 +221,19 @@ test.describe("Venues", () => {
       .locator(".editor-form")
       .getByRole("button", { name: "Save" })
       .click();
-    await expect.poll(() => writes.length).toBe(2);
+    await expect.poll(() => writes.length).toBe(1);
+    // The server moves or renames the one file: nothing is deleted after.
+    await page.waitForTimeout(300);
+    expect(writes).toHaveLength(1);
     expect(writes[0].method()).toBe("PUT");
-    expect(new URL(writes[0].url()).pathname).toBe(
-      `/api/lighting/venues/${venue.name}-b`,
-    );
-    // A new file: no version to match.
-    expect(writes[0].headers()["if-match"]).toBeUndefined();
+    const url = new URL(writes[0].url());
+    expect(url.pathname).toBe(`/api/lighting/venues/${venue.name}-b`);
+    expect(url.searchParams.get("from")).toBe(venue.name);
+    // The old venue's file is what is written, at the version it was read.
+    expect(writes[0].headers()["if-match"]).toBe("v1");
     expect(
       writes[0].postDataJSON().fixtures.map((f: { name: string }) => f.name),
     ).toEqual(["Spot", "Par"]);
-    expect(writes[1].method()).toBe("DELETE");
-    expect(new URL(writes[1].url()).pathname).toBe(
-      `/api/lighting/venues/${venue.name}`,
-    );
   });
 
   test("Delete, confirmed, sends a DELETE and nothing else", async ({
