@@ -159,7 +159,68 @@ pub fn stem(name: &str) -> String {
 /// Where a new `kind` named `name` is written in `dir`:
 /// `dir/<stem>.venue` or `dir/<stem>.fixture`.
 pub fn canonical_path(kind: Kind, dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{}.{}", stem(name), kind.extension()))
+    file_in(kind, dir, &stem(name))
+}
+
+/// The file of `kind` with the stem `file_stem`, as written, in `folder`.
+fn file_in(kind: Kind, folder: &Path, file_stem: &str) -> PathBuf {
+    folder.join(format!("{file_stem}.{}", kind.extension()))
+}
+
+/// Where the `.light` file `light` of `kind`, under `dir`, moves when its
+/// new text needs the newer format: beside it, with its own stem, as a
+/// `.venue` or `.fixture` (`tour/old.light` to `tour/old.venue`). Refused
+/// as a new name's file is when that file, or one of the kind with its stem
+/// in another case, is there.
+pub fn upgrade_path(kind: Kind, dir: &Path, light: &Path) -> Result<PathBuf, Refusal> {
+    let folder = light.parent().unwrap_or(dir);
+    let own = light
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let path = file_in(kind, folder, own);
+    file_free(kind, &read_record(kind, dir), dir, &path, Some(light))?;
+    Ok(path)
+}
+
+/// Refuses `path` when it, or a file of `kind` in its folder whose stem
+/// folds to the same, is there (`except` aside). Files are shown relative
+/// to `dir`.
+fn file_free(
+    kind: Kind,
+    record: &Record,
+    dir: &Path,
+    path: &Path,
+    except: Option<&Path>,
+) -> Result<(), Refusal> {
+    let folder = path.parent().unwrap_or(dir);
+    let wanted = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(fold)
+        .unwrap_or_default();
+    let entries: Vec<PathBuf> = match std::fs::read_dir(folder) {
+        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(Refusal::Unreadable {
+                dir: folder.to_path_buf(),
+                error,
+            })
+        }
+    };
+    let taken = entries
+        .into_iter()
+        .filter(|entry| Some(entry.as_path()) != except)
+        .find(|entry| has_stem_of_kind(entry, kind, &wanted))
+        .or_else(|| path.symlink_metadata().is_ok().then(|| path.to_path_buf()));
+    match taken {
+        Some(file) => Err(Refusal::Taken {
+            by: record.names_in(&file).map(unique).unwrap_or_default(),
+            file: display_in(dir, &file),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// What a file that parsed holds: the names of its kind, in file order (a
@@ -655,27 +716,7 @@ fn claim(
     let record = read_record(kind, dir);
     name_free_in(&record, kind, dir, name, library, own_archive)?;
     let path = canonical_path(kind, dir, name);
-    let wanted = stem(name);
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => {
-            return Err(Refusal::Unreadable {
-                dir: dir.to_path_buf(),
-                error,
-            })
-        }
-    };
-    let taken = entries
-        .into_iter()
-        .find(|entry| has_stem_of_kind(entry, kind, &wanted))
-        .or_else(|| path.symlink_metadata().is_ok().then(|| path.clone()));
-    if let Some(file) = taken {
-        return Err(Refusal::Taken {
-            by: record.names_in(&file).map(unique).unwrap_or_default(),
-            file: display_in(dir, &file),
-        });
-    }
+    file_free(kind, &record, dir, &path, None)?;
     Ok(Claim { path })
 }
 

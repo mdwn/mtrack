@@ -161,8 +161,9 @@ impl Save<'_> {
     /// - a rename of a file at the old name's canonical place: a new file
     ///   at the new name's, claimed, and the old one removed;
     /// - otherwise the owner's file in place, unless the text needs the
-    ///   newer format and the file is a `.light`: then `<stem>.venue` /
-    ///   `<stem>.fixture` beside it, made new, and the `.light` removed.
+    ///   newer format and the file is a `.light`: then the same stem as a
+    ///   `.venue` / `.fixture` beside it ([`files::upgrade_path`]), made
+    ///   new, and the `.light` removed.
     pub fn plan(&self) -> Result<Plan, Response> {
         let Some(owner) = self.owner() else {
             if self.renaming() {
@@ -201,12 +202,23 @@ impl Save<'_> {
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("light"));
         if self.needs_new_format && is_light {
-            let folder = owner.path.parent().unwrap_or(self.dir);
-            let upgraded = folder.join(format!(
-                "{}.{}",
-                files::stem(self.name),
-                self.kind.extension()
-            ));
+            let upgraded =
+                files::upgrade_path(self.kind, self.dir, &owner.path).map_err(|refusal| {
+                    match refusal {
+                        Refusal::Taken { file, .. } => (
+                            StatusCode::CONFLICT,
+                            Json(json!({"error": format!(
+                                "{} \"{}\" now needs a .{} file, and {file} is there; move or \
+                                 remove it by hand, then save again",
+                                self.kind.noun(),
+                                self.subject(),
+                                self.kind.extension()
+                            )})),
+                        )
+                            .into_response(),
+                        other => refused(other),
+                    }
+                })?;
             return Ok(Plan {
                 write: Write::Create(upgraded),
                 retire: Some(owner.path),
@@ -584,7 +596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_light_venue_needing_the_new_format_moves_to_its_stem_venue() {
+    async fn a_light_venue_needing_the_new_format_keeps_its_own_stem() {
         let (app, _dir, d) = project(V, &[("tour/old.light", &venue("Big Room"))]);
         let (status, _) = call(
             &app,
@@ -596,7 +608,8 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let names: Vec<String> = snapshot(&d).into_iter().map(|(f, _)| f).collect();
-        assert_eq!(names, ["tour/big_room.venue"]);
+        // The file keeps its name, as a rename elsewhere does.
+        assert_eq!(names, ["tour/old.venue"]);
     }
 
     #[tokio::test]
@@ -619,7 +632,31 @@ mod tests {
             body["error"]
                 .as_str()
                 .unwrap()
-                .contains("rig.venue already exists"),
+                .contains("rig.venue is there"),
+            "{body}"
+        );
+        assert_eq!(snapshot(&d), before);
+
+        // Nor beside the same stem in another case.
+        let (app, _dir, d) = project(
+            V,
+            &[
+                ("tour/rig.light", &venue("Rig")),
+                ("tour/RIG.venue", &venue("Other")),
+            ],
+        );
+        let before = snapshot(&d);
+        let (status, body) = call(
+            &app,
+            "PUT",
+            &venue_uri("Rig", ""),
+            "application/json",
+            venue_json(Some("8: RGBS")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("tour/RIG.venue"),
             "{body}"
         );
         assert_eq!(snapshot(&d), before);
@@ -694,34 +731,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_channel_map_form_does_not_overwrite_a_rich_type() {
-        let (app, _dir, d) = project(T, &[("mover.fixture", &rich("Mover"))]);
-        let before = snapshot(&d);
-        let (status, body) = call(
-            &app,
-            "PUT",
-            &type_uri("Mover", ""),
-            "application/json",
-            ft_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(
-            body["error"].as_str().unwrap().contains("as text"),
-            "{body}"
-        );
-        assert_eq!(snapshot(&d), before);
-        // A plain `.fixture` is the form's to save.
-        let (app, _dir, _) = project(T, &[("wash.fixture", &par("Wash"))]);
-        let (status, _) = call(
-            &app,
-            "PUT",
-            &type_uri("Wash", ""),
-            "application/json",
-            ft_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+    async fn the_channel_map_form_saves_only_a_type_it_can_say_all_of() {
+        let plain = par("Wash");
+        let with = |line: &str| plain.replace("\n}\n", &format!("\n  {line}\n}}\n"));
+        for (what, text) in [
+            ("a comment", format!("# measured on the rig\n{plain}")),
+            ("a strobe curve", with("strobe_curve: linear")),
+            ("special cases", with("special_cases: [\"Wash\"]")),
+            (
+                "movement limits",
+                with("movement { max_pan_speed: 90deg/s }"),
+            ),
+            ("rich channels", rich("Wash")),
+        ] {
+            let (app, _dir, d) = project(T, &[("wash.fixture", &text)]);
+            let before = snapshot(&d);
+            let (_, list) = call(
+                &app,
+                "GET",
+                &format!("/lighting/fixture-types?dir={T}"),
+                "text/plain",
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(
+                list["fixture_types"]["Wash"]["form_editable"], false,
+                "{what}"
+            );
+            let (status, body) = call(
+                &app,
+                "PUT",
+                &type_uri("Wash", ""),
+                "application/json",
+                ft_json(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {body}");
+            assert!(
+                body["error"].as_str().unwrap().contains("as text"),
+                "{body}"
+            );
+            assert_eq!(snapshot(&d), before, "{what}");
+        }
+        // A plain type, in either extension, is the form's to open and save.
+        for file in ["wash.fixture", "wash.light"] {
+            let (app, _dir, _) = project(T, &[(file, &plain)]);
+            let (_, list) = call(
+                &app,
+                "GET",
+                &format!("/lighting/fixture-types?dir={T}"),
+                "text/plain",
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(
+                list["fixture_types"]["Wash"]["form_editable"], true,
+                "{file}"
+            );
+            let (status, _) = call(
+                &app,
+                "PUT",
+                &type_uri("Wash", ""),
+                "application/json",
+                ft_json(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{file}");
+        }
     }
 
     // --- Saves of a read-only name.
@@ -1118,6 +1194,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_rename_at_a_stale_version_moves_nothing() {
+        let (app, _dir, d) = project(V, &[("house.venue", &venue("House"))]);
+        let before = snapshot(&d);
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(venue_uri("Big Room", "&from=House"))
+                    .header("content-type", "application/json")
+                    .header("if-match", "\"not-the-version\"")
+                    .body(Body::from(venue_json(None)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["conflict"], true);
+        assert_eq!(snapshot(&d), before);
+    }
+
     // --- The harness's layout stays editable.
 
     #[tokio::test]
@@ -1129,11 +1228,20 @@ mod tests {
         std::fs::create_dir_all(&types).unwrap();
         std::fs::write(venues.join("built-in.venue"), venue("built-in")).unwrap();
         std::fs::write(venues.join("test.venue"), venue("test")).unwrap();
+        // As the importer writes it: a record of its GDTF in the library.
+        let library = dir.path().join("lighting/library");
+        std::fs::create_dir_all(&library).unwrap();
         std::fs::write(
-            types.join("astera_pixelbrick.fixture"),
-            rich("Astera-PixelBrick"),
+            library.join("pb15.gdtf"),
+            crate::lighting::gdtf::build_zip(&[(
+                "description.xml",
+                crate::lighting::gdtf::SYNTHETIC_DESCRIPTION.as_bytes(),
+            )]),
         )
         .unwrap();
+        let record = "# Imported from pb15.gdtf.\nfixture_type \"Astera-PixelBrick\"\n  \
+                      from gdtf(\"lighting/library/pb15.gdtf\")\n{\n}\n";
+        std::fs::write(types.join("astera_pixelbrick.fixture"), record).unwrap();
         let app = router().with_state(state);
 
         let (_, list) = call(&app, "GET", "/lighting/venues", "text/plain", Body::empty()).await;
@@ -1150,6 +1258,11 @@ mod tests {
         assert_eq!(
             list["fixture_types"]["Astera-PixelBrick"]["owner"]["editable"],
             true
+        );
+        // A record is text, never the channel map's.
+        assert_eq!(
+            list["fixture_types"]["Astera-PixelBrick"]["form_editable"],
+            false
         );
 
         for name in ["built-in", "test"] {
@@ -1170,10 +1283,15 @@ mod tests {
             "PUT",
             "/lighting/fixture-types/Astera-PixelBrick",
             "text/plain",
-            rich("Astera-PixelBrick"),
+            record.replace("{\n}", "{\n  movement { max_pan_speed: 90deg/s }\n}"),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        assert!(
+            std::fs::read_to_string(types.join("astera_pixelbrick.fixture"))
+                .unwrap()
+                .contains("max_pan_speed")
+        );
         let mut names: Vec<String> = snapshot(&dir.path().join("lighting"))
             .into_iter()
             .map(|(f, _)| f)
@@ -1184,6 +1302,7 @@ mod tests {
             names,
             [
                 "fixture_types/astera_pixelbrick.fixture",
+                "library/pb15.gdtf",
                 "venues/built-in.venue",
                 "venues/test.venue"
             ]

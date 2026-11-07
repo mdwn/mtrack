@@ -93,13 +93,19 @@ test.describe("A venue whose file is not its alone", () => {
       page.locator(".editor-form").getByRole("button", { name: "Save" }),
     ).toBeDisabled();
     await expect(page.locator("#venue-name")).toBeDisabled();
+    // A click on the disabled Save, forced past the check, sends nothing.
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click({ force: true });
+    await page.waitForTimeout(300);
     expect(writes).toHaveLength(0);
   });
 
   test("its card cannot delete it; an editable venue's can", async ({
     page,
   }) => {
-    await routeVenues(page);
+    const writes = await routeVenues(page);
     await page.goto("/#/lighting/venues");
     await expect(page.getByTestId("venue-delete-Club")).toBeDisabled();
     await expect(page.getByTestId("venue-delete-Club")).toHaveAttribute(
@@ -107,6 +113,11 @@ test.describe("A venue whose file is not its alone", () => {
       SHARED,
     );
     await expect(page.getByTestId("venue-delete-House")).toBeEnabled();
+    // Forced, the disabled Delete asks nothing and deletes nothing.
+    await page.getByTestId("venue-delete-Club").click({ force: true });
+    await page.waitForTimeout(300);
+    await expect(page.locator(".dialog-overlay")).toHaveCount(0);
+    expect(writes).toHaveLength(0);
   });
 
   test("an editable venue's editor has no note and saves", async ({ page }) => {
@@ -136,6 +147,7 @@ const washType = (name: string): FixtureTypeEntry => ({
   file: "all.light",
   extension: "light",
   owner: { file: "all.light", editable: false, reason: TYPE_SHARED },
+  form_editable: true,
   referential: false,
   rich: false,
   footprint: 1,
@@ -182,6 +194,12 @@ test.describe("A fixture type whose file is not its alone", () => {
       page.locator(".editor-form").getByRole("button", { name: "Save" }),
     ).toBeDisabled();
     await expect(page.locator("#ft-name")).toBeDisabled();
+    // A click on the disabled Save, forced past the check, sends nothing.
+    await page
+      .locator(".editor-form")
+      .getByRole("button", { name: "Save" })
+      .click({ force: true });
+    await page.waitForTimeout(300);
     expect(writes).toHaveLength(0);
   });
 });

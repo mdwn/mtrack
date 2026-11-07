@@ -199,9 +199,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A new venue is written as `<stem>.venue` and a new type as `<stem>.fixture`, whatever they
     hold: "Club (Main)" goes to `lighting/venues/club_main.venue` and the channel map's "Wash Par"
     to `lighting/fixture_types/wash_par.fixture`, where both were `.light`. `?ext=light` no
-    longer makes a new `.light`. The channel map edits a plain type in a `.fixture` too (it still
-    refuses a rich or GDTF type), and a `.fixture` is not written back as `.light`: `?ext=light`
-    on one answers 400, where it moved the type to a `.light`.
+    longer makes a new `.light`. A `.fixture` is not written back as `.light`: `?ext=light` on
+    one answers 400, where it moved the type to a `.light`.
+  - The channel map edits only a type it can say all of: a file holding that one type and only
+    `channels`, `channel_map` and the strobe frequencies and offset, with no comment. The listing
+    says which, `form_editable`; any other type opens as text, and a form save of it answers 400
+    ("edit this type as text"). A data-loss fix: a `.light` type with a comment, a
+    `strobe_curve`, `special_cases` or `movement` limits opened in the channel map, and its save
+    regenerated the file without them. A plain `.fixture` (as a new type from the channel map
+    is) opens in the channel map, where every `.fixture` opened as text.
   - A new name whose file is taken is refused with 409: "club main" when `club_main.venue` holds
     "Club Main" answers "club_main.venue is taken by "Club Main"; choose another name", and a new
     type at a `<stem>.light` or `<stem>.fixture` declaring another type is refused, where that
@@ -210,12 +216,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A text body must declare this one venue or type and nothing else, or the save answers 400:
     `venue "House" { … }` followed by `venue "Annex" { … }`, or by a `show`, where the file
     became whatever the text declared.
-  - A `.light` whose edit needs the newer format moves to `<stem>.venue` or `<stem>.fixture`
-    beside it, named for the venue or type: "Big Room" in `tour/old.light` gaining a GDTF mode is
-    written to `tour/big_room.venue`, where it was `tour/old.venue`; a `.light` type saved with
-    rich channels moves to `<stem>.fixture`, where it was refused with 400. It is refused with 409
-    when that file is there, nothing written. If the `.light` cannot be removed after, the new
-    file is removed again and the save fails, where the two were left declaring the name twice.
+  - A `.light` whose edit needs the newer format moves to a `.venue` or `.fixture` of its own
+    name beside it, as before ("Big Room" in `tour/old.light` gaining a GDTF mode is written to
+    `tour/old.venue`); a `.light` type saved with rich channels now moves too, where it was
+    refused with 400. It is refused with 409, nothing written, when that file or one of the same
+    stem in another case (`tour/OLD.venue`) is there; a case variant was not looked for. If the
+    `.light` cannot be removed after, the new file is removed again and the save fails, where the
+    two were left declaring the name twice.
   - A rename in either editor is one save, `PUT …/<new name>?from=<old name>` at the old file's
     version, where it saved the new name to a new file and then deleted the old one (and a venue's
     comments went with it). A file at the old name's own place (`<dir>/<stem>.venue`, `.light` or
@@ -228,7 +235,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     mentions is not found: GET answers 404 (was 500), DELETE 404 (was: `rig.venue` deleted), and
     a save writes a new `house.venue` (was 409); a broken `house.venue` itself refuses that save
     (409), untouched. DELETE and the fixture settings of a type named only by a stem file that
-    does not declare it answer 404, where DELETE deleted that file and the settings read it.
+    does not declare it answer 404, where DELETE deleted that file and the settings read it;
+    `GET /api/lighting/fixture-types/<name>` and `…/<name>/gdtf` for a name whose stem file does
+    not parse answer 404, or the library's GDTF of that name, where they answered 500.
+  - A data-loss fix: DELETE of a venue whose file also holds a fixture type or a show, or of a
+    type whose file also holds a venue, answers 409 and deletes nothing, where it deleted the
+    whole file and everything else in it (only other venues, or other types, were checked for).
+  - Adding aim points to a venue (`POST /api/lighting/venues/<name>/aim-points`, the MVR export
+    dialog) writes by the same rule: a venue whose file is not its alone answers the same 409 and
+    the dialog does not offer it, saying why, where the points were patched into the shared,
+    mixed or first duplicate file; and a `.light` venue moves to its `.venue`, which focus points
+    need, where they were written into the `.light`.
   - The listings say who owns each name: `GET /api/lighting/venues` adds `owners`, and
     `GET /api/lighting/fixture-types` and `GET /api/lighting/fixture-types/<name>` add each type's
     `owner` (`null` for a library GDTF with no record), as `{file, editable, reason}`. A file that
