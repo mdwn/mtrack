@@ -59,7 +59,7 @@ use rmcp::{
 use schemars::JsonSchema;
 
 use crate::lighting::files::Kind;
-use crate::webui::api::lighting_writes;
+use crate::webui::api::{lighting_api, lighting_writes, playlists, songs_api};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
@@ -1211,65 +1211,31 @@ impl McpServer {
         })))
     }
 
-    #[tool(
-        description = "Write a song's `song.yaml`. Validates the YAML against \
-        `config::Song` before writing. If the song doesn't exist yet, creates a \
-        new song directory under the songs root. A folder of that name whose \
-        `song.yaml` is another song's is refused, and left as it is."
-    )]
+    #[tool(description = "Write a song's config, by the web UI's rules. A song \
+        that exists (loaded, failed to load, or a folder of that name) is \
+        saved as the song editor saves it: to the file it was loaded from, \
+        never over another song's config, and not renamed onto a name \
+        another song holds. Otherwise the song is created as the web UI \
+        creates one: a new folder under the songs root with a `song.yaml`, \
+        refused if the name the YAML declares is another song's. The YAML \
+        is validated as a song config before anything is written.")]
     async fn write_song(
         &self,
         Parameters(args): Parameters<WriteSongArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // Validate the YAML parses as a song config before we touch disk.
-        let written: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
-
         // Taken turns with the song's other writers, here and in the web UI,
         // whose edits read the file first.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let songs_root = self.songs_root_verified().await?;
-        // A song that failed to load is rewritten in place, as the web UI's
-        // song editor does: fixing it is the usual reason to write it.
-        let yaml_path = match self.player.songs().config_path(&args.name) {
-            Some(path) => {
-                // Use the recorded `config_path` so flat-layout songs
-                // (`<root>/<name>.yaml`) and directory-layout songs
-                // (`<root>/<name>/song.yaml`) both round-trip through their
-                // original file rather than writing to `<base>/song.yaml`,
-                // which is shared across all flat-layout songs.
-                crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
-                    .map_err(safepath_err)?
-                    .as_path()
-                    .to_path_buf()
-            }
-            None => {
-                crate::webui::safe_path::SafePath::validate_new_name(&args.name)
-                    .map_err(safepath_err)?;
-                let song_dir = crate::webui::safe_path::SafePath::create_dir(
-                    &songs_root.as_safe_path(),
-                    &args.name,
-                    &songs_root,
-                )
-                .map_err(safepath_err)?;
-                song_dir.join_filename("song.yaml")
-            }
+        let root = songs_root.as_path();
+        // The web UI's save of a song it finds (PUT), else its create
+        // (POST): one rule each, whoever writes.
+        let written = if songs_api::resolve_song_dir(&self.player, root, &args.name).is_ok() {
+            songs_api::save_song(&self.player, root, &args.name, args.yaml.clone()).await
+        } else {
+            songs_api::create_song(&self.player, root, &args.name, args.yaml.clone()).await
         };
-        // Not over another song's config: a folder named as this song whose
-        // `song.yaml` declares another (#680), by the web UI's rule.
-        crate::songs::check_song_config_for(&yaml_path, &args.name, Some(written.name()))
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        // Nor renamed onto a name another song holds, by the web UI's rule
-        // (#689).
-        let taken = crate::webui::api::helpers::player_song_names(&self.player);
-        let free = tokio::task::spawn_blocking({
-            let (yaml_path, root) = (yaml_path.clone(), songs_root.as_path().to_path_buf());
-            let declared = written.name().to_string();
-            move || crate::songs::check_song_name_free(&yaml_path, &declared, &root, taken)
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        free.map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        staged_write_string(&yaml_path, &args.yaml, false).await?;
+        let yaml_path = web(written).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
         self.reload_player_songs().await?;
@@ -1327,48 +1293,20 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let target = self.resolve_playlist_path(args.name.as_deref()).await?;
-        let path = target.path().to_path_buf();
         // Taken turns with the web UI's playlist saves, which read the file
         // to keep what the editor does not send.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+        let file = self.playlist_file_to_write(args.name.as_deref()).await?;
         // Checked under the lock, against the songs and the file as they
         // are: a web song delete holds it while it takes the song off every
         // playlist, and a check before it would write the deleted song back.
-        self.validate_playlist(&args.yaml)?;
-        if let (Some(name), PlaylistTarget::Named(file)) = (&args.name, &target) {
-            crate::webui::safe_path::SafePath::validate_name_to_write(name, file.exists())
-                .map_err(safepath_err)?;
-        }
-        // Same rule as the web UI's playlist write and every other configured
-        // root: created only when it is inside the project. A `playlists_dir:`
-        // pointing elsewhere is the operator's to set up.
-        //
-        // The file is then written under the directory that was made, not the
-        // spelling it was configured as -- those differ when the setting holds
-        // a `..`, and the spelling names a path that was never created.
-        let path = match (path.parent(), path.file_name()) {
-            (Some(parent), Some(name)) => {
-                let project = crate::util::project_dir_of(self.config_store()?.path());
-                let created = crate::util::create_dir_within_async(parent.to_path_buf(), project)
-                    .await
-                    .map_err(create_within_err)?;
-                created.as_path().join(name)
-            }
-            _ => path,
-        };
-        // A new playlist is created as new: never written over a file made
-        // since the lookup.
-        let new = matches!(
-            target,
-            PlaylistTarget::Named(crate::util::NamedFile::New(_))
-        );
-        staged_write_string(&path, &args.yaml, new).await?;
+        self.validate_playlist(&args.yaml).await?;
+        web(playlists::write_playlist_file(&file, args.yaml.clone()).await).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
         self.reload_player_songs().await?;
         Ok(ok_json(json!({
-            "path": path.display().to_string(),
+            "path": file.path().display().to_string(),
             "bytes": args.yaml.len(),
         })))
     }
@@ -2403,14 +2341,24 @@ impl McpServer {
             .to_string_lossy()
             .replace('\\', "/");
 
+        // The web UI's rule for deleting a light show, checked before the
+        // song's config is touched.
+        let store = self.config_store()?;
+        let songs_root = self.songs_root_verified().await?;
+        let shown = shown_in(songs_root.as_path(), &path);
+        web(lighting_api::check_light_show_delete(store.path(), &path, &shown).await).await?;
+
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
         let unregistered = match unregister_lighting_file(&original, &reference) {
             Some(updated) => {
-                // Same guard the write path uses: never leave a song.yaml that
+                // Saved as the song editor saves it: never a song.yaml that
                 // would not load back.
-                let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-                staged_write_string(&config_path, &updated, false).await?;
+                web(
+                    songs_api::save_song(&self.player, songs_root.as_path(), &args.song, updated)
+                        .await,
+                )
+                .await?;
                 true
             }
             None if referenced => {
@@ -2434,7 +2382,7 @@ impl McpServer {
 
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
-        remove_lighting_file(&path).await?;
+        web(lighting_api::remove_light_show(&path).await).await?;
         self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
@@ -2586,16 +2534,6 @@ impl McpServer {
         // the place it is written are the song's as a web save left them.
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
-        // Validate against the tempo this song will actually load it with,
-        // otherwise a bar/beat show is rejected here and then loads fine; and
-        // where it will be written, which its `include`s resolve against.
-        crate::lighting::parser::parse_light_file_within(
-            &args.source,
-            Some(&song_lighting_target(&song, &args.file)),
-            Some(&self.include_root(&song).await),
-            song_lighting_tempo(&song).as_ref(),
-        )
-        .map_err(|e| McpError::invalid_params(format!("invalid .light source: {e}"), None))?;
 
         let path = match find_song_lighting_write_path(&song, &args.file) {
             Some(existing) => existing,
@@ -2632,19 +2570,16 @@ impl McpServer {
                         None,
                     ));
                 }
-                let lighting_dir = song.base_path().join("lighting");
-                crate::util::create_dir_all_async(&lighting_dir)
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(
-                            format!("failed to create {}: {e}", lighting_dir.display()),
-                            None,
-                        )
-                    })?;
-                lighting_dir.join(&args.file)
+                // Made by the write, once the show is checked.
+                song.base_path().join("lighting").join(&args.file)
             }
         };
-        staged_write_string(&path, &args.source, false).await?;
+        // Saved as the web UI saves a light show: checked against the tempo
+        // this song loads it with (otherwise a bar/beat show is rejected
+        // here and then loads fine), and where it is written, which its
+        // `include`s resolve against.
+        self.save_light_show(&song, &path, args.source.clone())
+            .await?;
 
         // Writing the file is not enough: without a `lighting:` entry pointing
         // at it the show never loads, and the caller gets a success response,
@@ -2686,10 +2621,11 @@ impl McpServer {
             });
         };
 
-        // Same guard `patch_song` uses: never write a song.yaml that would not
-        // load back.
-        let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-        staged_write_string(&config_path, &updated, false).await?;
+        // Saved as the song editor saves it: never a song.yaml that would
+        // not load back.
+        let songs_root = self.songs_root_verified().await?;
+        web(songs_api::save_song(&self.player, songs_root.as_path(), song.name(), updated).await)
+            .await?;
 
         Ok(Registration {
             registered: true,
@@ -2718,8 +2654,16 @@ impl McpServer {
             &original,
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
-        let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-        staged_write_string(&path, &updated, false).await?;
+        // Saved as the song editor saves it.
+        let songs_root = self.songs_root_verified().await?;
+        let path = web(songs_api::save_song(
+            &self.player,
+            songs_root.as_path(),
+            &args.name,
+            updated.clone(),
+        )
+        .await)
+        .await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -2733,21 +2677,18 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PatchPlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_playlist_path(args.name.as_deref())
-            .await?
-            .path()
-            .to_path_buf();
         // As write_playlist, with the web UI's saves; held from the read, so
         // a save between it and the write is not lost.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
+        let file = self.playlist_file_to_write(args.name.as_deref()).await?;
+        let path = file.path().to_path_buf();
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
-        self.validate_playlist(&updated)?;
-        staged_write_string(&path, &updated, false).await?;
+        self.validate_playlist(&updated).await?;
+        web(playlists::write_playlist_file(&file, updated.clone()).await).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -2773,17 +2714,8 @@ impl McpServer {
             &original,
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
-        // Validate against the tempo this song loads it with, matching
-        // `write_song_lighting`. Otherwise a patch to a tempo-inheriting show
-        // is rejected here and would have loaded fine.
-        crate::lighting::parser::parse_light_file_within(
-            &updated,
-            Some(&path),
-            Some(&self.include_root(&song).await),
-            song_lighting_tempo(&song).as_ref(),
-        )
-        .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
-        staged_write_string(&path, &updated, false).await?;
+        // Saved as `write_song_lighting` saves, by the web UI's rule.
+        self.save_light_show(&song, &path, updated.clone()).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -3084,14 +3016,6 @@ struct Registration {
     already_registered: bool,
     /// How the file is spelled in `song.yaml`, relative to the song directory.
     reference: String,
-}
-
-/// Removes the file, mapping a missing path to a clear error rather than an
-/// opaque io message.
-async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
-    tokio::fs::remove_file(path).await.map_err(|e| {
-        McpError::internal_error(format!("failed to delete {}: {e}", path.display()), None)
-    })
 }
 
 /// The `lighting:` block's location in a song's YAML: the key line, the item
@@ -3996,11 +3920,71 @@ impl McpServer {
     /// when it loads it, that no fade outlasts the song it plays under, that
     /// every song it names exists (the player drops a playlist naming one
     /// that does not), and that its ambient show is inside the project.
-    fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
+    async fn validate_playlist(&self, yaml: &str) -> Result<(), McpError> {
         let config: crate::config::Playlist = serde_yaml_from_str(yaml)?;
-        crate::playlist::validate_for_write(&config, &self.player.songs())
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        Ok(())
+        web(playlists::check_playlist(&config, &self.player)).await
+    }
+
+    /// The file a playlist save writes. With a `name`, the web UI's rule
+    /// ([`playlists::playlist_file_to_write`]) in the playlists directory
+    /// the loader reads; with none, the top-level `playlist:` file, its
+    /// directory made if missing, inside the project.
+    async fn playlist_file_to_write(
+        &self,
+        name: Option<&str>,
+    ) -> Result<crate::util::NamedFile, McpError> {
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let sources = self.playlist_sources().await?;
+        match name {
+            Some(name) => {
+                let dir = sources.playlists_dir.ok_or_else(|| {
+                    McpError::invalid_params("no playlists directory configured", None)
+                })?;
+                web(playlists::playlist_file_to_write(&dir, &project, name).await).await
+            }
+            None => {
+                let path = sources.legacy_playlist.ok_or_else(|| {
+                    McpError::invalid_params("no top-level playlist file configured", None)
+                })?;
+                // Written under the directory that was made, not the
+                // spelling it was configured as -- those differ when the
+                // setting holds a `..`.
+                let path = match (path.parent(), path.file_name()) {
+                    (Some(parent), Some(file)) => {
+                        web(crate::webui::api::helpers::ensure_dir_within(parent, &project).await)
+                            .await?
+                            .join(file)
+                    }
+                    _ => path,
+                };
+                // Written whether or not it is there yet, as the config names it.
+                Ok(crate::util::NamedFile::Found(path))
+            }
+        }
+    }
+
+    /// Writes a song's light show `source` to `path` by the web UI's rule
+    /// ([`lighting_api::save_light_show`]): against the tempo `song` loads
+    /// it with, its `include`s kept inside the songs root.
+    async fn save_light_show(
+        &self,
+        song: &crate::songs::Song,
+        path: &std::path::Path,
+        source: String,
+    ) -> Result<(), McpError> {
+        let store = self.config_store()?;
+        let root = self.include_root(song).await;
+        let shown = shown_in(&root, path);
+        web(lighting_api::save_light_show(
+            store.path(),
+            &root,
+            path,
+            &shown,
+            source,
+            song_lighting_tempo(song).as_ref(),
+        )
+        .await)
+        .await
     }
 
     /// Resolves a playlist file path. With `None`, returns the top-level
@@ -4014,16 +3998,7 @@ impl McpServer {
         &self,
         name: Option<&str>,
     ) -> Result<PlaylistTarget, McpError> {
-        let store = self.config_store()?;
-        let config_path = store.path().to_path_buf();
-        // The playlists the player reloads from, so a playlist written here
-        // is one it picks up: the command line's legacy playlist included.
-        let sources = match self.player.song_sources() {
-            Some(sources) => sources,
-            None => {
-                crate::player::SongSources::resolve(&store.read_config().await, &config_path, None)
-            }
-        };
+        let sources = self.playlist_sources().await?;
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
@@ -4043,6 +4018,20 @@ impl McpServer {
                     McpError::invalid_params("no top-level playlist file configured", None)
                 }),
         }
+    }
+}
+
+impl McpServer {
+    /// The playlists the player reloads from, so a playlist written here
+    /// is one it picks up: the command line's legacy playlist included.
+    async fn playlist_sources(&self) -> Result<crate::player::SongSources, McpError> {
+        let store = self.config_store()?;
+        Ok(match self.player.song_sources() {
+            Some(sources) => sources,
+            None => {
+                crate::player::SongSources::resolve(&store.read_config().await, store.path(), None)
+            }
+        })
     }
 }
 
@@ -4357,12 +4346,18 @@ fn listing_of(
 /// error: the same message and body, `invalid_params` for a refusal and
 /// `internal_error` for a server-side failure, by the web API's status.
 fn answer_err(answer: lighting_writes::Answer) -> McpError {
-    let message = answer.message().to_string();
+    let message = answer.message();
     if answer.status.is_server_error() {
         McpError::internal_error(message, Some(answer.body))
     } else {
         McpError::invalid_params(message, Some(answer.body))
     }
+}
+
+/// A refusal of one of the web UI's song, playlist or light show writers,
+/// answered as its response, as the tool's error ([`answer_err`]).
+async fn response_err(response: axum::response::Response) -> McpError {
+    answer_err(lighting_writes::Answer::of_response(response).await)
 }
 
 /// Runs one of the web UI's venue and fixture type writers, which hold the
@@ -4384,45 +4379,20 @@ fn patch_of(args: &PatchLightingFileArgs) -> lighting_writes::Patch {
     })
 }
 
-/// Writes a string to `path` the same way the config store does, preserving the
-/// file's ownership and staging the content so an interrupted write stays
-/// recoverable (see [`crate::util::write_file`]). With `new`, it only
-/// creates the file (`util::write_new_file`): one already there is refused.
-pub(crate) async fn staged_write_string(
-    path: &std::path::Path,
-    content: &str,
-    new: bool,
-) -> Result<(), McpError> {
-    let owned = path.to_path_buf();
-    let content = content.to_string();
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        let parent = owned
-            .parent()
-            .ok_or_else(|| std::io::Error::other("path has no parent"))?;
-        crate::util::create_dir_all(parent)?;
-        if new {
-            crate::util::write_new_file(&owned, content.as_bytes())
-        } else {
-            crate::util::write_file(&owned, content.as_bytes())
-        }
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            return McpError::invalid_params(
-                format!(
-                    "a file `{}` already exists",
-                    crate::util::filename_display(path)
-                ),
-                None,
-            );
-        }
-        McpError::internal_error(
-            crate::util::write_failure_message(crate::util::WriteTarget::File(path), &e),
-            None,
-        )
-    })
+/// A web UI writer's answer as the tool's: its refusal ([`response_err`]).
+async fn web<T>(result: Result<T, axum::response::Response>) -> Result<T, McpError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(response) => Err(response_err(response).await),
+    }
+}
+
+/// `path` as the web API names it: relative to `root`, with `/`.
+fn shown_in(root: &std::path::Path, path: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 impl McpServer {
@@ -5329,6 +5299,262 @@ profiles:
         let _ = answer(write(renamed).await);
         assert_eq!(std::fs::read_to_string(&foo).unwrap(), renamed);
         drop(fixture);
+    }
+
+    const FOO: &str = "name: Foo\ntracks: []\n";
+    const SHOW: &str =
+        "show \"Written\" {\n    @00:00.000\n    all_lights: static color: \"blue\", duration: 4s\n}\n";
+    const IN_VENUES: &str = "foo/lighting/show.light is in the venues directory (rig/venues): a venue is saved \
+                             by name, on the Lighting page or with MCP's venue tools; this endpoint \
+                             is for song light shows";
+
+    /// #675: `write_song` creates a new song as the web UI's create does:
+    /// a name the YAML declares that another song holds, or a body that is
+    /// not a song config, is refused before any folder is made.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_creates_a_song_by_the_web_rules() {
+        let (server, fixture) = server(&[("songs/foo/song.yaml", FOO)]).await;
+        let write = |name: &str, yaml: &str| {
+            server.write_song(Parameters(WriteSongArgs {
+                name: name.to_string(),
+                yaml: yaml.to_string(),
+            }))
+        };
+
+        let taken = refusal(write("Fresh", FOO).await);
+        assert_eq!(
+            taken,
+            "a song named \"Foo\" already exists; choose another name"
+        );
+        let invalid = refusal(write("Fresh", "tracks: []\n").await);
+        assert!(!invalid.is_empty());
+        assert!(!fixture.root.join("songs/Fresh").exists(), "no folder made");
+
+        let _ = answer(write("Fresh", "name: Fresh\ntracks: []\n").await);
+        assert_eq!(
+            read(&fixture.root, "songs/Fresh/song.yaml").as_deref(),
+            Some("name: Fresh\ntracks: []\n")
+        );
+    }
+
+    /// #675: `patch_song` saves as the song editor does: a patch renaming
+    /// the song onto another's name is refused and leaves the file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_song_saves_by_the_web_rules() {
+        let (server, fixture) = server(&[
+            ("songs/foo/song.yaml", FOO),
+            ("songs/bar/song.yaml", "name: Bar\ntracks: []\n"),
+        ])
+        .await;
+        let patch = |old: &str, new: &str| {
+            server.patch_song(Parameters(PatchSongArgs {
+                name: "Foo".to_string(),
+                old_string: old.to_string(),
+                new_string: new.to_string(),
+                replace_all: false,
+            }))
+        };
+
+        let taken = refusal(patch("name: Foo", "name: Bar").await);
+        assert_eq!(
+            taken,
+            "a song named \"Bar\" already exists; choose another name"
+        );
+        assert_eq!(
+            read(&fixture.root, "songs/foo/song.yaml").as_deref(),
+            Some(FOO)
+        );
+
+        let _ = answer(patch("tracks: []", "tracks: []\nloop_playback: true").await);
+        assert_eq!(
+            read(&fixture.root, "songs/foo/song.yaml").as_deref(),
+            Some("name: Foo\ntracks: []\nloop_playback: true\n")
+        );
+    }
+
+    const SET: &str = "kind: playlist\nsongs:\n- DSL Light Show Song\n";
+
+    /// #675: `write_playlist` names and finds its file as the web UI's
+    /// playlist save does: the reserved name is refused with its message,
+    /// and a playlist whose file is a `.yml` is written there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_playlist_saves_by_the_web_rules() {
+        let (server, fixture) = server(&[("playlists/set.yml", SET)]).await;
+        let write = |name: &str, yaml: &str| {
+            server.write_playlist(Parameters(WritePlaylistArgs {
+                name: Some(name.to_string()),
+                yaml: yaml.to_string(),
+            }))
+        };
+
+        assert_eq!(
+            refusal(write("all_songs", SET).await),
+            "'all_songs' is the player's own playlist and has no file"
+        );
+        let unknown = refusal(write("new", "kind: playlist\nsongs:\n- Nope\n").await);
+        assert!(unknown.contains("Nope"), "{unknown}");
+        assert_eq!(read(&fixture.root, "playlists/new.yaml"), None);
+
+        let written = format!("{SET}- DSL Light Show Song\n");
+        let _ = answer(write("set", &written).await);
+        assert_eq!(read(&fixture.root, "playlists/set.yml"), Some(written));
+        assert_eq!(read(&fixture.root, "playlists/set.yaml"), None);
+    }
+
+    /// #675: `patch_playlist` checks and writes as `write_playlist` does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_playlist_saves_by_the_web_rules() {
+        let (server, fixture) = server(&[("playlists/set.yml", SET)]).await;
+        let patch = |old: &str, new: &str| {
+            server.patch_playlist(Parameters(PatchPlaylistArgs {
+                name: Some("set".to_string()),
+                old_string: old.to_string(),
+                new_string: new.to_string(),
+                replace_all: false,
+            }))
+        };
+
+        let unknown = refusal(patch("- DSL Light Show Song", "- Nope").await);
+        assert!(unknown.contains("Nope"), "{unknown}");
+        assert_eq!(
+            read(&fixture.root, "playlists/set.yml").as_deref(),
+            Some(SET)
+        );
+
+        let _ = answer(patch("songs:\n", "songs:\n- DSL Light Show Song\n").await);
+        assert_eq!(
+            read(&fixture.root, "playlists/set.yml"),
+            Some(format!("{SET}- DSL Light Show Song\n"))
+        );
+    }
+
+    /// A server whose song Foo's `lighting/` folder is the venues
+    /// directory (a link to it), and whose song Bar has none yet.
+    async fn light_show_server() -> (McpServer, StandaloneFixture) {
+        let (server, fixture) = server(&[
+            ("songs/foo/song.yaml", FOO),
+            ("songs/bar/song.yaml", "name: Bar\ntracks: []\n"),
+            ("rig/venues/show.light", SHOW),
+        ])
+        .await;
+        std::os::unix::fs::symlink(
+            fixture.root.join("rig/venues"),
+            fixture.root.join("songs/foo/lighting"),
+        )
+        .unwrap();
+        (server, fixture)
+    }
+
+    fn write_show_args(song: &str, source: &str) -> WriteSongLightingArgs {
+        WriteSongLightingArgs {
+            song: song.to_string(),
+            file: "show.light".to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    /// #675: `write_song_lighting` saves as the web UI's light show save
+    /// does: never into the venues directory, and checked first.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_lighting_saves_by_the_web_rules() {
+        let (server, fixture) = light_show_server().await;
+        let root = fixture.root.clone();
+
+        let refused = refusal(
+            server
+                .write_song_lighting(Parameters(write_show_args("Foo", SHOW)))
+                .await,
+        );
+        assert_eq!(refused, IN_VENUES);
+        assert_eq!(read(&root, "songs/foo/song.yaml").as_deref(), Some(FOO));
+
+        let invalid = refusal(
+            server
+                .write_song_lighting(Parameters(write_show_args("Bar", "show {")))
+                .await,
+        );
+        assert!(!invalid.is_empty());
+        assert!(!root.join("songs/bar/lighting").exists(), "no folder made");
+
+        let wrote = answer(
+            server
+                .write_song_lighting(Parameters(write_show_args("Bar", SHOW)))
+                .await,
+        );
+        assert_eq!(wrote["registered"], true, "{wrote}");
+        assert_eq!(
+            read(&root, "songs/bar/lighting/show.light").as_deref(),
+            Some(SHOW)
+        );
+        assert!(read(&root, "songs/bar/song.yaml")
+            .unwrap()
+            .contains("lighting/show.light"));
+    }
+
+    /// #675: `patch_song_lighting` saves as `write_song_lighting` does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn patch_song_lighting_saves_by_the_web_rules() {
+        let (server, fixture) = light_show_server().await;
+        let root = fixture.root.clone();
+        let patch = |song: &str, old: &str, new: &str| {
+            server.patch_song_lighting(Parameters(PatchSongLightingArgs {
+                song: song.to_string(),
+                file: "show.light".to_string(),
+                old_string: old.to_string(),
+                new_string: new.to_string(),
+                replace_all: false,
+            }))
+        };
+
+        assert_eq!(refusal(patch("Foo", "blue", "red").await), IN_VENUES);
+        assert_eq!(read(&root, "rig/venues/show.light").as_deref(), Some(SHOW));
+
+        let _ = answer(
+            server
+                .write_song_lighting(Parameters(write_show_args("Bar", SHOW)))
+                .await,
+        );
+        let invalid = refusal(patch("Bar", "duration: 4s", "duration: {{{").await);
+        assert!(!invalid.is_empty());
+        assert_eq!(
+            read(&root, "songs/bar/lighting/show.light").as_deref(),
+            Some(SHOW)
+        );
+        let _ = answer(patch("Bar", "blue", "red").await);
+        assert_eq!(
+            read(&root, "songs/bar/lighting/show.light"),
+            Some(SHOW.replace("blue", "red"))
+        );
+    }
+
+    /// #675: `delete_song_lighting` deletes as the web UI's light show
+    /// delete does: never a file in the venues directory, refused before
+    /// the song's config is touched.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_song_lighting_deletes_by_the_web_rules() {
+        let (server, fixture) = light_show_server().await;
+        let root = fixture.root.clone();
+        let delete = |song: &str| {
+            server.delete_song_lighting(Parameters(SongLightingArgs {
+                song: song.to_string(),
+                file: "show.light".to_string(),
+            }))
+        };
+
+        assert_eq!(refusal(delete("Foo").await), IN_VENUES);
+        assert_eq!(read(&root, "rig/venues/show.light").as_deref(), Some(SHOW));
+        assert_eq!(read(&root, "songs/foo/song.yaml").as_deref(), Some(FOO));
+
+        let _ = answer(
+            server
+                .write_song_lighting(Parameters(write_show_args("Bar", SHOW)))
+                .await,
+        );
+        let _ = answer(delete("Bar").await);
+        assert!(!root.join("songs/bar/lighting/show.light").exists());
+        assert!(!read(&root, "songs/bar/song.yaml")
+            .unwrap()
+            .contains("show.light"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

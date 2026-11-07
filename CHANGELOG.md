@@ -745,6 +745,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP's song, playlist and song light show tools write by the web UI's rules** (#675):
+  `write_song`, `patch_song`, `write_playlist`, `patch_playlist`, `write_song_lighting`,
+  `patch_song_lighting` and `delete_song_lighting` wrote and deleted files directly, each with
+  checks of its own. Each now goes through the web endpoint's own writer, with its checks,
+  refusals and messages (the error carries the web answer's body as its data):
+  - `write_song` saves a song it finds (loaded, failed, or a folder of that name) as
+    `PUT /api/songs/<name>` does, and creates any other as `POST /api/songs/<name>` does, nested
+    names included. `patch_song` saves as `PUT` does, so a patch renaming `Foo` onto `Bar` while
+    another song is Bar is now refused (`a song named "Bar" already exists; choose another
+    name`), as `write_song` already was. Both now also run the song editor's validation, whose
+    messages they now give.
+  - Creating a song with a name the config declares that another song holds is now refused by
+    `POST /api/songs/<name>` (409, naming it in `taken`) and MCP `write_song` alike, before any
+    folder is made: `POST /api/songs/Fresh` with `name: Foo` while Foo exists wrote a second
+    config declaring Foo.
+  - `write_playlist` and `patch_playlist` with a `name` take the web UI's playlist file rules:
+    an unsafe name is `Invalid playlist name`, `all_songs` is `'all_songs' is the player's own
+    playlist and has no file` (now also from `PUT` and `DELETE /api/playlists/all_songs`, which
+    said `Invalid playlist name`), a new name the file system takes
+    for an existing file's is refused, and a new playlist's file is made new (``a playlist file
+    `x.yaml` already exists`` when one appeared since). Their checks of the songs and
+    transitions are the web UI's.
+  - `write_song_lighting`, `patch_song_lighting` and `delete_song_lighting` refuse a file in this
+    host's venues or fixture types directory, as `PUT` and `DELETE /api/lighting/<path>` do
+    (`foo/lighting/show.light is in the venues directory (rig/venues): ...`), before anything is
+    written. A show that does not parse is refused with the parser's message alone, without the
+    `invalid .light source:` or `patched .light is invalid:` prefix. The song's `lighting:` entry
+    they add or remove is saved as `PUT /api/songs/<name>` saves.
+  - None of these set an old file aside, as the web UI's saves do not.
+
 - **`mtrack migrate` backs up every file it overwrites, and writes none beside one** (#671):
   only `mtrack.yaml` was backed up. A profile file already in `profiles/` (say `profiles/pi-a.yaml`
   when an inline profile has `hostname: pi-a`), a playlist already in `playlists/`, and a profile

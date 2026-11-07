@@ -348,11 +348,11 @@ fn resolve_lighting_path(
 /// identity ([`crate::util::is_within_dir`]), so no spelling (`..`, a
 /// symlink, another case) gets around it.
 async fn refuse_venue_or_type_file(
-    state: &WebUiState,
+    config_path: &std::path::Path,
     path: &std::path::Path,
     name: &str,
 ) -> Result<(), lighting_writes::Answer> {
-    let config_path = state.config_path.clone();
+    let config_path = config_path.to_path_buf();
     let project = crate::util::project_dir_of(&config_path);
     let (path, name) = (path.to_path_buf(), name.to_string());
     let refused = tokio::task::spawn_blocking(move || {
@@ -382,8 +382,7 @@ async fn refuse_venue_or_type_file(
 }
 
 /// PUT /api/lighting/:name — validates and atomically writes a lighting DSL
-/// file: a song's light show, never a file in the venues or fixture types
-/// directory ([`refuse_venue_or_type_file`]).
+/// file: a song's light show ([`save_light_show`]).
 pub(super) async fn put_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -393,31 +392,19 @@ pub(super) async fn put_lighting_file(
         Ok(path) => path,
         Err(e) => return e.into_response(),
     };
-    if let Err(refused) = refuse_venue_or_type_file(&state, &verified_path, &name).await {
-        return refused.into_response();
-    }
 
     // Held from reading the song's tempo: a song save changing it reloads
     // the songs under this lock.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    // Validate against the tempo the owning song loads this file with. A show
-    // inheriting its song's tempo is valid content that a tempo-less parse
-    // rejects, so writing it through the UI would fail for no real reason.
     let tempo = song_tempo_for_path(&state, &verified_path);
-    if let Err(errors) = config_io::validate_light_show(
-        &body,
-        Some(&verified_path),
-        Some(&state.songs_path()),
+    match save_light_show(
+        &state.config_path,
+        &state.songs_path(),
+        &verified_path,
+        &name,
+        body,
         tempo.as_ref(),
-    ) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-    }
-
-    let vp = verified_path;
-    let body_owned = body;
-    match super::helpers::spawn_blocking_io("write lighting file", move || {
-        config_io::staged_write(&vp, &body_owned)
-    })
+    )
     .await
     {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
@@ -425,9 +412,44 @@ pub(super) async fn put_lighting_file(
     }
 }
 
+/// Writes a song's light show `body` to `path` (shown as `name`), by the
+/// one rule of the web UI's light show save and MCP's
+/// `write_song_lighting` and `patch_song_lighting`: never a file in the
+/// venues or fixture types directory ([`refuse_venue_or_type_file`]);
+/// parsed first (400 with its `errors`) against `tempo`, the tempo its
+/// song loads it with (a show inheriting its song's tempo is valid content
+/// that a tempo-less parse rejects), its `include`s resolved where it is
+/// written and kept inside `songs_root`; its directory made only then. The
+/// caller holds [`super::songs_api::SONG_WRITES`].
+pub(crate) async fn save_light_show(
+    config_path: &std::path::Path,
+    songs_root: &std::path::Path,
+    path: &std::path::Path,
+    name: &str,
+    body: String,
+    tempo: Option<&crate::tempo::TempoMap>,
+) -> Result<(), axum::response::Response> {
+    refuse_venue_or_type_file(config_path, path, name)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    if let Err(errors) = config_io::validate_light_show(&body, Some(path), Some(songs_root), tempo)
+    {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+    }
+
+    let vp = path.to_path_buf();
+    super::helpers::spawn_blocking_io("write lighting file", move || {
+        if let Some(parent) = vp.parent() {
+            crate::util::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        config_io::staged_write(&vp, &body)
+    })
+    .await
+}
+
 /// DELETE /api/lighting/:name — deletes a song's `.light` file from disk:
 /// never one in the venues or fixture types directory
-/// ([`refuse_venue_or_type_file`]).
+/// ([`check_light_show_delete`]).
 pub(super) async fn delete_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -449,16 +471,8 @@ pub(super) async fn delete_lighting_file(
         }
     };
 
-    if crate::songs::FileKind::of(safe.as_path()) != crate::songs::FileKind::Lighting {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete .light files"})),
-        )
-            .into_response();
-    }
-
-    if let Err(refused) = refuse_venue_or_type_file(&state, safe.as_path(), &name).await {
-        return refused.into_response();
+    if let Err(refused) = check_light_show_delete(&state.config_path, safe.as_path(), &name).await {
+        return refused;
     }
 
     // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
@@ -466,14 +480,41 @@ pub(super) async fn delete_lighting_file(
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    match super::helpers::spawn_blocking_io("delete lighting file", move || {
-        std::fs::remove_file(&path)
-    })
-    .await
-    {
+    match remove_light_show(&path).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
         Err(e) => e,
     }
+}
+
+/// Whether the file at `path` (shown as `name`) may be deleted as a song's
+/// light show, by the one rule of the web UI's delete and MCP's
+/// `delete_song_lighting`: a `.light` file (400 otherwise), never one in
+/// the venues or fixture types directory ([`refuse_venue_or_type_file`]).
+pub(crate) async fn check_light_show_delete(
+    config_path: &std::path::Path,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<(), axum::response::Response> {
+    if crate::songs::FileKind::of(path) != crate::songs::FileKind::Lighting {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only delete .light files"})),
+        )
+            .into_response());
+    }
+    refuse_venue_or_type_file(config_path, path, name)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+/// Removes a song's light show file, [`check_light_show_delete`] first,
+/// off the async runtime.
+pub(crate) async fn remove_light_show(
+    path: &std::path::Path,
+) -> Result<(), axum::response::Response> {
+    let path = path.to_path_buf();
+    super::helpers::spawn_blocking_io("delete lighting file", move || std::fs::remove_file(&path))
+        .await
 }
 
 /// A `?song=` on an endpoint that otherwise works on bare DSL, naming the song

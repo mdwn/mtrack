@@ -178,8 +178,16 @@ pub(crate) async fn ensure_configured_dir(
     dir: &std::path::Path,
     state: &crate::webui::server::WebUiState,
 ) -> Result<PathBuf, axum::response::Response> {
+    ensure_dir_within(dir, &project_dir(state)).await
+}
+
+/// [`ensure_configured_dir`] inside the project directory `project`.
+pub(crate) async fn ensure_dir_within(
+    dir: &std::path::Path,
+    project: &std::path::Path,
+) -> Result<PathBuf, axum::response::Response> {
     let owned = dir.to_path_buf();
-    let project = project_dir(state);
+    let project = project.to_path_buf();
     let outcome = tokio::task::spawn_blocking(move || make_configured_dir(&owned, &project)).await;
 
     match outcome {

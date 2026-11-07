@@ -33,9 +33,18 @@ use crate::config;
 // ---------------------------------------------------------------------------
 
 /// Validates a playlist name for use in file paths.
+/// The player's own playlist is refused (400) saying so.
 #[allow(clippy::result_large_err)]
 fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
-    validate_resource_name(name, "playlist", crate::playlist::is_reserved_name(name))
+    if crate::playlist::is_reserved_name(name) {
+        let reserved = crate::playlist::PlaylistFileError::Reserved(name.to_string());
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": reserved.to_string()})),
+        )
+            .into_response());
+    }
+    validate_resource_name(name, "playlist", false)
 }
 
 /// The file that holds the playlist `name` in `dir` (`playlist::playlist_file`:
@@ -160,17 +169,8 @@ pub(super) async fn put_playlist_by_name(
     let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
-
-    // Before `resolve_named_file`, which canonicalizes the directory and
-    // fails if it is missing -- a creation after that call can never run.
-    // Created only when it is inside the project: a `playlists_dir:` pointing
-    // elsewhere is the operator's to set up, like `songs` and the rest.
-    let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
-
-    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in playlist_path.
-    let file = playlist_path(&playlists_dir, &name)?;
-    validate_resource_name_to_write(&name, "playlist", file.exists())?;
+    let file =
+        playlist_file_to_write(&playlists_dir, &super::helpers::project_dir(&state), &name).await?;
     let file_path = file.path().to_path_buf();
 
     // The editor knows only the songs: an existing playlist keeps its
@@ -233,18 +233,7 @@ pub(super) async fn put_playlist_by_name(
         Some(ambient) => playlist_config.with_ambient(ambient),
         None => playlist_config,
     };
-    // What the player would refuse to load is refused here, before the file
-    // is written: a song it does not have, a bad fade or ambient, or a fade
-    // leaving out a track its song does not have. So is a fade the player
-    // would cut short, longer than the song it plays under, and an ambient
-    // show outside the project.
-    if let Err(e) = crate::playlist::validate_for_write(&playlist_config, &state.player.songs()) {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response());
-    }
+    check_playlist(&playlist_config, &state.player)?;
     let yaml = match crate::util::to_yaml_string(&playlist_config) {
         // A text file ends with a newline.
         Ok(y) if y.ends_with('\n') => y,
@@ -258,17 +247,7 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
-    // Write atomically, off the async runtime. A new playlist is created as
-    // new (`config_io::staged_create`): a file made since the lookup, or one
-    // the filesystem takes for this name, is refused, never written over.
-    let fp = file_path.clone();
-    let yaml_owned = yaml;
-    let new = !file.exists();
-    let result = super::helpers::spawn_blocking_io("write playlist", move || {
-        Ok::<_, String>(config_io::write(&fp, &yaml_owned, new))
-    })
-    .await?;
-    super::helpers::written(result, &file_path, "playlist")?;
+    write_playlist_file(&file, yaml).await?;
 
     // Reload songs to pick up the new playlist.
     super::helpers::reload_songs(&state).await?;
@@ -280,6 +259,69 @@ pub(super) async fn put_playlist_by_name(
         )
             .into_response(),
     )
+}
+
+/// The file a save of the playlist `name` writes, in the playlists
+/// directory `dir`, by the one rule of the web UI's save and MCP's
+/// `write_playlist` and `patch_playlist`: the name checked
+/// (`validate_playlist_name`; a new one by the rules for new names); the
+/// directory made if missing, only inside `project`; the playlist's file
+/// as the directory lists it (`playlist_path`).
+pub(crate) async fn playlist_file_to_write(
+    dir: &std::path::Path,
+    project: &std::path::Path,
+    name: &str,
+) -> Result<crate::util::NamedFile, axum::response::Response> {
+    validate_playlist_name(name)?;
+    // Before `resolve_named_file`, which canonicalizes the directory and
+    // fails if it is missing -- a creation after that call can never run.
+    // Created only when it is inside the project: a `playlists_dir:` pointing
+    // elsewhere is the operator's to set up, like `songs` and the rest.
+    let dir = super::helpers::ensure_dir_within(dir, project).await?;
+
+    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
+    // verified via canonicalize + starts_with containment in playlist_path.
+    let file = playlist_path(&dir, name)?;
+    validate_resource_name_to_write(name, "playlist", file.exists())?;
+    Ok(file)
+}
+
+/// Refuses (422) a playlist the player would refuse to load, before it is
+/// written: a song it does not have, a bad fade or ambient, or a fade
+/// leaving out a track its song does not have. So is a fade the player
+/// would cut short, longer than the song it plays under, and an ambient
+/// show outside the project. The web UI's and MCP's playlist saves.
+#[allow(clippy::result_large_err)]
+pub(crate) fn check_playlist(
+    playlist: &config::Playlist,
+    player: &crate::player::Player,
+) -> Result<(), axum::response::Response> {
+    crate::playlist::validate_for_write(playlist, &player.songs()).map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response()
+    })
+}
+
+/// Writes a playlist's `yaml` to its `file`, atomically, off the async
+/// runtime: the web UI's and MCP's playlist saves. A new playlist is
+/// created as new (`config_io::write`): a file made since the lookup, or
+/// one the filesystem takes for this name, is refused (409), never written
+/// over.
+pub(crate) async fn write_playlist_file(
+    file: &crate::util::NamedFile,
+    yaml: String,
+) -> Result<(), axum::response::Response> {
+    let file_path = file.path().to_path_buf();
+    let fp = file_path.clone();
+    let new = !file.exists();
+    let result = super::helpers::spawn_blocking_io("write playlist", move || {
+        Ok::<_, String>(config_io::write(&fp, &yaml, new))
+    })
+    .await?;
+    super::helpers::written(result, &file_path, "playlist")
 }
 
 /// DELETE /api/playlists/:name — delete a playlist.

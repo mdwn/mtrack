@@ -878,7 +878,10 @@ dmx:
 "#,
             &[
                 ("lighting/venues/old.light", existing),
-                ("lighting/venues/inline_migrated_2.venue", "venue \"Other\" {\n}\n"),
+                (
+                    "lighting/venues/inline_migrated_2.venue",
+                    "venue \"Other\" {\n}\n",
+                ),
             ],
         );
 
@@ -890,8 +893,14 @@ dmx:
             existing
         );
         let venue = std::fs::read_to_string(venues.join("inline_migrated_3.venue")).unwrap();
-        assert!(venue.starts_with("venue \"inline_migrated_3\" {"), "{venue}");
-        assert!(venue.contains("fixture \"par1\" GenericPar @ 1:1"), "{venue}");
+        assert!(
+            venue.starts_with("venue \"inline_migrated_3\" {"),
+            "{venue}"
+        );
+        assert!(
+            venue.contains("fixture \"par1\" GenericPar @ 1:1"),
+            "{venue}"
+        );
         assert!(!venues.join("inline_migrated.venue").exists());
     }
 
