@@ -152,6 +152,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One walk finds the song folders for `songs --init` and the bulk import**
+  (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
+  regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,
+  found at any depth below directories that hold none, and not looked into. Hidden and symlinked
+  directories are passed over, and the folder walked is never a song itself. `songs --init` and
+  the web UI's bulk import (`POST /api/browse/bulk-import`) both take it. The player's song
+  loader loads what it loaded. What changes:
+  - `mtrack songs --init .` in a project no longer writes a `song.yaml` into `.git/`,
+    `lighting/`, `playlists/`, `profiles/` or any other folder with no audio, MIDI or song config;
+    it wrote one into each folder directly under the path. A folder holding only light shows
+    (`Intro/show.light`) no longer becomes a song with no tracks.
+  - `songs --init` finds nested songs: `songs --init /mnt/library` writes
+    `artist/album/Song/song.yaml`, where it wrote an empty `artist/song.yaml`.
+  - The bulk import takes a MIDI-only folder (`Backing/notes.mid`) as a song; it needed audio.
+    It no longer imports a folder whose only audio is hidden (`._Bass.wav`) or a symlink as a song
+    with no tracks.
+  - The bulk import no longer follows a symlinked folder (`lib/Linked -> /elsewhere`), so it
+    writes no `song.yaml` outside the folder imported; `songs --init` never followed one.
+  - The bulk import skips a folder whose song config is not `song.yaml` (`Ballad/song.yml`,
+    `Ballad/album.yaml`, the hidden `Ballad/.song.yaml`, any file declaring `kind: song`), with or
+    without audio beside it, and does not look into it; beside audio it wrote a second config,
+    `song.yaml`, and without audio it looked into the folder. A folder holding only a `song.yaml`
+    of another kind (`kind: playlist`) and no audio or MIDI is now looked into rather than
+    reported skipped.
+  - A subdirectory that cannot be read is passed over with a warning by both; the bulk import
+    passed over it silently, and `songs --init` failed. A directory to import from that cannot
+    be read is now an error (`500`, "Failed to read directory") from the bulk import; it answered
+    with nothing imported. The player's loader still fails on an unreadable folder.
+- **Nothing is written over a song config, or a `song.yaml` of another kind**
+  (`songs::song_config_to_write`): the one guard of every writer of a new song config:
+  `songs --init`, the bulk import, the web UI's create-song from a folder, `POST
+  /api/songs/<name>` and the config a track upload writes. What changes:
+  - `songs --init` leaves a folder that has a song config as it is: `songs --init songs` no
+    longer overwrites a hand-edited `songs/Foo/song.yaml`, nor writes a `song.yaml` beside
+    `Foo/song.yml` or `Foo/album.yaml`.
+  - A `song.yaml` or `song.yml` of another kind (`Pl/song.yaml` holding `kind: playlist`) is
+    kept: `songs --init` and the bulk import skip the folder, create-song from it (`POST
+    /api/browse/create-song`, `{"path": "/Pl"}`) and `POST /api/songs/Pl` answer 409, and a track
+    uploaded to it writes no config; each wrote over it.
+- **One naming rule for new songs** (`songs::new_songs`): a song new to `songs --init` or the
+  bulk import takes its folder's name, unless another new song has that name too, or a song
+  configured under the folder walked (loaded, or failing to load under the name its config
+  declares), or, for the bulk import, one the player has or one configured under the songs
+  folder, has it; then it takes its path below the folder walked, and if that is taken too, the
+  first free ` (2)`, ` (3)`, and so on. The names are read from the configs without loading the
+  songs. `lib/SongA/stems/a.wav` and `lib/SongB/stems/b.wav` are now `SongA/stems` and
+  `SongB/stems`, where both were `stems` and the player loaded one; a new `Intro/` beside an
+  `Old/song.yaml` naming its song "Intro" is `Intro (2)`, where the player loaded one of the two.
+  A song that nothing contests keeps its own name before another is given a suffix: beside
+  `Old/song.yaml` naming "B", new `B/` and `B (2)/` are `B (3)` and `B (2)`. A failed save from
+  `songs --init` now reads "Failed to save: ...", as the bulk import's does. A bulk-imported
+  folder whose name is not UTF-8 is named "unreadable file name", as `songs --init` names it;
+  it was "unknown".
+- **The web UI opens a song whose name holds a `/`**: the address takes the song's name as one
+  encoded segment (`#/songs/SongA%2Ftracks`), read before it is decoded. A song named
+  `SongA/tracks` (or ending in `/config`, `/lighting` and the other tabs) opened the song
+  `SongA` on that tab, and the page title named `SongA`.
+
 - **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
   dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is
   shown (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`; `auto_play: 1.0005s`

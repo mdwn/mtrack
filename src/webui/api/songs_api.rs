@@ -568,7 +568,8 @@ pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 /// POST /api/songs/:name — creates a new song with the given config YAML.
 ///
 /// Creates the song directory and writes its song config. Returns 409
-/// Conflict if the directory already has one ([`songs::has_song_config`]).
+/// Conflict if the directory already has one, or a `song.yaml` of another
+/// kind ([`songs::song_config_to_write`]).
 pub(super) async fn post_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -596,14 +597,13 @@ pub(super) async fn post_song(
         Err(e) => return e.into_response(),
     };
 
-    let config_path = songs::song_config_file(song_dir.as_path());
-    if songs::has_song_config(song_dir.as_path()) {
+    let Some(config_path) = songs::song_config_to_write(song_dir.as_path()) else {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),
         )
             .into_response();
-    }
+    };
 
     let cp = config_path;
     let body_owned = body;
@@ -929,16 +929,15 @@ fn remove_song_from_playlists(
 }
 
 /// Generates a song config for a song directory if it has none yet
-/// ([`songs::has_song_config`]). One already there (`song.yaml`, `song.yml`)
-/// is left untouched so that manual edits (track names, lighting config,
+/// ([`songs::song_config_to_write`]). One already there (`song.yaml`,
+/// `song.yml`, or one of another kind) is left untouched so that manual edits (track names, lighting config,
 /// etc.) are preserved.
 pub(super) fn ensure_song_config(
     song_dir: &std::path::Path,
 ) -> Result<(), Box<axum::response::Response>> {
-    if songs::has_song_config(song_dir) {
+    let Some(config_path) = songs::song_config_to_write(song_dir) else {
         return Ok(());
-    }
-    let config_path = songs::song_config_file(song_dir);
+    };
 
     let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
         Box::new(
@@ -1841,6 +1840,49 @@ mod test {
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(!song_dir.join("song.yaml").exists());
+    }
+
+    /// Beside a `song.yaml` of another kind (`kind: playlist`), a create
+    /// is refused and a track upload writes no config: neither writes over
+    /// it (`songs::song_config_to_write`), as both did on main.
+    #[tokio::test]
+    async fn create_and_upload_keep_a_song_yaml_of_another_kind() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Pl");
+        std::fs::create_dir(&song_dir).unwrap();
+        let playlist = "kind: playlist\nsongs: []\n";
+        std::fs::write(song_dir.join("song.yaml"), playlist).unwrap();
+
+        let create = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/Pl")
+                    .body(Body::from("name: Pl\ntracks: []\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CONFLICT);
+
+        let upload = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Pl/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+        assert!(song_dir.join("guitar.wav").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            playlist
+        );
     }
 
     /// A track uploaded to a song whose config is `song.yml` leaves that

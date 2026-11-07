@@ -51,9 +51,9 @@ rename the tracks afterwards on the song's detail page.
 ## Bulk Import
 
 To import many songs at once, navigate to a parent directory and click **Import All
-Subdirectories**. mtrack imports every subdirectory as a song, skipping any that already have
-a `song.yaml`. The scan is recursive, so nested structures like `artist/album/song` are
-handled automatically.
+Subdirectories**. mtrack imports every subdirectory holding audio or MIDI files as a song,
+skipping any that already have a song config. The scan is recursive, so nested structures like
+`artist/album/song` are handled automatically.
 
 ## Editing a Song
 

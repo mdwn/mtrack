@@ -192,9 +192,9 @@ Click **Import from Filesystem** to browse the project directory (the directory 
 - **Single import** — Navigate to a directory containing audio files, click "Use This Directory"
   to generate a `song.yaml` from the detected audio, MIDI, and lighting files.
 - **Bulk import** — When viewing a directory with subdirectories, click "Import All
-  Subdirectories" to import every subdirectory as a song. Subdirectories are scanned
-  recursively, so nested structures (artist/album/song) are handled automatically. Directories
-  that already have a `song.yaml` are skipped.
+  Subdirectories" to import every subdirectory holding audio or MIDI files as a song.
+  Subdirectories are scanned recursively, so nested structures (artist/album/song) are handled
+  automatically. Directories that already have a song config are skipped.
 
 ![Bulk import results](../images/bulk-import-result.png)
 
