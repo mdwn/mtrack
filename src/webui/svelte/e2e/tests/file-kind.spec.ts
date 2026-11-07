@@ -17,7 +17,12 @@
 // browser).
 
 import { test, expect } from "@playwright/test";
-import { audioAccept, isMidiFile, midiAccept } from "../../src/lib/util/paths";
+import {
+  audioAccept,
+  isLightShowFile,
+  isMidiFile,
+  midiAccept,
+} from "../../src/lib/util/paths";
 import { loadRules } from "./rules-node";
 
 test.beforeAll(loadRules);
@@ -36,4 +41,11 @@ test("a MIDI file is one in any case, and .midi is not one", () => {
   expect(isMidiFile("show.midi")).toBe(false);
   expect(isMidiFile("show.wav")).toBe(false);
   expect(isMidiFile("mid")).toBe(false);
+});
+
+test("a light show file is one in any case", () => {
+  expect(isLightShowFile("show.light")).toBe(true);
+  expect(isLightShowFile("Show.LIGHT")).toBe(true);
+  expect(isLightShowFile("show.lights")).toBe(false);
+  expect(isLightShowFile("show")).toBe(false);
 });

@@ -4108,7 +4108,7 @@ fn refuse_rich_channels_in_light<'a>(
 
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    if !name.ends_with(".light") {
+    if crate::songs::FileKind::of(std::path::Path::new(name)) != crate::songs::FileKind::Lighting {
         return Err(McpError::invalid_params(
             "lighting filename must end with .light",
             None,
@@ -4446,6 +4446,22 @@ mod read_text_tests {
         stop.store(true, Ordering::Relaxed);
         writer.join().unwrap();
         assert_eq!(torn, 0, "read_text read a torn song.yaml {torn} times");
+    }
+}
+
+#[cfg(test)]
+mod validate_lighting_filename_tests {
+    use super::validate_lighting_filename;
+
+    /// A song's light show name is read by the one rule, in any case.
+    #[test]
+    fn a_light_show_is_one_in_any_case() {
+        for name in ["show.light", "Show.LIGHT", "Show.Light"] {
+            assert!(validate_lighting_filename(name).is_ok(), "{name}");
+        }
+        for name in ["show.lights", "show.txt", "show", "../show.light"] {
+            assert!(validate_lighting_filename(name).is_err(), "{name}");
+        }
     }
 }
 

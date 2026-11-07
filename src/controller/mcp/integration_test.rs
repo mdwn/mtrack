@@ -3632,10 +3632,14 @@ async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Err
     let initial_show =
         "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"blue\", duration: 5s\n}\n";
     std::fs::write(song_dir.join("show.light"), initial_show)?;
+    // A light show's extension in capitals, as `songs --init` registers it.
+    let loud_show =
+        "show \"Loud\" {\n  @00:00.000\n  all_lights: static color: \"red\", duration: 5s\n}\n";
+    std::fs::write(song_dir.join("Loud.LIGHT"), loud_show)?;
     std::fs::write(
         song_dir.join("song.yaml"),
         format!(
-            "kind: song\nname: Flat Lighting Song\nlighting:\n  - file: show.light\ntracks:\n  - name: main\n    file: \"{}\"\n    file_channel: 1\n",
+            "kind: song\nname: Flat Lighting Song\nlighting:\n  - file: show.light\n  - file: Loud.LIGHT\ntracks:\n  - name: main\n    file: \"{}\"\n    file_channel: 1\n",
             track_src.display()
         ),
     )?;
@@ -3675,6 +3679,21 @@ async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Err
         resolved.ends_with("songs/flat-lighting-song/show.light"),
         "expected root-level path, got: {resolved}",
     );
+
+    // read_song_lighting reads a `.LIGHT` file: the extension is read in
+    // any case (`songs::FileKind`).
+    let loud = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1704,
+            "read_song_lighting",
+            json!({"song": "Flat Lighting Song", "file": "Loud.LIGHT"}),
+        )
+        .await,
+    );
+    assert_eq!(loud["source"].as_str(), Some(loud_show), "{loud}");
 
     // patch_song_lighting on a root-level file: change the color.
     let _ = call_tool(

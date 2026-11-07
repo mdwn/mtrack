@@ -4664,6 +4664,36 @@ pilot:
         Ok(())
     }
 
+    /// With every case counted, the last MIDI file by name is the playback:
+    /// `notes.mid` and `old.MID` give `old.MID` (main passed it over and
+    /// took `notes.mid`). A corrupt `Bad.WAV` now fails the song's init, as
+    /// a corrupt `bad.wav` already did.
+    #[test]
+    fn initialize_counts_every_case_when_picking_and_reading() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pick");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("notes.mid"), &midi_bytes)?;
+        fs::write(song_dir.join("old.MID"), &midi_bytes)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        let playback = song.midi_playback().expect("MIDI playback");
+        assert!(
+            playback.file_path().ends_with("old.MID"),
+            "{}",
+            playback.file_path().display()
+        );
+
+        fs::write(song_dir.join("Bad.WAV"), "")?;
+        assert!(super::Song::initialize(&song_dir).is_err());
+        Ok(())
+    }
+
     /// `load_tracks` takes an audio file whatever its extension's case.
     #[test]
     fn track_load_tracks_uppercase_extension() -> Result<(), Box<dyn Error>> {

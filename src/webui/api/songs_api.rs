@@ -1569,6 +1569,30 @@ mod test {
         assert!(state.songs_path().join("MidiSong/Notes.MID").exists());
     }
 
+    /// A light show upload's extension is read in any case: `Show.LIGHT` is
+    /// taken.
+    #[tokio::test]
+    async fn upload_track_single_uppercase_light_extension() {
+        let (state, _dir) = test_state();
+        let show =
+            "show \"Loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}\n";
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/LightSong/tracks/Show.LIGHT")
+                    .body(Body::from(show))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.songs_path().join("LightSong/Show.LIGHT").exists());
+    }
+
     #[tokio::test]
     async fn upload_track_single_path_traversal_rejected() {
         let (state, _dir) = test_state();

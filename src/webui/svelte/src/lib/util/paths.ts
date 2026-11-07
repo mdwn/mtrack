@@ -65,3 +65,8 @@ export function midiAccept(): string {
 export function isMidiFile(name: string): boolean {
   return rules.file_kind(name) === "midi";
 }
+
+/** Whether `name` is a light show file to the player (`songs::FileKind::of`), in any case. */
+export function isLightShowFile(name: string): boolean {
+  return rules.file_kind(name) === "lighting";
+}

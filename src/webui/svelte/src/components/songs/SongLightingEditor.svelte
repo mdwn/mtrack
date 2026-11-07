@@ -51,7 +51,12 @@
   import { isPhone } from "../../lib/util/media";
   import FileUpload from "./FileUpload.svelte";
   import FileBrowser from "./FileBrowser.svelte";
-  import { isMidiFile, midiAccept } from "../../lib/util/paths";
+  import {
+    isLightShowFile,
+    isMidiFile,
+    midiAccept,
+    withoutExtension,
+  } from "../../lib/util/paths";
   import { t } from "svelte-i18n";
   import { showConfirm, showPrompt } from "../../lib/dialog.svelte";
   import { playerClient } from "../../lib/grpc/client";
@@ -671,8 +676,10 @@
       error = $t("songLighting.badFileName");
       return;
     }
-    const fileName = name.endsWith(".light") ? name : `${name}.light`;
-    const showName = fileName.replace(/\.light$/, "");
+    // A light show file in any case (`songs::FileKind`): `Show.LIGHT` is
+    // kept as named, as the player reads it.
+    const fileName = isLightShowFile(name) ? name : `${name}.light`;
+    const showName = withoutExtension(fileName);
     // One show of the file's name, with an empty cue at 0, as the player's
     // writer writes it.
     const defaultContent =
