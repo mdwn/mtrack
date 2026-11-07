@@ -1367,7 +1367,7 @@
   "tooltips.trigger.highpassHz": "High-pass filter cutoff frequency. Removes low-frequency bleed from nearby sources. Leave empty to disable.",
   "tooltips.trigger.dynThresholdMs": "Decay time for dynamic threshold tracking. After a hit, the threshold temporarily rises then decays over this period, preventing false retrigs from signal ringing.",
   "tooltips.trigger.noiseFloorSens": "Sensitivity multiplier for noise floor tracking. Higher values make the detector more aggressive at rejecting background noise.",
-  "tooltips.trigger.fixedVelocity": "MIDI velocity value (0-127) used for every trigger hit when velocity curve is set to Fixed.",
+  "tooltips.trigger.fixedVelocity": "MIDI velocity value ({min}-{max}) used for every trigger hit when velocity curve is set to Fixed.",
   "tooltips.config.maxSampleVoices": "Maximum number of sample voices that can play simultaneously across all samples. Oldest voices are stopped when the limit is reached. Default is 32.",
   "tooltips.notifications.loopArmed": "Audio file played when a section loop is armed (player acknowledges the section). Overrides the built-in notification tone.",
   "tooltips.notifications.breakRequested": "Audio file played when a break out of the section loop is requested. Overrides the built-in notification tone.",

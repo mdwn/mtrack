@@ -42,6 +42,10 @@ fn default_gain() -> f32 {
     1.0
 }
 
+/// The velocities an audio trigger's hit plays at, whatever its curve: a
+/// hit is a note on, which a velocity of 0 is not.
+pub const TRIGGER_VELOCITY: std::ops::RangeInclusive<u8> = 1..=127;
+
 pub(super) fn default_fixed_velocity() -> u8 {
     127
 }

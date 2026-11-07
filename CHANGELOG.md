@@ -391,6 +391,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A trigger hit's velocity is held to 1-127 by one rule, whatever its curve**
+  (`config::trigger::TRIGGER_VELOCITY`): the `linear` curve could give 0, which plays nothing (a
+  peak of 0.006 over `threshold: 0.005`); it now plays at 1, as the `logarithmic` curve's lowest
+  already did. A `fixed_velocity: 0` plays at 1 and `fixed_velocity: 200` at 127, where they were
+  sent as written. The web UI's trigger editor takes the range from the same rule: its fixed
+  velocity field and tooltip said 0-127, and a typed 0 or 200 was saved as typed; it is now held to
+  1-127 (0 becomes 1, 200 becomes 127) and a blank field to the default.
 - **A file's kind is read by one rule, in any case** (`songs::FileKind`): an audio, MIDI or
   `.light` file's extension now counts whatever its case everywhere on the song side, as the
   song file listing and the file browser already read it. `songs --init`, a web song create or

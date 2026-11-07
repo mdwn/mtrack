@@ -104,6 +104,24 @@ test.describe("Profile Editor - Triggers Section", () => {
     ).toBeVisible();
   });
 
+  test("a typed fixed velocity is held to 1-127, as the player holds it", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "+ Audio" }).click();
+    await page.getByRole("button", { name: "More", exact: true }).click();
+    await page.locator('[id^="trigger-vel-"]').selectOption("fixed");
+    const field = page.locator('[id^="trigger-fixvel-"]');
+    await expect(field).toHaveAttribute("min", "1");
+    await expect(field).toHaveAttribute("max", "127");
+
+    await field.fill("0");
+    await field.blur();
+    await expect(field).toHaveValue("1");
+    await field.fill("200");
+    await field.blur();
+    await expect(field).toHaveValue("127");
+  });
+
   test("removing input removes card", async ({ page }) => {
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.locator(".input-card")).toHaveCount(1);

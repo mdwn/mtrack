@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-
 // The file pickers' `accept=` lists and the MIDI test, from the player's
 // one rule for a file's kind (`songs::FileKind`), as plain values (no
 // browser).
