@@ -543,9 +543,11 @@ pub(super) async fn add_aim_points(
     .await?;
     let (created, version) = match outcome {
         Ok(done) => done,
-        Err(AimError::Stale(current)) => return Err(stale_venue_response(&name, Some(current))),
+        Err(AimError::Stale(current)) => {
+            return Err(stale_venue_response(&name, Some(current)).into())
+        }
         Err(AimError::Message(e)) => return Err(bad_request(e)),
-        Err(AimError::Refused(r)) => return Err(r),
+        Err(AimError::Refused(r)) => return Err(r.into()),
     };
     let reloaded = if created.is_empty() {
         false
@@ -581,7 +583,7 @@ enum AimError {
     Stale(String),
     /// The venue's file may not be written (it is not the venue's alone),
     /// or its upgrade to a `.venue` is refused: the save's own answer.
-    Refused(Response),
+    Refused(super::lighting_writes::Answer),
 }
 
 impl From<String> for AimError {

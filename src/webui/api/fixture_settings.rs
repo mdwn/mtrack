@@ -44,7 +44,7 @@ use super::super::server::WebUiState;
 use super::lighting_api::{
     canonical_project_root, content_version, if_match_version, locate_fixture_type_file,
     project_root, resolve_lighting_dir, validate_lighting_name, validate_lighting_name_to_write,
-    venue_error_after_save, DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
+    DEFAULT_FIXTURE_TYPES_DIR, DEFAULT_VENUES_DIR, VENUE_WRITES,
 };
 use crate::lighting;
 use crate::lighting::fixture_patch::{current_settings, patch_fixture_type, FixtureSettings};
@@ -598,20 +598,15 @@ fn new_record_for(
 }
 
 /// The name of the venue the player plays against: the engine's, else the
-/// config's.
-fn current_venue_name(state: &WebUiState) -> Option<String> {
-    if let Some(system) = state
-        .player
-        .broadcast_handles()
-        .and_then(|h| h.lighting_system)
-    {
+/// one this host's profile in the config at `config_path` names.
+fn current_venue_name(player: &crate::player::Player, config_path: &FsPath) -> Option<String> {
+    if let Some(system) = player.broadcast_handles().and_then(|h| h.lighting_system) {
         return system.lock().current_venue().map(str::to_string);
     }
     // codeql[rust/path-injection] config_path is set at startup, not user input.
-    let config = crate::config::Player::deserialize(&state.config_path).ok()?;
+    let config = crate::config::Player::deserialize(config_path).ok()?;
     config
-        .dmx()
-        .and_then(|d| d.lighting())
+        .host_lighting()
         .and_then(|l| l.current_venue())
         .map(str::to_string)
 }
@@ -619,18 +614,20 @@ fn current_venue_name(state: &WebUiState) -> Option<String> {
 /// After a fixture type's save that may have rewritten venues: one reload of
 /// the running engine's types and venues together, so it never sees a
 /// venue naming a type it has not read yet; then whether the current venue
-/// still loads ([`venue_error_after_save`]).
-pub(super) async fn reload_types_and_venues(
-    state: &WebUiState,
+/// still loads ([`super::lighting_api::venue_error_after_save`]). The web UI's and MCP's.
+pub(crate) async fn reload_types_and_venues(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &FsPath,
     type_name: &str,
     venues_dir: &FsPath,
 ) -> Option<crate::lighting::findings::VenueError> {
-    let player = state.player.clone();
-    if let Ok(Err(e)) = tokio::task::spawn_blocking(move || player.reload_fixture_types()).await {
+    let reloading = player.clone();
+    if let Ok(Err(e)) = tokio::task::spawn_blocking(move || reloading.reload_fixture_types()).await
+    {
         tracing::warn!(fixture_type = %type_name, error = %e, "fixture type saved, but the running engine could not reload it");
     }
-    let current = current_venue_name(state)?;
-    venue_error_after_save(state, &current, venues_dir).await
+    let current = current_venue_name(player, config_path)?;
+    super::lighting_api::venue_error_of(player, config_path, &current, venues_dir).await
 }
 
 /// POST /api/lighting/fixture-types/:name/settings — plans (`write: false`)
@@ -708,7 +705,7 @@ pub(super) async fn post_settings(
 
     let renamed = new_name != name;
     let venue_error = if write {
-        reload_types_and_venues(&state, &new_name, &venues_dir).await
+        reload_types_and_venues(&state.player, &state.config_path, &new_name, &venues_dir).await
     } else {
         None
     };

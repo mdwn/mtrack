@@ -1379,6 +1379,42 @@ pub fn project_dir_of(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Whether `path`, which need not exist, is `dir` or inside it. `path` is
+/// expected already resolved, as `SafePath` resolves a request's path: a
+/// `..` after a component that is not there is not normalised here. The
+/// nearest of `path` and its ancestors that is there is canonicalized
+/// (symlinks), then it and each ancestor of it is compared
+/// with `dir` by identity (device and inode on Unix), so a name in another
+/// case on a case-insensitive file system, or a second path to the same
+/// directory, is the same directory. `false` when `dir` is not there:
+/// nothing is in it.
+pub fn is_within_dir(path: &Path, dir: &Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    let Some(existing) = path.ancestors().find_map(|a| std::fs::canonicalize(a).ok()) else {
+        return false;
+    };
+    if existing.starts_with(&dir) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(wanted) = std::fs::metadata(&dir) else {
+            return false;
+        };
+        existing.ancestors().any(|a| {
+            std::fs::metadata(a).is_ok_and(|m| m.dev() == wanted.dev() && m.ino() == wanted.ino())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let fold = |p: &Path| p.to_string_lossy().to_lowercase();
+        std::path::Path::new(&fold(&existing)).starts_with(fold(&dir))
+    }
+}
+
 /// [`create_dir_all`] for callers on a Tokio runtime, which keeps the
 /// filesystem work off the async worker.
 pub async fn create_dir_all_async(path: &Path) -> std::io::Result<()> {

@@ -37,10 +37,11 @@ These talk to the player's gRPC server (`-H host:port`); see [gRPC Control](../i
 
 ## Lighting files
 
-`import-gdtf`, `import-mvr` and `export-mvr` work on a project directory (`--project`, default
-the current directory) and the default lighting directories, which `--fixture-types-dir` (and,
-for the MVR commands, `--venues-dir`) move as `directories` does in the config; they do not read
-`directories` themselves
+`import-gdtf`, `import-mvr` and `export-mvr` work on a project (`--project`: its directory or its
+config file, default the current directory) and the lighting directories its config gives this
+host's profile, as the player reads them, or the defaults when it names none; `--fixture-types-dir`
+(and, for the MVR commands, `--venues-dir`) override them. The library is always the project's
+`lighting/library/`
 ([Where the lighting files live](../lighting/configuration.md#where-the-lighting-files-live)).
 `migrate` takes the project directory or config file as its argument instead
 (`mtrack migrate [path]`, default the current directory).

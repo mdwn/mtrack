@@ -494,16 +494,16 @@ async fn wait_for_event(
 // Test 2: full chain with a wired `ConfigStore` against a tempdir
 // ---------------------------------------------------------------------------
 
-struct StandaloneFixture {
+pub(super) struct StandaloneFixture {
     _tempdir: tempfile::TempDir,
-    root: PathBuf,
-    config_path: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) config_path: PathBuf,
 }
 
 impl StandaloneFixture {
     fn write_config(&self) {
         // Top-level `audio:` and `dmx:` are normalized into a profile at load
-        // time, so `lighting_from_profiles()` resolves correctly without us
+        // time, so `lighting_dirs()` resolves correctly without us
         // having to author the profile block by hand. The `all_lights`
         // logical group lets simplified shows in the cues/effects test
         // resolve a real group during play() validation.
@@ -549,7 +549,7 @@ dmx:
 /// Sets up a tempdir with a real `mtrack.yaml`, `playlist.yaml`, and the
 /// `examples/songs/dsl-light-show-song` directory copied in so the player loads
 /// a real song with real audio files.
-fn setup_standalone_fixture() -> Result<StandaloneFixture, Box<dyn Error>> {
+pub(super) fn setup_standalone_fixture() -> Result<StandaloneFixture, Box<dyn Error>> {
     let tempdir = tempfile::tempdir()?;
     let root = tempdir.path().to_path_buf();
     std::fs::create_dir_all(root.join("songs"))?;
@@ -574,7 +574,7 @@ fn setup_standalone_fixture() -> Result<StandaloneFixture, Box<dyn Error>> {
 
 /// Constructs a `Player` and wires a `ConfigStore` the way `cli::local::start`
 /// does — the production path for standalone (non-test) deployment.
-async fn build_standalone_player(
+pub(super) async fn build_standalone_player(
     fixture: &StandaloneFixture,
 ) -> Result<Arc<Player>, Box<dyn Error>> {
     let player_config = config::Player::deserialize(&fixture.config_path)?;
@@ -1129,7 +1129,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         &session,
         20,
         "write_venue",
-        json!({"file": "test_stage.light", "source": venue_dsl}),
+        json!({"name": "test_stage", "source": venue_dsl}),
     )
     .await;
     let listed =
@@ -1143,7 +1143,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         })
         .unwrap_or_default();
     assert!(
-        listed_files.iter().any(|n| n == "test_stage.light"),
+        listed_files.iter().any(|n| n == "test_stage.venue"),
         "list_venue_files missing our write: {listed_files:?}",
     );
     let read = tool_json(
@@ -1153,7 +1153,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
             &session,
             22,
             "read_venue",
-            json!({"file": "test_stage.light"}),
+            json!({"file": "test_stage.venue"}),
         )
         .await,
     );
@@ -1164,7 +1164,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         &session,
         23,
         "write_venue",
-        json!({"file": "bogus.light", "source": "venue ohno { not valid syntax"}),
+        json!({"name": "bogus", "source": "venue ohno { not valid syntax"}),
     )
     .await;
     assert!(
@@ -1172,7 +1172,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         "bad venue should be rejected: {bad_venue}",
     );
     assert!(
-        !fixture.root.join("lighting/venues/bogus.light").exists(),
+        !fixture.root.join("lighting/venues/bogus.venue").exists(),
         "rejected venue was written anyway",
     );
 
@@ -1184,7 +1184,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         &session,
         24,
         "write_fixture_type",
-        json!({"file": "test_par.light", "source": fixture_dsl}),
+        json!({"name": "TestPar", "source": fixture_dsl}),
     )
     .await;
     let listed_fts = tool_json(
@@ -1207,7 +1207,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         })
         .unwrap_or_default();
     assert!(
-        ft_files.iter().any(|n| n == "test_par.light"),
+        ft_files.iter().any(|n| n == "testpar.fixture"),
         "list_fixture_type_files missing our write: {ft_files:?}",
     );
     let read_ft = tool_json(
@@ -1217,7 +1217,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
             &session,
             26,
             "read_fixture_type",
-            json!({"file": "test_par.light"}),
+            json!({"file": "testpar.fixture"}),
         )
         .await,
     );
@@ -1228,7 +1228,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         &session,
         27,
         "write_fixture_type",
-        json!({"file": "bogus.light", "source": "fixture_type \"X\" { what is this"}),
+        json!({"name": "X", "source": "fixture_type \"X\" { what is this"}),
     )
     .await;
     assert!(
@@ -1238,7 +1238,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     assert!(
         !fixture
             .root
-            .join("lighting/fixture_types/bogus.light")
+            .join("lighting/fixture_types/x.fixture")
             .exists(),
         "rejected fixture type was written anyway",
     );
@@ -1444,14 +1444,14 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         36,
         "patch_venue",
         json!({
-            "file": "test_stage.light",
+            "name": "test_stage",
             "old_string": "tags [\"wash\"]",
             "new_string": "tags [\"wash\", \"front\"]",
         }),
     )
     .await;
     let venue_after =
-        std::fs::read_to_string(fixture.root.join("lighting/venues/test_stage.light"))?;
+        std::fs::read_to_string(fixture.root.join("lighting/venues/test_stage.venue"))?;
     assert!(venue_after.contains("tags [\"wash\", \"front\"]"));
 
     let _ = call_tool(
@@ -1461,14 +1461,14 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         37,
         "patch_fixture_type",
         json!({
-            "file": "test_par.light",
+            "name": "TestPar",
             "old_string": "channels: 4",
             "new_string": "channels: 5",
         }),
     )
     .await;
     let ft_after =
-        std::fs::read_to_string(fixture.root.join("lighting/fixture_types/test_par.light"))?;
+        std::fs::read_to_string(fixture.root.join("lighting/fixture_types/testpar.fixture"))?;
     assert!(ft_after.contains("channels: 5"));
 
     controller.shutdown();
@@ -4538,7 +4538,7 @@ async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
             1601,
             "write_venue",
             json!({
-                "file": "main_stage.venue",
+                "name": "main_stage",
                 "source": "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1\n  fixture \"B1\" Brick @ 1:20\n}\n",
             }),
         )
@@ -4566,7 +4566,7 @@ async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
             1602,
             "patch_venue",
             json!({
-                "file": "main_stage.venue",
+                "name": "main_stage",
                 "old_string": "\"B1\" Brick @",
                 "new_string": "\"B1\" Brick mode \"8: RGBS\" @",
             }),

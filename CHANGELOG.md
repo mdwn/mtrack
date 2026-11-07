@@ -332,9 +332,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the venues were left naming a type that no longer existed. The editor says so as the
     settings form does ("Saved. Renamed in 2 venue lines: club (1), arena (1).", or that the
     current venue no longer loads).
-  - The web UI's and the importers' writes of venue and fixture type files are all or nothing
-    (MCP's `write_venue`, `write_fixture_type`, `patch_venue` and `patch_fixture_type` are not
-    yet): a web save, the fixture settings, an MVR import's revised MVR, records and venue, a GDTF
+  - The web UI's, MCP's and the importers' writes of venue and fixture type files are all or
+    nothing (MCP's `write_venue`, `write_fixture_type`, `patch_venue` and `patch_fixture_type` now
+    write through the web UI's own writers): a web or MCP save, the fixture settings, an MVR import's revised MVR, records and venue, a GDTF
     import's record, and both renames, which write the type's file, then the venue files, and
     remove the old type file last. Any failure, the old file's removal included, puts back what
     was written before it and what the failing write itself changed (a file it made is removed,
@@ -366,7 +366,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     original kept; a write interrupted by a crash still leaves its staged copy.
   - A web save's file that was removed since it was read is not made again (409): "club.venue
     was removed while saving and was not made again; try again", where the save made it anew
-    (or left it empty). MCP's writes still make it again.
+    (or left it empty). MCP's writes, which now go through the same writers, do not make it again
+    either.
   - A file a save claimed that appears before it is written is refused in one wording wherever
     it happens, shown as its writer's user knows it (relative to the venues or fixture types
     directory, or the project for a GDTF record): "pixelbrick.fixture appeared after it was
@@ -381,6 +382,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the GDTF import (`POST /api/lighting/gdtf/import?name=`) and the MVR import and inspection
     included, where those answered 400 (the GDTF import answered 409 only for a different
     archive of the same file name, as it still does).
+- **MCP's venue and fixture type tools write by name, by the web UI's rules**: `write_venue`,
+  `patch_venue`, `delete_venue`, `write_fixture_type`, `patch_fixture_type` and
+  `delete_fixture_type` take the venue's or type's `name` (and `from` to rename; `ext` for a type)
+  where they took a file name, and go through the web UI's own save, rename and delete. What
+  changes:
+  - A new name is written at its own file: `write_venue {name: "Club (Main)", source}` writes
+    `<venues dir>/club_main.venue`, and `write_fixture_type {name: "New Par"}` writes
+    `<fixture types dir>/new_par.fixture`, where the caller's file name was used as given. A name
+    another file declares, or whose file is there in any case, is refused as on the web ("old.light
+    is taken by "Old"; choose another name"), as is a fixture type named like an unrecorded
+    library GDTF.
+  - An existing name is written where it lives, only when its file is its alone; otherwise it is
+    read-only and the tool is refused with the web UI's reason: writing, patching or deleting
+    venue "A" in `tour/shared.light`, which also holds venue "B", answers "Defined in
+    tour/shared.light alongside venue "B"; edit that file by hand.", where the whole file was
+    overwritten, patched or deleted. `source` (and a patch's result) must declare this one name
+    and nothing else ("the DSL declares no venue named "New" (it declares "Else")…"), where any
+    number of blocks, of any names, was written.
+  - `from` renames as the editors do: "Club (Main)" in `club_main.venue` renamed "Hall" moves to
+    `hall.venue`; a fixture type's rename retypes every venue line naming it, and the answer
+    carries `rename`.
+  - A `.light` venue or type whose new text needs the newer format moves to its own `.venue` or
+    `.fixture` beside it: `write_venue {name: "Old"}` with a fixture `mode` turns `old.light` into
+    `old.venue`, and rich channel syntax turns `old_par.light` into `old_par.fixture`, where a
+    venue was written into the `.light` and a type was refused ("write it as … .fixture instead").
+  - `delete_fixture_type` also removes the type's GDTF archive when no other type uses it, and
+    deletes an unrecorded library GDTF by its name, as the web UI does. `delete_venue` of a name
+    no file declares answers "Venue not found: Hall".
+  - `read_venue` and `read_fixture_type` still read any file in the directory, now by its path
+    relative to it, nested too (`tour/shared.light`), where only a top-level basename was taken.
+  - A write that fails says "could not write <file>: <reason>", as the web UI does, where MCP said
+    "write failed: <reason>"; this holds for every MCP file write.
+  - The venue and fixture type tools no longer make the configured directory on every call (a
+    listing, a read, a refused write): a save makes it once its text has passed its checks, and a
+    fixture type save makes only the fixture types directory.
+- **MCP lists venues and fixture types as the loader reads them, in the host's directories**:
+  `list_venue_files` and `list_fixture_type_files` list every venue or type file at any depth
+  (`tour/shared.light`), where only top-level files were listed, and add each name's owner
+  (`venues` / `fixture_types`: `{name, file, editable, reason}`, `name` null for a file that does
+  not parse) and, for types, the library's unrecorded GDTFs (`library`: `{name, archive}`). Every
+  MCP lighting tool (these, the writes, `import_gdtf`, `import_mvr`, `export_mvr`) now uses the
+  directories of the profile this host runs, as the engine does, where it used the first
+  profile's: with a profile for `pi-a` naming `other/venues` listed before one for this host
+  naming `rig/venues`, MCP now reads and writes `rig/venues`.
+- **Every config read of the lighting section uses the profile this host runs**: with no engine
+  running, the web UI's lighting groups (`GET /api/lighting/groups`), the current venue a venue or
+  fixture type save checks (`venue_error`), and `mtrack verify-light-show --config` now read this
+  host's profile, as the engine does, where they read the first profile: with a profile for
+  `pi-a` declaring group `elsewhere` listed before this host's declaring `here`, the groups are
+  `here`. `verify-light-show` says "No lighting configuration found in this host's profile" where
+  it said there was none in the DMX config, or no DMX configuration.
+- **`PUT` and `DELETE /api/lighting/<path>` write song light shows only**: a path inside the
+  venues or fixture types directory this host's profile gives is refused with 400 ("lighting/
+  venues/club.light is in the venues directory (lighting/venues): a venue is saved by name, on
+  the Lighting page or with MCP's venue tools; this endpoint is for song light shows"), however
+  it is spelled (`shows/../lighting/venues/club.light`, a symlink into the directory, another
+  case on a file system that folds case), where, with the songs root holding the lighting
+  directories (`songs: "."`), it replaced or deleted a venue or type file.
+- **`mtrack import-gdtf`, `import-mvr` and `export-mvr` use the project's configured
+  directories**: without `--fixture-types-dir` or `--venues-dir`, they use the directories the
+  project's `mtrack.yaml` gives this host's profile, as the player, the web UI and MCP do, where
+  they used the defaults: with `directories: {fixture_types: rig/types}`, `import-gdtf
+  x.gdtf --name Brick` writes `rig/types/brick.fixture`, not
+  `lighting/fixture_types/brick.fixture`. `--project` also takes the config file itself
+  (`--project live/mtrack.yaml`). A project with no `mtrack.yaml` keeps the defaults; one whose
+  config does not load is refused, saying why.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

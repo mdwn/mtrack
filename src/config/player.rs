@@ -784,12 +784,39 @@ impl Player {
         self.dmx.as_mut().and_then(|d| d.lighting_mut())
     }
 
-    /// Returns a reference to the DMX config's lighting section (through all profiles).
-    /// Checks the first profile's DMX config for lighting.
-    pub fn lighting_from_profiles(&self) -> Option<&Lighting> {
-        self.first_profile()
+    /// The lighting section of the profile `hostname` runs: the first of
+    /// [`Self::profiles`] for it, as the engine picks its profile, so every
+    /// surface reads the directories the engine loads from.
+    pub fn lighting_for_host(&self, hostname: &str) -> Option<&Lighting> {
+        self.profiles(hostname)
+            .first()
             .and_then(|p| p.dmx())
             .and_then(|d| d.lighting())
+    }
+
+    /// The lighting section of the profile this host runs
+    /// ([`super::resolve_hostname`], [`Self::lighting_for_host`]).
+    pub fn host_lighting(&self) -> Option<&Lighting> {
+        self.lighting_for_host(&super::hostname::resolve_hostname())
+    }
+
+    /// The project's lighting directories on this host: the host-matched
+    /// profile's, else the defaults, as the engine loads them.
+    pub fn lighting_dirs(&self) -> super::lighting::ProjectDirs {
+        super::lighting::ProjectDirs::of(self.host_lighting())
+    }
+
+    /// The lighting directories the config at `config_path` gives this host
+    /// ([`Self::lighting_dirs`]): the one reader the web UI's server side,
+    /// MCP and the CLI ask. The defaults when there is no config file; an
+    /// error when it does not load.
+    pub fn lighting_dirs_at(
+        config_path: &Path,
+    ) -> Result<super::lighting::ProjectDirs, ConfigError> {
+        if !config_path.is_file() {
+            return Ok(super::lighting::ProjectDirs::of(None));
+        }
+        Ok(Self::deserialize(config_path)?.lighting_dirs())
     }
 
     /// Deserializes a config file without running normalize() or loading profiles_dir.
@@ -1018,6 +1045,46 @@ profiles:
         );
         assert!(profiles[2].midi().is_none());
         assert!(profiles[2].dmx().is_none());
+    }
+
+    #[test]
+    fn lighting_comes_from_the_hosts_profile_not_the_first() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    dmx:
+      universes: []
+      lighting:
+        current_venue: a-venue
+        directories:
+          venues: a/venues
+  - dmx:
+      universes: []
+      lighting:
+        current_venue: b-venue
+        directories:
+          venues: b/venues
+"#,
+        );
+        let of = |host: &str| {
+            player
+                .lighting_for_host(host)
+                .and_then(|l| l.current_venue())
+        };
+        assert_eq!(of("pi-a"), Some("a-venue"));
+        assert_eq!(of("pi-b"), Some("b-venue"));
+        let dirs = super::super::lighting::ProjectDirs::of(player.lighting_for_host("pi-b"));
+        assert_eq!(dirs.venues, "b/venues");
+        // The legacy first-profile accessor would have said pi-a's.
+        assert_eq!(
+            player
+                .dmx()
+                .and_then(|d| d.lighting())
+                .and_then(|l| l.current_venue()),
+            Some("a-venue")
+        );
     }
 
     #[test]

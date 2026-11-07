@@ -12,12 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! The web UI's venue and fixture type writers: the one rule's plan and
-//! write ([`crate::lighting::writes`]) with their refusals answered as the
-//! web API answers them, and the listings' owners. Both kinds go through
-//! here, so a venue and a fixture type are saved, renamed and deleted alike.
+//! The venue and fixture type writers of the web UI and MCP: the one rule's
+//! plan and write ([`crate::lighting::writes`]) with their refusals answered
+//! as the web API answers them ([`Answer`]), and the listings' owners. Both
+//! kinds, and both surfaces, go through here ([`save_venue`],
+//! [`save_fixture_type`], [`delete_venue`], [`delete_fixture_type`]), so a
+//! venue and a fixture type are saved, renamed and deleted alike, whoever
+//! asks.
 
-// A refusal is the response itself, as across the web API.
+// A refusal is an answer, as across the web API.
 #![allow(clippy::result_large_err)]
 
 use std::path::{Path, PathBuf};
@@ -27,14 +30,59 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
+use super::lighting_api::{
+    content_version, stale_venue_response, validate_lighting_name, validate_lighting_name_to_write,
+    validate_referential_archives, VENUE_WRITES,
+};
 use crate::lighting;
 use crate::lighting::files::{self, Editable, Kind, Owner, ReadOnly, Refusal};
-use crate::webui::wire::fixture_types::LightingOwner;
+use crate::webui::wire::fixture_types::{LightingOwner, Rename};
 
 type Response = axum::response::Response;
 
+/// A refusal or failure of a venue or fixture type write: the status the
+/// web API answers with and its body, `{error, ...}`. MCP gives the same
+/// `error` and the same body.
+#[derive(Debug)]
+pub(crate) struct Answer {
+    pub status: StatusCode,
+    pub body: serde_json::Value,
+}
+
+impl Answer {
+    /// The answer `{error: message}` with `status`.
+    pub(crate) fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Answer {
+            status,
+            body: json!({"error": message.into()}),
+        }
+    }
+
+    /// A 400 saying `message`.
+    pub(crate) fn bad(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, message)
+    }
+
+    /// What the answer says.
+    pub(crate) fn message(&self) -> &str {
+        self.body["error"].as_str().unwrap_or_default()
+    }
+}
+
+impl IntoResponse for Answer {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
+}
+
+impl From<Answer> for Response {
+    fn from(answer: Answer) -> Self {
+        answer.into_response()
+    }
+}
+
 /// An owner as the listings carry it.
-pub(super) fn wire_owner(kind: Kind, dir: &Path, owner: &Owner) -> LightingOwner {
+pub(crate) fn wire_owner(kind: Kind, dir: &Path, owner: &Owner) -> LightingOwner {
     LightingOwner {
         file: lighting::project_files::display_in(dir, &owner.path),
         editable: owner.editable == Editable::Editable,
@@ -45,7 +93,7 @@ pub(super) fn wire_owner(kind: Kind, dir: &Path, owner: &Owner) -> LightingOwner
 /// The 409 for a write to a name whose file is not its alone: the reason,
 /// the file, and what else is there (`others`), or the other files
 /// declaring it (`files`), or why it does not parse (`parse_error`).
-pub(super) fn read_only_response(kind: Kind, dir: &Path, owner: &Owner) -> Response {
+pub(super) fn read_only_answer(kind: Kind, dir: &Path, owner: &Owner) -> Answer {
     let shown = |p: &Path| lighting::project_files::display_in(dir, p);
     let mut body = json!({
         "error": owner.reason(kind, dir).unwrap_or_default(),
@@ -64,7 +112,10 @@ pub(super) fn read_only_response(kind: Kind, dir: &Path, owner: &Owner) -> Respo
             ReadOnly::Unparseable { error } => body["parse_error"] = json!(error),
         }
     }
-    (StatusCode::CONFLICT, Json(body)).into_response()
+    Answer {
+        status: StatusCode::CONFLICT,
+        body,
+    }
 }
 
 pub(super) use crate::lighting::writes::{Plan, Save};
@@ -153,45 +204,40 @@ pub(crate) fn import_error(
 /// [`Save::plan`], a refusal answered as the web API answers it, with the
 /// status [`refused_status`] gives; a read-only file's 409 also carries the
 /// file and what else is in it.
-pub(super) fn plan(save: &Save<'_>) -> Result<Plan, Response> {
+pub(super) fn plan(save: &Save<'_>) -> Result<Plan, Answer> {
     save.plan().map_err(|refused| match refused {
-        Refused::ReadOnly { kind, dir, owner } => read_only_response(kind, &dir, &owner),
-        other => (
-            refused_status(&other),
-            Json(json!({"error": other.to_string()})),
-        )
-            .into_response(),
+        Refused::ReadOnly { kind, dir, owner } => read_only_answer(kind, &dir, &owner),
+        other => Answer::new(refused_status(&other), other.to_string()),
     })
 }
 
 /// [`crate::lighting::writes::write`], a failure answered with the status
 /// [`write_status`] gives.
-pub(super) fn write(plan: &Plan, content: &str) -> Result<(), Response> {
+pub(super) fn write(plan: &Plan, content: &str) -> Result<(), Answer> {
     crate::lighting::writes::write(plan, content)
-        .map_err(|e| (write_status(&e), Json(json!({"error": e.to_string()}))).into_response())
+        .map_err(|e| Answer::new(write_status(&e), e.to_string()))
 }
 
 /// The file a delete of `name` removes: its owner's, when that is the
 /// name's alone. `Ok(None)`: no file declares it.
-pub(super) fn deletable(
+fn deletable(
     kind: Kind,
     dir: &Path,
     record: &files::Record,
     name: &str,
-) -> Result<Option<PathBuf>, Response> {
+) -> Result<Option<PathBuf>, Answer> {
     match record.owner(name) {
         None => Ok(None),
         Some(owner) if owner.editable == Editable::Editable => Ok(Some(owner.path)),
-        Some(owner) => Err(read_only_response(kind, dir, &owner)),
+        Some(owner) => Err(read_only_answer(kind, dir, &owner)),
     }
 }
 
 /// The 400 for a text body that is not one file of exactly this name: it
 /// must declare `name`, and nothing else, as an editable file holds.
-pub(super) fn require_alone(kind: Kind, name: &str, text: &str) -> Result<(), Response> {
-    let bad = |e: String| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
+pub(super) fn require_alone(kind: Kind, name: &str, text: &str) -> Result<(), Answer> {
     let contents = files::Contents::parse(kind, text)
-        .map_err(|e| bad(format!("Invalid {} DSL: {e}", kind.noun())))?;
+        .map_err(|e| Answer::bad(format!("Invalid {} DSL: {e}", kind.noun())))?;
     let editable = contents.alone(name).ok_or_else(|| {
         let declared = files::unique(&contents.names);
         let found = if declared.is_empty() {
@@ -199,7 +245,7 @@ pub(super) fn require_alone(kind: Kind, name: &str, text: &str) -> Result<(), Re
         } else {
             format!("it declares \"{}\"", declared.join("\", \""))
         };
-        bad(format!(
+        Answer::bad(format!(
             "the DSL declares no {noun} named \"{name}\" ({found}); rename the {noun} in the Name \
              field, not in the text",
             noun = kind.noun()
@@ -229,10 +275,494 @@ pub(super) fn require_alone(kind: Kind, name: &str, text: &str) -> Result<(), Re
         ),
         Editable::ReadOnly(ReadOnly::Unparseable { error }) => error,
     };
-    Err(bad(format!(
+    Err(Answer::bad(format!(
         "the text {also}; a {noun} saved here is a file of that one {noun} and nothing else",
         noun = kind.noun()
     )))
+}
+
+/// A change made from the file as it is: `None` for a name no file
+/// declares yet.
+pub(crate) type Edit = Box<dyn FnOnce(Option<&str>) -> Result<String, Answer> + Send>;
+
+/// A change of an existing name's file, as it is.
+pub(crate) type Patch = Box<dyn FnOnce(&str) -> Result<String, Answer> + Send>;
+
+/// What a save writes: always the whole of the name's file, which must
+/// declare that one name and nothing else ([`require_alone`]).
+pub(crate) enum Body {
+    /// The whole new file.
+    Text(String),
+    /// The new file made from the current one under the write lock (the
+    /// venue editor's JSON: patched in, so comments and layout survive).
+    Edit(Edit),
+    /// The current file changed (MCP's string patch): only a name a file
+    /// declares (404 otherwise).
+    Patch(Patch),
+}
+
+impl Body {
+    /// The body's text, given the file as it is (`None` for a new name),
+    /// when it is not known before.
+    fn text(self, kind: Kind, name: &str, current: Option<&[u8]>) -> Result<String, Answer> {
+        let current = match current {
+            Some(bytes) => Some(std::str::from_utf8(bytes).map_err(|_| {
+                Answer::bad(format!("the {}'s file is not valid UTF-8", kind.noun()))
+            })?),
+            None => None,
+        };
+        match self {
+            Body::Text(text) => Ok(text),
+            Body::Edit(edit) => edit(current),
+            Body::Patch(patch) => patch(current.ok_or_else(|| not_found(kind, name))?),
+        }
+    }
+}
+
+/// The 404 for a name no file declares.
+fn not_found(kind: Kind, name: &str) -> Answer {
+    let noun = match kind {
+        Kind::Venue => "Venue",
+        Kind::FixtureType => "Fixture type",
+    };
+    Answer::new(StatusCode::NOT_FOUND, format!("{noun} not found: {name}"))
+}
+
+/// Whether a venue uses syntax only `.venue` files carry: provenance, focus
+/// points, a fixture's position, rotation or beam angle, or its own GDTF mode
+/// (§21).
+pub(super) fn needs_venue_extension(venue: &lighting::types::Venue) -> bool {
+    venue.source().is_some()
+        || !venue.focus_points().is_empty()
+        || venue.fixtures().values().any(|f| {
+            f.position().is_some()
+                || f.rotation().is_some()
+                || f.mode().is_some()
+                || f.beam_angle().is_some()
+        })
+}
+
+/// Whether venue text needs a `.venue` file; 400 when it does not parse.
+fn venue_text_needs_new_format(text: &str) -> Result<bool, Answer> {
+    Ok(lighting::parser::parse_venues(text)
+        .map_err(|e| Answer::bad(format!("Invalid venue DSL: {e}")))?
+        .values()
+        .any(needs_venue_extension))
+}
+
+/// What a save wrote.
+pub(crate) struct Saved {
+    /// The file written.
+    pub file: PathBuf,
+    /// The file it replaced, as it was; `None` for a new name.
+    pub before: Option<String>,
+    /// What was written.
+    pub text: String,
+    /// What a fixture type's rename retyped in the venues.
+    pub rename: Option<Rename>,
+}
+
+impl Saved {
+    fn of(plan: &Plan, text: String, rename: Option<Rename>) -> Self {
+        Saved {
+            file: plan.write.path().to_path_buf(),
+            before: plan
+                .current
+                .as_deref()
+                .map(|b| String::from_utf8_lossy(b).into_owned()),
+            text,
+            rename,
+        }
+    }
+}
+
+/// The names a save is given, checked as file names.
+fn validate_names(name: &str, from: Option<&str>) -> Result<(), Answer> {
+    validate_lighting_name(name)?;
+    from.map_or(Ok(()), validate_lighting_name)
+}
+
+/// The directory `dir`, made when it is not there and inside `project`
+/// ([`super::helpers::make_configured_dir`]), once a save's text has passed
+/// its checks: a refused save makes nothing.
+fn made(dir: &Path, project: &Path) -> Result<PathBuf, Answer> {
+    super::helpers::make_configured_dir(dir, project)
+        .map_err(|(status, message)| Answer::new(status, message))
+}
+
+/// A save of one venue.
+pub(crate) struct VenueSave {
+    /// The project, which the venues directory must be inside.
+    pub project: PathBuf,
+    /// The venues directory, made by the save when it is not there.
+    pub dir: PathBuf,
+    pub name: String,
+    /// A rename's old name.
+    pub from: Option<String>,
+    /// The version (`If-Match`) the save was made against, when one was
+    /// sent: refused (409) when it is not the file's.
+    pub expected: Option<String>,
+    /// Whether the new text needs a `.venue`, when the caller knows (the
+    /// editor's JSON venue); otherwise read from the text.
+    pub needs_new_format: Option<bool>,
+    pub body: Body,
+}
+
+/// Saves one venue by the one rule for venue files: a new name claimed at
+/// `<venues dir>/<stem>.venue`; an existing one written only where its file
+/// is that venue's alone (409 with the file and why otherwise); a rename
+/// moving a file at the old name's canonical place to the new name's, and
+/// renaming any other in place; a `.light` whose text needs the newer
+/// format moved to its own stem's `.venue`. What was written, or the
+/// answer. Holds the venue write lock: called from a blocking task.
+pub(crate) fn save_venue(save: VenueSave) -> Result<Saved, Answer> {
+    let VenueSave {
+        project,
+        dir,
+        name,
+        from,
+        expected,
+        needs_new_format,
+        body,
+    } = save;
+    validate_names(&name, from.as_deref())?;
+    let mut needs = needs_new_format;
+    if let Body::Text(text) = &body {
+        require_alone(Kind::Venue, &name, text)?;
+        if needs.is_none() {
+            needs = Some(venue_text_needs_new_format(text)?);
+        }
+    }
+    let dir = made(&dir, &project)?;
+    let _guard = VENUE_WRITES.blocking_lock();
+    let record = lighting::project_files::venues(&dir).record;
+    let save = Save {
+        kind: Kind::Venue,
+        dir: &dir,
+        record: &record,
+        library: &[],
+        name: &name,
+        from: from.as_deref(),
+        needs_new_format: needs.unwrap_or(false),
+    };
+    if matches!(body, Body::Patch(_)) && save.owner().is_none() {
+        return Err(not_found(Kind::Venue, save.subject()));
+    }
+    let mut plan = plan(&save)?;
+    validate_lighting_name_to_write(&name, !plan.names_anew(save.renaming()))?;
+    if let Some(expected) = &expected {
+        let current = plan.current.as_deref().map(content_version);
+        if current.as_deref() != Some(expected.as_str()) {
+            return Err(stale_venue_response(save.subject(), current));
+        }
+    }
+    let text = body.text(Kind::Venue, save.subject(), plan.current.as_deref())?;
+    // What is written is this venue's file alone, whichever way it came.
+    require_alone(Kind::Venue, &name, &text)?;
+    // Planned before the text was known: planned again for the format.
+    if needs.is_none() && venue_text_needs_new_format(&text)? {
+        plan = self::plan(&Save {
+            needs_new_format: true,
+            ..save
+        })?;
+    }
+    write(&plan, &text)?;
+    Ok(Saved::of(&plan, text, None))
+}
+
+/// A save of one fixture type.
+pub(crate) struct TypeSave {
+    /// The project root, canonical, which the fixture types directory must
+    /// be inside.
+    pub root: PathBuf,
+    /// The fixture types directory, made by the save when it is not there.
+    pub dir: PathBuf,
+    /// The venues directory a rename retypes.
+    pub venues_dir: PathBuf,
+    pub name: String,
+    /// A rename's old name.
+    pub from: Option<String>,
+    /// The form asked for: `fixture` moves a `.light` to a `.fixture`;
+    /// `light` keeps a `.light` and is refused for a `.fixture`.
+    pub ext: Option<&'static str>,
+    /// The body came from the channel-map form, which saves only a type it
+    /// can say all of.
+    pub from_form: bool,
+    pub body: Body,
+}
+
+/// The checks a fixture type's new text passes before it is written: it
+/// parses, declares this one type and nothing else, and any GDTF it names
+/// is a file in the project; and whether it needs a `.fixture` (`ext`
+/// `fixture`, rich channels or a GDTF reference: the extension is the
+/// version marker, and such a type in a `.light` is skipped by the loader).
+fn type_text_checks(
+    root: &Path,
+    name: &str,
+    text: &str,
+    ext: Option<&str>,
+) -> Result<bool, Answer> {
+    let types = lighting::parser::parse_fixture_types(text)
+        .map_err(|e| Answer::bad(format!("Invalid fixture type DSL: {e}")))?;
+    require_alone(Kind::FixtureType, name, text)?;
+    validate_referential_archives(root, &types)?;
+    Ok(ext == Some("fixture")
+        || types
+            .values()
+            .any(|t| t.uses_rich_channels() || t.source().is_some()))
+}
+
+/// Saves one fixture type by the one rule for type files, as
+/// [`save_venue`] saves a venue; a new name also may not take an unrecorded
+/// library type's. A rename retypes every venue line naming the old name in
+/// `venues_dir`, planned in full and refused (nothing written) when any
+/// venue file cannot be; the answer is what it changed. Holds the venue
+/// write lock: called from a blocking task.
+pub(crate) fn save_fixture_type(save: TypeSave) -> Result<Saved, Answer> {
+    let TypeSave {
+        root,
+        dir,
+        venues_dir,
+        name,
+        from,
+        ext,
+        from_form,
+        body,
+    } = save;
+    validate_names(&name, from.as_deref())?;
+    let needs = match &body {
+        Body::Text(text) => Some(type_text_checks(&root, &name, text, ext)?),
+        _ => None,
+    };
+    let dir = made(&dir, &root)?;
+    // Held from reading the files to writing one: a type added to the file
+    // between the two would be lost.
+    let _guard = VENUE_WRITES.blocking_lock();
+    let project = lighting::project_files::fixture_types(&root, Some(&dir));
+    let save = Save {
+        kind: Kind::FixtureType,
+        dir: &dir,
+        record: &project.files.record,
+        library: &project.library.types,
+        name: &name,
+        from: from.as_deref(),
+        needs_new_format: needs.unwrap_or(false),
+    };
+    if matches!(body, Body::Patch(_)) && save.owner().is_none() {
+        return Err(not_found(Kind::FixtureType, save.subject()));
+    }
+    let mut plan = plan(&save)?;
+    validate_lighting_name_to_write(&name, !plan.names_anew(save.renaming()))?;
+    if let Some(existing) = project.files.get(save.subject()) {
+        let shown = lighting::project_files::display_in(&dir, &existing.file);
+        // The channel-map form saves only a type it can say all of:
+        // anything more (comments, a strobe curve, special cases, movement
+        // limits, rich channels, a GDTF source) would be lost.
+        if from_form {
+            let expresses = plan
+                .current
+                .as_deref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .is_some_and(|text| lighting::fixture_patch::form_expresses(text, save.subject()));
+            if !expresses {
+                return Err(Answer::bad(format!(
+                    "fixture type \"{}\" in {shown} holds more than the channel-map editor can \
+                     express; edit this type as text",
+                    save.subject(),
+                )));
+            }
+        }
+        let is_fixture = existing
+            .file
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("fixture"));
+        if ext == Some("light") && is_fixture {
+            return Err(Answer::bad(format!(
+                "fixture type \"{}\" is in {shown}, a .fixture file; it is not written back as a \
+                 .light",
+                save.subject(),
+            )));
+        }
+    }
+    let text = body.text(Kind::FixtureType, save.subject(), plan.current.as_deref())?;
+    // Planned before the text was known: planned again for the format.
+    if needs.is_none() && type_text_checks(&root, &name, &text, ext)? {
+        plan = self::plan(&Save {
+            needs_new_format: true,
+            ..save
+        })?;
+    }
+    // A rename is the fixture settings' rename: every venue line naming
+    // the old name is retyped, planned in full first, and refused (so
+    // nothing is written) when any venue file cannot be.
+    let retype = match from.as_deref().filter(|old| *old != name) {
+        Some(old) => {
+            let retype = super::fixture_settings::plan_venue_retype(
+                &venues_dir,
+                old,
+                Some(&name),
+                &Default::default(),
+            )
+            .map_err(|(status, message)| Answer::new(status, message))?;
+            Some((old.to_string(), retype))
+        }
+        None => None,
+    };
+    match &retype {
+        // The type and its venues are written together, and put back
+        // together if any write fails.
+        Some((_, retype)) => {
+            super::fixture_settings::write_type_save(&dir, &[], &plan, &text, retype)
+                .map_err(|(status, message)| Answer::new(status, message))?
+        }
+        None => write(&plan, &text)?,
+    }
+    let rename = retype.map(|(old, retype)| retype.summary(&old, &name));
+    Ok(Saved::of(&plan, text, rename))
+}
+
+/// Deletes the venue `name`'s file: only one that is the venue's alone
+/// (409 otherwise, with the file and why; 404 when no file declares it).
+/// Holds the venue write lock from reading the files to deleting one: a
+/// save adding another venue to it between the two would be lost (#578).
+/// Called from a blocking task.
+pub(crate) fn delete_venue(dir: &Path, name: &str) -> Result<PathBuf, Answer> {
+    validate_lighting_name(name)?;
+    let _guard = VENUE_WRITES.blocking_lock();
+    let record = lighting::project_files::venues(dir).record;
+    let path =
+        deletable(Kind::Venue, dir, &record, name)?.ok_or_else(|| not_found(Kind::Venue, name))?;
+    std::fs::remove_file(&path).map_err(|e| {
+        Answer::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to delete venue: {e}"),
+        )
+    })?;
+    Ok(path)
+}
+
+/// What a fixture type delete removed: the type's file (`None` for an
+/// unrecorded library type, whose archive is the type), the archive
+/// removed (project-relative), and whether a GDTF archive was kept because
+/// another type still uses it.
+pub(crate) struct TypeDeleted {
+    pub file: Option<PathBuf>,
+    pub archive_removed: Option<String>,
+    pub archive_kept: bool,
+}
+
+/// Deletes the fixture type `name`'s file: only one that is the type's
+/// alone (409 otherwise, with the file and why). A GDTF type's archive goes
+/// with its record when no other type uses it; a GDTF in the library with
+/// no record is its archive, deleted. 404 when neither has the name. Holds
+/// the venue write lock, as [`delete_venue`] does. Called from a blocking
+/// task.
+pub(crate) fn delete_fixture_type(
+    root: &Path,
+    dir: &Path,
+    name: &str,
+) -> Result<TypeDeleted, Answer> {
+    let failed = |e: std::io::Error| {
+        Answer::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to delete fixture type: {e}"),
+        )
+    };
+    validate_lighting_name(name)?;
+    let _guard = VENUE_WRITES.blocking_lock();
+    let read = lighting::project_files::type_files(dir);
+    let Some(file) = deletable(Kind::FixtureType, dir, &read.record, name)? else {
+        // A GDTF in the library with no record is a fixture of its own;
+        // deleting it is deleting the archive.
+        let library = lighting::library::unrecorded_types(root, Some(dir));
+        let found = library
+            .get(name)
+            .ok_or_else(|| not_found(Kind::FixtureType, name))?;
+        std::fs::remove_file(root.join(&found.archive)).map_err(failed)?;
+        return Ok(TypeDeleted {
+            file: None,
+            archive_removed: Some(found.archive.clone()),
+            archive_kept: false,
+        });
+    };
+    // A GDTF fixture's archive is mtrack's to keep, not the user's: read
+    // which one this type uses before its record goes.
+    let archive = read
+        .get(name)
+        .and_then(|declared| declared.item.source().cloned());
+    std::fs::remove_file(&file).map_err(failed)?;
+    let (archive_removed, archive_kept) = match archive {
+        Some(source) => remove_unused_archive(root, dir, &source.path),
+        None => (None, false),
+    };
+    Ok(TypeDeleted {
+        file: Some(file),
+        archive_removed,
+        archive_kept,
+    })
+}
+
+/// After a GDTF fixture's record is deleted: its archive in
+/// `lighting/library/`, removed when no other fixture type in `types_dir`
+/// uses it — otherwise archives the user cannot see pile up. Returns the
+/// removed archive (project-relative) and whether it was kept because
+/// another type still uses it. An archive outside the library is never
+/// touched, and neither is the expansion cache (it is keyed by content and
+/// rebuilt on demand).
+fn remove_unused_archive(
+    root: &Path,
+    types_dir: &Path,
+    archive_rel: &str,
+) -> (Option<String>, bool) {
+    let library = root.join(lighting::library::LIBRARY_DIR);
+    let Ok(target) = root.join(archive_rel).canonicalize() else {
+        return (None, false);
+    };
+    let in_library = library
+        .canonicalize()
+        .is_ok_and(|library| target.starts_with(library));
+    if !in_library {
+        return (None, false);
+    }
+    let still_used = lighting::import::existing_types(types_dir)
+        .values()
+        .flatten()
+        .any(|other| {
+            root.join(other)
+                .canonicalize()
+                .is_ok_and(|other| other == target)
+        });
+    if still_used {
+        return (None, true);
+    }
+    match std::fs::remove_file(&target) {
+        Ok(()) => (Some(archive_rel.to_string()), false),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not remove a deleted fixture's GDTF archive");
+            (None, false)
+        }
+    }
+}
+
+/// Every name of `kind` in `dir` with its owner, and every file there that
+/// does not parse, as the loader read them ([`files::Record::listing`]):
+/// `{name, file, editable, reason}`, `name` null for a file that does not
+/// parse. What MCP's listings give.
+pub(crate) fn owners_listing(kind: Kind, dir: &Path, record: &files::Record) -> serde_json::Value {
+    let listed: Vec<serde_json::Value> = record
+        .listing()
+        .into_iter()
+        .map(|listed| {
+            let owner = wire_owner(kind, dir, &listed.owner);
+            json!({
+                "name": listed.name,
+                "file": owner.file,
+                "editable": owner.editable,
+                "reason": owner.reason,
+            })
+        })
+        .collect();
+    json!(listed)
 }
 
 #[cfg(test)]

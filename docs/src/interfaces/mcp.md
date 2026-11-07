@@ -80,8 +80,12 @@ About 65 tools are available. They fall into a few groups:
   detailed song metadata and beat-grid queries. A playlist write is checked as the player would
   load it: each entry's `fade_out`, `fade_in` and `auto_play`, and the playlist's `ambient`.
 - **Lighting authoring** — read, write, validate, patch, and delete `.light` DSL files for songs,
-  venues, and fixture types (venue tools also take `.venue` files, fixture-type tools `.fixture`),
-  list the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
+  and venues and fixture types by name, by the web UI's rules: a new one is written to its own
+  `<stem>.venue` or `<stem>.fixture`, an existing one only where its file is its alone (a shared,
+  broken or doubly declared one is read-only, refused with the file and why), and `from` renames.
+  The listings give every file in the host's profile's directories, at any depth, with each
+  name's owner, and `read_venue` / `read_fixture_type` read any of those files by path. List
+  the lighting cues and active effects, and fetch a DSL reference primer. Manufacturer and
   venue files import through `list_gdtf_modes` / `import_gdtf` and `inspect_mvr` / `import_mvr`
   (and go back out through `export_mvr`),
   so an agent can fetch a GDTF or a venue's MVR, read its modes or pick the origin, and wire it in.
@@ -90,7 +94,7 @@ About 65 tools are available. They fall into a few groups:
   names one (`mode "…"`), which `list_gdtf_modes` lists with footprints. `list_fixture_types`
   lists hand-written types with their channels and GDTF fixtures with their archive and modes,
   each with its `strobe_curve` (null when automatic) and the `strobe_curve_in_use`. A GDTF
-  fixture's own settings (its record) are written with the fixture-type tools as a `.fixture`
+  fixture's own settings (its record) are written with the fixture-type tools, in its `.fixture`
   file. Deleting a song's lighting file also removes its `lighting:` entry, so the song is never
   left with a dangling reference.
   `validate_lighting` returns each show's resolved cue timeline alongside the parse result, so
