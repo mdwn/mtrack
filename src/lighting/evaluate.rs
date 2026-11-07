@@ -907,6 +907,7 @@ show "T" {
                 let mut snap = crate::state::compute_fixture_snapshots(
                     &engine.get_fixture_states(),
                     &has_dimmer,
+                    engine.get_fixture_registry(),
                 );
                 fill_dark_fixtures(&mut snap, fixtures.iter());
                 sampled.push((now, snap));
@@ -1181,6 +1182,45 @@ show "T" {
         let results = eval(&open_white_then("red: 100%"), &fixtures, &[2.0]);
         assert_eq!(results[0].is_dark(), Some(false));
         assert_eq!(channel(&results[0], "wash", "cyan"), 0);
+    }
+
+    /// On a CMY fixture with nothing opening its flags first: a flag no
+    /// effect drives is open on the wire, so it reads open, and the
+    /// fixture is judged subtractively by the flags the head is sent.
+    #[test]
+    fn a_cmy_fixture_with_flags_left_alone_reads_them_open() {
+        let fixtures = [fixture_of("wash", &["dimmer", "cyan", "magenta", "yellow"])];
+        let at = |params: &str| {
+            let source = format!(
+                "show \"T\" {{\n    @00:00.000\n    \
+                 wash: static dimmer: 100%, {params}, duration: 10s\n}}\n"
+            );
+            let result = eval(&source, &fixtures, &[1.0]).remove(0);
+            let shown = crate::lighting::channels::shown_color(
+                result.fixtures[0]
+                    .channels
+                    .iter()
+                    .map(|(name, &v)| (name.as_str(), f64::from(v))),
+            );
+            (result, shown)
+        };
+        let (red, shown) = at("red: 100%");
+        assert_eq!(red.is_dark(), Some(false), "red alone opens cyan: white");
+        assert_eq!(shown, [1.0, 1.0, 1.0]);
+        let (red_green, shown) = at("red: 100%, green: 100%");
+        assert_eq!(red_green.is_dark(), Some(false));
+        assert_eq!(shown, [1.0, 1.0, 1.0], "white");
+        let (half_green, shown) = at("red: 100%, green: 50%");
+        assert_eq!(half_green.is_dark(), Some(false));
+        assert_eq!(channel(&half_green, "wash", "magenta"), 128);
+        assert_eq!(channel(&half_green, "wash", "yellow"), 0, "blue left open");
+        assert_eq!(
+            shown,
+            [1.0, 127.0 / 255.0, 1.0],
+            "magenta takes half the green"
+        );
+        let (cyan, _) = at("cyan: 0%");
+        assert_eq!(cyan.is_dark(), Some(false), "cyan open alone is open white");
     }
 
     /// A CMY fixture driven through its flags directly reads as before.

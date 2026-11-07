@@ -220,9 +220,9 @@ impl FixtureState {
         &self,
         channels: &HashMap<String, V>,
         has_dedicated_dimmer: bool,
-    ) -> std::iter::Flatten<std::array::IntoIter<Option<(&'static str, f64)>, 3>> {
+    ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
         let subtractive = super::fixture::has_cmy(channels);
-        super::fixture::CMY_OF_RGB
+        crate::lighting::channels::CMY_OF_RGB
             .map(|(rgb, cmy)| {
                 let state = self.channels.get(rgb).filter(|_| subtractive)?;
                 Some((

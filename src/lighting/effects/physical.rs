@@ -156,6 +156,16 @@ pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = 
     }
 }
 
+/// The coarse byte a normalized 0..1 value goes out as on `def`
+/// ([`resolve_normalized`]'s first): an 8-bit channel's byte, a 16-bit
+/// channel's high byte. What a snapshot shows for the channel, so it is
+/// the byte on the wire.
+pub fn coarse_byte(def: &ChannelDef, value: f64) -> u8 {
+    resolve_normalized(def, value)
+        .next()
+        .map_or(0, |(_, byte)| byte)
+}
+
 /// The degree span a channel resolves over, and the DMX sub-range it maps
 /// onto (inclusive, on the 8-bit coarse scale): the channel's own range
 /// first, then a function carrying a degree range, then the parameter's
