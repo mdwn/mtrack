@@ -663,7 +663,7 @@ impl Player {
         let resolved_active = if playlists.contains_key(&active_playlist) {
             active_playlist
         } else {
-            "all_songs".to_string()
+            playlist::ALL_SONGS.to_string()
         };
 
         Ok(Player {
@@ -673,7 +673,7 @@ impl Player {
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
             playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
-                if resolved_active == "all_songs" {
+                if resolved_active == playlist::ALL_SONGS {
                     "playlist".to_string()
                 } else {
                     resolved_active
@@ -1499,7 +1499,7 @@ pub enum ReloadSongsError {
 }
 
 /// Loads all playlists from a directory and/or legacy playlist path.
-/// Always includes the computed "all_songs" playlist.
+/// Always includes the computed [`playlist::ALL_SONGS`] playlist.
 pub fn load_playlists(
     playlists_dir: Option<&Path>,
     legacy_playlist_path: Option<&Path>,
@@ -1509,7 +1509,7 @@ pub fn load_playlists(
 
     // Always create all_songs.
     playlists.insert(
-        "all_songs".to_string(),
+        playlist::ALL_SONGS.to_string(),
         playlist::from_songs(songs.clone())?,
     );
 
@@ -1534,7 +1534,7 @@ pub fn load_playlists(
                     .and_then(|s| s.to_str())
                     .unwrap_or_default()
                     .to_string();
-                if name.is_empty() || name == "all_songs" {
+                if name.is_empty() || playlist::is_reserved_name(&name) {
                     continue;
                 }
                 match config::Playlist::deserialize(&path) {

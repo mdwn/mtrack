@@ -50,16 +50,15 @@ pub fn project_dir(state: &crate::webui::server::WebUiState) -> PathBuf {
 /// Validates a resource name for use in file paths.
 ///
 /// Rejects names that would be unsafe as filenames (empty, path traversal, etc.)
-/// and optionally rejects a reserved name.
+/// and a name the caller reserves (`reserved`).
 #[allow(clippy::result_large_err)]
 pub(crate) fn validate_resource_name(
     name: &str,
     label: &str,
-    reserved: Option<&str>,
+    reserved: bool,
 ) -> Result<(), axum::response::Response> {
     use super::super::safe_path::SafePath;
-    let is_reserved = reserved.is_some_and(|r| name == r);
-    if is_reserved || SafePath::validate_name(name).is_err() {
+    if reserved || SafePath::validate_name(name).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Invalid {} name", label)})),

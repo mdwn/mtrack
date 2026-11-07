@@ -540,6 +540,16 @@ pub fn validate_for_write(
     Ok(())
 }
 
+/// The name of the playlist of every song ([`from_songs`]), which the player
+/// makes itself: no playlist file holds it.
+pub const ALL_SONGS: &str = "all_songs";
+
+/// Whether `name` is reserved for a playlist the player makes, so no file
+/// in the playlists directory holds it.
+pub fn is_reserved_name(name: &str) -> bool {
+    name == ALL_SONGS
+}
+
 /// Creates an alphabetized playlist from all available songs.
 pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
@@ -552,7 +562,7 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
             .into_iter()
             .map(|song| song.name().to_string()),
     );
-    Playlist::new("all_songs", &config::Playlist::new(&sorted), songs)
+    Playlist::new(ALL_SONGS, &config::Playlist::new(&sorted), songs)
 }
 
 #[cfg(test)]

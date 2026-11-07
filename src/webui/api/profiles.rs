@@ -139,7 +139,7 @@ fn carry(raw: &serde_json::Value, typed: &serde_json::Value, new: &mut serde_jso
 
 #[allow(clippy::result_large_err)]
 fn validate_profile_filename(name: &str) -> Result<(), axum::response::Response> {
-    validate_resource_name(name, "profile", None)
+    validate_resource_name(name, "profile", false)
 }
 
 /// GET /api/profiles — list profile files from profiles_dir.

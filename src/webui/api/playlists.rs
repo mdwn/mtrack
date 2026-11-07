@@ -36,7 +36,7 @@ use crate::config;
 /// Validates a playlist name for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
-    validate_resource_name(name, "playlist", Some("all_songs"))
+    validate_resource_name(name, "playlist", crate::playlist::is_reserved_name(name))
 }
 
 /// GET /api/playlists — list all playlists with name, song count, and active status.
