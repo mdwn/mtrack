@@ -325,6 +325,7 @@ impl Player {
         // Store the active profile name and hostname.
         if !install_if_current(&self.hardware, &cancel, |hw| {
             hw.profile_name = Some(profile.hostname().unwrap_or("default").to_string());
+            hw.profile_file = profile.source_file().map(String::from);
             hw.hostname = Some(hostname);
         }) {
             return;
@@ -909,6 +910,7 @@ impl Player {
                 clock_source: ClockSource::Wall,
                 song_change_notifiers: notifiers,
                 profile_name: None,
+                profile_file: None,
                 hostname: None,
                 init_errors: HashMap::new(),
             };
@@ -1128,6 +1130,7 @@ impl Player {
             init_done,
             hostname: hw.hostname.clone(),
             profile: hw.profile_name.clone(),
+            profile_file: hw.profile_file.clone(),
             audio: status_for(
                 "audio",
                 hw.device.is_some(),
@@ -1573,6 +1576,7 @@ mod test {
             clock_source: ClockSource::Wall,
             song_change_notifiers: Vec::new(),
             profile_name: None,
+            profile_file: None,
             hostname: None,
             init_errors: std::collections::HashMap::new(),
         })

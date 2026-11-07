@@ -24,8 +24,7 @@ use serde_json::json;
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::helpers::{
-    require_configured_dir, resolve_resource_path, validate_resource_name,
-    validate_resource_name_to_write,
+    require_configured_dir, validate_resource_name, validate_resource_name_to_write,
 };
 use crate::config;
 
@@ -36,7 +35,31 @@ use crate::config;
 /// Validates a playlist name for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
-    validate_resource_name(name, "playlist", Some("all_songs"))
+    validate_resource_name(name, "playlist", crate::playlist::is_reserved_name(name))
+}
+
+/// The file that holds the playlist `name` in `dir` (`playlist::playlist_file`:
+/// its `.yaml`, else its `.yml`, as listed, else a new `.yaml`), checked to
+/// be inside `dir`. The reserved name is refused (400), and a new file named
+/// as one there but for case (409).
+#[allow(clippy::result_large_err)]
+fn playlist_path(
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<crate::util::NamedFile, axum::response::Response> {
+    use crate::playlist::PlaylistFileError;
+    let file = match crate::playlist::playlist_file(dir, name) {
+        Ok(file) => Ok(file),
+        Err(PlaylistFileError::CaseClash(clash)) => Err(clash),
+        Err(e @ PlaylistFileError::Reserved(_)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response())
+        }
+    };
+    super::helpers::resolve_named_file(dir, file)
 }
 
 /// GET /api/playlists — list all playlists with name, song count, and active status.
@@ -55,6 +78,7 @@ pub(super) async fn get_playlists(State(state): State<WebUiState>) -> impl IntoR
                 name: name.clone(),
                 song_count,
                 is_active: name == &active,
+                reserved: crate::playlist::is_reserved_name(name),
             }
         })
         .collect();
@@ -137,21 +161,22 @@ pub(super) async fn put_playlist_by_name(
     let playlists_dir =
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
-    // Before `resolve_resource_path`, which canonicalizes the directory and
+    // Before `resolve_named_file`, which canonicalizes the directory and
     // fails if it is missing -- a creation after that call can never run.
     // Created only when it is inside the project: a `playlists_dir:` pointing
     // elsewhere is the operator's to set up, like `songs` and the rest.
     let playlists_dir = super::helpers::ensure_configured_dir(&playlists_dir, &state).await?;
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_resource_path.
-    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
-    validate_resource_name_to_write(&name, "playlist", file_path.is_file())?;
+    // verified via canonicalize + starts_with containment in playlist_path.
+    let file = playlist_path(&playlists_dir, &name)?;
+    validate_resource_name_to_write(&name, "playlist", file.exists())?;
+    let file_path = file.path().to_path_buf();
 
     // The editor knows only the songs: an existing playlist keeps its
     // transitions, and each entry its own with the song. One that does not
     // read is not overwritten, which would lose them.
-    let playlist_config = if file_path.is_file() {
+    let playlist_config = if file.exists() {
         match config::Playlist::deserialize(&file_path) {
             Ok(existing) => existing.with_songs(&body.songs),
             Err(e) => {
@@ -233,13 +258,17 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
-    // Write atomically, off the async runtime.
+    // Write atomically, off the async runtime. A new playlist is created as
+    // new (`config_io::staged_create`): a file made since the lookup, or one
+    // the filesystem takes for this name, is refused, never written over.
     let fp = file_path.clone();
     let yaml_owned = yaml;
-    super::helpers::spawn_blocking_io("write playlist", move || {
-        config_io::staged_write(&fp, &yaml_owned)
+    let new = !file.exists();
+    let result = super::helpers::spawn_blocking_io("write playlist", move || {
+        Ok::<_, String>(config_io::write(&fp, &yaml_owned, new))
     })
     .await?;
+    super::helpers::written(result, &file_path, "playlist")?;
 
     // Reload songs to pick up the new playlist.
     super::helpers::reload_songs(&state).await?;
@@ -264,24 +293,20 @@ pub(super) async fn delete_playlist_by_name(
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_resource_path.
-    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
-    let yml_path = resolve_resource_path(&playlists_dir, &name, "yml")?;
-
-    // Determine which file to delete, then remove it off the async runtime.
-    let target = if file_path.is_file() {
-        file_path
-    } else if yml_path.is_file() {
-        yml_path
-    } else {
+    // verified via canonicalize + starts_with containment in playlist_path.
+    let target = playlist_path(&playlists_dir, &name)?;
+    if !target.exists() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Playlist '{}' not found", name)})),
         )
             .into_response());
-    };
-    super::helpers::spawn_blocking_io("delete playlist", move || std::fs::remove_file(&target))
-        .await?;
+    }
+    // Remove it off the async runtime.
+    super::helpers::spawn_blocking_io("delete playlist", move || {
+        std::fs::remove_file(target.path())
+    })
+    .await?;
 
     // Reload songs to remove the playlist.
     super::helpers::reload_songs(&state).await?;
@@ -347,7 +372,13 @@ mod test {
         assert!(parsed.is_array());
         let arr = parsed.as_array().unwrap();
         // Should contain at least the playlist we created.
-        assert!(arr.iter().any(|v| v["name"] == "mylist"));
+        assert!(arr
+            .iter()
+            .any(|v| v["name"] == "mylist" && v["reserved"] == false));
+        // The player's own playlist says it is: the web UI hides it by that.
+        assert!(arr
+            .iter()
+            .any(|v| v["name"] == "all_songs" && v["reserved"] == true));
     }
 
     #[tokio::test]
@@ -389,6 +420,154 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
         let written = std::fs::read_to_string(playlists_dir.join("mylist.yaml")).unwrap();
         assert!(written.ends_with('\n'), "{written:?}");
+    }
+
+    /// PUTs `{"songs": [<songs>]}` to the playlist `mylist` in a fresh
+    /// state with songs A, B and C on disk and a playlists directory holding
+    /// `files`; returns the status, the directory, and the songs of
+    /// `mylist` as the reloaded player has it.
+    async fn put_mylist(
+        files: &[(&str, &str)],
+        songs: &str,
+    ) -> (
+        StatusCode,
+        std::path::PathBuf,
+        Vec<String>,
+        tempfile::TempDir,
+    ) {
+        let (state, dir) = test_state();
+        for name in ["A", "B", "C"] {
+            let song_dir = state.songs_path().join(format!("song_{name}"));
+            std::fs::create_dir(&song_dir).unwrap();
+            crate::testutil::write_wav(song_dir.join("kick.wav"), vec![vec![0_i32; 441]], 44100)
+                .unwrap();
+            std::fs::write(
+                song_dir.join("song.yaml"),
+                format!("name: Song {name}\ntracks:\n- name: kick\n  file: kick.wav\n"),
+            )
+            .unwrap();
+        }
+        let playlists_dir = state.playlists_dir().clone().unwrap();
+        for (file, text) in files {
+            std::fs::write(playlists_dir.join(file), text).unwrap();
+        }
+        state.player.reload_songs().await.unwrap();
+        let status = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/mylist")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"songs": [{songs}]}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        let loaded = state
+            .player
+            .playlists_snapshot()
+            .get("mylist")
+            .map(|playlist| playlist.songs().clone())
+            .unwrap_or_default();
+        (status, playlists_dir, loaded, dir)
+    }
+
+    /// A playlist kept as `.yml` is saved into that file, keeping its
+    /// settings, not into a new `.yaml` beside it, and the reloaded player
+    /// plays the songs saved; with both there, the `.yaml` the loader reads
+    /// is saved and the `.yml` left alone.
+    #[tokio::test]
+    async fn put_playlist_by_name_writes_the_names_file() {
+        let old = "songs:\n  - Song A\nambient: false\n";
+        let (status, playlists_dir, loaded, _dir) =
+            put_mylist(&[("mylist.yml", old)], r#""Song B""#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!playlists_dir.join("mylist.yaml").exists());
+        let written = std::fs::read_to_string(playlists_dir.join("mylist.yml")).unwrap();
+        assert!(written.contains("Song B"), "{written}");
+        assert!(written.contains("ambient: false"), "{written}");
+        assert_eq!(loaded, ["Song B"]);
+
+        let files = [("mylist.yaml", "songs:\n  - Song A\n"), ("mylist.yml", old)];
+        let (status, playlists_dir, loaded, _dir) = put_mylist(&files, r#""Song C""#).await;
+        assert_eq!(status, StatusCode::OK);
+        let written = std::fs::read_to_string(playlists_dir.join("mylist.yaml")).unwrap();
+        assert!(written.contains("Song C"), "{written}");
+        assert_eq!(
+            std::fs::read_to_string(playlists_dir.join("mylist.yml")).unwrap(),
+            old
+        );
+        assert_eq!(loaded, ["Song C"]);
+    }
+
+    /// A new playlist named as a file there but for case (`set` beside
+    /// `Set.yaml`, which a case-insensitive filesystem would open for it)
+    /// is refused, and `Set.yaml` left alone.
+    #[tokio::test]
+    async fn put_playlist_refuses_a_name_differing_only_in_case() {
+        let old = "songs:\n  - Song A\n";
+        let (state, dir) = test_state();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
+        std::fs::write(playlists_dir.join("Set.yaml"), old).unwrap();
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"songs": []}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(
+            body.contains("`Set.yaml` already exists; names differ only in case"),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(playlists_dir.join("Set.yaml")).unwrap(),
+            old
+        );
+        assert!(!playlists_dir.join("set.yaml").exists());
+        drop(dir);
+    }
+
+    /// A delete removes the name's file: its `.yml` when that is all there
+    /// is, its `.yaml` when both are there.
+    #[tokio::test]
+    async fn delete_playlist_by_name_removes_the_names_file() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir().clone().unwrap();
+        std::fs::write(playlists_dir.join("old.yml"), "songs: []\n").unwrap();
+        std::fs::write(playlists_dir.join("both.yaml"), "songs: []\n").unwrap();
+        std::fs::write(playlists_dir.join("both.yml"), "songs: []\n").unwrap();
+        let app = router().with_state(state);
+        let delete = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .method("DELETE")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        assert_eq!(delete("/playlists/old").await, StatusCode::OK);
+        assert!(!playlists_dir.join("old.yml").exists());
+        assert_eq!(delete("/playlists/both").await, StatusCode::OK);
+        assert!(!playlists_dir.join("both.yaml").exists());
+        assert!(playlists_dir.join("both.yml").exists());
     }
 
     /// PUTs `songs` (JSON) to the playlist `mylist`, whose file holds

@@ -34,32 +34,42 @@ fn default_active_playlist() -> String {
 }
 
 /// Lists the profile YAML files in a profiles directory in load order
-/// (sorted by file name). Shared by config load and by gain persistence so
-/// both sides agree on which file owns the active profile.
+/// (sorted by file name): every one (`util::yaml_config_files`), since a
+/// profile is matched by the `hostname` inside it, not by its file name.
+/// Shared by config load, gain persistence and the web UI's list so all
+/// agree on which file owns the active profile.
 pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
+    crate::util::yaml_config_files(dir).map_err(|source| ConfigError::Io {
         path: dir.to_path_buf(),
         source,
-    })?;
+    })
+}
 
-    let mut yaml_paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| ConfigError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "yaml" || ext == "yml" {
-                    yaml_paths.push(path);
-                }
-            }
-        }
+/// The file in the profiles directory `dir` that `name` addresses, by the
+/// directory's listing: a full file name it lists (`stage.yml`) is that
+/// file (`util::file_among`), so two files sharing a stem are each
+/// addressed; else a stem's file (`util::yaml_file_among`: `stage` is its
+/// `.yaml`, else its `.yml`; `stage.yaml` with only `stage.yaml.yaml`
+/// there is that). With neither, a full file name is created as written
+/// (`x.yml`) and a stem as `<stem>.yaml`. A new file named as one there
+/// but for case is refused. `name` is not checked for path safety here.
+pub(crate) fn profile_file(
+    dir: &Path,
+    name: &str,
+) -> Result<crate::util::NamedFile, crate::util::CaseClash> {
+    let files = crate::util::files_to_look_up(dir);
+    let as_stem = crate::util::yaml_file_among(dir, &files, name);
+    if !crate::songs::is_yaml_config(Path::new(name)) {
+        return as_stem;
     }
-    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    Ok(yaml_paths)
+    match crate::util::file_among(dir, &files, std::ffi::OsStr::new(name)) {
+        Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+        full => match as_stem {
+            Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+            _ => full,
+        },
+    }
 }
 
 /// The configuration for the multitrack player.
@@ -367,6 +377,8 @@ impl Player {
                     path: path.clone(),
                     source,
                 })?;
+            let mut profile = profile;
+            profile.set_source_file(path.file_name().and_then(|n| n.to_str()).map(String::from));
             dir_profiles.push(profile);
         }
 
@@ -1682,6 +1694,92 @@ profiles:
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
+    }
+
+    /// Profiles are matched by the `hostname` inside them, so every profile
+    /// file loads: `stage.yaml` (`pi-a`) and `stage.yml` (the catch-all)
+    /// both do. Addressed (`profile_file`), `stage` is the `.yaml` and
+    /// `stage.yml` the `.yml`.
+    #[test]
+    fn test_profiles_dir_loads_both_files_of_a_stem() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            let profiles = dir.join("profiles");
+            std::fs::create_dir(&profiles).unwrap();
+            write_profile(
+                &profiles,
+                "stage.yaml",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &profiles,
+                "stage.yml",
+                "audio:\n  device: catch-all\n  track_mappings:\n    drums: [1]\n",
+            );
+            write_profile(
+                &profiles,
+                "pi-b.yml",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [1]\n",
+            );
+            use crate::util::NamedFile;
+            let file = |name: &str| super::profile_file(&profiles, name).unwrap();
+            assert_eq!(file("stage"), NamedFile::Found(profiles.join("stage.yaml")));
+            assert_eq!(
+                file("stage.yaml"),
+                NamedFile::Found(profiles.join("stage.yaml"))
+            );
+            assert_eq!(
+                file("stage.yml"),
+                NamedFile::Found(profiles.join("stage.yml"))
+            );
+            assert_eq!(file("pi-b"), NamedFile::Found(profiles.join("pi-b.yml")));
+            assert_eq!(file("pi-c"), NamedFile::New(profiles.join("pi-c.yaml")));
+            assert_eq!(file("pi-c.yml"), NamedFile::New(profiles.join("pi-c.yml")));
+            assert_eq!(
+                super::profile_file(&profiles, "Stage.yml"),
+                Err(crate::util::CaseClash("stage.yml".to_string()))
+            );
+        });
+
+        let devices: Vec<_> = player
+            .all_profiles()
+            .iter()
+            .map(|p| p.audio_config().unwrap().audio().device().to_string())
+            .collect();
+        assert_eq!(devices, ["device-b", "device-a", "catch-all"]);
+        // Each remembers its file, which the web UI links the running one by.
+        let files: Vec<_> = player
+            .all_profiles()
+            .iter()
+            .map(|p| p.source_file())
+            .collect();
+        assert_eq!(
+            files,
+            [Some("pi-b.yml"), Some("stage.yaml"), Some("stage.yml")]
+        );
+    }
+
+    /// A full file name the directory does not list is tried as a stem:
+    /// `stage.yaml` with only `stage.yaml.yaml` there is that file. With
+    /// neither, it is created as written: `x.yml`, not `x.yml.yaml`.
+    #[test]
+    fn profile_file_tries_a_full_name_as_a_stem() {
+        use crate::util::NamedFile;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        std::fs::write(dir.join("stage.yaml.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml.yaml")))
+        );
+        assert_eq!(
+            super::profile_file(dir, "x.yml"),
+            Ok(NamedFile::New(dir.join("x.yml")))
+        );
+        std::fs::write(dir.join("stage.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml")))
+        );
     }
 
     #[test]

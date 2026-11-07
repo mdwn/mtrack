@@ -668,6 +668,10 @@ impl ConfigStore {
                     "profile update removes populated section(s)"
                 );
             }
+            // The file it was loaded from stays its own: the status links
+            // the running profile by it (`hardware.profile_file`).
+            let mut profile = profile;
+            profile.set_source_file(list[index].source_file().map(String::from));
             list[index] = profile;
             Ok(())
         })

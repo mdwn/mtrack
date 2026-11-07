@@ -14,6 +14,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import { sendWs } from "../support/ws";
+import type { ProfileFileInfo } from "../../src/gen/rules/mtrack_rules";
 
 let testCounter = 0;
 
@@ -271,7 +272,10 @@ test.describe("Lighting area: Groups", () => {
         contentType: "application/json",
         body: JSON.stringify([
           {
-            filename: "test-host.yaml",
+            file: "test-host.yaml",
+            filename: "test-host",
+            addressable: true,
+            error: null,
             hostname: "test-host",
             has_audio: false,
             has_midi: false,
@@ -279,7 +283,7 @@ test.describe("Lighting area: Groups", () => {
             has_trigger: false,
             has_controllers: false,
           },
-        ]),
+        ] satisfies ProfileFileInfo[]),
       });
     });
     let version = "v1";

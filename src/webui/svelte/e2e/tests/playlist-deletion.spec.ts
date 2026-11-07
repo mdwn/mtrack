@@ -13,6 +13,7 @@
 //
 
 import { test, expect } from "@playwright/test";
+import type { PlaylistInfo } from "../../src/gen/rules/mtrack_rules";
 
 test.describe("Playlist Deletion", () => {
   test.beforeEach(async ({ page }) => {
@@ -67,9 +68,19 @@ test.describe("Playlist Deletion", () => {
           status: 200,
           contentType: "application/json",
           body: JSON.stringify([
-            { name: "all_songs", song_count: 2, is_active: false },
-            { name: "rehearsal", song_count: 2, is_active: false },
-          ]),
+            {
+              name: "all_songs",
+              song_count: 2,
+              is_active: false,
+              reserved: true,
+            },
+            {
+              name: "rehearsal",
+              song_count: 2,
+              is_active: false,
+              reserved: false,
+            },
+          ] satisfies PlaylistInfo[]),
         });
       } else {
         await route.continue();

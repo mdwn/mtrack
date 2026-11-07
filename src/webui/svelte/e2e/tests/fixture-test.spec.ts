@@ -328,7 +328,7 @@ test.describe("when testing cannot happen, the section says why", () => {
       );
       await expect(
         why.getByRole("link", { name: "Open the profile's DMX settings" }),
-      ).toHaveAttribute("href", "#/config/test-host/lighting");
+      ).toHaveAttribute("href", "#/config/test-host.yaml/lighting");
       await expect(page.getByTestId("ftest-send")).toBeDisabled();
     });
   }

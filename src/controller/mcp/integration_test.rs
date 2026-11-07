@@ -4070,6 +4070,126 @@ async fn mcp_write_playlist_keeps_names_already_on_disk() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> {
+    // A playlist kept as `.yml` is read, written and patched in that file,
+    // not a new `.yaml` beside it; `all_songs` is the player's own and has
+    // no file to write.
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+    let refused = |response: &serde_json::Value| {
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
+    };
+    let dir = fixture.root.join("playlists");
+    std::fs::create_dir_all(&dir)?;
+    let yml = dir.join("old.yml");
+    std::fs::write(&yml, "songs: []\n")?;
+    let yaml = "songs:\n- DSL Light Show Song\n";
+
+    // An `all_songs.yaml` on disk is not the player's playlist either.
+    std::fs::write(dir.join("all_songs.yaml"), "songs: []\n")?;
+    let all_songs = [
+        ("write_playlist", json!({"name": "all_songs", "yaml": yaml})),
+        ("read_playlist", json!({"name": "all_songs"})),
+        (
+            "patch_playlist",
+            json!({"name": "all_songs", "old_string": "songs:", "new_string": "songs:"}),
+        ),
+    ];
+    for (id, (tool, args)) in (1630..).zip(all_songs) {
+        let response = call_tool(&client, &url, &session, id, tool, args).await;
+        assert!(refused(&response), "{tool} all_songs: {response}");
+        assert!(
+            response
+                .to_string()
+                .contains("'all_songs' is the player's own playlist and has no file"),
+            "{tool}: {response}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("all_songs.yaml"))?,
+        "songs: []\n"
+    );
+
+    // A new `other` beside `Other.yaml` is refused, not written into it.
+    std::fs::write(dir.join("Other.yaml"), "songs: []\n")?;
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1635,
+        "write_playlist",
+        json!({"name": "other", "yaml": yaml}),
+    )
+    .await;
+    assert!(refused(&response), "{response}");
+    assert!(
+        response
+            .to_string()
+            .contains("`Other.yaml` already exists; names differ only in case"),
+        "{response}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Other.yaml"))?,
+        "songs: []\n"
+    );
+
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1640,
+        "write_playlist",
+        json!({"name": "old", "yaml": yaml}),
+    )
+    .await;
+    assert!(!refused(&response), "{response}");
+    assert_eq!(std::fs::read_to_string(&yml)?, yaml);
+    assert!(!dir.join("old.yaml").exists());
+
+    let read = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1641,
+            "read_playlist",
+            json!({"name": "old"}),
+        )
+        .await,
+    );
+    assert_eq!(read["path"], yml.display().to_string(), "{read}");
+    assert_eq!(read["yaml"], yaml, "{read}");
+
+    let response = call_tool(
+        &client,
+        &url,
+        &session,
+        1642,
+        "patch_playlist",
+        json!({"name": "old", "old_string": "songs:", "new_string": "# kept\nsongs:"}),
+    )
+    .await;
+    assert!(!refused(&response), "{response}");
+    assert_eq!(std::fs::read_to_string(&yml)?, format!("# kept\n{yaml}"));
+    assert!(!dir.join("old.yaml").exists());
+
+    controller.shutdown();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test 3l: song_details returns the structured metadata + computed BPM
 // ---------------------------------------------------------------------------

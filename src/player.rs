@@ -140,6 +140,9 @@ struct HardwareState {
     song_change_notifiers: Vec<Arc<dyn SongChangeNotifier>>,
     /// The hostname of the active hardware profile (None if no profile matched).
     profile_name: Option<String>,
+    /// The file the active profile was loaded from (`stage.yml`); None for
+    /// an inline profile, or none matched.
+    profile_file: Option<String>,
     /// The resolved machine hostname used for profile matching.
     hostname: Option<String>,
     /// Subsystems whose init gave up, keyed by name, with the reason.
@@ -653,6 +656,7 @@ impl Player {
             clock_source,
             song_change_notifiers: Vec::new(),
             profile_name: None,
+            profile_file: None,
             hostname: None,
             init_errors: HashMap::new(),
         };
@@ -663,7 +667,7 @@ impl Player {
         let resolved_active = if playlists.contains_key(&active_playlist) {
             active_playlist
         } else {
-            "all_songs".to_string()
+            playlist::ALL_SONGS.to_string()
         };
 
         Ok(Player {
@@ -673,7 +677,7 @@ impl Player {
             active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
             playlist_moves: Arc::new(parking_lot::Mutex::new(())),
             persisted_playlist: Arc::new(parking_lot::RwLock::new(
-                if resolved_active == "all_songs" {
+                if resolved_active == playlist::ALL_SONGS {
                     "playlist".to_string()
                 } else {
                     resolved_active
@@ -1499,7 +1503,7 @@ pub enum ReloadSongsError {
 }
 
 /// Loads all playlists from a directory and/or legacy playlist path.
-/// Always includes the computed "all_songs" playlist.
+/// Always includes the computed [`playlist::ALL_SONGS`] playlist.
 pub fn load_playlists(
     playlists_dir: Option<&Path>,
     legacy_playlist_path: Option<&Path>,
@@ -1509,33 +1513,23 @@ pub fn load_playlists(
 
     // Always create all_songs.
     playlists.insert(
-        "all_songs".to_string(),
+        playlist::ALL_SONGS.to_string(),
         playlist::from_songs(songs.clone())?,
     );
 
     // Load playlists from directory.
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().is_file()
-                        && e.path()
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in entries {
-                let path = entry.path();
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                if name.is_empty() || name == "all_songs" {
-                    continue;
+            // Each name's file (`playlist::playlist_files`): with both
+            // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
+            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
+                if let Some(unread) = unread {
+                    warn!(
+                        name = %name,
+                        "Playlist has two files: {} is read, {} is not",
+                        path.display(),
+                        unread.display()
+                    );
                 }
                 match config::Playlist::deserialize(&path) {
                     Ok(playlist_config) => {
@@ -4294,6 +4288,70 @@ mod test {
         assert!(playlists.contains_key("my_set"));
         assert_eq!(playlists["my_set"].songs().len(), 2);
 
+        Ok(())
+    }
+
+    /// The running profile's file (`hardware.profile_file`, which the web UI
+    /// links it by) is the one it was loaded from, and stays so after the
+    /// profile is updated by index, as MCP, the web UI and gRPC do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_running_profiles_file_survives_a_profile_update() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("profiles"))?;
+        std::fs::create_dir(dir.path().join("songs"))?;
+        std::fs::write(
+            dir.path().join("profiles/rig.yml"),
+            "kind: hardware_profile\n",
+        )?;
+        let path = dir.path().join("mtrack.yaml");
+        std::fs::write(&path, "songs: songs\nprofiles_dir: profiles\n")?;
+        let config = config::Player::deserialize(&path)?;
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        let playlists = super::load_playlists(None, None, songs)?;
+        let player = Player::new(playlists, "playlist".to_string(), &config, Some(dir.path()))?;
+        let store = Arc::new(config::store::ConfigStore::new(config, path.clone()));
+        player.set_config_store(store.clone());
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
+
+        let snap = store.read().await?;
+        let updated = config::Profile::new(None, None, None, None);
+        let snap = store.update_profile(0, updated, &snap.checksum).await?;
+        assert_eq!(snap.config.all_profiles()[0].source_file(), Some("rig.yml"));
+        let _ = player.apply_config_change().await;
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
+        Ok(())
+    }
+
+    /// With both `set.yaml` and `set.yml`, the loader takes `set.yaml` (it
+    /// took `set.yml`, the later file name, before); `all_songs.yaml` and
+    /// `loud.YAML` are not playlists.
+    #[test]
+    fn load_playlists_takes_a_names_yaml_over_its_yml() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let temp_dir = tempfile::tempdir()?;
+        let pl_dir = temp_dir.path();
+        fs::write(pl_dir.join("set.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("set.yml"), "songs:\n- Song 1\n- Song 3\n")?;
+        fs::write(pl_dir.join("old.yml"), "songs:\n- Song 3\n")?;
+        fs::write(pl_dir.join("all_songs.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("loud.YAML"), "songs:\n- Song 1\n")?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs.clone())?;
+        assert_eq!(playlists["set"].songs(), &vec!["Song 1".to_string()]);
+        assert_eq!(playlists["old"].songs(), &vec!["Song 3".to_string()]);
+        assert_eq!(
+            playlists[playlist::ALL_SONGS].songs().len(),
+            songs.sorted_list().len()
+        );
+        assert!(!playlists.contains_key("loud"));
+        assert_eq!(playlists.len(), 3);
         Ok(())
     }
 

@@ -28,6 +28,9 @@ pub struct PlaylistInfo {
     pub name: String,
     pub song_count: usize,
     pub is_active: bool,
+    /// The player's own playlist of every song (`playlist::is_reserved_name`),
+    /// which has no file to edit or delete.
+    pub reserved: bool,
 }
 
 /// `GET /api/playlists/{name}`: a playlist's songs and, entry for entry,

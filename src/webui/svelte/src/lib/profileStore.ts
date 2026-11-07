@@ -40,17 +40,26 @@ import {
 import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
 import { get } from "./api/rest";
 import { reloadNotice, type ReloadNotice } from "./configReload";
+import type { Translate } from "./i18n";
 
-/** Where one profile is stored. */
+/** Where one profile is stored: a file by its full file name
+ *  (`stage.yml`), or an inline profile by its index. */
 export type ProfileRef =
   | { kind: "file"; filename: string }
   | { kind: "inline"; index: number };
 
 /** One profile in the listing. */
 export interface ProfileEntry {
-  /** The name used in URLs: a file's name without extension, or the
-   *  hostname, or `Profile #<index>` for an inline profile with neither. */
+  /** The name the profile is addressed and linked by: a file's full file
+   *  name (`stage.yml`), or an inline profile's hostname, or
+   *  `Profile #<index>` with neither. */
   name: string;
+  /** What the profile is shown as: a file's `fileProfileLabel`, else
+   *  `name`. Display only, never an address. */
+  label: string;
+  /** False for a file the API cannot address (`addressable`), shown
+   *  read-only. */
+  editable: boolean;
   /** The profile's `hostname`, which decides which machine runs it. */
   hostname: string | null;
   ref: ProfileRef;
@@ -85,8 +94,68 @@ export function inlineProfileName(
   return profile?.hostname || `Profile #${index}`;
 }
 
-export function fileProfileName(filename: string): string {
-  return filename.replace(/\.\w+$/, "");
+/** A profile file's stem: its full file name (`stage.yml`) without the
+ *  `.yaml` or `.yml`. The one place the stem is taken from a file name. */
+export function fileProfileName(file: string): string {
+  return file.replace(/\.(yaml|yml)$/, "");
+}
+
+/** What a profile file is shown as: its stem, or its full file name when
+ *  the stem could be taken for another file (one sharing it, `stage.yaml`
+ *  beside `stage.yml`, or one named it, `stage.yaml` beside
+ *  `stage.yaml.yaml`). Display text only: a file is addressed, linked and
+ *  matched by its full file name (`ProfileFileInfo.file`). */
+export function fileProfileLabel(
+  file: string,
+  files: ProfileFileInfo[],
+): string {
+  const stem = fileProfileName(file);
+  const taken = files.some(
+    (f) =>
+      f.file !== file && (fileProfileName(f.file) === stem || f.file === stem),
+  );
+  return taken ? file : stem;
+}
+
+/** Why a route or link names no profile among `names`: a name differing
+ *  only in case from one there (`clash`, with that name), else `missing`.
+ *  The page says so, and never falls back to another profile. */
+export function profileRouteProblem(
+  route: string,
+  names: string[],
+): { kind: "missing" } | { kind: "clash"; name: string } {
+  const wanted = [route, `${route}.yaml`, `${route}.yml`].map((n) =>
+    n.toLowerCase(),
+  );
+  const name = names.find((n) => wanted.includes(n.toLowerCase()));
+  return name ? { kind: "clash", name } : { kind: "missing" };
+}
+
+/** What a page shows for a route naming no profile (`profileRouteProblem`). */
+export function profileRouteMessage(
+  route: string,
+  names: string[],
+  t: Translate,
+): string {
+  const problem = profileRouteProblem(route, names);
+  return problem.kind === "clash"
+    ? t("config.profileFileCaseClash", {
+        values: { file: route, other: problem.name },
+      })
+    : t("config.profileFileNotFound", { values: { file: route } });
+}
+
+/** The profile a route or link names, among `names` (each file's full file
+ *  name, or an inline profile's name): the name itself, else, as the server
+ *  reads a stem, `<route>.yaml`, else `<route>.yml`. So a bookmark from
+ *  before full file names (`#/config/stage`) opens the file it opened. */
+export function resolveProfileRoute(
+  route: string,
+  names: string[],
+): string | undefined {
+  return [route, `${route}.yaml`, `${route}.yml`].find((name) =>
+    names.includes(name),
+  );
 }
 
 function buildEntries(
@@ -95,14 +164,21 @@ function buildEntries(
   files: ProfileFileInfo[],
 ): ProfileEntry[] {
   if (profilesDir) {
-    return files.map((f) => ({
-      name: fileProfileName(f.filename),
-      hostname: f.hostname,
-      ref: { kind: "file", filename: f.filename },
-    }));
+    // A file that does not parse has no profile to pick or edit.
+    return files
+      .filter((f) => !f.error)
+      .map((f) => ({
+        name: f.file,
+        label: fileProfileLabel(f.file, files),
+        editable: f.addressable,
+        hostname: f.hostname,
+        ref: { kind: "file", filename: f.file },
+      }));
   }
   return inline.map((p, index) => ({
     name: inlineProfileName(p, index),
+    label: inlineProfileName(p, index),
+    editable: true,
     hostname: p?.hostname ?? null,
     ref: { kind: "inline", index },
   }));
@@ -185,6 +261,7 @@ export async function writeProfile(
       ref.filename,
       profile,
       version ?? undefined,
+      isNew,
     );
     return { snapshot: null, version: saved.version, reload: saved.reload };
   }
@@ -198,13 +275,15 @@ export async function writeProfile(
  *  `/api/status` reports as `hardware.profile`. There is no fallback: when
  *  the status cannot be read or no profile names this host, the answer is
  *  null, and the caller has the user choose. Falling back to the first
- *  profile let one machine's editor write another machine's profile. */
+ *  profile let one machine's editor write another machine's profile. Only
+ *  an `editable` entry is picked: one the API cannot address is never read
+ *  or written for the running profile (lighting, `addUniverseToRunningProfile`). */
 export function pickRunningProfile(
   entries: ProfileEntry[],
   running: string | null | undefined,
 ): ProfileEntry | null {
   if (!running) return null;
-  return entries.find((e) => e.hostname === running) ?? null;
+  return entries.find((e) => e.editable && e.hostname === running) ?? null;
 }
 
 /** The running profile's name as `/api/status` reports it, or null when the

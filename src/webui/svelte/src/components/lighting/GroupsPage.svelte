@@ -29,7 +29,9 @@
     fetchRunningProfile,
     loadProfileSet,
     pickRunningProfile,
+    profileRouteMessage,
     readProfileVersioned,
+    resolveProfileRoute,
     writeProfile,
     parseProfileYaml,
     type ProfileEntry,
@@ -91,12 +93,31 @@
    *  no machine's profile is edited by accident. */
   function target(): ProfileEntry | null {
     if (!set) return null;
-    return (
-      (profileParam
-        ? set.entries.find((e) => e.name === profileParam)
-        : undefined) ?? pickRunningProfile(set.entries, running)
-    );
+    const editable = set.entries.filter((e) => e.editable);
+    // A full file name, or an old link's stem as the server reads it. One
+    // naming no profile opens none (`paramMissing` says so), never the
+    // running one in its place.
+    if (profileParam) {
+      const wanted = resolveProfileRoute(
+        profileParam,
+        editable.map((e) => e.name),
+      );
+      return editable.find((e) => e.name === wanted) ?? null;
+    }
+    return pickRunningProfile(editable, running);
   }
+
+  /** What the page says when `?profile=` names no profile: deleted, or
+   *  differing only in case. */
+  const paramMissing = $derived(
+    set && profileParam && !selected && !loading
+      ? profileRouteMessage(
+          profileParam,
+          set.entries.map((e) => e.name),
+          $t,
+        )
+      : null,
+  );
 
   async function open(entry: ProfileEntry | null) {
     selected = entry;
@@ -244,6 +265,9 @@
   </div>
 {:else}
   <div class="groups-page">
+    {#if paramMissing}
+      <p class="param-missing" role="alert">{paramMissing}</p>
+    {/if}
     <div class="groups-toolbar">
       <div class="groups-picker">
         <label for="groups-profile">{$t("lighting.groups.profile")}</label>
@@ -258,8 +282,8 @@
             <option value="" disabled>{$t("lighting.groups.choose")}</option>
           {/if}
           {#each set.entries as entry (entry.name)}
-            <option value={entry.name}>
-              {entry.name}{entry.hostname && entry.hostname === running
+            <option value={entry.name} disabled={!entry.editable}>
+              {entry.label}{entry.hostname && entry.hostname === running
                 ? ` (${$t("lighting.groups.running")})`
                 : ""}
             </option>
@@ -395,5 +419,9 @@
   }
   .save-notice {
     color: var(--yellow);
+  }
+  .param-missing {
+    color: var(--text-danger);
+    margin: 0 0 12px;
   }
 </style>

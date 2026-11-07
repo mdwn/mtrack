@@ -1222,7 +1222,7 @@ impl McpServer {
                 song_dir.join_filename("song.yaml")
             }
         };
-        staged_write_string(&yaml_path, &args.yaml).await?;
+        staged_write_string(&yaml_path, &args.yaml, false).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
         self.reload_player_songs().await?;
@@ -1234,12 +1234,16 @@ impl McpServer {
 
     #[tool(description = "Read a playlist YAML file. With no `name`, reads the \
         top-level `playlist:` file from the mtrack config. With a `name`, reads \
-        `<playlists_dir>/<name>.yaml`.")]
+        `<playlists_dir>/<name>.yaml`, else `<name>.yml`.")]
     async fn read_playlist(
         &self,
         Parameters(args): Parameters<PlaylistNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = self
+            .resolve_playlist_path(args.name.as_deref())
+            .await?
+            .path()
+            .to_path_buf();
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -1251,8 +1255,9 @@ impl McpServer {
         description = "Write a playlist YAML file. Validates the YAML against \
         `config::Playlist`, and its transitions against the songs, before \
         writing. With no `name`, writes the top-level playlist file. With a \
-        `name`, writes `<playlists_dir>/<name>.yaml` and creates the file if \
-        missing. Each `songs:` entry is a song name, or a map with `song:` and \
+        `name`, writes `<playlists_dir>/<name>.yaml` (or the `<name>.yml` \
+        already there) and creates the file if missing; `all_songs` is the \
+        player's own and has no file. Each `songs:` entry is a song name, or a map with `song:` and \
         its own transitions: `fade_out` (how a looping song fades out under the \
         next song when play/next/previous breaks its loop) and `fade_in` (how \
         the song fades in when it starts under such a fade-out). Each is a \
@@ -1275,7 +1280,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let target = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = target.path().to_path_buf();
         // Taken turns with the web UI's playlist saves, which read the file
         // to keep what the editor does not send.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
@@ -1283,8 +1289,9 @@ impl McpServer {
         // are: a web song delete holds it while it takes the song off every
         // playlist, and a check before it would write the deleted song back.
         self.validate_playlist(&args.yaml)?;
-        if let Some(name) = &args.name {
-            validate_name_to_write(&path, name)?;
+        if let (Some(name), PlaylistTarget::Named(file)) = (&args.name, &target) {
+            crate::webui::safe_path::SafePath::validate_name_to_write(name, file.exists())
+                .map_err(safepath_err)?;
         }
         // Same rule as the web UI's playlist write and every other configured
         // root: created only when it is inside the project. A `playlists_dir:`
@@ -1303,7 +1310,13 @@ impl McpServer {
             }
             _ => path,
         };
-        staged_write_string(&path, &args.yaml).await?;
+        // A new playlist is created as new: never written over a file made
+        // since the lookup.
+        let new = matches!(
+            target,
+            PlaylistTarget::Named(crate::util::NamedFile::New(_))
+        );
+        staged_write_string(&path, &args.yaml, new).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
         self.reload_player_songs().await?;
@@ -2217,7 +2230,7 @@ impl McpServer {
         // which goes by whether the file is there.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         validate_name_to_write(&path, &args.file)?;
-        staged_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source, false).await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
             "path": path.display().to_string(),
@@ -2323,7 +2336,7 @@ impl McpServer {
                 // Same guard the write path uses: never leave a song.yaml that
                 // would not load back.
                 let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-                staged_write_string(&config_path, &updated).await?;
+                staged_write_string(&config_path, &updated, false).await?;
                 true
             }
             None if referenced => {
@@ -2402,7 +2415,7 @@ impl McpServer {
         // Held from the check on the file's name, as write_venue holds it.
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
         validate_name_to_write(&path, &args.file)?;
-        staged_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source, false).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -2490,7 +2503,7 @@ impl McpServer {
                 lighting_dir.join(&args.file)
             }
         };
-        staged_write_string(&path, &args.source).await?;
+        staged_write_string(&path, &args.source, false).await?;
 
         // Writing the file is not enough: without a `lighting:` entry pointing
         // at it the show never loads, and the caller gets a success response,
@@ -2535,7 +2548,7 @@ impl McpServer {
         // Same guard `patch_song` uses: never write a song.yaml that would not
         // load back.
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-        staged_write_string(&config_path, &updated).await?;
+        staged_write_string(&config_path, &updated, false).await?;
 
         Ok(Registration {
             registered: true,
@@ -2565,7 +2578,7 @@ impl McpServer {
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
         let _: crate::config::Song = serde_yaml_from_str(&updated)?;
-        staged_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated, false).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -2579,7 +2592,11 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<PatchPlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = self
+            .resolve_playlist_path(args.name.as_deref())
+            .await?
+            .path()
+            .to_path_buf();
         // As write_playlist, with the web UI's saves; held from the read, so
         // a save between it and the write is not lost.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
@@ -2589,7 +2606,7 @@ impl McpServer {
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
         self.validate_playlist(&updated)?;
-        staged_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated, false).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -2625,7 +2642,7 @@ impl McpServer {
             song_lighting_tempo(&song).as_ref(),
         )
         .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
-        staged_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated, false).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -2651,7 +2668,7 @@ impl McpServer {
         crate::lighting::parser::parse_venues(&updated).map_err(|e| {
             McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
         })?;
-        staged_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated, false).await?;
         let (_, venue_error) = self.reload_venue_if_current().await;
         let Some(error) = venue_error else {
             return Ok(patch_response(&path, &original, &updated));
@@ -2688,7 +2705,7 @@ impl McpServer {
             McpError::invalid_params(format!("patched fixture type is invalid: {e}"), None)
         })?;
         refuse_rich_channels_in_light(&args.file, types.values())?;
-        staged_write_string(&path, &updated).await?;
+        staged_write_string(&path, &updated, false).await?;
         Ok(patch_response(&path, &original, &updated))
     }
 }
@@ -3842,11 +3859,15 @@ impl McpServer {
 
     /// Resolves a playlist file path. With `None`, returns the top-level
     /// `playlist:` file referenced from the config. With `Some(name)`, returns
-    /// `<playlists_dir>/<name>.yaml` (after validating `name`).
+    /// the file in the playlists directory that holds it
+    /// (`playlist::playlist_file`: its `.yaml`, else its `.yml`, else a new
+    /// `.yaml`), after validating `name`; the player's own `all_songs` has
+    /// none, and a new file named as one there but for case is refused.
+    /// Whether it exists is the directory listing's answer.
     pub(crate) async fn resolve_playlist_path(
         &self,
         name: Option<&str>,
-    ) -> Result<std::path::PathBuf, McpError> {
+    ) -> Result<PlaylistTarget, McpError> {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
         // The playlists the player reloads from, so a playlist written here
@@ -3860,16 +3881,38 @@ impl McpServer {
         match name {
             Some(n) => {
                 crate::webui::safe_path::SafePath::validate_name(n).map_err(safepath_err)?;
-                // The same default the loader uses: `playlists/` beside the
-                // config when no `playlists_dir` is configured.
-                let dir = sources
-                    .playlists_dir
-                    .unwrap_or_else(|| crate::util::project_dir_of(&config_path).join("playlists"));
-                Ok(dir.join(format!("{n}.yaml")))
+                // The directory the loader reads: `SongSources` already
+                // defaults it to `playlists/` beside the config.
+                let dir = sources.playlists_dir.ok_or_else(|| {
+                    McpError::invalid_params("no playlists directory configured", None)
+                })?;
+                crate::playlist::playlist_file(&dir, n)
+                    .map(PlaylistTarget::Named)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))
             }
-            None => sources.legacy_playlist.ok_or_else(|| {
-                McpError::invalid_params("no top-level playlist file configured", None)
-            }),
+            None => sources
+                .legacy_playlist
+                .map(PlaylistTarget::Legacy)
+                .ok_or_else(|| {
+                    McpError::invalid_params("no top-level playlist file configured", None)
+                }),
+        }
+    }
+}
+
+/// The file a playlist tool acts on: the top-level `playlist:` file the
+/// config names, or a named playlist's file as the playlists directory's
+/// listing has it.
+pub(crate) enum PlaylistTarget {
+    Legacy(std::path::PathBuf),
+    Named(crate::util::NamedFile),
+}
+
+impl PlaylistTarget {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            PlaylistTarget::Legacy(path) => path,
+            PlaylistTarget::Named(file) => file.path(),
         }
     }
 }
@@ -4257,10 +4300,12 @@ pub(crate) async fn list_light_files(
 
 /// Writes a string to `path` the same way the config store does, preserving the
 /// file's ownership and staging the content so an interrupted write stays
-/// recoverable (see [`crate::util::write_file`]).
+/// recoverable (see [`crate::util::write_file`]). With `new`, it only
+/// creates the file (`util::write_new_file`): one already there is refused.
 pub(crate) async fn staged_write_string(
     path: &std::path::Path,
     content: &str,
+    new: bool,
 ) -> Result<(), McpError> {
     let owned = path.to_path_buf();
     let content = content.to_string();
@@ -4269,11 +4314,24 @@ pub(crate) async fn staged_write_string(
             .parent()
             .ok_or_else(|| std::io::Error::other("path has no parent"))?;
         crate::util::create_dir_all(parent)?;
-        crate::util::write_file(&owned, content.as_bytes())
+        if new {
+            crate::util::write_new_file(&owned, content.as_bytes())
+        } else {
+            crate::util::write_file(&owned, content.as_bytes())
+        }
     })
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return McpError::invalid_params(
+                format!(
+                    "a file `{}` already exists",
+                    crate::util::filename_display(path)
+                ),
+                None,
+            );
+        }
         let mut message = format!("write failed: {e}");
         if let Some(hint) =
             crate::util::write_failure_hint(crate::util::WriteTarget::File(path), &e)

@@ -76,7 +76,7 @@ impl Player {
             let song = all_songs.navigate_to(song_name).ok_or_else(|| {
                 crate::songs::SongLookupError::NotFound(song_name.to_string()).to_string()
             })?;
-            *self.active_playlist.write() = "all_songs".to_string();
+            *self.active_playlist.write() = crate::playlist::ALL_SONGS.to_string();
             Ok(song)
         });
         let song = song?;
@@ -240,7 +240,7 @@ impl Player {
         drop(join);
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
-        if name != "all_songs" {
+        if name != crate::playlist::ALL_SONGS {
             *self.persisted_playlist.write() = name.to_string();
             if let Some(store) = self.config_store() {
                 if let Err(e) = store.set_active_playlist(name.to_string()).await {
@@ -280,7 +280,7 @@ impl Player {
     /// Gets the all-songs playlist (every song in the registry).
     pub fn get_all_songs_playlist(&self) -> Option<Arc<Playlist>> {
         let playlists = self.playlists.read();
-        let result = playlists.get("all_songs").cloned();
+        let result = playlists.get(crate::playlist::ALL_SONGS).cloned();
         if result.is_none() {
             error!("all_songs playlist missing from player state");
         }
@@ -291,7 +291,10 @@ impl Player {
     pub fn get_playlist(&self) -> Arc<Playlist> {
         let name = self.active_playlist.read().clone();
         let playlists = self.playlists.read();
-        match playlists.get(&name).or_else(|| playlists.get("all_songs")) {
+        match playlists
+            .get(&name)
+            .or_else(|| playlists.get(crate::playlist::ALL_SONGS))
+        {
             Some(playlist) => playlist.clone(),
             None => {
                 // This should never happen because all_songs is always created
@@ -317,7 +320,7 @@ impl Player {
     /// Returns the song registry from the all-songs playlist.
     pub fn songs(&self) -> Arc<Songs> {
         let playlists = self.playlists.read();
-        match playlists.get("all_songs") {
+        match playlists.get(crate::playlist::ALL_SONGS) {
             Some(playlist) => playlist.registry().clone(),
             None => {
                 error!("all_songs playlist missing from player state");
@@ -408,7 +411,7 @@ impl Player {
             let mut active = self.active_playlist.write();
             let was_active = active.clone();
             if !new_playlists.contains_key(active.as_str()) {
-                *active = "all_songs".to_string();
+                *active = crate::playlist::ALL_SONGS.to_string();
             }
             (was_active, active.clone())
         };

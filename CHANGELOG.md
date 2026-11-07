@@ -418,6 +418,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their lists from the same rule: the notification sound picker now offers `.mp4`, which the
   upload always took, and the light show's MIDI DMX picker no longer offers `.midi`, which the
   upload refuses and `--init` passes over.
+- **A playlist's or profile's file is found by one rule** (`util::yaml_file_at`,
+  `playlist::playlist_file`, `playlist::playlist_files`, `config::profile_file`): a name's file
+  is `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`, matched against the names the
+  directory lists (so a `set.YML` on a case-insensitive filesystem is not taken for `set.yml`).
+  It is used by the playlist loader, the web UI's playlist save and delete, MCP
+  `read_playlist`/`write_playlist`/`patch_playlist`, a song delete taking the song off the
+  playlists, and the web UI's profile read, save and delete. The profile list the config loads
+  is unchanged: profiles are matched by the `hostname` inside them, so every profile file loads,
+  `stage.yaml` and `stage.yml` alike, and the web UI lists both, as before. What changes:
+  - A playlist kept as `set.yml` is saved by the web UI's playlist editor and MCP `write_playlist`
+    (`name: set`) into `set.yml`; a new `set.yaml` was written beside it, and the loader went on
+    reading `set.yml`, so the save had no effect. MCP `read_playlist` and `patch_playlist`
+    (`name: set`) take `set.yml`; they failed, finding no `set.yaml`.
+  - With both `set.yaml` and `set.yml` in the playlists directory, the loader now takes
+    `set.yaml` and logs once, as it loads, "Playlist has two files: .../set.yaml is read,
+    .../set.yml is not"; it took `set.yml` (the later file name) without a warning.
+  - MCP `write_playlist`, `read_playlist` and `patch_playlist` with `name: all_songs` are refused
+    ("'all_songs' is the player's own playlist and has no file"): `write_playlist` wrote an
+    `all_songs.yaml` the loader never reads.
+  - Deleting a song takes it off each playlist's file as the loader reads it: with both
+    `set.yaml` and `set.yml` only `set.yaml` is rewritten (both were), and an `all_songs.yaml`
+    is left alone (the song was taken off it). A playlists directory that cannot be listed is
+    logged, where the song stayed on every playlist silently.
+  - A directory entry that cannot be read is passed over with a warning ("unreadable entry")
+    wherever the playlists or profiles directory is listed or a name looked up in it: the
+    playlist loader and the web UI's profile list passed over it silently, the config's profile
+    load failed with an error, and `mtrack migrate`'s profile step left every profile file
+    unmigrated.
+  - The web UI's playlist list (`GET /api/playlists`) gives each playlist `reserved`, true for
+    `all_songs`; the playlist editor hides the playlist by it, holding no copy of the name.
+  - A new playlist or profile whose file would differ only in case from one already there is
+    refused, on every filesystem, since a case-insensitive one (macOS) would write into that
+    file, which the player then ignores or reads under another name. `PUT /api/playlists/set`
+    beside `Set.yaml` answers 409 "`Set.yaml` already exists; names differ only in case", as do
+    MCP `write_playlist` (`name: set`) and `PUT /api/profiles/Stage` beside `stage.yaml`. Before,
+    the first two created `set.yaml` beside `Set.yaml`, and the third `Stage.yaml` beside
+    `stage.yaml`. A read or delete of such a name gets the same answer: `DELETE
+    /api/playlists/set` and `GET`/`DELETE /api/profiles/Stage` answer 409, and MCP
+    `read_playlist`/`patch_playlist` (`name: set`) give the clash error, where each said the
+    playlist or profile was not found.
+- **Profile files sharing a stem are each shown and edited in the web UI**: with `stage.yaml` and
+  `stage.yml` in `profiles_dir`, the config editor's profile list and the lighting groups page
+  threw (`each_key_duplicate`) and showed nothing, and the `stage.yml` row opened, saved and
+  deleted `stage.yaml`. The web UI now addresses, links and selects a profile file by its full
+  file name (`#/config/stage.yml`, `#/lighting/groups?profile=stage.yml`), and each row acts on
+  its own file. A row shows the stem, or the full file name when the stem could be taken for
+  another file (`stage.yaml` beside `stage.yml`, or beside `stage.yaml.yaml`); a stem no other
+  file shares or is named shows as before (`pi-a`). A link by stem from before (`#/config/stage`)
+  opens the stem's `.yaml`, else its `.yml`. A file whose name is not UTF-8 is listed read-only.
+  `GET /api/profiles` gives each file's full name as `file` beside its stem `filename`, and
+  `addressable`, false for a name the API cannot take back. `/api/profiles/<name>` takes a full
+  file name the directory lists, else a stem (`.yaml`, else `.yml`):
+  - `GET /api/profiles/stage.yml` reads `stage.yml`; it looked for `stage.yml.yaml`, which was
+    not there (404). `GET /api/profiles/stage.yaml` with only `stage.yaml.yaml` there still
+    reads that.
+  - `PUT /api/profiles/x.yml` with neither there creates `x.yml`; it created `x.yml.yaml`.
+  - A save with `If-None-Match: *`, which the web UI sends for a new profile, is only a create:
+    one whose name reaches a file already there is refused (409 "a profile file
+    `stage.yaml.yaml` already exists"), where it was merged into that file (`stage.yaml` with
+    only `stage.yaml.yaml` there, or `stage` with only `stage.yml`).
+  - A file that does not parse is listed by `GET /api/profiles`, with `error` saying why and its
+    sections all false, where it was left out of the list though the API still reached it. The
+    config editor shows the row with the error and does not open it; the groups page's picker
+    leaves it out.
+  - A link naming no profile file (`#/config/gone.yaml`, `#/lighting/groups?profile=gone`, or a
+    name differing only in case) says so and opens none; the groups page opened the running
+    profile in its place.
+  - The status gives the running profile's file as `hardware.profile_file`, and the fixture
+    test's "set up DMX" link opens that file (`#/config/stage.yml/lighting`), where it went by
+    the hostname; an inline profile is linked by its hostname as before.
+- **A new playlist or profile file is only ever created, never written over**: the web UI's and
+  MCP's saves of a new playlist and the web UI's save of a new profile create the file with the
+  filesystem refusing one already there (`create_new`), so a file made since it was looked up,
+  or one the filesystem takes for the same name (case, or Unicode normalization on macOS), is
+  refused (409; MCP: "a file `set.yaml` already exists") and left as it was.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need

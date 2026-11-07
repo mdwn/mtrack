@@ -21,6 +21,7 @@ import type {
   MvrInspection,
   PlaylistDetail,
   PlaylistInfo,
+  ProfileFileInfo,
   Profile,
   FixtureMetadata,
   Readiness,
@@ -142,9 +143,9 @@ export const SONGS: SongList = {
 };
 
 export const PLAYLISTS: PlaylistInfo[] = [
-  { name: "all_songs", song_count: 2, is_active: false },
-  { name: "setlist", song_count: 1, is_active: true },
-  { name: "rehearsal", song_count: 2, is_active: false },
+  { name: "all_songs", song_count: 2, is_active: false, reserved: true },
+  { name: "setlist", song_count: 1, is_active: true, reserved: false },
+  { name: "rehearsal", song_count: 2, is_active: false, reserved: false },
 ];
 
 const SONG_TRACKS: Record<string, string[]> = {
@@ -203,7 +204,7 @@ export const CONFIG_STORE: StoreSnapshot = {
   checksum: "abc123def456",
 };
 
-export const STATUS: Status = {
+export const STATUS = {
   build: {
     version: "0.1.0-test",
     git_hash: "deadbeef",
@@ -214,6 +215,7 @@ export const STATUS: Status = {
     init_done: true,
     hostname: "test-host",
     profile: "test-host",
+    profile_file: "test-host.yaml",
     audio: { status: "connected", name: "Default Audio Device" },
     audio_output: {
       status: "healthy",
@@ -236,7 +238,7 @@ export const STATUS: Status = {
     { kind: "osc", status: "running", detail: "0.0.0.0:9000", error: null },
   ],
   locked: false,
-};
+} satisfies Status;
 
 export const AUDIO_DEVICES: AudioDeviceInfo[] = [
   {
@@ -308,7 +310,10 @@ export const MIDI_DEVICES: MidiDeviceInfo[] = [
 
 export const PROFILE_FILES = [
   {
-    filename: "test-host.yaml",
+    file: "test-host.yaml",
+    filename: "test-host",
+    addressable: true,
+    error: null,
     hostname: "test-host",
     has_audio: true,
     has_midi: false,
@@ -316,7 +321,7 @@ export const PROFILE_FILES = [
     has_trigger: false,
     has_controllers: true,
   },
-];
+] satisfies ProfileFileInfo[];
 
 export const PROFILE_FILE_DETAIL = {
   profile: {
