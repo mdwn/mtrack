@@ -165,3 +165,36 @@ fn test_effect_duration_expiry() {
     // Timed static effects end and don't generate commands after expiry
     assert_eq!(commands.len(), 0);
 }
+
+#[test]
+fn same_time_effects_stack_in_start_order_whatever_their_ids() {
+    // #669: the last tie-break was the id compared as a string, so
+    // `song_effect_10000` went under `song_effect_9999` although it started
+    // after it. The one started later goes on top, whatever the ids.
+    for (first, second) in [
+        ("song_effect_9999", "song_effect_10000"),
+        ("song_effect_10000", "song_effect_9999"),
+        ("song_effect_8", "song_effect_9"),
+    ] {
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+        for (id, dimmer) in [(first, 0.3), (second, 0.8)] {
+            let mut effect = EffectInstance::new(
+                id.to_string(),
+                EffectType::Static {
+                    parameters: HashMap::from([("dimmer".to_string(), dimmer)]),
+                    duration: Duration::from_secs(5),
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            );
+            effect.cue_time = Some(Duration::from_secs(1));
+            engine.start_effect(effect).unwrap();
+        }
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
+        assert_eq!(commands.len(), 1, "{first}, {second}");
+        assert_eq!(commands[0].value, 204, "{first} then {second}");
+    }
+}

@@ -4695,6 +4695,47 @@ mod test {
         }
 
         #[test]
+        fn same_time_cues_fire_in_file_order_across_a_power_of_ten() -> Result<(), Box<dyn Error>> {
+            // #669: the engine broke the tie by effect id, compared as a
+            // string, so with the ids either side of 10^k
+            // (`song_effect_9999`, `song_effect_10000`) the earlier cue went
+            // on top. From 9997 the two cues' ids straddle 10000.
+            let shows = "show \"later\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"earlier\" {\n    @1.500\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n";
+            let one = "show \"a\" {\n    @1.500\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n    @1.500\n    \
+                wash: static, color: \"green\", duration: 5s, layer: midground, \
+                blend_mode: replace\n}\n";
+            for show in [shows, one] {
+                for next in [7, 97, 997, 9_997, 99_997, 999_997] {
+                    crate::lighting::timeline::set_effect_id_counter(next);
+                    assert_eq!(played_frame(show, 2.0)?, GREEN, "from {next}\n{show}");
+                    crate::lighting::timeline::set_effect_id_counter(next);
+                    assert_eq!(seek_frame(show, 2.0)?, GREEN, "seek, from {next}\n{show}");
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn same_time_sequences_stack_in_the_order_the_show_starts_them(
+        ) -> Result<(), Box<dyn Error>> {
+            // #669: they went by their ids, so by the sequences' names.
+            // Started at one cue, the one started later goes on top.
+            const RED: (f64, f64, f64) = (255.0, 0.0, 0.0);
+            let show = "sequence \"b\" {\n    @0.000\n    wash: static, color: \"green\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                sequence \"a\" {\n    @0.000\n    wash: static, color: \"red\", \
+                duration: 5s, layer: midground, blend_mode: replace\n}\n\n\
+                show \"s\" {\n    @1.500\n    sequence \"b\"\n    sequence \"a\"\n}\n";
+            assert_eq!(played_frame(show, 2.0)?, RED);
+            assert_eq!(seek_frame(show, 2.0)?, RED, "seek to 2 s");
+            Ok(())
+        }
+
+        #[test]
         fn cues_less_than_a_frame_apart_apply_in_turn() -> Result<(), Box<dyn Error>> {
             // #592: cues that land in one frame were applied all layer
             // commands first, then all effects, so a clear or a sequence

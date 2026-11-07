@@ -745,6 +745,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Same-time cues stack in the order they start, past every power of ten** (#669): two effects on
+  one layer at one priority, cued at the same time, were ordered last by their ids compared as
+  strings, and the ids come from a counter that runs all night. Where the two ids straddled 10, 100,
+  1,000, 10,000 and so on (`song_effect_9999`, `song_effect_10000`), the earlier cue went on top:
+  two shows each cueing a `replace` wash at `@1.500` on `midground` showed the first show's colour
+  instead of the second's, played through and after a seek. The engine now numbers each effect as
+  it starts and puts the one started later on top, so the later cue in the file wins every time.
+  Away from those boundaries the order is as before, save one case: effects from two different
+  sequences cued at the same time on one layer went by the sequences' names (`seq_a_…` under
+  `seq_b_…`); they now go in the order the show starts them, so `sequence "b"` then
+  `sequence "a"` at one cue puts `a`'s look on top where `b`'s used to win. A sequence's effects
+  still go under the show's own at the same time (#599).
+
 - **A song folder's config is found by one rule** (`songs::is_song_config_name`,
   `songs::has_song_config`, `songs::song_config_file`): a song folder's own config is named
   `song.yaml` or `song.yml`, exactly as written; a folder already has a song config when it holds

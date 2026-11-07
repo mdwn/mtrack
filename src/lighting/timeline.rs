@@ -24,6 +24,13 @@ use std::time::Duration;
 /// Global atomic counter for generating unique, deterministic effect IDs.
 static EFFECT_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Sets the next effect id's number, so a test can put two cues' ids either
+/// side of a power of ten (#669).
+#[cfg(test)]
+pub(crate) fn set_effect_id_counter(next: u64) {
+    EFFECT_ID_COUNTER.store(next, Ordering::Relaxed);
+}
+
 /// One thing a cue does, as the engine applies it.
 // Most steps are effects started: boxing them would only add an allocation
 // per effect.
