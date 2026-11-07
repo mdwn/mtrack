@@ -473,6 +473,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     not there (404). `GET /api/profiles/stage.yaml` with only `stage.yaml.yaml` there still
     reads that.
   - `PUT /api/profiles/x.yml` with neither there creates `x.yml`; it created `x.yml.yaml`.
+  - A save with `If-None-Match: *`, which the web UI sends for a new profile, is only a create:
+    one whose name reaches a file already there is refused (409 "a profile file
+    `stage.yaml.yaml` already exists"), where it was merged into that file (`stage.yaml` with
+    only `stage.yaml.yaml` there, or `stage` with only `stage.yml`).
+  - A file that does not parse is listed by `GET /api/profiles`, with `error` saying why and its
+    sections all false, where it was left out of the list though the API still reached it.
+  - A link naming no profile file (`#/config/gone.yaml`, `#/lighting/groups?profile=gone`, or a
+    name differing only in case) says so and opens none; the groups page opened the running
+    profile in its place.
+  - The status gives the running profile's file as `hardware.profile_file`, and the fixture
+    test's "set up DMX" link opens that file (`#/config/stage.yml/lighting`), where it went by
+    the hostname; an inline profile is linked by its hostname as before.
+- **A new playlist or profile file is only ever created, never written over**: the web UI's and
+  MCP's saves of a new playlist and the web UI's save of a new profile create the file with the
+  filesystem refusing one already there (`create_new`), so a file made since it was looked up,
+  or one the filesystem takes for the same name (case, or Unicode normalization on macOS), is
+  refused (409; MCP: "a file `set.yaml` already exists") and left as it was.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need

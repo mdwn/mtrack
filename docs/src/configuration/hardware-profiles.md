@@ -173,8 +173,13 @@ by its full file name (`#/config/stage.yml`), and opens, saves and deletes the f
 A row shows the stem, or the full file name when the stem could be taken for another file (one
 sharing it, or one named it: `stage.yaml` beside `stage.yaml.yaml`). An older link by stem
 (`#/config/stage`) opens the stem's `.yaml`, else its `.yml`. A file whose name is not UTF-8 is
-listed read-only. A new profile is created as `<name>.yaml`; one whose file would differ only in
-case from a file already there (`Stage` beside `stage.yaml`) is refused. The API
+listed read-only, and one that does not parse is listed with why. A link that names no file
+says so and opens none. A new profile is created as what was typed (`<name>.yaml` for a stem),
+and only created: a name that reaches a file already there (`stage.yaml` with only
+`stage.yaml.yaml`, or `stage` with only `stage.yml`) is refused, as is one whose file would
+differ only in case from a file there (`Stage` beside `stage.yaml`). The file is created with
+the filesystem refusing one already there, so a name that differs from an existing one only by
+Unicode normalization (which macOS treats as the same) is refused too, never written over. The API
 (`/api/profiles/<name>`) takes a full file name the directory lists, else a stem, which is its
 `.yaml`, else its `.yml`; with neither there, a full file name is created as written (`x.yml`).
 
