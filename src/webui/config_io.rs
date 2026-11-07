@@ -37,12 +37,7 @@ pub fn write(path: &Path, content: &str, new: bool) -> std::io::Result<()> {
 
 /// What a failed write of `path` says, with the hint for fixing it.
 pub fn write_message(path: &Path, e: &std::io::Error) -> String {
-    let mut message = format!("Failed to write {}: {}", path.display(), e);
-    if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), e) {
-        message.push_str("\n\n");
-        message.push_str(&hint);
-    }
-    message
+    util::write_file_message(path, e)
 }
 
 /// Validates a player config YAML string by attempting to deserialize it.

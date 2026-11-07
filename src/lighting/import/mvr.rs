@@ -116,7 +116,8 @@ struct Planned {
     write_archive: bool,
     /// The venue file's text.
     venue_text: String,
-    venue_path: PathBuf,
+    /// Where it goes, by the venue save's rule.
+    venue_write: crate::lighting::writes::Plan,
 }
 
 struct GdtfWrite {
@@ -188,8 +189,8 @@ pub fn import_mvr_bytes(
     }
     let distillation_warnings = planned.distillation_warnings;
 
-    create_dir(planned.venue_path.parent().unwrap_or(project))?;
-    write(&planned.venue_path, planned.venue_text.as_bytes())?;
+    create_dir(planned.venue_write.write.path().parent().unwrap_or(project))?;
+    crate::lighting::writes::write(&planned.venue_write, &planned.venue_text)?;
     written.push(planned.plan.venue_file.clone());
 
     Ok(MvrImport {
@@ -285,20 +286,10 @@ fn plan(
     let library_path = project.join(&library_rel);
 
     // --- The existing venue, if this is a re-import.
-    let existing = find_existing_venue(project, &options.venues_dir, &venue_name)?;
-    let (venue_path, venue_file) = match &existing {
-        Some((path, _)) => (path.clone(), relative_display(project, path)),
-        None => {
-            let file = format!(
-                "{}/{}.venue",
-                options.venues_dir.trim_end_matches('/'),
-                crate::lighting::files::stem(&venue_name)
-            );
-            (project.join(&file), file)
-        }
-    };
+    let (venue_write, existing) = venue_file_for(project, &options.venues_dir, &venue_name)?;
+    let venue_file = relative_display(project, venue_write.write.path());
     let existing_venue = match &existing {
-        Some((path, venue)) => {
+        Some((path, venue, _)) => {
             let Some(source) = venue.source() else {
                 return Err(format!(
                     "{} holds a hand-written venue \"{venue_name}\" (no `imported from \
@@ -838,11 +829,11 @@ fn plan(
         warnings,
     };
     let mut venue_text = render_venue(&plan, archive_file_name, &kept, &kept_focus);
-    if let Some((path, _)) = &existing {
+    if let Some((_, _, content)) = &existing {
         // A merge patches the file in place, so comments, TODO lines and
         // the header survive. A file the patcher cannot handle safely is
         // regenerated, and the plan says so.
-        match patch_existing(path, &plan, &kept, &kept_focus) {
+        match patch_existing(content, &plan, &kept, &kept_focus) {
             Ok(text) => venue_text = text,
             Err(reason) => plan.warnings.push(format!(
                 "could not patch the venue file in place ({reason}); it was regenerated, so \
@@ -872,50 +863,74 @@ fn plan(
         distillation_warnings,
         write_archive,
         venue_text,
-        venue_path,
+        venue_write,
     })
 }
 
-/// Finds a venue file of this name in the venues directory: `.venue` first,
-/// then the v1 `.light`. The file must hold the named venue.
-fn find_existing_venue(
+/// A venue an import may not write, by the venue save's rule: its file is
+/// not its alone, or a new name's file is taken. Its own type, so a caller
+/// can tell it from a bad archive (the web API answers it with 409).
+#[derive(Debug)]
+pub struct VenueRefused {
+    pub venue: String,
+    pub refused: crate::lighting::writes::Refused,
+}
+
+impl std::fmt::Display for VenueRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot import venue \"{}\": {}",
+            self.venue, self.refused
+        )
+    }
+}
+
+impl Error for VenueRefused {}
+
+/// The venue's file, by the venue save's rule ([`crate::lighting::writes`]),
+/// and, on a re-import, the venue as the loader read it, from which file,
+/// and that file's text. A new name is claimed at `<venues dir>/<stem>.venue`;
+/// a venue whose file is its alone is merged there (a `.light` moves to its
+/// `.venue`, which provenance needs); anything else is refused, with the file
+/// and why.
+#[allow(clippy::type_complexity)]
+fn venue_file_for(
     project: &Path,
     venues_dir: &str,
     venue_name: &str,
-) -> Result<Option<(PathBuf, Venue)>, Box<dyn Error>> {
-    // Wherever the venue lives — any file, any depth — as the lighting
-    // system finds it; a merge must patch that file, not seed a twin.
-    let venues = crate::lighting::project_files::venues(&project.join(venues_dir));
-    if let Some(declared) = venues.get(venue_name) {
-        return Ok(Some((declared.file.clone(), declared.item.clone())));
-    }
-    // The file the venue would be written to holds something else: other
-    // venues, or text that does not parse, as the read recorded it.
-    let stem = crate::lighting::files::stem(venue_name);
-    for extension in ["venue", "light"] {
-        let path = project.join(venues_dir).join(format!("{stem}.{extension}"));
-        if !path.exists() {
-            continue;
-        }
-        let read = venues.record.files().iter().find(|read| read.file == path);
-        if let Some(Err(error)) = read.map(|read| &read.declared) {
-            return Err(format!("{} does not parse: {error}", path.display()).into());
-        }
-        let holds =
-            crate::lighting::files::unique(venues.record.names_in(&path).unwrap_or_default());
-        return Err(format!(
-            "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
-             import under a different --name",
-            path.display(),
-            holds
-                .iter()
-                .map(|k| format!("\"{k}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .into());
-    }
-    Ok(None)
+) -> Result<
+    (
+        crate::lighting::writes::Plan,
+        Option<(PathBuf, Venue, Result<String, String>)>,
+    ),
+    Box<dyn Error>,
+> {
+    let dir = project.join(venues_dir);
+    let venues = crate::lighting::project_files::venues(&dir);
+    let save = crate::lighting::writes::Save {
+        kind: crate::lighting::files::Kind::Venue,
+        dir: &dir,
+        record: &venues.record,
+        library: &[],
+        name: venue_name,
+        from: None,
+        // An imported venue states its MVR, which only a `.venue` holds.
+        needs_new_format: true,
+    };
+    let plan = save.plan().map_err(|refused| VenueRefused {
+        venue: venue_name.to_string(),
+        refused,
+    })?;
+    let existing = match (&plan.current, venues.get(venue_name)) {
+        (Some(bytes), Some(declared)) => Some((
+            declared.file.clone(),
+            declared.item.clone(),
+            String::from_utf8(bytes.clone()).map_err(|e| e.to_string()),
+        )),
+        _ => None,
+    };
+    Ok((plan, existing))
 }
 
 /// Names a scene's fixtures the way the venue file will state them. Consoles
@@ -1313,12 +1328,12 @@ fn desired_venue(plan: &MvrPlan, kept: &[Fixture], kept_focus: &BTreeMap<String,
 /// TODO line stays where it is, and one whose fixture resolved (or changed)
 /// is replaced.
 fn patch_existing(
-    path: &Path,
+    content: &Result<String, String>,
     plan: &MvrPlan,
     kept: &[Fixture],
     kept_focus: &BTreeMap<String, Vec3>,
 ) -> Result<String, String> {
-    let content = crate::util::read_to_string(path).map_err(|e| e.to_string())?;
+    let content = content.as_ref().map_err(Clone::clone)?;
     let desired = desired_venue(plan, kept, kept_focus);
     let by_name: HashMap<&str, &PlannedFixture> =
         plan.fixtures.iter().map(|f| (f.name.as_str(), f)).collect();
@@ -2381,46 +2396,162 @@ mod tests {
         );
         assert_eq!(plan.focus_points[0].name, "Drummer");
     }
-}
 
-#[cfg(test)]
-mod existing_venue_tests {
-    use super::*;
+    /// The venue "kellys", seeded by an import, at
+    /// `lighting/venues/kellys.venue`; its MVR's bytes.
+    fn seeded(dir: &Path) -> Vec<u8> {
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+        import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir).unwrap();
+        bytes
+    }
 
-    /// A venue is found wherever it lives, in one read of the venues
-    /// directory; the file at its own name holding something else is
-    /// reported from that same read.
+    /// The revision of [`seeded`]'s MVR that moves B to 1.2.
+    fn revised() -> Vec<u8> {
+        mvr_bytes(&scene_with(&brick("B", "1.2", 0.0), ""))
+    }
+
+    fn venues_dir(dir: &Path) -> PathBuf {
+        dir.join("lighting/venues")
+    }
+
+    /// Every file under the venues directory, relative to it.
+    fn venue_files(dir: &Path) -> Vec<String> {
+        let root = venues_dir(dir);
+        crate::lighting::project_files::files_under(&root, &["venue", "light"])
+            .iter()
+            .map(|p| crate::lighting::project_files::display_in(&root, p))
+            .collect()
+    }
+
     #[test]
-    fn finds_the_venue_or_says_what_its_file_holds() {
-        let dir = tempfile::tempdir().unwrap();
-        let venues = dir.path().join("venues");
+    fn a_venue_whose_file_is_its_alone_is_merged_where_it_lives() {
+        let dir = project();
+        seeded(dir.path());
+        let venues = venues_dir(dir.path());
         std::fs::create_dir_all(venues.join("tour")).unwrap();
-        std::fs::write(venues.join("tour/anywhere.venue"), "venue \"Club\" {\n}\n").unwrap();
-        std::fs::write(venues.join("house.venue"), "venue \"Other\" {\n}\n").unwrap();
-        std::fs::write(venues.join("broken.venue"), "venue \"Broken\" {\n").unwrap();
+        std::fs::rename(venues.join("kellys.venue"), venues.join("tour/2024.venue")).unwrap();
 
-        let found = find_existing_venue(dir.path(), "venues", "Club")
-            .unwrap()
-            .expect("found");
-        assert_eq!(found.0, venues.join("tour/anywhere.venue"));
+        let plan = inspect_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path()).unwrap();
+        assert!(plan.merge);
+        assert_eq!(plan.venue_file, "lighting/venues/tour/2024.venue");
+        let report = import_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path()).unwrap();
 
-        let error = find_existing_venue(dir.path(), "venues", "House")
+        assert!(report
+            .written
+            .contains(&"lighting/venues/tour/2024.venue".to_string()));
+        assert_eq!(venue_files(dir.path()), ["tour/2024.venue"]);
+        let text = std::fs::read_to_string(venues.join("tour/2024.venue")).unwrap();
+        assert!(text.contains("@ 1:2"), "{text}");
+    }
+
+    #[test]
+    fn a_venue_whose_file_holds_more_is_refused_and_nothing_is_written() {
+        let dir = project();
+        seeded(dir.path());
+        let venues = venues_dir(dir.path());
+        let mut shared = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        shared.push_str("venue \"Annex\" {\n}\n");
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("all.venue"), &shared).unwrap();
+        let library = std::fs::read(dir.path().join("lighting/library/kellys.mvr")).unwrap();
+
+        let err = import_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path())
             .unwrap_err()
             .to_string();
+
+        assert_eq!(
+            err,
+            "cannot import venue \"kellys\": Defined in all.venue alongside venue \"Annex\"; \
+             edit that file by hand."
+        );
+        assert_eq!(
+            std::fs::read_to_string(venues.join("all.venue")).unwrap(),
+            shared
+        );
+        assert_eq!(venue_files(dir.path()), ["all.venue"]);
+        assert_eq!(
+            std::fs::read(dir.path().join("lighting/library/kellys.mvr")).unwrap(),
+            library,
+            "the library's MVR is not replaced"
+        );
+        let err = inspect_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("alongside venue \"Annex\""), "{err}");
+    }
+
+    #[test]
+    fn a_light_venue_moves_to_its_venue_file_when_merged() {
+        let dir = project();
+        seeded(dir.path());
+        let venues = venues_dir(dir.path());
+        std::fs::create_dir_all(venues.join("tour")).unwrap();
+        std::fs::rename(venues.join("kellys.venue"), venues.join("tour/old.light")).unwrap();
+
+        let plan = inspect_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path()).unwrap();
+        assert_eq!(plan.venue_file, "lighting/venues/tour/old.venue");
+        import_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path()).unwrap();
+
+        assert_eq!(venue_files(dir.path()), ["tour/old.venue"]);
+        let text = std::fs::read_to_string(venues.join("tour/old.venue")).unwrap();
+        assert!(text.contains("@ 1:2"), "{text}");
+
+        // Its `.venue` taken, in any case: refused, nothing moved.
+        std::fs::rename(venues.join("tour/old.venue"), venues.join("tour/old.light")).unwrap();
+        std::fs::write(venues.join("tour/OLD.venue"), "").unwrap();
+        let err = import_mvr_bytes(&revised(), "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "cannot import venue \"kellys\": venue \"kellys\" now needs a .venue file, and \
+             tour/OLD.venue is there; move or remove it by hand, then save again"
+        );
+        assert_eq!(
+            venue_files(dir.path()),
+            ["tour/OLD.venue", "tour/old.light"]
+        );
+    }
+
+    #[test]
+    fn a_new_venue_is_claimed_at_its_stem_and_a_taken_file_is_refused() {
+        let dir = project();
+        let venues = venues_dir(dir.path());
+        std::fs::create_dir_all(&venues).unwrap();
+        std::fs::write(venues.join("Kellys.venue"), "venue \"Other\" {\n}\n").unwrap();
+        std::fs::write(venues.join("broken.venue"), "venue \"Broken\" {\n").unwrap();
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+
+        let err = import_mvr_bytes(&bytes, "kellys.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "cannot import venue \"kellys\": Kellys.venue is taken by \"Other\"; choose another \
+             name"
+        );
+        let broken = MvrImportOptions {
+            name: Some("Broken".to_string()),
+            ..options()
+        };
+        let err = import_mvr_bytes(&bytes, "kellys.mvr", &broken, dir.path())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "cannot import venue \"Broken\": broken.venue already exists; choose another name"
+        );
         assert!(
-            error.contains(
-                "exists but does not define a venue named \"House\" (it holds: \"Other\")"
-            ),
-            "{error}"
+            !dir.path().join("lighting/library").exists(),
+            "nothing written"
         );
 
-        let error = find_existing_venue(dir.path(), "venues", "Broken")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("broken.venue does not parse: "), "{error}");
-
-        assert!(find_existing_venue(dir.path(), "venues", "Nowhere")
-            .unwrap()
-            .is_none());
+        let fresh = MvrImportOptions {
+            name: Some("Club (Main)".to_string()),
+            ..options()
+        };
+        let report = import_mvr_bytes(&bytes, "kellys.mvr", &fresh, dir.path()).unwrap();
+        assert_eq!(report.plan.venue_file, "lighting/venues/club_main.venue");
+        assert!(venues.join("club_main.venue").is_file());
     }
 }

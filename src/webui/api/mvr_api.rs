@@ -242,7 +242,9 @@ pub(super) async fn inspect_mvr(
 /// `{write: false, plan}` (what `import-mvr` prints without `--write`);
 /// `write=true` performs the import and answers `{write: true, report,
 /// reloaded}`, `reloaded` saying whether the running engine re-read the
-/// venue it is playing. Importing never makes the venue current.
+/// venue it is playing. Importing never makes the venue current. A venue
+/// whose file is not its alone, or whose new file is taken, is a 409 (the
+/// venue save's rule); anything else refused is a 400.
 pub(super) async fn import_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -284,11 +286,24 @@ pub(super) async fn import_mvr(
                 )
                 .map(Imported::Plan)
             }
-            .map_err(|e| e.to_string()),
+            .map_err(|e| {
+                // A venue whose file is not its alone, or a taken file, is a
+                // conflict; anything else refused is the request's fault.
+                let conflict = e.downcast_ref::<lighting::import::VenueRefused>().is_some()
+                    || e.downcast_ref::<lighting::writes::WriteError>()
+                        .is_some_and(|w| matches!(w, lighting::writes::WriteError::Exists(_)));
+                (conflict, e.to_string())
+            }),
         )
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(|(conflict, e)| {
+        if conflict {
+            (StatusCode::CONFLICT, Json(json!({"error": e}))).into_response()
+        } else {
+            bad_request(e)
+        }
+    })?;
     let report = match outcome {
         Imported::Plan(plan) => {
             let answer = MvrImportAnswer {
@@ -636,7 +651,7 @@ fn add_aim_points_blocking(
         from: None,
         needs_new_format: true,
     };
-    let plan = save.plan().map_err(AimError::Refused)?;
+    let plan = super::lighting_writes::plan(&save).map_err(AimError::Refused)?;
     let content = plan
         .current
         .as_deref()
@@ -1006,6 +1021,40 @@ mod test {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_re_import_into_a_shared_venue_file_is_a_conflict_and_writes_nothing() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let venues = dir.path().join("lighting/venues");
+        let mut shared = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        shared.push_str("venue \"Annex\" {\n}\n");
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("all.venue"), &shared).unwrap();
+
+        for write in ["false", "true"] {
+            let (status, body) = post(
+                &app,
+                "/lighting/mvr/import",
+                "Kellys.mvr",
+                &synthetic_mvr(true),
+                &[("name", "kellys"), ("write", write)],
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(
+                body["error"],
+                "cannot import venue \"kellys\": Defined in all.venue alongside venue \
+                 \"Annex\"; edit that file by hand."
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(venues.join("all.venue")).unwrap(),
+            shared
+        );
+        assert!(!venues.join("kellys.venue").exists());
     }
 
     async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {

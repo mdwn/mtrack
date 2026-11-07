@@ -1538,7 +1538,7 @@ pub(super) async fn put_fixture_type(
             from: from.as_deref(),
             needs_new_format,
         };
-        let plan = match save.plan() {
+        let plan = match lighting_writes::plan(&save) {
             Ok(plan) => plan,
             Err(r) => return reply(r),
         };
@@ -2397,7 +2397,7 @@ pub(super) async fn put_venue(
             from: from.as_deref(),
             needs_new_format,
         };
-        let plan = match save.plan() {
+        let plan = match lighting_writes::plan(&save) {
             Ok(plan) => plan,
             Err(r) => return reply(r),
         };

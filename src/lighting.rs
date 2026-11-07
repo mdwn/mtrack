@@ -55,6 +55,7 @@ pub mod venue_patch;
 pub mod venue_rows;
 #[cfg(test)]
 mod visual_consistency_tests;
+pub mod writes;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module

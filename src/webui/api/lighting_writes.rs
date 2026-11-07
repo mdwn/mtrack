@@ -12,12 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! What the web UI's venue and fixture type writers may do to a file, by
-//! the one rule in [`lighting::files`]: a new name is claimed at its
-//! canonical path; an existing one is written only where its owner's file
-//! is that name's alone; anything else is refused with the file and why.
-//! Both kinds go through here, so a venue and a fixture type are saved,
-//! renamed and deleted alike.
+//! The web UI's venue and fixture type writers: the one rule's plan and
+//! write ([`crate::lighting::writes`]) with their refusals answered as the
+//! web API answers them, and the listings' owners. Both kinds go through
+//! here, so a venue and a fixture type are saved, renamed and deleted alike.
 
 // A refusal is the response itself, as across the web API.
 #![allow(clippy::result_large_err)]
@@ -31,7 +29,6 @@ use serde_json::json;
 
 use crate::lighting;
 use crate::lighting::files::{self, Editable, Kind, Owner, ReadOnly, Refusal};
-use crate::lighting::library::LibraryType;
 use crate::webui::wire::fixture_types::LightingOwner;
 
 type Response = axum::response::Response;
@@ -71,7 +68,7 @@ pub(super) fn read_only_response(kind: Kind, dir: &Path, owner: &Owner) -> Respo
 }
 
 /// The 409 for a name [`files::claim_new`] or [`files::name_free`] refused.
-fn refused(refusal: Refusal) -> Response {
+fn refused_claim(refusal: Refusal) -> Response {
     let status = match refusal {
         Refusal::Unreadable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,
@@ -95,186 +92,37 @@ fn server_error(message: String) -> Response {
         .into_response()
 }
 
-/// How a save is written.
-#[derive(Debug, PartialEq)]
-pub(super) enum Write {
-    /// A file made with `create_new`: a new name's claimed canonical file,
-    /// a renamed canonical file's new one, or a `.light` upgraded.
-    Create(PathBuf),
-    /// The owner's file, rewritten in place.
-    Rewrite(PathBuf),
+pub(super) use crate::lighting::writes::{Plan, Save};
+use crate::lighting::writes::{Refused, WriteError};
+
+/// [`Save::plan`], a refusal answered as the web API answers it: 404 for a
+/// rename of nothing, the read-only 409, the claim's 409, a 409 for a
+/// `.light` upgrade whose file is there, and 500 for a file that cannot be
+/// read.
+pub(super) fn plan(save: &Save<'_>) -> Result<Plan, Response> {
+    save.plan().map_err(|refused| match refused {
+        Refused::NotFound { kind, name } => not_found(kind, &name),
+        Refused::ReadOnly { kind, dir, owner } => read_only_response(kind, &dir, &owner),
+        Refused::Claim(refusal) => refused_claim(refusal),
+        upgrade @ Refused::UpgradeTaken { .. } => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": upgrade.to_string()})),
+        )
+            .into_response(),
+        unreadable @ Refused::Unreadable { .. } => server_error(unreadable.to_string()),
+    })
 }
 
-/// What a save of one venue or fixture type writes, decided before
-/// anything is.
-#[derive(Debug)]
-pub(super) struct Plan {
-    pub write: Write,
-    /// The owner's file, removed once the new one is written.
-    pub retire: Option<PathBuf>,
-    /// The owner's file as it is now; `None` for a new name.
-    pub current: Option<Vec<u8>>,
-}
-
-impl Plan {
-    /// Whether the save creates a name: new, or renamed.
-    pub fn names_anew(&self, renaming: bool) -> bool {
-        self.current.is_none() || renaming
-    }
-}
-
-/// What is being saved: `name`, renamed from `from` when that is another
-/// name, in `dir`, whose files were read into `record`.
-pub(super) struct Save<'a> {
-    pub kind: Kind,
-    pub dir: &'a Path,
-    pub record: &'a files::Record,
-    /// The library's unrecorded types (fixture types), whose names a new
-    /// name may not take; none for venues.
-    pub library: &'a [LibraryType],
-    pub name: &'a str,
-    pub from: Option<&'a str>,
-    /// Whether the new text needs the newer format (`.venue` / `.fixture`).
-    pub needs_new_format: bool,
-}
-
-impl Save<'_> {
-    /// The name whose file is written: the old one of a rename.
-    pub fn subject(&self) -> &str {
-        self.from.unwrap_or(self.name)
-    }
-
-    /// Whether this save gives a name a new name.
-    pub fn renaming(&self) -> bool {
-        self.from
-            .is_some_and(|from| !files::same_name(from, self.name))
-    }
-
-    /// The owner of the name whose file is written, if any.
-    pub fn owner(&self) -> Option<Owner> {
-        self.record.owner(self.subject())
-    }
-
-    /// Where the save goes, or the refusal:
-    /// - a new name: [`files::claim_new`] at its canonical path;
-    /// - a name whose file is not its alone: the read-only 409;
-    /// - a rename of a file at the old name's canonical place: a new file
-    ///   at the new name's, claimed, and the old one removed;
-    /// - otherwise the owner's file in place, unless the text needs the
-    ///   newer format and the file is a `.light`: then the same stem as a
-    ///   `.venue` / `.fixture` beside it ([`files::upgrade_path`]), made
-    ///   new, and the `.light` removed.
-    pub fn plan(&self) -> Result<Plan, Response> {
-        let Some(owner) = self.owner() else {
-            if self.renaming() {
-                return Err(not_found(self.kind, self.subject()));
-            }
-            let claim =
-                files::claim_new(self.kind, self.dir, self.name, self.library).map_err(refused)?;
-            return Ok(Plan {
-                write: Write::Create(claim.path().to_path_buf()),
-                retire: None,
-                current: None,
-            });
-        };
-        if owner.editable != Editable::Editable {
-            return Err(read_only_response(self.kind, self.dir, &owner));
-        }
-        let current = crate::util::read_file(&owner.path)
-            .map_err(|e| server_error(format!("cannot read {}: {e}", owner.path.display())))?;
-        if self.renaming() {
-            files::name_free(self.kind, self.dir, self.name, self.library).map_err(refused)?;
-            let moves = owner.at_canonical_place(self.kind, self.dir, self.subject())
-                && files::stem(self.name) != files::stem(self.subject());
-            if moves {
-                let claim = files::claim_new(self.kind, self.dir, self.name, self.library)
-                    .map_err(refused)?;
-                return Ok(Plan {
-                    write: Write::Create(claim.path().to_path_buf()),
-                    retire: Some(owner.path),
-                    current: Some(current),
-                });
-            }
-        }
-        let is_light = owner
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("light"));
-        if self.needs_new_format && is_light {
-            let upgraded =
-                files::upgrade_path(self.kind, self.dir, &owner.path).map_err(|refusal| {
-                    match refusal {
-                        Refusal::Taken { file, .. } => (
-                            StatusCode::CONFLICT,
-                            Json(json!({"error": format!(
-                                "{} \"{}\" now needs a .{} file, and {file} is there; move or \
-                                 remove it by hand, then save again",
-                                self.kind.noun(),
-                                self.subject(),
-                                self.kind.extension()
-                            )})),
-                        )
-                            .into_response(),
-                        other => refused(other),
-                    }
-                })?;
-            return Ok(Plan {
-                write: Write::Create(upgraded),
-                retire: Some(owner.path),
-                current: Some(current),
-            });
-        }
-        Ok(Plan {
-            write: Write::Rewrite(owner.path),
-            retire: None,
-            current: Some(current),
-        })
-    }
-}
-
-/// Writes `content` as `plan` says. A file to be made that is there by now
-/// is refused (409), nothing written. When the old file cannot be removed
-/// after a new one is made, the new one is removed again and the save
-/// fails, so a name is never left in two files.
+/// [`crate::lighting::writes::write`], a failure answered as the web API
+/// answers it: a file to be made that is there by now is a 409, anything
+/// else a 500.
 pub(super) fn write(plan: &Plan, content: &str) -> Result<(), Response> {
-    match &plan.write {
-        Write::Rewrite(path) => {
-            super::super::config_io::staged_write(path, content).map_err(server_error)?
+    crate::lighting::writes::write(plan, content).map_err(|e| match e {
+        WriteError::Exists(_) => {
+            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
         }
-        Write::Create(path) => match crate::util::write_new_file(path, content.as_bytes()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": format!(
-                        "{} already exists; move or remove it by hand, then save again",
-                        path.display()
-                    )})),
-                )
-                    .into_response())
-            }
-            Err(e) => {
-                return Err(server_error(super::super::config_io::write_message(
-                    path, &e,
-                )))
-            }
-        },
-    }
-    if let (Some(old), Write::Create(new)) = (&plan.retire, &plan.write) {
-        if let Err(e) = std::fs::remove_file(old) {
-            let undone = std::fs::remove_file(new);
-            return Err(server_error(format!(
-                "cannot remove {}: {e}; {}",
-                old.display(),
-                match undone {
-                    Ok(()) => "nothing was saved".to_string(),
-                    Err(u) => format!("{} was written and cannot be removed: {u}", new.display()),
-                }
-            )));
-        }
-    }
-    Ok(())
+        other => server_error(other.to_string()),
+    })
 }
 
 /// The file a delete of `name` removes: its owner's, when that is the

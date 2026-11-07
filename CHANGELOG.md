@@ -267,6 +267,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the web import answers these with 409, where it answered 400. The record is made with
     `create_new`, never written over one made meanwhile. The library's own naming of an
     unrecorded archive ("Synth Brick (v2)", `#2`) is unchanged.
+  - An MVR import (`mtrack import-mvr --write`, `POST /api/lighting/mvr/import`, MCP
+    `import_mvr`) writes its venue by the venue save's rule. A new venue is claimed at
+    `<venues dir>/<stem>.venue`: "Club (Main)" goes to `club_main.venue`, and a name whose file
+    is there in any case is refused ("cannot import venue "kellys": Kellys.venue is taken by
+    "Other"; choose another name"), as is one whose file does not parse ("broken.venue already
+    exists"), where those said the file "exists but does not define" the venue or "does not
+    parse"; `Kellys.venue` was not looked for on Linux. A re-import merges into the venue's file
+    where it lives only when that file is the venue's alone: "kellys" in `all.venue`, which also
+    holds venue "Annex", is refused ("cannot import venue "kellys": Defined in all.venue alongside
+    venue "Annex"; edit that file by hand.") and nothing is written, the library's MVR included,
+    where the import patched kellys' block inside the shared file. The web import answers these
+    with 409 (it answered every refusal with 400), the plan (`write=false`) too. A `.light`
+    venue moves to its own `.venue` beside it when merged (`tour/old.light` to `tour/old.venue`,
+    the `.light` removed), as a web save does, where the provenance was written into the
+    `.light`; refused when that `.venue` is there, in any case.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

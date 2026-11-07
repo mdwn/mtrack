@@ -478,6 +478,17 @@ pub fn yaml_source(
     Ok(::config::File::from_str(&text, format))
 }
 
+/// What a failed write of the file `path` says, with the hint for fixing
+/// it ([`write_failure_hint`]).
+pub fn write_file_message(path: &Path, e: &std::io::Error) -> String {
+    let mut message = format!("Failed to write {}: {}", path.display(), e);
+    if let Some(hint) = write_failure_hint(WriteTarget::File(path), e) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
+    }
+    message
+}
+
 /// Explains a write failure whose cause is not the file's own permissions.
 ///
 /// The generated systemd unit runs mtrack under `ProtectSystem=strict` as a
