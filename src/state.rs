@@ -708,10 +708,15 @@ pub(crate) fn attach_cell_snapshots(
             let own = states.get(&crate::lighting::effects::cell_fixture_name(
                 parent, &cell.name,
             ));
+            // Each cell channel at the coarse byte it goes out as on the
+            // cell's own channel, as the DMX output resolves it.
             let values: HashMap<String, u8> = parent_state
                 .cell_values(cell, own)
                 .into_iter()
-                .map(|(name, value)| (name, dmx_byte(value * 255.0)))
+                .map(|(name, value)| {
+                    let byte = crate::lighting::effects::coarse_byte(&cell.channels[&name], value);
+                    (name, byte)
+                })
                 .collect();
             cells.insert(cell.name.clone(), values);
         }
@@ -1318,6 +1323,43 @@ mod tests {
         assert_eq!(*bar_snapshot.cells["1"].get("red").unwrap(), 255);
         assert_eq!(*bar_snapshot.cells["2"].get("red").unwrap(), 0);
         assert_eq!(*bar_snapshot.cells["3"].get("red").unwrap(), 255);
+    }
+
+    /// A cell's snapshot is the bytes the head is sent: a 16-bit cell
+    /// channel shows its coarse byte on the wire, the 16-bit value's high
+    /// byte.
+    #[test]
+    fn a_cell_snapshot_is_what_the_head_is_sent() {
+        use crate::lighting::effects::{EffectInstance, EffectType};
+        let mut info = bar("Bar");
+        // Cell 2's red is 16-bit, its fine byte at 11.
+        info.cells[1].channels.get_mut("red").unwrap().fine = Some(11);
+        let red_2 = info.cells[1].channels["red"].offset;
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(info);
+        engine
+            .start_effect(EffectInstance::new(
+                "cell".to_string(),
+                EffectType::Static {
+                    parameters: HashMap::from([("red".to_string(), 0.3)]),
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["Bar/2".to_string()],
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        let sent: HashMap<u16, u8> = engine
+            .update(std::time::Duration::from_millis(10), None)
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("Bar".to_string(), true)]));
+        let cell = &snapshot.fixtures[0].cells["2"];
+        assert_eq!(cell.get("red"), sent.get(&red_2));
+        assert_eq!(cell["red"], 76, "0.3 of 65535 is 0x4CCD: coarse 76");
     }
 
     #[test]

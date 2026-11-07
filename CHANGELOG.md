@@ -764,7 +764,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A 16-bit channel's state shows the coarse byte on the wire**: a fixture's state showed a
   16-bit channel at its value on the 8-bit scale, while the wire carries the high byte of the
   16-bit value: a dimmer at 0.3 showed 77 and went out as 76 (0x4CCD). The state now shows the
-  byte the channel goes out as (`physical::coarse_byte`, the DMX output's own rule).
+  byte the channel goes out as (`physical::coarse_byte`, the DMX output's own rule), a pixel
+  fixture's cells' channels too.
 
 - **Going from one song's page straight to another's shows the new song** (#632): changing the URL
   from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
