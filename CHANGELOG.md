@@ -745,6 +745,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A light show's time signature has a denominator of at most 64** (#635): a `tempo {}` block
+  took any nonzero signature, and under `time_signature: 1/4294967295` a `1measure` duration
+  rounded to nothing, so the show failed, after some 15 s, with `Effect 'static' requires a
+  'duration'`. A denominator over 64 is now refused, naming the signature: `time signature
+  "1/4294967295" has denominator 4294967295; the most it may be is 64`. Any denominator from 1 to
+  64 is still taken, as before (`4/3`, `4/64`); a song's `tempo:` range is unchanged.
+
 - **A near-flat tempo ramp is timed to the nanosecond** (#638): the time a ramp takes to cover some
   beats was solved in a form that cancels when the ramp is nearly flat, so `{bpm: 60.000001,
   transition: 16}` after 60 BPM placed its beats tens of nanoseconds off (and up to microseconds
