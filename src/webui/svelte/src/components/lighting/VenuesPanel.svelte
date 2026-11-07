@@ -960,6 +960,7 @@
     venuesDir={venueDir}
     onclose={() => (exportingVenue = null)}
     onchanged={loadVenues}
+    readOnly={readOnly(venueOwners[exportingVenue])}
   />
 {/if}
 

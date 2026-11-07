@@ -14,6 +14,7 @@
 
 import { test, expect, type Page, type Request } from "@playwright/test";
 import { MVR_INSPECTION, MVR_EXPORT_SUMMARY } from "../mock-server/test-data";
+import type { VenueList } from "../../src/gen/rules/mtrack_rules";
 
 // MVR import (the wizard at #/lighting/import) and export (the dialog on
 // Venues), design section 11. Every test routes its own answers with
@@ -728,6 +729,41 @@ test.describe("MVR export dialog", () => {
     expect(new URL(summaries[0].url()).searchParams.get("venue")).toBe(
       "test-venue",
     );
+  });
+
+  test("does not offer aim points for a venue whose file is not its alone", async ({
+    page,
+  }) => {
+    const { aims } = await routeExport(page);
+    const reason =
+      'Defined in tour/all.light alongside venue "Arena"; edit that file by hand.';
+    await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          venues: {
+            "test-venue": {
+              name: "test-venue",
+              fixtures: {},
+              focus_points: {},
+              source: null,
+            },
+          },
+          owners: {
+            "test-venue": { file: "tour/all.light", editable: false, reason },
+          },
+          errors: [],
+          versions: { "test-venue": "v1" },
+        } satisfies VenueList,
+      }),
+    );
+    await page.goto("/#/lighting/venues");
+    await page.getByTestId("venue-export-mvr-test-venue").click();
+    await expect(page.getByTestId("mvr-export-unlinked")).toBeVisible();
+    await expect(page.getByTestId("mvr-export-add-aim")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-export-read-only")).toHaveText(reason);
+    // Exporting as it is stays on offer.
+    await expect(page.getByTestId("mvr-export-as-is")).toBeVisible();
+    expect(aims).toHaveLength(0);
   });
 
   test("adds an aim point per fixture, refreshes, then downloads", async ({

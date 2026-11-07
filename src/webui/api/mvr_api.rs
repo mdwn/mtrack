@@ -35,7 +35,6 @@ use axum::{
 };
 use serde_json::json;
 
-use super::super::config_io;
 use super::super::server::WebUiState;
 use super::lighting_api::{
     content_version, if_match_version, project_root, reload_if_current_venue, resolve_lighting_dir,
@@ -542,6 +541,7 @@ pub(super) async fn add_aim_points(
         Ok(done) => done,
         Err(AimError::Stale(current)) => return Err(stale_venue_response(&name, Some(current))),
         Err(AimError::Message(e)) => return Err(bad_request(e)),
+        Err(AimError::Refused(r)) => return Err(r),
     };
     let reloaded = if created.is_empty() {
         false
@@ -575,6 +575,9 @@ enum AimError {
     /// The file's version is not the one the client sent; carries the
     /// current one.
     Stale(String),
+    /// The venue's file may not be written (it is not the venue's alone),
+    /// or its upgrade to a `.venue` is refused: the save's own answer.
+    Refused(Response),
 }
 
 impl From<String> for AimError {
@@ -584,6 +587,7 @@ impl From<String> for AimError {
 }
 
 /// Adds the points; returns them with the venue file's version afterwards.
+#[allow(clippy::result_large_err)]
 fn add_aim_points_blocking(
     project: &std::path::Path,
     venue_name: &str,
@@ -611,28 +615,33 @@ fn add_aim_points_blocking(
         .map(|f| f.name.as_str())
         .collect();
 
-    // The file that holds the venue, whatever it is called.
+    // The venue's file, by the one rule for venue writes: the file the
+    // loader read it from, written only when it is the venue's alone, and a
+    // `.light` moved to a `.venue` (focus points need the newer format).
     let dir = project.join(venues_dir);
-    let mut found: Option<(std::path::PathBuf, String, lighting::types::Venue)> = None;
     if !dir.is_dir() {
         return Err(format!("cannot read {venues_dir}: not a directory").into());
     }
-    // The venue files the lighting system loads, subdirectories included.
-    for path in
-        lighting::project_files::files_under(&dir, lighting::project_files::VENUE_EXTENSIONS)
-    {
-        let Ok(content) = crate::util::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(mut venues) = lighting::parser::parse_venues(&content) {
-            if let Some(venue) = venues.remove(venue_name) {
-                found = Some((path, content, venue));
-                break;
-            }
-        }
-    }
-    let (path, content, venue) =
-        found.ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
+    let read = lighting::project_files::venues(&dir);
+    let venue = read
+        .get(venue_name)
+        .map(|declared| declared.item.clone())
+        .ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
+    let save = super::lighting_writes::Save {
+        kind: lighting::files::Kind::Venue,
+        dir: &dir,
+        record: &read.record,
+        library: &[],
+        name: venue_name,
+        from: None,
+        needs_new_format: true,
+    };
+    let plan = save.plan().map_err(AimError::Refused)?;
+    let content = plan
+        .current
+        .as_deref()
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .ok_or_else(|| format!("no venue file in {venues_dir} defines \"{venue_name}\""))?;
 
     let current = content_version(content.as_bytes());
     if expected_version.is_some_and(|expected| expected != current) {
@@ -674,7 +683,7 @@ fn add_aim_points_blocking(
     }
     let desired = venue.clone().with_focus_points(focus_points);
     let updated = lighting::venue_patch::patch_venue(&content, venue_name, &desired)?;
-    config_io::staged_write(&path, &updated)?;
+    super::lighting_writes::write(&plan, &updated).map_err(AimError::Refused)?;
     Ok((created, content_version(updated.as_bytes())))
 }
 
@@ -1249,6 +1258,63 @@ mod test {
             body["version"].as_str().unwrap(),
             super::content_version(after.as_bytes())
         );
+    }
+
+    async fn post_aim(app: &axum::Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/venues/kellys/aim-points")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn aim_points_are_refused_for_a_venue_whose_file_is_not_its_alone() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let path = dir.path().join("lighting/venues/kellys.venue");
+        let shared = format!(
+            "{}venue \"annex\" {{\n}}\n",
+            std::fs::read_to_string(&path).unwrap()
+        );
+        std::fs::write(&path, &shared).unwrap();
+
+        let (status, body) = post_aim(&app).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["read_only"], true);
+        assert_eq!(body["file"], "kellys.venue");
+        assert_eq!(body["others"], json!(["annex"]));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), shared);
+    }
+
+    #[tokio::test]
+    async fn aim_points_move_a_light_venue_to_its_venue_file() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let venues = dir.path().join("lighting/venues");
+        let text = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("kellys.light"), &text).unwrap();
+
+        let (status, body) = post_aim(&app).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!body["created"].as_array().unwrap().is_empty(), "{body}");
+        assert!(!venues.join("kellys.light").exists());
+        let after = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        assert!(after.contains("focus \""), "{after}");
     }
 
     #[tokio::test]
