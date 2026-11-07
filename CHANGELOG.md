@@ -745,6 +745,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mtrack migrate` backs up every file it overwrites, and writes none beside one** (#671):
+  only `mtrack.yaml` was backed up. A profile file already in `profiles/` (say `profiles/pi-a.yaml`
+  when an inline profile has `hostname: pi-a`), a playlist already in `playlists/`, and a profile
+  file rewritten without its inline fixtures were written over with no copy kept. Each is now
+  copied first, by one rule: to `<file>.bak`, or `<file>.bak-2` and so on when an earlier backup
+  has that name (an earlier `mtrack.yaml.bak` used to be written over too). A config named
+  `mtrack.yml` is now backed up as `mtrack.yml.bak`, not `mtrack.yaml.bak`.
+  - The legacy playlist goes to the file the playlists directory already has for its name, by
+    the loader's lookup: `playlist: set.yaml` with `playlists/set.yml` there writes `set.yml`
+    (backed up), where it wrote a `set.yaml` beside it that the loader did not read. A profile's
+    file is looked up the same way. A legacy playlist already in the playlists directory is left
+    where it is, where it was copied over itself and deleted.
+  - The retired inline fixtures go to a new venue by the rule for new venue files: `inline_migrated`
+    in `lighting/venues/inline_migrated.venue` (was `inline_migrated.light`), or the first of
+    `inline_migrated_2`, `_3`, ... that no venue file declares and whose file is free, where it
+    wrote over an `inline_migrated.light` already there and could declare a second venue named
+    `inline_migrated`. The venue file is made new, never written over.
+
 - **A failed save whose own recovery fails keeps its original safe** (#685): these cases come up
   only when a save fails and then putting the file back fails too.
   - When the original could be neither hard-linked nor written out to `<file>.mtrack-original`

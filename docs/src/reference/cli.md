@@ -91,6 +91,9 @@ a profiles directory, the legacy playlist into a playlists directory, and legacy
 hardware settings out of the file once they live in profiles. For lighting, it
 moves retired inline fixtures (a `fixtures:` map under `lighting`, which a config may no longer
 carry) into
-a venue, `lighting/venues/inline_migrated.light`, and clears them from the config. Make that
+a new venue, `lighting/venues/inline_migrated.venue` (`inline_migrated_2`, and so on, when that
+name or file is taken), and clears them from the config. Make that
 venue current, or copy its lines into yours, for the fixtures to light. It does not touch fixture
-types, GDTFs or venues that already exist.
+types, GDTFs or venues that already exist. Every file it overwrites (the config, a profile or
+playlist file already there) is first copied to `<file>.bak`, or `<file>.bak-2` and so on when
+an earlier backup has that name.
