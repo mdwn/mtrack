@@ -30,6 +30,11 @@
 
   // Venue names for the current_venue dropdown
   let venues = $state<Record<string, Venue>>({});
+  /** Whether the venue list has been asked for and answered (or failed).
+   *  Until then the field is a disabled dropdown holding the current venue,
+   *  not the text input it falls back to with no venues listed: a choice
+   *  made as the list arrived went into that input, not the dropdown. */
+  let venuesLoaded = $state(false);
   let venueDir = $derived(lighting.directories?.venues || "");
   let venueNames = $derived(Object.keys(venues).sort());
 
@@ -38,6 +43,8 @@
       venues = (await fetchVenues(venueDir || undefined)).venues;
     } catch {
       // The field falls back to a text input when no venues are listed.
+    } finally {
+      venuesLoaded = true;
     }
   }
 
@@ -321,7 +328,13 @@
           text={$t("tooltips.lighting.currentVenue")}
         /></label
       >
-      {#if venueNames.length > 0}
+      {#if !venuesLoaded}
+        <select id="lighting-venue" class="input" disabled>
+          <option value={lighting.current_venue ?? ""}
+            >{lighting.current_venue ?? $t("lighting.noneVenue")}</option
+          >
+        </select>
+      {:else if venueNames.length > 0}
         <select
           id="lighting-venue"
           class="input"
