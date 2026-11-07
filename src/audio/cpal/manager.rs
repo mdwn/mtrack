@@ -529,6 +529,28 @@ mod test {
             drop(manager);
         }
 
+        /// The control for the test above: a rebuild that fails is retried
+        /// after the backoff, and the output thread's pause is seen on the
+        /// test's clock. Without it, "no pauses" could hold because none
+        /// were ever noted.
+        #[test]
+        fn a_failed_rebuild_pauses_for_the_backoff() {
+            let clock = crate::clock::TestClock::start();
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+
+            handle.fail_next_builds(1);
+            handle.trigger_error();
+            // The failed rebuild, then the retry after the backoff.
+            handle.wait_for_builds(3);
+
+            assert_eq!(clock.pauses(), [REBUILD_BACKOFF_START]);
+            drop(manager);
+        }
+
         /// Retrying must not outlive the manager — a device that never comes back
         /// should not keep a thread spinning past shutdown.
         #[test]
