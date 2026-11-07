@@ -274,6 +274,33 @@ fn json_to_yaml(value: &serde_json::Value) -> Yaml {
 /// look for `.yaml` and `.light` files.
 const STAGED_SUFFIX: &str = ".mtrack-new";
 
+/// The suffix a file's kept original takes ([`restore_file`]), then `-2`,
+/// `-3`… when taken.
+const ORIGINAL_SUFFIX: &str = ".mtrack-original";
+
+/// Whether `path` is a file mtrack's own writes leave beside another: a
+/// staged copy (`<file>.<pid>.mtrack-new`) or a kept original
+/// (`<file>.mtrack-original`, `-2`, …). A scan of a directory's files
+/// takes neither for one of them.
+pub fn is_write_leftover(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.ends_with(STAGED_SUFFIX) {
+        return true;
+    }
+    match name.rfind(ORIGINAL_SUFFIX) {
+        Some(at) => {
+            let rest = &name[at + ORIGINAL_SUFFIX.len()..];
+            rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        }
+        None => false,
+    }
+}
+
 /// The path a pending write to `path` from this process is staged under. The
 /// process id keeps two mtrack processes writing one file from sharing it;
 /// within one, [`write_file`] has writers of a file take turns.
@@ -436,6 +463,12 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
     // so the rewrite below always has something to recover from.
     let staged = staged_path(path);
     let stage = || -> std::io::Result<()> {
+        // A fresh file, never one a kept original is linked to: truncating
+        // a leftover staged copy in place would empty that original too.
+        match std::fs::remove_file(&staged) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let mut file = std::fs::File::create(&staged)?;
         if let Some(ownership) = intended {
             ownership.apply(&file, &staged)?;
@@ -599,9 +632,9 @@ fn original_names(path: &Path) -> impl Iterator<Item = (String, PathBuf)> + '_ {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     (1u32..).map(move |n| {
         let candidate = if n == 1 {
-            format!("{name}.mtrack-original")
+            format!("{name}{ORIGINAL_SUFFIX}")
         } else {
-            format!("{name}.mtrack-original-{n}")
+            format!("{name}{ORIGINAL_SUFFIX}-{n}")
         };
         let file = path.with_file_name(&candidate);
         (candidate, file)
@@ -1547,6 +1580,45 @@ mod ownership_test {
         // a successful write must not leave one lying about.
         assert!(!staged_path(&dest).exists());
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "contents");
+    }
+
+    #[test]
+    fn a_write_never_truncates_a_kept_original_linked_to_its_staged_name() {
+        // A kept original linked to a staged copy that stayed (its removal
+        // failed): the next write stages afresh, leaving the original whole.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("club.venue");
+        std::fs::write(&dest, "failed save\n").unwrap();
+        std::fs::write(staged_path(&dest), "was\n").unwrap();
+        let original = dir.path().join("club.venue.mtrack-original");
+        std::fs::hard_link(staged_path(&dest), &original).unwrap();
+
+        write_file(&dest, b"new\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new\n");
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "was\n");
+        assert!(!staged_path(&dest).exists());
+    }
+
+    #[test]
+    fn a_write_s_leftovers_are_known_by_name() {
+        for leftover in [
+            "par.zip.1234.mtrack-new",
+            "club.venue.mtrack-original",
+            "club.venue.mtrack-original-2",
+            "club.venue.mtrack-original-17",
+        ] {
+            assert!(is_write_leftover(Path::new(leftover)), "{leftover}");
+        }
+        for file in [
+            "par.zip",
+            "synth.gdtf",
+            "club.venue.mtrack-original-x",
+            "club.venue.mtrack-original-",
+            "mtrack-original.gdtf",
+        ] {
+            assert!(!is_write_leftover(Path::new(file)), "{file}");
+        }
     }
 
     #[test]

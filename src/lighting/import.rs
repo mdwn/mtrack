@@ -247,8 +247,11 @@ fn library_copy_of(project: &Path, bytes: &[u8]) -> Option<String> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
+        // Any file, by whatever name it arrived with, but what mtrack's own
+        // writes leave beside one.
         .filter(|p| {
-            super::library::is_archive(p)
+            !crate::util::is_write_leftover(p)
+                && p.is_file()
                 && std::fs::metadata(p).is_ok_and(|m| m.len() == bytes.len() as u64)
         })
         .collect();
@@ -970,6 +973,35 @@ mod tests {
         let report = import_gdtf_bytes(&bytes, "synth.gdtf", None, &project, TYPES).unwrap();
         assert!(!report.already_imported);
         assert_eq!(report.type_name, "Synth Brick");
+        assert_eq!(std::fs::read(library.join("synth.gdtf")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn an_archive_under_any_file_name_is_found_again_and_a_leftover_is_not() {
+        let bytes = synthetic_bytes("Synth Brick");
+        for name in [None, Some("Par")] {
+            let dir = tempfile::tempdir().unwrap();
+            let project = project(dir.path());
+            let first = import_gdtf_bytes(&bytes, "par.zip", name, &project, TYPES).unwrap();
+            assert!(!first.already_imported, "{name:?}");
+
+            let again = import_gdtf_bytes(&bytes, "par.zip", name, &project, TYPES).unwrap();
+
+            assert!(again.already_imported, "{name:?}");
+            assert_eq!(again.archive, "lighting/library/par.zip");
+        }
+
+        // A staged copy or a kept original with the same bytes is no copy.
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let library = project.join("lighting/library");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join("synth.gdtf.1234.mtrack-new"), &bytes).unwrap();
+        std::fs::write(library.join("synth.gdtf.mtrack-original-2"), &bytes).unwrap();
+
+        let report = import_gdtf_bytes(&bytes, "synth.gdtf", None, &project, TYPES).unwrap();
+
+        assert!(!report.already_imported);
         assert_eq!(std::fs::read(library.join("synth.gdtf")).unwrap(), bytes);
     }
 
