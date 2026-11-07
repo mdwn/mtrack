@@ -414,6 +414,22 @@
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
+  /**
+   * After an upload: the name the server gave the song, when it is not
+   * this page's (a new song whose name was taken, #674), opens its page,
+   * where the files that follow go. True when it did.
+   */
+  function followUploadedSong(data: { song?: unknown } | null): boolean {
+    const name = data?.song;
+    if (typeof name !== "string" || name === "" || name === songName) {
+      return false;
+    }
+    const base = `#/songs/${encodeURIComponent(name)}`;
+    window.location.hash =
+      activeTab === "tracks" ? base : `${base}/${activeTab}`;
+    return true;
+  }
+
   /** The song name a config's YAML declares, if it reads and has one. */
   function declaredName(yaml: string): string | null {
     try {
@@ -715,6 +731,7 @@
       }
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";
@@ -758,6 +775,7 @@
         : get(t)("songs.detail.midiUploaded");
       uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
+      if (followUploadedSong(data)) return;
       await load();
     } catch (e) {
       uploadMsg = e instanceof Error ? e.message : "Upload failed";

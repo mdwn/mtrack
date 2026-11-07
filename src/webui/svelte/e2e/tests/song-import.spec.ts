@@ -121,4 +121,25 @@ test.describe("Song Import Flow", () => {
       }
     }
   });
+
+  // #674: a name another song has already, as the pre-filled folder name
+  // may be, is refused with a 409 that says which.
+  test("a taken song name shows the server's refusal", async ({ page }) => {
+    await page.route("**/api/browse/create-song", async (route) => {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: 'a song named "songs" already exists; choose another name',
+          taken: "songs",
+        }),
+      });
+    });
+    await page.getByRole("button", { name: /import from filesystem/i }).click();
+    await page.getByRole("button", { name: "Use This Directory" }).click();
+    await page.getByRole("button", { name: "Create Song" }).click();
+    await expect(page.locator(".error-msg")).toHaveText(
+      'A song named "songs" already exists; choose another name',
+    );
+  });
 });

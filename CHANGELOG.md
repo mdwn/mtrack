@@ -770,7 +770,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PUT /api/songs/Fresh/tracks/kick.wav` with `Other/song.yaml` declaring `name: Fresh` wrote a
   second `Fresh`. It now takes the bulk import's naming rule (`songs::new_song`, the one rule of
   `songs --init` and the bulk import): its folder's name, else its path below the songs folder,
-  else the first free ` (2)`, ` (3)`, …; here `Fresh (2)`.
+  else the first free ` (2)`, ` (3)`, …; here `Fresh (2)`. The upload's answer gives the name the
+  song got (`"song": "Fresh (2)"`), and the song page opens that song's page after it. The web
+  UI's create-song from a folder (`POST /api/browse/create-song`) takes the same rule: with no
+  name, the folder's (`Song A/` beside a loaded Song A is `Song A (2)`); a name given that a song
+  loaded or configured under the songs folder has already is a 409 naming it (`a song named
+  "Fresh" already exists; choose another name`), which the import dialog shows, where the
+  config used to be written under it.
 
 - **The web UI's lighting endpoints default to this host's lighting directories** (#673): an
   endpoint given no directory (`?dir=`, `venues_dir`, `fixture_types_dir`) used the default ones,

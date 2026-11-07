@@ -203,6 +203,67 @@ pub(super) async fn create_song_in_directory(
             .into_response();
     };
 
+    // The song's name, by the one rule for a new song's (#674): one given
+    // must not be taken by a song loaded, failed or configured under the
+    // songs root (a 409 naming it); with none, the folder's name, else its
+    // path below the songs root, else the first free suffix. Off the async
+    // worker: the configured names are a walk of the songs tree.
+    let taken = super::helpers::player_song_names(&state.player);
+    let songs_root = state.songs_path();
+    let asked = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    let naming = super::helpers::spawn_blocking_io("read the songs folder", {
+        let dir = dir_canonical.clone();
+        let asked = asked.clone();
+        move || -> std::io::Result<Result<String, String>> {
+            let root = songs_root.canonicalize().unwrap_or(songs_root);
+            match asked {
+                Some(name) => {
+                    let mut taken = taken;
+                    taken.extend(songs::configured_song_names(&root)?);
+                    Ok(if taken.contains(&name) {
+                        Err(name)
+                    } else {
+                        Ok(name)
+                    })
+                }
+                None => {
+                    // Below the songs root, the path a contested name is
+                    // given is from there; elsewhere, from the folder's own.
+                    let base = if dir.starts_with(&root) {
+                        root
+                    } else {
+                        dir.parent().unwrap_or(&dir).to_path_buf()
+                    };
+                    let song = songs::new_song(&base, &dir, taken)?;
+                    Ok(Ok(song.map_or_else(
+                        || crate::util::filename_display(&dir).to_string(),
+                        |song| song.name,
+                    )))
+                }
+            }
+        }
+    })
+    .await;
+    let name = match naming {
+        Ok(Ok(name)) => name,
+        Ok(Err(taken)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": format!("a song named \"{taken}\" already exists; choose another name"),
+                    "taken": taken,
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => return e,
+    };
+
     // Use Song::initialize to scan the directory and build the config with proper
     // channel-aware track splitting (stereo -> L/R, multichannel -> per-channel).
     // Same blocking decode/analysis as the bulk path, for one song.
@@ -233,13 +294,7 @@ pub(super) async fn create_song_in_directory(
         }
     };
 
-    // Apply name override if provided.
-    if let Some(ref name) = body.name {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            song_config.set_name(trimmed);
-        }
-    }
+    song_config.set_name(&name);
 
     // Flattened before the reload's await: the save's error is not Send.
     if let Err(e) = song_config.save(&config_path).map_err(|e| e.to_string()) {
@@ -255,7 +310,7 @@ pub(super) async fn create_song_in_directory(
     }
     (
         StatusCode::CREATED,
-        Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
+        Json(json!({"status": "created", "path": config_path.to_string_lossy(), "song": name})),
     )
         .into_response()
 }
@@ -673,6 +728,73 @@ mod test {
         assert_eq!(find_entry("Notes.MID")["type"], "midi");
         assert_eq!(find_entry("Show.LIGHT")["type"], "lighting");
         assert_eq!(find_entry("notes.midi")["type"], "other");
+    }
+
+    /// Posts a create-song for `songs/<folder>` (holding a WAV), with
+    /// `name` if given: the status and the answer.
+    async fn create_song_named(
+        state: &crate::webui::server::WebUiState,
+        project: &std::path::Path,
+        folder: &str,
+        name: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let song_dir = project.join("songs").join(folder);
+        std::fs::create_dir_all(&song_dir).unwrap();
+        std::fs::write(song_dir.join("track.wav"), create_test_wav()).unwrap();
+        let body = serde_json::json!({"path": format!("/songs/{folder}"), "name": name});
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (
+            status,
+            serde_json::from_str(&response_body(response).await).unwrap(),
+        )
+    }
+
+    /// #674: a name given that a song has already, loaded or configured
+    /// under the songs root, is a 409 naming it, and nothing is written.
+    #[tokio::test]
+    async fn create_song_refuses_a_name_taken() {
+        let (state, dir) = test_state();
+        let other = state.songs_path().join("Other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("song.yaml"), "name: Fresh\ntracks: []\n").unwrap();
+        for taken in ["Song A", "Fresh"] {
+            let (status, parsed) = create_song_named(&state, dir.path(), "new", Some(taken)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{taken}: {parsed}");
+            assert_eq!(parsed["taken"], taken);
+            assert_eq!(
+                parsed["error"],
+                format!("a song named \"{taken}\" already exists; choose another name")
+            );
+            assert!(!dir.path().join("songs/new/song.yaml").exists());
+        }
+        let (status, parsed) = create_song_named(&state, dir.path(), "new", Some("Free")).await;
+        assert_eq!(status, StatusCode::CREATED, "{parsed}");
+        assert_eq!(parsed["song"], "Free");
+    }
+
+    /// #674: with no name given, the folder's, by the bulk import's rule:
+    /// past a name taken, the first free suffix.
+    #[tokio::test]
+    async fn create_song_with_no_name_is_named_past_the_names_taken() {
+        let (state, dir) = test_state();
+        let (status, parsed) = create_song_named(&state, dir.path(), "Song A", None).await;
+        assert_eq!(status, StatusCode::CREATED, "{parsed}");
+        assert_eq!(parsed["song"], "Song A (2)");
+        let config =
+            crate::config::Song::deserialize(&dir.path().join("songs/Song A/song.yaml")).unwrap();
+        assert_eq!(config.name(), "Song A (2)");
     }
 
     #[tokio::test]

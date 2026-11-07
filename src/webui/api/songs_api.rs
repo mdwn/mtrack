@@ -275,9 +275,10 @@ pub(super) async fn import_file_to_song(
         return e;
     }
 
-    if let Err(e) = ensure_song_config(&state.player, &state.songs_path(), &song_dir) {
-        return *e;
-    }
+    let created = match ensure_song_config(&state.player, &state.songs_path(), &song_dir).await {
+        Ok(created) => created,
+        Err(e) => return e,
+    };
 
     if let Err(resp) = super::helpers::reload_songs(&state).await {
         return resp;
@@ -288,7 +289,9 @@ pub(super) async fn import_file_to_song(
         Json(json!({
             "status": "imported",
             "file": filename,
-            "song": name,
+            // The name the song has: a new one's may not be the one asked
+            // for, when that is taken (#674).
+            "song": created.unwrap_or(name),
         })),
     )
         .into_response()
@@ -686,7 +689,7 @@ pub(super) async fn upload_track_single(
     let data = body.to_vec();
     super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
-    ensure_song_config(&state.player, &state.songs_path(), &song_dir).map_err(|e| *e)?;
+    let created = ensure_song_config(&state.player, &state.songs_path(), &song_dir).await?;
     super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>((
@@ -694,7 +697,8 @@ pub(super) async fn upload_track_single(
         Json(json!({
             "status": if replaced { "replaced" } else { "uploaded" },
             "replaced": replaced,
-            "song": name,
+            // The name the song has (see the import's).
+            "song": created.unwrap_or(name),
             "file": filename,
         })),
     ))
@@ -757,14 +761,15 @@ pub(super) async fn upload_tracks_multipart(
             .into_response());
     }
 
-    ensure_song_config(&state.player, &state.songs_path(), &song_dir).map_err(|e| *e)?;
+    let created = ensure_song_config(&state.player, &state.songs_path(), &song_dir).await?;
     super::helpers::reload_songs(&state).await?;
 
     Ok((
         StatusCode::OK,
         Json(json!({
             "status": "uploaded",
-            "song": name,
+            // The name the song has (see the import's).
+            "song": created.unwrap_or(name),
             "files": uploaded,
         })),
     ))
@@ -945,33 +950,32 @@ fn remove_song_from_playlists(
 /// folder's, unless a song loaded, failed or configured under the songs
 /// root has it (#674). One already there (`song.yaml`, `song.yml`, or one
 /// of another kind) is left untouched so that manual edits (track names,
-/// lighting config, etc.) are preserved.
-pub(super) fn ensure_song_config(
+/// lighting config, etc.) are preserved. Answers the new song's name, which
+/// is the one it is loaded as; `None` when the folder had a config.
+pub(super) async fn ensure_song_config(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     song_dir: &std::path::Path,
-) -> Result<(), Box<axum::response::Response>> {
-    let failed = |what: &str, e: &dyn std::fmt::Display| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to {what}: {e}")})),
-            )
-                .into_response(),
-        )
-    };
+) -> Result<Option<String>, axum::response::Response> {
     let taken = super::helpers::player_song_names(player);
-    // Both as the file system has them, for the folder's path below the
-    // root, which a contested name is given.
-    let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let song = songs::new_song(&canonical(songs_path), &canonical(song_dir), taken)
-        .map_err(|e| failed("read the songs folder", &e))?;
-    match song {
-        Some(song) => song
-            .write()
-            .map_err(|e| failed("write the song config", &e)),
-        None => Ok(()),
-    }
+    let (songs_path, song_dir) = (songs_path.to_path_buf(), song_dir.to_path_buf());
+    // Off the async worker: the names configured under the songs root are
+    // a walk of the whole tree, and the new config a scan of the audio.
+    super::helpers::spawn_blocking_io("write the song config", move || {
+        // Both as the file system has them, for the folder's path below
+        // the root, which a contested name is given.
+        let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let song = songs::new_song(&canonical(&songs_path), &canonical(&song_dir), taken)
+            .map_err(|e| e.to_string())?;
+        match song {
+            Some(song) => song
+                .write()
+                .map(|()| Some(song.name))
+                .map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    })
+    .await
 }
 
 /// Whether song `name` has a file `filename` already, for
@@ -1641,6 +1645,10 @@ mod test {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        // The answer gives the name the song has, for the client to go on.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(parsed["song"], "Fresh (2)");
         let config =
             crate::config::Song::deserialize(&state.songs_path().join("Fresh/song.yaml")).unwrap();
         assert_eq!(config.name(), "Fresh (2)");

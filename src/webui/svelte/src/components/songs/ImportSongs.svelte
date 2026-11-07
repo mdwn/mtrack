@@ -105,7 +105,12 @@
     try {
       const res = await createSongInDirectory(songDir, songName.trim());
       if (res.status === 409) {
-        createError = get(t)("songs.import.songExists");
+        // A name another song has already (#674), else a config there.
+        const data = await res.json().catch(() => null);
+        createError =
+          typeof data?.taken === "string"
+            ? get(t)("songs.import.nameTaken", { values: { name: data.taken } })
+            : get(t)("songs.import.songExists");
         return;
       }
       if (!res.ok) {
