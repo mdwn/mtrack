@@ -131,7 +131,8 @@ pub struct Engine {
     pub(super) effect_engine: Arc<Mutex<EffectEngine>>,
     pub(super) lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     pub(super) lighting_config: Option<config::Lighting>,
-    ola_http_port: u16,
+    /// Asks olad's web server, on the profile's port, what is patched.
+    olad: super::patch_check::OladProbe,
     pub(super) effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     pub(super) current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// The pass a crossfading song loop is fading out of, while it does.
@@ -300,7 +301,7 @@ impl Engine {
             effects_loop_handle: Mutex::new(None),
             lighting_system,
             lighting_config: lighting_config.cloned(),
-            ola_http_port: config.ola_http_port(),
+            olad: super::patch_check::OladProbe::new(config.ola_http_port()),
             current_song_timeline,
             outgoing_pass: Mutex::new(None),
             break_fades: Mutex::new(Default::default()),
@@ -734,7 +735,19 @@ impl Engine {
 
     /// The port olad's web server listens on, from the profile.
     pub fn ola_http_port(&self) -> u16 {
-        self.ola_http_port
+        self.olad.http_port()
+    }
+
+    /// What asks olad's web server which universes are patched.
+    pub fn olad(&self) -> &super::patch_check::OladProbe {
+        &self.olad
+    }
+
+    /// Holds the olad probe to `limits`, for a test whose runner may be
+    /// slower than a probe allows.
+    #[cfg(test)]
+    pub(crate) fn set_olad_limits(&mut self, limits: super::patch_check::ProbeLimits) {
+        self.olad = self.olad.clone().with_limits(limits);
     }
 
     /// The universes this profile configures an output for.
@@ -1022,7 +1035,7 @@ impl Drop for Engine {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, error::Error, net::Ipv4Addr, sync::Arc, time::Duration};
+    use std::{collections::HashSet, error::Error, sync::Arc, time::Duration};
 
     use midly::num::u7;
 
@@ -1033,14 +1046,13 @@ mod test {
     use crate::lighting::effects::EffectType;
 
     fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
-        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
-        // Use a mock OLA client for tests
+        // A mock OLA client, so the engine connects to no OLA port.
         let ola_client = OlaClientFactory::create_mock_client();
         let engine = Engine::new(
             &config::Dmx::new(
                 None,
                 None,
-                Some(port),
+                None,
                 vec![config::Universe::new(5, "universe1".to_string())],
                 None, // lighting configuration
             ),

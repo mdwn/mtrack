@@ -2008,7 +2008,7 @@ fn readiness_report(player: &crate::player::Player) -> crate::webui::wire::readi
     };
     let olad = match &dmx {
         Some(dmx) if !to_probe.is_empty() => {
-            let report = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
+            let report = dmx.olad().probe(&to_probe);
             Some(OladPatch {
                 reachable: report.reachable,
                 unpatched: report.unpatched,
@@ -7394,6 +7394,8 @@ show "test" {
         state: WebUiState,
         _state_dir: tempfile::TempDir,
         _project: tempfile::TempDir,
+        /// The port olad's web server is looked for on, where nothing listens.
+        _olad: crate::testutil::net::ClosedPort,
     }
 
     /// Writes one song directory per (name, show file body) and loads them.
@@ -7458,7 +7460,8 @@ show "test" {
         }
         let songs = song_registry(root, songs);
 
-        let dead_port = crate::testutil::net::free_tcp_port();
+        let olad = crate::testutil::net::ClosedPort::bind();
+        let dead_port = olad.port();
         let universe_yaml: String = universes
             .iter()
             .map(|u| format!("  - universe: {u}\n    name: u{u}\n"))
@@ -7491,6 +7494,7 @@ show "test" {
             state,
             _state_dir: state_dir,
             _project: project,
+            _olad: olad,
         }
     }
 

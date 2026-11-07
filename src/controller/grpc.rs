@@ -47,6 +47,8 @@ pub struct Driver {
     player: Arc<Player>,
     /// The socket address to host the gRPC server on.
     addr: SocketAddr,
+    /// Where the server is listening, once it is.
+    bound: super::BoundAddr,
 }
 
 impl Driver {
@@ -56,14 +58,23 @@ impl Driver {
     ) -> Result<Arc<Self>, Box<dyn Error>> {
         let addr: SocketAddr = format!("0.0.0.0:{}", config.port()).parse()?;
 
-        Ok(Arc::new(Driver { player, addr }))
+        Ok(Arc::new(Driver {
+            player,
+            addr,
+            bound: super::BoundAddr::new(),
+        }))
     }
 }
 
 impl super::Driver for Driver {
+    fn bound_addr(&self) -> Option<super::BoundAddr> {
+        Some(self.bound.clone())
+    }
+
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
         let addr = self.addr;
         let player = self.player.clone();
+        let bound = self.bound.clone();
 
         tokio::spawn(async move {
             let reflection_service = tonic_reflection::server::Builder::configure()
@@ -71,15 +82,22 @@ impl super::Driver for Driver {
                 .build_v1()
                 .map_err(io::Error::other)?;
 
+            // Bound here rather than by `serve`, to know the address: the
+            // port the OS picked, for a port of 0. TCP_NODELAY as `serve` sets.
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let addr = listener.local_addr()?;
             {
                 let _enter = span!(Level::INFO, "gRPC Server").entered();
-                info!("Starting gRPC server");
+                info!("Starting gRPC server on {addr}");
             }
+            bound.set(addr);
 
             Server::builder()
                 .add_service(reflection_service)
                 .add_service(player_service(player))
-                .serve(addr)
+                .serve_with_incoming(
+                    tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true)),
+                )
                 .await
                 .map_err(io::Error::other)
         })
@@ -754,7 +772,7 @@ impl PlayerService for PlayerServer {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, net::Ipv4Addr, sync::Arc, time::Duration};
+    use std::{collections::HashMap, error::Error, sync::Arc, time::Duration};
 
     use tonic::transport::Channel;
 
@@ -828,31 +846,8 @@ mod test {
             .expect("audio device should be present");
         let device = binding.to_mock()?;
 
-        // Get a random port.
-        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
-
-        println!("Using port {} for testing.", port);
-
-        let driver = Driver::new(config::GrpcController::new(port), player.clone())?;
-        tokio::spawn(driver.monitor_events());
-        let mut client: Option<PlayerServiceClient<Channel>> = None;
-        for _ in 0..5 {
-            match PlayerServiceClient::connect(format!("http://127.0.0.1:{}", port)).await {
-                Ok(connected_client) => client = Some(connected_client),
-                Err(e) => {
-                    println!("Sleeping for 50ms and trying to connect again. {}", e);
-                }
-            }
-
-            if client.is_some() {
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
         // Direct the player.
-        let mut client = client.expect("client was none");
+        let mut client = serve_grpc(player.clone()).await?;
 
         // Verify initial playlist name in status
         let resp = client.status(StatusRequest {}).await?;
@@ -997,26 +992,15 @@ mod test {
         Ok((player, client, device))
     }
 
-    /// Serves `player` over gRPC on an ephemeral port; a client for it.
+    /// Serves `player` over gRPC on a port the OS picks; a client for it.
     async fn serve_grpc(
         player: Arc<Player>,
     ) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
-        let port = crate::testutil::net::free_tcp_port_on(Ipv4Addr::UNSPECIFIED);
-
-        let driver = Driver::new(config::GrpcController::new(port), player.clone())?;
-        tokio::spawn(driver.monitor_events());
-
-        let mut client = None;
-        for _ in 0..10 {
-            match PlayerServiceClient::connect(format!("http://127.0.0.1:{}", port)).await {
-                Ok(c) => {
-                    client = Some(c);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-        Ok(client.expect("gRPC client connection failed"))
+        // Port 0: the server binds one the OS picks, and says which.
+        let driver = Driver::new(config::GrpcController::new(0), player.clone())?;
+        drop(driver.monitor_events());
+        let port = driver.bound.port().await;
+        Ok(PlayerServiceClient::connect(format!("http://127.0.0.1:{port}")).await?)
     }
 
     #[tokio::test(flavor = "multi_thread")]

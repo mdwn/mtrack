@@ -42,27 +42,6 @@ use crate::{config, controller::Controller, player::Player, songs};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-use crate::testutil::net::free_tcp_port as pick_free_port;
-
-/// Polls the MCP endpoint until it accepts a connection.
-async fn wait_until_listening(client: &Client, url: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if client
-            .post(url)
-            .timeout(Duration::from_millis(100))
-            .body("{}")
-            .send()
-            .await
-            .is_ok()
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("MCP server never started listening at {url}");
-}
-
 /// Extracts a single JSON-RPC response from either an `application/json` body
 /// or an SSE stream — the `StreamableHttpService` may use either.
 fn parse_response_body(content_type: &str, body: &str) -> Value {
@@ -232,17 +211,17 @@ async fn build_assets_player() -> Result<Arc<Player>, Box<dyn Error>> {
 async fn mcp_initialize_list_and_call_tools() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
-    let cfg = config::McpController::new(port);
+    let cfg = config::McpController::new(0);
     let controller = Controller::new(vec![config::Controller::Mcp(cfg)], player);
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
 
     let session = initialize_session(&client, &url).await;
 
@@ -318,28 +297,21 @@ async fn mcp_initialize_list_and_call_tools() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Waits for any line of SSE event data that, parsed as JSON, satisfies
-/// `predicate`. Returns the matched value or panics if the wait timed out.
 /// A predicate over SSE events, boxed so a sequence of differing closures can
 /// be held in one list.
 type EventPredicate = Box<dyn FnMut(&Value) -> bool + Send>;
 
-/// Waits for a series of events on a *single* SSE stream, in order.
-///
-/// A session may have only one GET stream, so a second listener does not
-/// observe a second change — it kills the first stream. Anything watching for
-/// more than one state transition has to do it from one subscription, which is
-/// also how a real client behaves.
-///
-/// Each predicate is tried against every event until it matches; matching
-/// advances to the next predicate. Returns the events that satisfied them.
-async fn wait_for_event_sequence(
+/// Opens the session's SSE stream, timing out after `timeout`. Once this
+/// returns, the server holds the stream, and a notification sent from then
+/// on reaches it: a test opens it before the change it waits to hear of.
+/// The server may not send anything if `accept: application/json` is set,
+/// so the event-stream form is asked for.
+async fn open_event_stream(
     client: &Client,
     url: &str,
     session: &str,
     timeout: Duration,
-    mut predicates: Vec<EventPredicate>,
-) -> Vec<Value> {
+) -> reqwest::Response {
     let resp = client
         .get(url)
         .header("mcp-session-id", session)
@@ -353,7 +325,24 @@ async fn wait_for_event_sequence(
         "GET /mcp returned {}",
         resp.status()
     );
-    let mut stream = resp.bytes_stream();
+    resp
+}
+
+/// Waits for a series of events on a *single* SSE stream, in order.
+///
+/// A session may have only one GET stream, so a second listener does not
+/// observe a second change — it kills the first stream. Anything watching for
+/// more than one state transition has to do it from one subscription, which is
+/// also how a real client behaves.
+///
+/// Each predicate is tried against every event until it matches; matching
+/// advances to the next predicate. Returns the events that satisfied them.
+async fn wait_for_event_sequence(
+    events: reqwest::Response,
+    timeout: Duration,
+    mut predicates: Vec<EventPredicate>,
+) -> Vec<Value> {
+    let mut stream = events.bytes_stream();
     let mut buf = String::new();
     let mut matched: Vec<Value> = Vec::new();
     let mut next = 0usize;
@@ -433,61 +422,16 @@ async fn wait_for_event_sequence(
     matched
 }
 
+/// Waits for any line of SSE event data that, parsed as JSON, satisfies
+/// `predicate`. Returns the matched value or panics if the wait timed out.
 async fn wait_for_event(
-    client: &Client,
-    url: &str,
-    session: &str,
+    events: reqwest::Response,
     timeout: Duration,
-    mut predicate: impl FnMut(&Value) -> bool,
+    predicate: impl FnMut(&Value) -> bool + Send + 'static,
 ) -> Value {
-    // The server may not send anything if `accept: application/json` is set,
-    // so we explicitly ask for the event-stream form.
-    let resp = client
-        .get(url)
-        .header("mcp-session-id", session)
-        .header("accept", "text/event-stream")
-        .timeout(timeout)
-        .send()
+    wait_for_event_sequence(events, timeout, vec![Box::new(predicate)])
         .await
-        .expect("open GET /mcp");
-    assert!(
-        resp.status().is_success(),
-        "GET /mcp returned {}",
-        resp.status()
-    );
-    let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        match tokio::time::timeout(remaining, stream.next()).await {
-            Ok(Some(Ok(bytes))) => {
-                buf.push_str(std::str::from_utf8(&bytes).unwrap_or(""));
-            }
-            Ok(Some(Err(e))) => panic!("SSE stream error: {e}"),
-            Ok(None) => break,
-            Err(_) => break, // timeout
-        }
-        // SSE events are separated by blank lines.
-        while let Some(idx) = buf.find("\n\n") {
-            let event = buf[..idx].to_string();
-            buf = buf[idx + 2..].to_string();
-            for line in event.lines() {
-                let Some(payload) = line.strip_prefix("data:").map(str::trim_start) else {
-                    continue;
-                };
-                if payload.is_empty() {
-                    continue;
-                }
-                if let Ok(value) = serde_json::from_str::<Value>(payload) {
-                    if predicate(&value) {
-                        return value;
-                    }
-                }
-            }
-        }
-    }
-    panic!("timed out waiting for SSE event matching predicate; buffer:\n{buf}");
+        .remove(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -622,19 +566,19 @@ async fn mcp_gdtf_import_flow() -> Result<(), Box<dyn Error>> {
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // --- list_gdtf_modes surfaces the mode-picking input.
@@ -733,19 +677,19 @@ async fn mcp_mvr_import_flow() -> Result<(), Box<dyn Error>> {
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // --- inspect_mvr resolves everything and writes nothing.
@@ -861,19 +805,19 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // --- get_config returns the YAML we wrote, plus a checksum.
@@ -1560,19 +1504,19 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
         "test fixture should have a DMX engine running"
     );
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Before play(), the cue list is empty (no song timeline yet).
@@ -1670,18 +1614,18 @@ async fn mcp_evaluate_show_runs_offline() -> Result<(), Box<dyn Error>> {
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let source = r#"show "Offline" {
@@ -1869,18 +1813,18 @@ async fn mcp_fixture_state_matches_offline_evaluation() -> Result<(), Box<dyn Er
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // With nothing playing there is an engine and nothing running. The
@@ -2071,17 +2015,17 @@ async fn mcp_analyze_show_reports_gaps_and_coverage() -> Result<(), Box<dyn Erro
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // `all_lights` is a configured logical group; `movers` is not, so it
@@ -2172,17 +2116,17 @@ async fn mcp_analyze_show_reports_gaps_and_coverage() -> Result<(), Box<dyn Erro
 async fn mcp_validate_lighting_returns_resolved_cue_times() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // 120bpm 4/4: a bar is 2s. Bars 1, 3 and 5 are 0.0s, 4.0s and 8.0s.
@@ -2377,17 +2321,17 @@ async fn mcp_write_song_lighting_registers_the_show() -> Result<(), Box<dyn Erro
     let _ = std::fs::remove_dir_all(song_dir.join("lighting"));
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let before = tool_json(
@@ -2512,17 +2456,17 @@ async fn mcp_lighting_tools_resolve_includes() -> Result<(), Box<dyn Error>> {
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // New file: it lands in `<song>/lighting/`, two folders below `common/`.
@@ -2614,17 +2558,17 @@ async fn mcp_write_song_lighting_ignores_an_unreferenced_root_file() -> Result<(
     std::fs::write(song_dir.join("show.light"), stray)?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let source = "show \"Written\" {\n    @00:00.000\n    all_lights: static color: \"blue\", duration: 4s\n}\n";
@@ -2665,17 +2609,17 @@ async fn mcp_write_song_lighting_ignores_an_unreferenced_root_file() -> Result<(
 async fn mcp_diff_shows_reports_resolved_changes() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let v1 = r#"show "S" {
@@ -2808,17 +2752,17 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
     crate::controller::mcp::service::set_lighting_notify_interval_ms(3_000);
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // The resource is advertised alongside the existing two.
@@ -2937,25 +2881,16 @@ async fn mcp_lighting_state_resource_pushes_on_change() -> Result<(), Box<dyn Er
         }),
     ];
 
-    let session_clone = session.clone();
-    let url_clone = url.clone();
-    let listener_client = client.clone();
-    let listener = tokio::spawn(async move {
-        wait_for_event_sequence(
-            &listener_client,
-            &url_clone,
-            &session_clone,
-            // Covers the 10s coalescing window set above plus server start-up
-            // under a loaded machine — the whole suite runs these in parallel.
-            Duration::from_secs(45),
-            predicates,
-        )
-        .await
-    });
-
-    // Let the listener open its GET. Both transitions are ten seconds out, so
-    // this is margin, not a race.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Opened before the change, so the server holds it when the
+    // notification goes out.
+    let events = open_event_stream(&client, &url, &session, Duration::from_secs(45)).await;
+    let listener = tokio::spawn(wait_for_event_sequence(
+        events,
+        // Covers the 10s coalescing window set above plus server start-up
+        // under a loaded machine — the whole suite runs these in parallel.
+        Duration::from_secs(45),
+        predicates,
+    ));
 
     // Nothing more to do: the background effect ends at 10s (rig still lit by
     // the foreground one) and the foreground at 13s. The second lands inside
@@ -3002,17 +2937,17 @@ async fn mcp_surface_consistency_fixes() -> Result<(), Box<dyn Error>> {
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let song = "DSL Light Show Song";
@@ -3144,19 +3079,19 @@ async fn mcp_profile_crud_round_trip() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Helper to read the current checksum.
@@ -3319,19 +3254,19 @@ async fn mcp_profile_crud_round_trip() -> Result<(), Box<dyn Error>> {
 async fn mcp_update_body_schema_is_typed() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let (_, list_resp) = mcp_post(
@@ -3391,19 +3326,19 @@ async fn mcp_update_body_schema_is_typed() -> Result<(), Box<dyn Error>> {
 async fn mcp_read_song_handles_flat_layout() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // The asset songs are "Song 1" … "Song 10", each stored as a top-level
@@ -3491,19 +3426,19 @@ async fn mcp_config_updates_every_subsection() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // update_midi installs a new MIDI subsection.
@@ -3555,7 +3490,7 @@ async fn mcp_config_updates_every_subsection() -> Result<(), Box<dyn Error>> {
         "update_controllers",
         json!([
             {"kind": "mcp", "port": port, "bind_address": "127.0.0.1"},
-            {"kind": "grpc", "port": 43234}
+            {"kind": "grpc", "port": 0}
         ]),
         "grpc",
     )
@@ -3580,19 +3515,19 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
         .expect("audio device should be present")
         .to_mock()?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // play
@@ -3694,19 +3629,19 @@ async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Err
 
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // read_song_lighting must follow the actual path mtrack loaded.
@@ -3836,19 +3771,19 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
     )?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Baseline: only `all_songs` is loaded because the playlist file
@@ -3907,17 +3842,17 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
 async fn mcp_write_playlist_checks_transitions() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
     let path = fixture.root.join("playlist.yaml");
     let before = std::fs::read_to_string(&path)?;
@@ -3970,17 +3905,17 @@ async fn mcp_playlist_writes_take_turns_with_the_web_ui() -> Result<(), Box<dyn 
     // during the rewrite read it short.
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
     let path = fixture.root.join("playlist.yaml");
     let before = std::fs::read_to_string(&path)?;
@@ -4020,17 +3955,17 @@ async fn mcp_write_playlist_checks_its_songs_in_turn_with_a_song_delete(
     // song back into the playlist.
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
     let path = fixture.root.join("playlist.yaml");
 
@@ -4077,17 +4012,17 @@ async fn mcp_write_playlist_keeps_names_already_on_disk() -> Result<(), Box<dyn 
     // playlist is already there, from before those rules.
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
     let refused = |response: &serde_json::Value| {
         response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
@@ -4125,17 +4060,17 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
     // no file to write.
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
     let refused = |response: &serde_json::Value| {
         response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true)
@@ -4246,19 +4181,19 @@ async fn mcp_playlist_tools_take_the_names_file() -> Result<(), Box<dyn Error>> 
 async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let details = tool_json(
@@ -4358,19 +4293,19 @@ async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Er
 async fn mcp_host_info_returns_runtime_identity() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let info = tool_json(&call_tool(&client, &url, &session, 1300, "host_info", json!({})).await);
@@ -4431,19 +4366,19 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
 
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let resp = tool_json(&call_tool(&client, &url, &session, 1400, "list_groups", json!({})).await);
@@ -4514,17 +4449,17 @@ async fn mcp_lists_a_gdtf_type_and_says_when_a_write_darkens_the_venue(
 
     let player = build_standalone_player(&fixture).await?;
     assert_eq!(player.hardware_status().lighting_venue.status, "ok");
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let body = tool_json(
@@ -4632,17 +4567,17 @@ async fn mcp_suggest_group_tags_proposes_tags_for_an_untagged_venue() -> Result<
     )?;
 
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let body = tool_json(
@@ -4698,19 +4633,19 @@ async fn mcp_suggest_group_tags_proposes_tags_for_an_untagged_venue() -> Result<
 async fn mcp_idle_sessions_are_evicted() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     // 1-second idle TTL with a fast sweeper (clamped to MIN_SWEEP_INTERVAL =
     // 5s). We wait long enough to clear both.
-    let cfg = config::McpController::with_idle_timeout(port, Some(1));
+    let cfg = config::McpController::with_idle_timeout(0, Some(1));
     let controller = Controller::new(vec![config::Controller::Mcp(cfg)], player);
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Confirm the session works initially.
@@ -4769,19 +4704,19 @@ async fn mcp_subscriber_keepalive_survives_ttl() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     // 2-second idle TTL with the sweeper clamped to MIN_SWEEP_INTERVAL = 5s,
     // so eviction worst-case fires at TTL + 5s = 7s of true silence.
-    let cfg = config::McpController::with_idle_timeout(port, Some(2));
+    let cfg = config::McpController::with_idle_timeout(0, Some(2));
     let controller = Controller::new(vec![config::Controller::Mcp(cfg)], player.clone());
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let (_, sub_resp) = mcp_post(
@@ -4918,19 +4853,19 @@ async fn mcp_session_delete_cleans_up_subscriptions() -> Result<(), Box<dyn Erro
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Subscribe so we have something for the session to clean up.
@@ -5021,19 +4956,19 @@ async fn mcp_session_delete_cleans_up_subscriptions() -> Result<(), Box<dyn Erro
 async fn mcp_handles_many_simultaneous_sessions() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
 
     let mut handles = Vec::new();
     for i in 0..8u64 {
@@ -5106,19 +5041,19 @@ async fn post_init_with_host(client: &Client, url: &str, host: &str) -> reqwest:
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_loopback_bind_rejects_foreign_host_header() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
 
     assert!(
         post_init_with_host(&client, &url, &format!("127.0.0.1:{port}"))
@@ -5144,20 +5079,20 @@ async fn mcp_allowed_hosts_config_overrides_default_list() -> Result<(), Box<dyn
     let player = build_assets_player().await?;
 
     // Explicit list.
-    let port = pick_free_port();
     let controller = Controller::new(
         vec![config::Controller::Mcp(
-            config::McpController::with_allowed_hosts(port, Some(vec!["mtrack.example".into()])),
+            config::McpController::with_allowed_hosts(0, Some(vec!["mtrack.example".into()])),
         )],
         player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     assert!(
         post_init_with_host(&client, &url, "mtrack.example:43237")
             .await
@@ -5172,16 +5107,16 @@ async fn mcp_allowed_hosts_config_overrides_default_list() -> Result<(), Box<dyn
     drop(controller);
 
     // Empty list: anything goes.
-    let port = pick_free_port();
     let controller = Controller::new(
         vec![config::Controller::Mcp(
-            config::McpController::with_allowed_hosts(port, Some(Vec::new())),
+            config::McpController::with_allowed_hosts(0, Some(Vec::new())),
         )],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
-    wait_until_listening(&client, &url).await;
     for host in [
         "mtrack.example:43237",
         "192.168.1.111:43237",
@@ -5206,16 +5141,17 @@ async fn mcp_allowed_hosts_config_overrides_default_list() -> Result<(), Box<dyn
 async fn mcp_bearer_token_enforces_auth() -> Result<(), Box<dyn Error>> {
     let player = build_assets_player().await?;
 
-    let port = pick_free_port();
     let token = "test-secret-token-123";
     let controller = Controller::new(
         vec![config::Controller::Mcp(
-            config::McpController::with_bearer_token(port, token),
+            config::McpController::with_bearer_token(0, token),
         )],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
@@ -5336,19 +5272,19 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let (_, sub_resp) = mcp_post(
@@ -5368,30 +5304,21 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
         "subscribe was rejected: {sub_resp}"
     );
 
-    let session_clone = session.clone();
-    let url_clone = url.clone();
-    let listener_client = client.clone();
-    let listener = tokio::spawn(async move {
-        wait_for_event(
-            &listener_client,
-            &url_clone,
-            &session_clone,
-            Duration::from_secs(5),
-            // The fixture's unlock is a state change too, and its
-            // notification can arrive first: wait for the switch's.
-            |v| {
-                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
-                    && v["params"]["uri"].as_str() == Some("mtrack://status")
-                    && v["params"]["_meta"]["mtrack.status"]["playlist_name"].as_str()
-                        == Some("all_songs")
-            },
-        )
-        .await
-    });
-
-    // Give the listener a moment to open the GET connection so the server
-    // has somewhere to push the notification.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Opened before the change, so the server holds it when the
+    // notification goes out.
+    let events = open_event_stream(&client, &url, &session, Duration::from_secs(5)).await;
+    let listener = tokio::spawn(wait_for_event(
+        events,
+        Duration::from_secs(5),
+        // The fixture's unlock is a state change too, and its
+        // notification can arrive first: wait for the switch's.
+        |v| {
+            v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+                && v["params"]["uri"].as_str() == Some("mtrack://status")
+                && v["params"]["_meta"]["mtrack.status"]["playlist_name"].as_str()
+                    == Some("all_songs")
+        },
+    ));
 
     // Trigger an actual transport-state transition: switch to the
     // built-in `all_songs` playlist. The 5Hz transport poller picks the
@@ -5437,19 +5364,19 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // Subscribe to the config resource. The handler spawns a watcher tied to
@@ -5481,26 +5408,13 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
 
     // Open the SSE listener BEFORE triggering the mutation. We do this in a
     // spawned task so we can fire the mutation in the foreground.
-    let session_clone = session.clone();
-    let url_clone = url.clone();
-    let listener_client = client.clone();
-    let listener = tokio::spawn(async move {
-        wait_for_event(
-            &listener_client,
-            &url_clone,
-            &session_clone,
-            Duration::from_secs(5),
-            |v| {
-                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
-                    && v["params"]["uri"].as_str() == Some("mtrack://config")
-            },
-        )
-        .await
-    });
-
-    // Give the listener a moment to actually open the GET connection so the
-    // server has somewhere to push the notification when ConfigStore fires.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Opened before the change, so the server holds it when the
+    // notification goes out.
+    let events = open_event_stream(&client, &url, &session, Duration::from_secs(5)).await;
+    let listener = tokio::spawn(wait_for_event(events, Duration::from_secs(5), |v| {
+        v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+            && v["params"]["uri"].as_str() == Some("mtrack://config")
+    }));
 
     let _ = call_tool(
         &client,
@@ -5593,17 +5507,17 @@ async fn mcp_ambient_mode_and_cancel_auto_play() -> Result<(), Box<dyn Error>> {
         .ready()
         .await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let status = tool_json(&call_tool(&client, &url, &session, 300, "status", json!({})).await);
@@ -5661,17 +5575,17 @@ async fn mcp_patch_song_keeps_a_save_made_while_it_waits() -> Result<(), Box<dyn
     // read, whatever the web UI's song editor had saved in between.
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let path = fixture.root.join("songs/dsl-light-show-song/song.yaml");
@@ -5726,17 +5640,17 @@ async fn mcp_import_gdtf_waits_for_a_venue_save() -> Result<(), Box<dyn Error>> 
         crate::testutil::lighting::synthetic_gdtf(),
     )?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // A save from the web UI under way, as its fixture type PUT holds the lock.
@@ -5787,17 +5701,17 @@ async fn mcp_import_mvr_keeps_a_venue_save_made_while_it_waits() -> Result<(), B
         ]),
     )?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player,
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let seeded = call_tool(
@@ -5856,17 +5770,17 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
     let player = build_standalone_player(&fixture).await?;
     assert!(player.audio_device().is_some(), "the fixture has audio");
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
@@ -5903,21 +5817,21 @@ async fn mcp_config_update_reloads_the_hardware() -> Result<(), Box<dyn Error>> 
 async fn mcp_controller_change_leaves_the_mcp_server_running() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
-    let mcp = json!({"kind": "mcp", "port": port});
+    let mcp = json!({"kind": "mcp", "port": 0});
     player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = player.controller_bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let cfg = tool_json(&call_tool(&client, &url, &session, 10, "get_config", json!({})).await);
     let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
-    let grpc = json!({"kind": "grpc", "port": pick_free_port()});
+    let grpc = json!({"kind": "grpc", "port": 0});
     let updated = tool_json(
         &call_tool(
             &client,
@@ -5955,16 +5869,16 @@ async fn mcp_controller_change_leaves_the_mcp_server_running() -> Result<(), Box
 async fn mcp_refuses_a_config_change_that_would_not_load() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let port = pick_free_port();
-    let mcp = json!({"kind": "mcp", "port": port});
+    let mcp = json!({"kind": "mcp", "port": 0});
     player.start_controllers(vec![serde_json::from_value(mcp.clone())?]);
 
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = player.controller_bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let midi = serde_json::to_value(config::Controller::Midi(config::MidiController::new(
@@ -6018,17 +5932,17 @@ async fn mcp_config_update_while_paused_says_it_is_deferred() -> Result<(), Box<
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
 
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     // The fixture's show names fixtures its config does not have, so its
@@ -6121,18 +6035,18 @@ async fn mcp_locked_player_refuses_writes() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
     player.set_locked(true);
-    let port = pick_free_port();
     let controller = Controller::new(
-        vec![config::Controller::Mcp(config::McpController::new(port))],
+        vec![config::Controller::Mcp(config::McpController::new(0))],
         player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
+    // On port 0: the port the OS picked, once the server is bound.
+    let port = controller.bound_addr(0).port().await;
     let url = format!("http://127.0.0.1:{port}/mcp");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client");
-    wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
     let (_, list_resp) = mcp_post(

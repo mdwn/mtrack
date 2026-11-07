@@ -262,7 +262,7 @@ fn venue_overlaps(state: &WebUiState, test: &PatchSpan) -> Vec<String> {
 /// olad was not reachable).
 fn universes_with_olad(engine: &crate::dmx::engine::Engine) -> (Vec<TestUniverse>, Option<bool>) {
     let configured = engine.configured_universes();
-    let report = crate::dmx::patch_check::probe_universes(engine.ola_http_port(), &configured);
+    let report = engine.olad().probe(&configured);
     let reachable = report.reachable;
     let names = engine.universe_names();
     let universes = configured
@@ -538,13 +538,12 @@ async fn warnings(
             ),
         });
     }
-    let port = engine.ola_http_port();
+    let olad = engine.olad().clone();
+    let port = olad.http_port();
     let universe = request.universe;
-    let report = tokio::task::spawn_blocking(move || {
-        crate::dmx::patch_check::probe_universes(port, &[universe])
-    })
-    .await
-    .ok();
+    let report = tokio::task::spawn_blocking(move || olad.probe(&[universe]))
+        .await
+        .ok();
     if let Some(report) = report {
         if !report.reachable {
             out.push(TestWarning::OladUnreachable {
@@ -613,7 +612,7 @@ mod tests {
         port
     }
 
-    use crate::testutil::net::free_tcp_port as dead_port;
+    use crate::testutil::net::ClosedPort;
 
     fn write_project(root: &FsPath, venue: Option<&str>) {
         std::fs::create_dir_all(root.join("lighting/fixture_types")).unwrap();
@@ -657,15 +656,17 @@ mod tests {
             .unwrap()
             .try_deserialize()
             .unwrap();
-        let engine = Arc::new(
-            crate::dmx::engine::Engine::new(
-                &dmx,
-                dmx.lighting(),
-                Some(engine_project.path()),
-                crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
-            )
-            .unwrap(),
-        );
+        let mut engine = crate::dmx::engine::Engine::new(
+            &dmx,
+            dmx.lighting(),
+            Some(engine_project.path()),
+            crate::dmx::ola_client::OlaClientFactory::create_mock_client(),
+        )
+        .unwrap();
+        // The fake olad answers when its thread gets to it; on a loaded
+        // runner, that can be past a probe's usual limits.
+        engine.set_olad_limits(crate::dmx::patch_check::ProbeLimits::PATIENT);
+        let engine = Arc::new(engine);
         let songs = Arc::new(crate::songs::Songs::new(std::collections::HashMap::new()));
         let (state, dir) = test_state_with_dmx(songs, engine.clone());
         // A player starts locked, as a show machine should; a test edits.
@@ -707,7 +708,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_test_resolves_the_frame_lays_it_over_the_output_and_releases() {
-        let (state, _dir, _p, engine) = dmx_state(dead_port(), None);
+        let closed = ClosedPort::bind();
+        let (state, _dir, _p, engine) = dmx_state(closed.port(), None);
         let (status, body) = call(&state, "POST", "/lighting/fixture-test", Some(red_par())).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["active"], true);
@@ -767,7 +769,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_gdtf_fixture_in_a_mode_and_what_the_mode_cannot_do() {
-        let (state, _dir, _p, _engine) = dmx_state(dead_port(), None);
+        let closed = ClosedPort::bind();
+        let (state, _dir, _p, _engine) = dmx_state(closed.port(), None);
         let body = json!({
             "fixture_type": "Synth Brick", "mode": "8: RGBS", "universe": 1, "address": 1,
             "controls": {"color": "#ffffff", "dimmer": 1, "pan": 10},
@@ -791,7 +794,8 @@ mod tests {
 
     #[tokio::test]
     async fn each_refusal_says_why() {
-        let (state, _dir, _p, engine) = dmx_state(dead_port(), None);
+        let closed = ClosedPort::bind();
+        let (state, _dir, _p, engine) = dmx_state(closed.port(), None);
         let post = |body: serde_json::Value| {
             let state = state.clone();
             async move { call(&state, "POST", "/lighting/fixture-test", Some(body)).await }
@@ -956,7 +960,8 @@ mod tests {
     #[tokio::test]
     async fn a_type_with_no_channels_lights_no_venue_fixture() {
         let venue = "venue \"house\" {\n  fixture \"Front\" Par @ 1:11\n}\n";
-        let (state, dir, _p, _engine) = dmx_state(dead_port(), Some(venue));
+        let closed = ClosedPort::bind();
+        let (state, dir, _p, _engine) = dmx_state(closed.port(), Some(venue));
         std::fs::write(
             dir.path().join("lighting/fixture_types/blank.light"),
             "fixture_type \"Blank\" {\n}\n",
@@ -980,7 +985,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_options_describe_each_mode() {
-        let (state, _dir, _p, _engine) = dmx_state(dead_port(), None);
+        let closed = ClosedPort::bind();
+        let (state, _dir, _p, _engine) = dmx_state(closed.port(), None);
         let (status, options) = call(
             &state,
             "GET",

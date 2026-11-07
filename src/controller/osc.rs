@@ -69,6 +69,8 @@ pub struct Driver {
     broadcast_addresses: Vec<SocketAddr>,
     /// OSC events.
     osc_events: Arc<OscEvents>,
+    /// Where its socket is bound, once it is.
+    bound: super::BoundAddr,
 }
 
 pub(super) struct OscEvents {
@@ -164,16 +166,22 @@ impl Driver {
             addr,
             broadcast_addresses,
             osc_events: Arc::new(OscEvents::new(&config)?),
+            bound: super::BoundAddr::new(),
         }))
     }
 }
 
 impl super::Driver for Driver {
+    fn bound_addr(&self) -> Option<super::BoundAddr> {
+        Some(self.bound.clone())
+    }
+
     fn monitor_events(&self) -> JoinHandle<Result<(), std::io::Error>> {
         let addr = self.addr;
         let broadcast_addresses = self.broadcast_addresses.clone();
         let player = self.player.clone();
         let osc_events = self.osc_events.clone();
+        let bound = self.bound.clone();
 
         tokio::spawn(async move {
             let span = span!(Level::INFO, "OSC Driver");
@@ -197,6 +205,8 @@ impl super::Driver for Driver {
                     }
                 }
             }
+            // Datagrams queue on the socket from here on.
+            bound.set(socket.local_addr()?);
             let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
             let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
             let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
@@ -1568,24 +1578,7 @@ mod test {
             .expect("audio device should be present");
         let device = binding.to_mock()?;
 
-        // Find a free port by binding temporarily.
-        let port = crate::testutil::net::free_udp_port();
-
-        // Construct a Driver directly with the free port.
-        let driver = Arc::new(Driver {
-            player: player.clone(),
-            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                port,
-            )),
-            broadcast_addresses: vec![],
-            osc_events: Arc::new(make_default_osc_events()),
-        });
-
-        let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give the spawned tasks time to bind and start.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         let send_osc = |addr: &str| {
             let addr = addr.to_string();
@@ -1653,26 +1646,10 @@ mod test {
             .build()?;
         player.await_hardware_ready().await;
 
-        // Find a free port.
-        let port = crate::testutil::net::free_udp_port();
-
-        // Use a multicast address as a broadcast target to cover the multicast join path.
-        let multicast_addr: SocketAddr = format!("224.0.0.1:{}", port + 1).parse()?;
-
-        let driver = Arc::new(Driver {
-            player: player.clone(),
-            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                port,
-            )),
-            broadcast_addresses: vec![multicast_addr],
-            osc_events: Arc::new(make_default_osc_events()),
-        });
-
-        let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give it time to start and join multicast group.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // A multicast address as a broadcast target covers the multicast
+        // join path; nothing need listen there (9 is the discard port).
+        let multicast_addr: SocketAddr = "224.0.0.1:9".parse()?;
+        let (handle, port) = start_driver(player.clone(), vec![multicast_addr]).await?;
 
         // Send a command to verify the driver is functional.
         let client = UdpSocket::bind("127.0.0.1:0").await?;
@@ -1702,33 +1679,32 @@ mod test {
         Ok(player)
     }
 
-    /// Starts the OSC driver on a free local port, returning its task and the
-    /// port to send to.
-    async fn start_driver_on_free_port(
+    /// Starts the OSC driver on a port the OS picks, broadcasting to
+    /// `broadcast_addresses`, returning its task and the port to send to once
+    /// its socket is bound.
+    async fn start_driver(
         player: Arc<Player>,
+        broadcast_addresses: Vec<SocketAddr>,
     ) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, u16), Box<dyn Error>> {
-        let port = crate::testutil::net::free_udp_port();
-
         let driver = Arc::new(Driver {
             player,
             addr: SocketAddr::V4(std::net::SocketAddrV4::new(
                 std::net::Ipv4Addr::UNSPECIFIED,
-                port,
+                0,
             )),
-            broadcast_addresses: vec![],
+            broadcast_addresses,
             osc_events: Arc::new(make_default_osc_events()),
+            bound: super::super::BoundAddr::new(),
         });
         let handle = super::super::Driver::monitor_events(&*driver);
-
-        // Give the spawned tasks time to bind and start.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let port = driver.bound.port().await;
         Ok((handle, port))
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_survives_a_malformed_address() -> Result<(), Box<dyn Error>> {
         let player = make_monitor_player().await?;
-        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         // A trailing slash makes the address invalid. The packet still decodes,
         // so it reaches the handler, which can't classify it.
@@ -1800,7 +1776,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_osc_monitor_events_survives_a_burst() -> Result<(), Box<dyn Error>> {
         let player = make_monitor_player().await?;
-        let (handle, port) = start_driver_on_free_port(player.clone()).await?;
+        let (handle, port) = start_driver(player.clone(), vec![]).await?;
 
         // Every recognized message queues a status broadcast back to the
         // sender, so a burst from one client fills the receive and send queues

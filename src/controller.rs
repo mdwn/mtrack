@@ -16,6 +16,7 @@ pub use crate::player::ControllerStatus;
 use crate::player::Player;
 use std::error::Error;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,50 @@ mod osc;
 
 pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
+
+    /// Where its listener is bound, once it is, for a driver that listens.
+    fn bound_addr(&self) -> Option<BoundAddr> {
+        None
+    }
+}
+
+/// The address a listening driver's socket is bound to, once it is: for a
+/// configured port of 0, the one the OS picked. A test starts its server on
+/// port 0 and reads the port here; one picked free beforehand could be taken
+/// by another test before the server bound it (#668).
+#[derive(Clone)]
+pub struct BoundAddr(Arc<tokio::sync::watch::Sender<Option<SocketAddr>>>);
+
+impl BoundAddr {
+    pub(crate) fn new() -> BoundAddr {
+        BoundAddr(Arc::new(tokio::sync::watch::Sender::new(None)))
+    }
+
+    /// Records the address the listener was bound to.
+    pub(crate) fn set(&self, addr: SocketAddr) {
+        self.0.send_replace(Some(addr));
+    }
+
+    /// The address, once the listener is bound.
+    #[cfg(test)]
+    pub(crate) async fn get(&self) -> SocketAddr {
+        let mut bound = self.0.subscribe();
+        // Only as a guard against a test hanging: binding takes no time.
+        let addr = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            bound.wait_for(Option::is_some),
+        )
+        .await
+        .expect("the listener was never bound")
+        .expect("the sender is held here");
+        addr.expect("waited for")
+    }
+
+    /// The port, once the listener is bound.
+    #[cfg(test)]
+    pub(crate) async fn port(&self) -> u16 {
+        self.get().await.port()
+    }
 }
 
 /// A transport command a controller's event maps to: what the OSC and MIDI
@@ -192,6 +237,10 @@ struct Entry {
     midi_device: Option<Arc<dyn crate::midi::Device>>,
     /// Its task, when it started.
     handle: Option<JoinHandle<Result<(), io::Error>>>,
+    /// Where its listener is bound, for a driver that listens: for a test
+    /// to reach one started on port 0.
+    #[cfg(test)]
+    bound: Option<BoundAddr>,
     /// Stops its task, which ends once the driver's own task is gone.
     stop: CancellationToken,
     /// What its task waited on before running the driver, cancelled once
@@ -217,6 +266,8 @@ impl Entry {
     ) -> Entry {
         let stop = CancellationToken::new();
         let failure = Arc::new(parking_lot::Mutex::new(None));
+        #[cfg(test)]
+        let bound = driver.bound_addr();
         let handle = {
             let stop = stop.clone();
             let failure = failure.clone();
@@ -267,6 +318,8 @@ impl Entry {
             duplicate: false,
             midi_device,
             handle: Some(handle),
+            #[cfg(test)]
+            bound,
             stop,
             after,
             failure,
@@ -519,6 +572,8 @@ impl Controller {
                         duplicate,
                         midi_device,
                         handle: None,
+                        #[cfg(test)]
+                        bound: None,
                         stop: CancellationToken::new(),
                         // Never waited on, but what it was to wait on is
                         // what its retry must wait on.
@@ -573,6 +628,16 @@ impl Controller {
                 None => status.clone(),
             })
             .collect()
+    }
+
+    /// Where the `index`th controller's listener is bound, for a test to
+    /// reach one started on port 0.
+    #[cfg(test)]
+    pub(crate) fn bound_addr(&self, index: usize) -> BoundAddr {
+        self.entries[index]
+            .bound
+            .clone()
+            .expect("a controller that listens, started")
     }
 
     /// The tasks of the controllers that started, for a test to tell one
@@ -1005,27 +1070,32 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_changed_controller_binds_the_port_it_had() -> Result<(), Box<dyn Error>> {
         let player = make_controllerless_player().await?;
-        let port = crate::testutil::net::free_tcp_port();
-        let mcp = |token: &str| {
+        let mcp = |port: u16, token: &str| {
             config::Controller::Mcp(config::McpController::with_bearer_token(port, token))
         };
         let mut failures = 0;
         for round in 0..10 {
-            let mut controller = super::Controller::new(vec![mcp("old")], player.clone());
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            // A new token: the same port, a changed config.
-            assert!(controller.update(vec![mcp(&format!("new{round}"))], player.clone(), false));
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if controller.entries[0]
-                .handle
-                .as_ref()
-                .expect("started")
-                .is_finished()
-            {
+            // On port 0, for the port it binds: the one its replacement must
+            // take over.
+            let mut controller = super::Controller::new(vec![mcp(0, "old")], player.clone());
+            let port = controller.bound_addr(0).port().await;
+            // A new token on the port it has: a changed config.
+            assert!(controller.update(
+                vec![mcp(port, &format!("new{round}"))],
+                player.clone(),
+                false
+            ));
+            // The replacement either binds the port or ends, failing to.
+            let bound = controller.bound_addr(0);
+            let task = controller.entries[0].handle.as_mut().expect("started");
+            let took_it = tokio::select! {
+                addr = bound.get() => addr.port() == port,
+                _ = task => false,
+            };
+            if !took_it {
                 failures += 1;
             }
             controller.shutdown();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert_eq!(
             failures, 0,
