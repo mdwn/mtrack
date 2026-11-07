@@ -82,6 +82,9 @@ pub struct Declarations<T> {
     pub items: Vec<Declared<T>>,
     /// Files that would not read or parse, then names declared twice.
     pub problems: Vec<FileProblem>,
+    /// Every file read and what it declared: where a name's owner comes
+    /// from ([`super::files::Record::owner`]).
+    pub record: super::files::Record,
 }
 
 impl<T> Default for Declarations<T> {
@@ -89,6 +92,7 @@ impl<T> Default for Declarations<T> {
         Self {
             items: Vec::new(),
             problems: Vec::new(),
+            record: super::files::Record::default(),
         }
     }
 }
@@ -135,6 +139,7 @@ fn declarations<T>(
         let declared = match parsed {
             Ok(declared) => declared,
             Err(error) => {
+                out.record.push(file.clone(), Err(error.clone()));
                 out.problems.push(FileProblem { file, error });
                 continue;
             }
@@ -142,6 +147,8 @@ fn declarations<T>(
         // A file's own declarations in name order, so the result does not
         // depend on hash order.
         let declared: BTreeMap<String, T> = declared.into_iter().collect();
+        out.record
+            .push(file.clone(), Ok(declared.keys().cloned().collect()));
         for (name, item) in declared {
             if let Some(first) = taken.get(&name) {
                 duplicates.push(FileProblem {
@@ -247,6 +254,27 @@ mod tests {
         let errors: Vec<&str> = read.problems.iter().map(|p| p.error.as_str()).collect();
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors[1].contains("defined in both a.light and rig/old/par.light"));
+        // The record has every file, the set-aside duplicate and the one
+        // that does not parse too, so each name's owner says so.
+        use super::super::files::{Editable, ReadOnly};
+        assert_eq!(
+            read.record.owner("Par").unwrap().editable,
+            Editable::ReadOnly(ReadOnly::Duplicate {
+                files: vec![
+                    dir.path().join("a.light"),
+                    dir.path().join("rig/old/par.light")
+                ],
+            })
+        );
+        assert_eq!(
+            read.record.owner("Wash").unwrap().editable,
+            Editable::Editable
+        );
+        assert!(read
+            .record
+            .files()
+            .iter()
+            .any(|f| f.file == dir.path().join("rig/broken.light") && f.declared.is_err()));
     }
 
     #[test]

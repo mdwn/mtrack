@@ -22,6 +22,7 @@ pub mod effects;
 pub mod engine;
 pub mod evaluate;
 pub mod export;
+pub mod files;
 pub mod findings;
 pub mod fit;
 pub mod fixture_data;
