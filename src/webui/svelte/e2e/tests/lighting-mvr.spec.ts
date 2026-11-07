@@ -275,6 +275,17 @@ test.describe("MVR import wizard", () => {
     await recheck.click();
     await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
     expect(names).toEqual(["Kellys", undefined]);
+
+    // Empty means the file's own name for Continue too: on to the origin,
+    // with no second inspection.
+    const proceed = page.getByTestId("mvr-continue");
+    await expect(proceed).toBeEnabled();
+    await proceed.click();
+    await expect(page.getByTestId("mvr-step-origin")).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
+    expect(names).toEqual(["Kellys", undefined]);
   });
 
   test("step 2 marks the deck suggestion, applies it, and takes a click", async ({

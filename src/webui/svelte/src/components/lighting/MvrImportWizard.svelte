@@ -24,7 +24,8 @@
     VenueError,
   } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
-  import { importMvr, inspectMvr, MvrRefused } from "../../lib/api/config";
+  import { importMvr, inspectMvr } from "../../lib/api/config";
+  import { ApiError } from "../../lib/api/rest";
   import {
     defaultVenueName,
     fromPage,
@@ -110,7 +111,9 @@
       refused = false;
     } catch (e) {
       inspection = null;
-      refused = e instanceof MvrRefused;
+      // Only a refusal of the venue itself is one another name can
+      // answer; an embedded GDTF's record or an archive's name is not.
+      refused = e instanceof ApiError && e.kind === "venue";
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
@@ -466,7 +469,7 @@
           <button
             class="btn btn-primary"
             onclick={toOrigin}
-            disabled={busy || !venueName.trim()}
+            disabled={busy}
             data-testid="mvr-continue"
           >
             {$t("lighting.mvr.continue")}

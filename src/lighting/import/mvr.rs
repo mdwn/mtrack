@@ -59,7 +59,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use super::{create_dir, place_in_library, write, write_library_entry, LibraryEntry};
+use super::{
+    create_dir, place_in_library, record_to_write, write, write_library_copy, LibraryEntry,
+};
 use crate::lighting::gdtf;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::parse_venues;
@@ -166,31 +168,39 @@ pub fn import_mvr_bytes(
     project: &Path,
 ) -> Result<MvrImport, Box<dyn Error>> {
     let planned = plan(bytes, archive_file_name, options, project)?;
-    let mut written = Vec::new();
 
+    // The library copies (the MVR, each embedded GDTF that is new) stand
+    // whatever follows, as an import's library always has; the records and
+    // the venue are written together, all or nothing.
     let library_dir = project.join("lighting/library");
     create_dir(&library_dir)?;
+    let mut kept = Vec::new();
     if planned.write_archive {
         write(&library_dir.join(archive_file_name), bytes)?;
-        written.push(planned.plan.archive.clone());
+        kept.push(planned.plan.archive.clone());
     }
-
-    // Each embedded GDTF lands as `import-gdtf` would put it: the archive
-    // in the library (the fixture), a record only to pin a name.
+    let mut records = Vec::new();
     for gdtf_write in &planned.gdtf_writes {
         let description = gdtf::parse_archive(&gdtf_write.bytes)?;
-        write_library_entry(project, &gdtf_write.entry, &gdtf_write.bytes, &description)?;
-        if !gdtf_write.entry.existing {
-            written.push(gdtf_write.entry.archive.clone());
-        }
-        if let Some(record) = &gdtf_write.entry.record {
-            written.push(record.clone());
-        }
+        kept.extend(write_library_copy(
+            project,
+            &gdtf_write.entry,
+            &gdtf_write.bytes,
+        )?);
+        records.extend(record_to_write(project, &gdtf_write.entry, &description)?);
     }
     let distillation_warnings = planned.distillation_warnings;
 
     create_dir(planned.venue_write.write.path().parent().unwrap_or(project))?;
-    crate::lighting::writes::write(&planned.venue_write, &planned.venue_text)?;
+    let mut written = kept.clone();
+    crate::lighting::writes::Changes::all_or_nothing_keeping(kept, |changes| {
+        for record in &records {
+            record.create(changes)?;
+        }
+        changes.plan(&planned.venue_write, &planned.venue_text)?;
+        changes.retire(&planned.venue_write)
+    })?;
+    written.extend(records.into_iter().map(|record| record.shown));
     written.push(planned.plan.venue_file.clone());
 
     Ok(MvrImport {
@@ -1862,6 +1872,44 @@ mod tests {
              own (`mtrack import-gdtf --name <name>`, or the Fixtures page)"
         );
         assert_eq!(all_files(dir.path()), before, "nothing written, no _2");
+    }
+
+    #[test]
+    fn a_venue_write_failing_takes_its_records_back_and_keeps_the_library_copies() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = project();
+        let types = with_hand_written_synth_brick(dir.path());
+        let venues = dir.path().join("lighting/venues");
+        std::fs::create_dir_all(&venues).unwrap();
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(venues.join(".probe"), "").is_ok() {
+            return; // running as root: a locked directory locks nothing
+        }
+        let bytes = mvr_bytes(&scene_with(&brick("B", "1.1", 0.0), ""));
+
+        let err = import_mvr_bytes(&bytes, "k.mvr", &options(), dir.path())
+            .unwrap_err()
+            .to_string();
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(err.contains("kellys.venue"), "{err}");
+        assert!(
+            err.ends_with(
+                "; nothing was saved but the library's lighting/library/k.mvr, \
+                 lighting/library/Astera_PB15.gdtf, which are kept"
+            ),
+            "{err}"
+        );
+        assert!(
+            !types.join("synth_brick_astera_pb15.fixture").exists(),
+            "the record goes with the venue"
+        );
+        assert!(dir.path().join("lighting/library/k.mvr").is_file());
+        assert!(dir
+            .path()
+            .join("lighting/library/Astera_PB15.gdtf")
+            .is_file());
+        assert_eq!(all_files(&venues), Vec::<String>::new());
     }
 
     #[test]

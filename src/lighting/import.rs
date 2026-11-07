@@ -450,41 +450,65 @@ pub fn place_in_library(
     })
 }
 
-/// Carries out a [`LibraryEntry`]: the copy, when it is new, and the
-/// record, when the name is pinned.
-pub fn write_library_entry(
+/// Carries out a [`LibraryEntry`]'s copy, when it is new: the archive put
+/// in the library. The library file written, project-relative, if one was:
+/// a copy stands whatever happens after it, as an import's library always
+/// has.
+pub fn write_library_copy(
     project: &Path,
     entry: &LibraryEntry,
     bytes: &[u8],
-    description: &gdtf::Description,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<String>, Box<dyn Error>> {
     let library_dir = project.join(super::library::LIBRARY_DIR);
     create_dir(&library_dir)?;
-    if !entry.existing {
-        write(&library_dir.join(&entry.file_name), bytes)?;
+    if entry.existing {
+        return Ok(None);
     }
-    if let Some(record) = &entry.record {
-        let path = project.join(record);
-        create_dir(path.parent().unwrap_or(project))?;
-        let text = gdtf_definition(&entry.name, &entry.archive, &entry.file_name, description);
-        // A record that does not read back is not written.
-        let parsed = super::parser::parse_fixture_types(&text)?;
-        if !parsed.contains_key(&entry.name) {
-            return Err(format!("the record for \"{}\" did not read back", entry.name).into());
-        }
-        // Made new, as it was claimed: one there by now is refused, never
-        // written over.
-        // A failure takes back what it made of the record; the library copy
-        // written before it stays, as it always has.
-        super::writes::Changes::all_or_nothing(|changes| {
-            changes.create(&path, text.as_bytes(), record.clone())
-        })
-        .map_err(|e| match e {
-            super::writes::WriteError::RolledBack { cause, left } if left.is_empty() => *cause,
-            other => other,
-        })?;
+    write(&library_dir.join(&entry.file_name), bytes)?;
+    Ok(Some(entry.archive.clone()))
+}
+
+/// A pinned [`LibraryEntry`]'s record, ready to be made.
+pub struct RecordWrite {
+    pub path: PathBuf,
+    pub text: String,
+    /// The file as the user knows it: project-relative.
+    pub shown: String,
+}
+
+impl RecordWrite {
+    /// Makes the record among `changes`, with whatever goes with it.
+    pub fn create(
+        &self,
+        changes: &mut super::writes::Changes,
+    ) -> Result<(), super::writes::WriteError> {
+        changes.create(&self.path, self.text.as_bytes(), self.shown.clone())
     }
-    Ok(())
+}
+
+/// The record a pinned [`LibraryEntry`] writes, once its text is proven to
+/// read back and its directory is there. `None` when the name is not pinned.
+pub fn record_to_write(
+    project: &Path,
+    entry: &LibraryEntry,
+    description: &gdtf::Description,
+) -> Result<Option<RecordWrite>, Box<dyn Error>> {
+    let Some(record) = &entry.record else {
+        return Ok(None);
+    };
+    let path = project.join(record);
+    create_dir(path.parent().unwrap_or(project))?;
+    let text = gdtf_definition(&entry.name, &entry.archive, &entry.file_name, description);
+    // A record that does not read back is not written.
+    let parsed = super::parser::parse_fixture_types(&text)?;
+    if !parsed.contains_key(&entry.name) {
+        return Err(format!("the record for \"{}\" did not read back", entry.name).into());
+    }
+    Ok(Some(RecordWrite {
+        path,
+        text,
+        shown: record.clone(),
+    }))
 }
 
 /// [`import_gdtf`] over in-memory bytes — the shape uploads arrive in.
@@ -513,7 +537,15 @@ pub fn import_gdtf_bytes(
     )?;
     let already_imported = entry.existing && entry.record.is_none();
     if !already_imported {
-        write_library_entry(project, &entry, bytes, &description)?;
+        let kept = write_library_copy(project, &entry, bytes)?;
+        if let Some(record) = record_to_write(project, &entry, &description)? {
+            // Made new, as it was claimed; a failure takes back what it made,
+            // and says the library copy stands.
+            super::writes::Changes::all_or_nothing_keeping(
+                kept.into_iter().collect(),
+                |changes| record.create(changes),
+            )?;
+        }
         // The 3D view and the thumbnail draw a GDTF fixture in the first
         // mode it can drive: warm that rig now so they are instant.
         if let Some(drawn) = first_drivable_mode(&description, &entry.name) {

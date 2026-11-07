@@ -109,16 +109,34 @@ pub(crate) fn write_status(e: &WriteError) -> StatusCode {
 /// can offer the right way on, never guessing from the status: `venue` (the
 /// venue's name or file: another name may do), `record` (an embedded GDTF's
 /// record file), `library` (an archive file name), `name` (a fixture type
-/// name or its file), `write` (a file that could not be written).
+/// name or its file), `write` (a file that could not be written), and
+/// `unreadable` (a file or directory that could not be read, which no
+/// other name gets past).
 pub(crate) fn import_error(
     e: &(dyn std::error::Error + 'static),
 ) -> (StatusCode, serde_json::Value) {
+    let unreadable = |refusal: &Refusal| matches!(refusal, Refusal::Unreadable { .. });
     let (status, kind) = if let Some(venue) = e.downcast_ref::<lighting::import::VenueRefused>() {
-        (refused_status(&venue.refused), Some("venue"))
+        let kind = match &venue.refused {
+            Refused::Unreadable { .. } => "unreadable",
+            Refused::Claim(refusal) if unreadable(refusal) => "unreadable",
+            _ => "venue",
+        };
+        (refused_status(&venue.refused), Some(kind))
     } else if let Some(record) = e.downcast_ref::<lighting::import::RecordRefused>() {
-        (claim_status(&record.refusal), Some("record"))
+        let kind = if unreadable(&record.refusal) {
+            "unreadable"
+        } else {
+            "record"
+        };
+        (claim_status(&record.refusal), Some(kind))
     } else if let Some(refusal) = e.downcast_ref::<Refusal>() {
-        (claim_status(refusal), Some("name"))
+        let kind = if unreadable(refusal) {
+            "unreadable"
+        } else {
+            "name"
+        };
+        (claim_status(refusal), Some(kind))
     } else if let Some(write) = e.downcast_ref::<WriteError>() {
         (write_status(write), Some("write"))
     } else if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {

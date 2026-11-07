@@ -318,9 +318,11 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// writes, so losing power midway leaves a short file. To bound that, the
 /// complete new content is first staged in a sidecar (see [`staged_path`]) and
 /// flushed to disk, and only removed once the destination is durable. A sidecar
-/// left behind therefore means the last write to that file may not have
-/// completed, and holds the content it was trying to write. Recovery is
-/// currently manual: copy the sidecar over the destination. A reader can see
+/// left behind therefore means the last write to that file was interrupted (a
+/// crash, a power cut) and holds the content it was trying to write; a write
+/// that fails and says so removes its sidecar, since its caller has both the
+/// error and the content. Recovery is currently manual: copy the sidecar over
+/// the destination. A reader can see
 /// the short file too, while the rewrite is under way, unless it reads
 /// through [`read_file`].
 ///
@@ -333,7 +335,7 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// the new content is staged, so a write that fails before then (a full
 /// disk, say) leaves no empty file where there was none.
 pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    write_file_tracked(path, contents, false).map_err(|failed| failed.error)
+    write_file_tracked(path, contents, WriteMode::CreateOrReplace).map_err(|failed| failed.error)
 }
 
 /// [`write_file`] for a file that must not be there yet: the destination is
@@ -342,7 +344,19 @@ pub fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// normalization-insensitive filesystem takes for the same name, and one
 /// made since it was looked up. Nothing is written over it.
 pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    write_file_tracked(path, contents, true).map_err(|failed| failed.error)
+    write_file_tracked(path, contents, WriteMode::CreateNew).map_err(|failed| failed.error)
+}
+
+/// How [`write_file_tracked`] opens its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteMode {
+    /// [`write_file`]: made if missing, else rewritten.
+    CreateOrReplace,
+    /// [`write_new_file`]: made, and refused (`AlreadyExists`) if there.
+    CreateNew,
+    /// Rewritten only if there: one gone since it was read is `NotFound`,
+    /// never made again.
+    ReplaceExisting,
 }
 
 /// A failed [`write_file`] or [`write_new_file`], and whether it changed the
@@ -355,10 +369,15 @@ pub struct WriteFailure {
     pub touched: bool,
 }
 
-/// [`write_file`] (`new` false) or [`write_new_file`] (`new` true), saying
-/// on failure whether the destination was changed ([`WriteFailure`]), so a
-/// writer undoing its changes undoes this one's only when there is one.
-pub fn write_file_tracked(path: &Path, contents: &[u8], new: bool) -> Result<(), WriteFailure> {
+/// [`write_file`], opening the destination as `mode` says and saying on
+/// failure whether it was changed ([`WriteFailure`]), so a writer undoing
+/// its changes undoes this one's only when there is one.
+pub fn write_file_tracked(
+    path: &Path,
+    contents: &[u8],
+    mode: WriteMode,
+) -> Result<(), WriteFailure> {
+    let new = mode == WriteMode::CreateNew;
     let untouched = |error| WriteFailure {
         error,
         touched: false,
@@ -410,7 +429,7 @@ pub fn write_file_tracked(path: &Path, contents: &[u8], new: bool) -> Result<(),
     // fails; one it only opened is untouched until it is truncated.
     let claim = || -> Result<std::fs::File, WriteFailure> {
         let destination = std::fs::OpenOptions::new()
-            .create(!new)
+            .create(mode == WriteMode::CreateOrReplace)
             .create_new(new)
             .write(true)
             .truncate(false)
@@ -437,16 +456,22 @@ pub fn write_file_tracked(path: &Path, contents: &[u8], new: bool) -> Result<(),
             return Err(e);
         }
     };
-    destination.set_len(0).map_err(touched)?;
-    #[cfg(test)]
-    if FAIL_AFTER_TRUNCATING.get() > 0 {
-        FAIL_AFTER_TRUNCATING.set(FAIL_AFTER_TRUNCATING.get() - 1);
-        return Err(touched(std::io::Error::other(
-            "injected failure after truncating",
-        )));
+    let mut rewrite = || -> std::io::Result<()> {
+        destination.set_len(0)?;
+        #[cfg(test)]
+        if FAIL_AFTER_TRUNCATING.get() > 0 {
+            FAIL_AFTER_TRUNCATING.set(FAIL_AFTER_TRUNCATING.get() - 1);
+            return Err(std::io::Error::other("injected failure after truncating"));
+        }
+        destination.write_all(contents)?;
+        destination.sync_all()
+    };
+    if let Err(e) = rewrite() {
+        // A failure said is not an interrupted write: its caller has the
+        // content, and puts back what it must.
+        let _ = std::fs::remove_file(&staged);
+        return Err(touched(e));
     }
-    destination.write_all(contents).map_err(touched)?;
-    destination.sync_all().map_err(touched)?;
 
     // The destination is durable, so the staged copy has served its purpose.
     // Leaving it behind would falsely advertise an interrupted write. The

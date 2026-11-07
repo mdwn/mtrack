@@ -1098,6 +1098,38 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn a_venues_directory_that_cannot_be_read_is_not_a_venue_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let venues = dir.path().join("lighting/venues");
+        std::fs::create_dir_all(&venues).unwrap();
+        // Written to and walked through, never listed.
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o300)).unwrap();
+        if std::fs::read_dir(&venues).is_ok() {
+            std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root
+        }
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["kind"], "unreadable", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("cannot be read"),
+            "{body}"
+        );
+    }
+
     async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
         let response = app
             .clone()

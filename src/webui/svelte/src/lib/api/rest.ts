@@ -81,14 +81,29 @@ export async function del(path: string): Promise<Response> {
 export async function apiError(
   res: Response,
   fallback: string,
-): Promise<Error> {
-  const body: { error?: string; errors?: string[] } = await res
+): Promise<ApiError> {
+  const body: { error?: string; errors?: string[]; kind?: string } = await res
     .json()
     .catch(() => ({}));
   const msg =
     body.error ||
     (Array.isArray(body.errors) ? body.errors.join("; ") : undefined);
-  return new Error(msg || `${fallback}: ${res.status}`);
+  return new ApiError(
+    msg || `${fallback}: ${res.status}`,
+    typeof body.kind === "string" ? body.kind : null,
+  );
+}
+
+/** A refused request's message, and the `kind` of refusal when the server
+ *  says which (an import's `venue`, `record`, `library`, ...), so a caller
+ *  offers the right way on without guessing from the status. */
+export class ApiError extends Error {
+  kind: string | null;
+  constructor(message: string, kind: string | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.kind = kind;
+  }
 }
 
 /** A save refused because the file changed since the client read it (HTTP 409

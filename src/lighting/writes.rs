@@ -245,6 +245,9 @@ pub enum WriteError {
         path: PathBuf,
         error: std::io::Error,
     },
+    /// The file to be rewritten was removed since it was read; it was not
+    /// made again.
+    Gone { path: PathBuf, shown: String },
     /// The old file of a move (`shown`) could not be removed.
     NotRetired {
         shown: String,
@@ -252,10 +255,12 @@ pub enum WriteError {
     },
     /// `cause` failed, and everything written before it (and what it
     /// changed itself) was put back, but for `left`: each file that could
-    /// not be, and why.
+    /// not be, and why. `kept` are files written before these changes that
+    /// stand anyway (an import's library copies), as the user knows them.
     RolledBack {
         cause: Box<WriteError>,
         left: Vec<String>,
+        kept: Vec<String>,
     },
 }
 
@@ -281,17 +286,30 @@ impl std::fmt::Display for WriteError {
                 crate::util::WriteTarget::File(path),
                 error,
             )),
+            WriteError::Gone { shown, .. } => write!(
+                f,
+                "{shown} was removed while saving and was not made again; try again"
+            ),
             WriteError::NotRetired { shown, error } => {
                 write!(f, "cannot remove {shown}: {error}")
             }
-            WriteError::RolledBack { cause, left } if left.is_empty() => {
-                write!(f, "{cause}; nothing was saved")
+            WriteError::RolledBack { cause, left, kept } => {
+                write!(f, "{cause}; ")?;
+                if kept.is_empty() {
+                    f.write_str("nothing was saved")?;
+                } else {
+                    write!(
+                        f,
+                        "nothing was saved but the library's {}, which {} kept",
+                        kept.join(", "),
+                        if kept.len() == 1 { "is" } else { "are" }
+                    )?;
+                }
+                if !left.is_empty() {
+                    write!(f, ", and {} could not be put back", left.join(", "))?;
+                }
+                Ok(())
             }
-            WriteError::RolledBack { cause, left } => write!(
-                f,
-                "{cause}; nothing more was saved, but {} could not be put back",
-                left.join(", ")
-            ),
         }
     }
 }
@@ -331,7 +349,12 @@ impl Changes {
         was: Option<&[u8]>,
     ) -> Result<(), WriteError> {
         let new = was.is_none();
-        let result = crate::util::write_file_tracked(path, contents, new);
+        let mode = if new {
+            crate::util::WriteMode::CreateNew
+        } else {
+            crate::util::WriteMode::ReplaceExisting
+        };
+        let result = crate::util::write_file_tracked(path, contents, mode);
         let touched = match &result {
             Ok(()) => true,
             Err(failure) => failure.touched,
@@ -352,6 +375,11 @@ impl Changes {
         result.map_err(|failure| {
             if new && failure.error.kind() == std::io::ErrorKind::AlreadyExists {
                 WriteError::Exists {
+                    path: path.to_path_buf(),
+                    shown,
+                }
+            } else if !new && failure.error.kind() == std::io::ErrorKind::NotFound {
+                WriteError::Gone {
                     path: path.to_path_buf(),
                     shown,
                 }
@@ -416,6 +444,12 @@ impl Changes {
     /// Puts back every change, newest first, after `cause` failed: the
     /// error to answer with, naming each file that could not be put back.
     pub fn roll_back(self, cause: WriteError) -> WriteError {
+        self.roll_back_keeping(cause, Vec::new())
+    }
+
+    /// [`Self::roll_back`], saying which files written before these
+    /// changes stand anyway (`kept`, as the user knows them).
+    pub fn roll_back_keeping(self, cause: WriteError, kept: Vec<String>) -> WriteError {
         let mut left = Vec::new();
         for undo in self.done.into_iter().rev() {
             let (shown, result) = match undo {
@@ -429,6 +463,7 @@ impl Changes {
         WriteError::RolledBack {
             cause: Box::new(cause),
             left,
+            kept,
         }
     }
 
@@ -437,10 +472,19 @@ impl Changes {
     pub fn all_or_nothing(
         steps: impl FnOnce(&mut Changes) -> Result<(), WriteError>,
     ) -> Result<(), WriteError> {
+        Self::all_or_nothing_keeping(Vec::new(), steps)
+    }
+
+    /// [`Self::all_or_nothing`] after `kept` (as the user knows them) were
+    /// written, which stand whatever happens: a failure's answer says so.
+    pub fn all_or_nothing_keeping(
+        kept: Vec<String>,
+        steps: impl FnOnce(&mut Changes) -> Result<(), WriteError>,
+    ) -> Result<(), WriteError> {
         let mut changes = Changes::default();
         match steps(&mut changes) {
             Ok(()) => Ok(()),
-            Err(cause) => Err(changes.roll_back(cause)),
+            Err(cause) => Err(changes.roll_back_keeping(cause, kept)),
         }
     }
 }
@@ -537,6 +581,25 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "venue \"club\" {\n}\n"
         );
+        assert!(!crate::util::staged_path(&file).exists(), "no sidecar left");
+    }
+
+    #[test]
+    fn a_rewrite_of_a_file_removed_since_it_was_read_makes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("club.venue");
+        let rewrite = plan(dir.path(), Write::Rewrite(file.clone()), Some("was\n"));
+
+        let err = write(&rewrite, "venue \"club\" {\n}\n").unwrap_err();
+
+        assert!(matches!(err.cause(), WriteError::Gone { .. }), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "club.venue was removed while saving and was not made again; try again; nothing \
+             was saved"
+        );
+        assert!(!file.exists());
+        assert!(!crate::util::staged_path(&file).exists());
     }
 
     #[test]
@@ -552,6 +615,7 @@ mod tests {
 
         assert!(err.to_string().ends_with("; nothing was saved"), "{err}");
         assert!(!file.exists(), "the empty file it made is gone");
+        assert!(!crate::util::staged_path(&file).exists(), "no sidecar left");
     }
 
     #[test]
