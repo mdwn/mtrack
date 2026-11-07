@@ -519,7 +519,10 @@ fn restore(path: &Path, was: &[u8]) -> Option<String> {
     };
     let original = match original {
         Original::Kept(name) => format!("its original is in {name}"),
-        Original::Staged(name) => format!("its original is only in {name}; keep that file"),
+        Original::Staged(name) => format!(
+            "its original is only in {name}, which the next save of this file writes over; \
+             copy it somewhere else first"
+        ),
         Original::Lost(e) => format!("its original could not be kept either: {e}"),
     };
     Some(format!(
@@ -843,8 +846,15 @@ mod tests {
 
     #[test]
     fn an_original_that_cannot_be_kept_leaves_the_staged_copy_and_names_it() {
-        let (err, text, files) =
-            failed_rewrite(&[Fault::AfterTruncating, Fault::Link, Fault::Staging], &[]);
+        let (err, text, files) = failed_rewrite(
+            &[
+                Fault::AfterTruncating,
+                Fault::Link,
+                Fault::Staging,
+                Fault::Rename,
+            ],
+            &[],
+        );
 
         let staged = crate::util::staged_path(Path::new("club.venue"))
             .to_string_lossy()
@@ -861,8 +871,41 @@ mod tests {
         assert!(
             err.contains(&format!(
                 "club.venue (injected failure after truncating; it is left as the failed save \
-                 wrote it, perhaps empty, and its original is only in {staged}; keep that file)"
+                 wrote it, perhaps empty, and its original is only in {staged}, which the next \
+                 save of this file writes over; copy it somewhere else first)"
             )),
+            "{err}"
+        );
+    }
+
+    /// #685: with no link and no room to write the original out, the
+    /// staged copy is moved to a kept original's name, which no later
+    /// write uses: the next save of the file does not write over it.
+    #[test]
+    fn an_original_neither_linked_nor_written_out_is_moved_to_a_name_of_its_own() {
+        let (err, text, files) = failed_rewrite(
+            &[Fault::AfterTruncating, Fault::Link, Fault::Staging],
+            &[("club.venue.mtrack-original", "an earlier original\n")],
+        );
+
+        assert_eq!(text, "");
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (
+                    "club.venue.mtrack-original".to_string(),
+                    "an earlier original\n".to_string()
+                ),
+                (
+                    "club.venue.mtrack-original-2".to_string(),
+                    "was\n".to_string()
+                ),
+            ],
+            "moved, not copied: no staged copy is left, and a taken name is skipped"
+        );
+        assert!(
+            err.contains("its original is in club.venue.mtrack-original-2"),
             "{err}"
         );
     }
