@@ -203,10 +203,18 @@ impl From<&ReactiveLoopState> for ReactiveLoopStateKind {
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
-    /// Where in the song the playback started: where it still is until
-    /// `play_files` stamps `play_start_time`, which a pause in that window
-    /// reads instead of the clock.
-    start_time: Duration,
+}
+
+/// Where a playing song's position comes from.
+#[derive(Clone, Copy, Debug)]
+enum PlayPosition {
+    /// The playback started at this position and waits on its subsystems,
+    /// its clock not yet running: it is still there (#634). Without it the
+    /// position read as none, 0:00, for most of a second after a play from
+    /// part way in, while the lights already showed the start position.
+    Starting(Duration),
+    /// The clock runs: when the song's start would have been, on the wall.
+    Running(SystemTime),
 }
 
 /// Groups the parameters needed for `play_files` to avoid excessive argument counts.
@@ -220,7 +228,7 @@ struct PlaybackContext {
     cancel_handle: CancelHandle,
     play_tx: oneshot::Sender<Result<(), String>>,
     start_time: Duration,
-    play_start_time: Arc<Mutex<Option<SystemTime>>>,
+    play_start_time: Arc<Mutex<Option<PlayPosition>>>,
     /// Loop control state shared with audio/MIDI/DMX subsystems.
     loop_control: crate::playsync::LoopControl,
 }
@@ -273,8 +281,8 @@ pub struct Player {
     /// The persisted active playlist name (last non-all_songs choice). Used by
     /// MIDI/OSC `Playlist` action to return to the user's "real" playlist.
     persisted_playlist: Arc<parking_lot::RwLock<String>>,
-    /// The time that the last play action occurred.
-    play_start_time: Arc<Mutex<Option<SystemTime>>>,
+    /// Where the playing song's position comes from: none while stopped.
+    play_start_time: Arc<Mutex<Option<PlayPosition>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
     join: Arc<Mutex<Option<PlayHandles>>>,
     /// Whether a song is playing: set as `join` becomes `Some`, and cleared
@@ -1807,10 +1815,9 @@ mod test {
 
     /// Waits until the player reports an elapsed position, and returns it.
     ///
-    /// `play_start_time` is set inside `play_files` just after `clock.start()`,
-    /// while the mock device raises `is_playing` before it signals readiness — so
-    /// `elapsed()` can still be `None` for a moment after `is_playing` turns true.
-    /// Waiting for the mock device is not enough on a loaded machine.
+    /// A start stamps `play_start_time` as it goes in, and `play_files` again
+    /// as the clock starts; one started some other way (an auto play) may
+    /// not have gone in yet when `is_playing` turns true.
     async fn elapsed_eventually(player: &Arc<Player>) -> Result<Duration, Box<dyn Error>> {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -2184,6 +2191,25 @@ mod test {
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    /// #634: from the moment a play from part way in returns, the position
+    /// is the start position, not none (0:00) until the subsystems are
+    /// ready and the clock starts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_play_from_reads_its_start_position_before_the_clock_starts(
+    ) -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let start = Duration::from_millis(300);
+        assert!(player.play_from(start).await?.is_some());
+        let elapsed = player.elapsed().await?;
+        assert!(
+            elapsed.is_some_and(|e| e >= start && e < start + Duration::from_secs(2)),
+            "{elapsed:?}"
+        );
+        player.stop().await;
+        assert_eq!(player.elapsed().await?, None);
         Ok(())
     }
 
@@ -4554,7 +4580,7 @@ mod test {
         // Just past the jump: back in the section, not 96s past its end.
         let (log, start) = at(Duration::from_millis(100_003));
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(start);
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(start));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(4) && position < Duration::from_secs(50),
@@ -4563,7 +4589,7 @@ mod test {
         // Well before it falls due, the song is where the clock says.
         let (log, start) = at(Duration::from_secs(50));
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(start);
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(start));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(50) && position < Duration::from_secs(100),
@@ -4596,8 +4622,9 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_millis(99_995));
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(
+            std::time::SystemTime::now() - Duration::from_millis(99_995),
+        ));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(4),
@@ -4632,8 +4659,9 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await =
-            Some(std::time::SystemTime::now() - Duration::from_secs(200));
+        *player.play_start_time.lock().await = Some(PlayPosition::Running(
+            std::time::SystemTime::now() - Duration::from_secs(200),
+        ));
         let position = player.elapsed().await?.unwrap();
         assert!(
             position >= Duration::from_secs(8) && position < Duration::from_secs(96),
@@ -4991,7 +5019,8 @@ mod test {
             Duration::ZERO,
         );
         *player.section_jumps.lock() = log;
-        *player.play_start_time.lock().await = Some(std::time::SystemTime::now() - raw);
+        *player.play_start_time.lock().await =
+            Some(PlayPosition::Running(std::time::SystemTime::now() - raw));
         let b = SectionBounds {
             name: "b".to_string(),
             start_time: b_start,
@@ -6140,15 +6169,17 @@ mod test {
             "stopped",
         );
         // Resume at 5 s (as after a pause), then pause again before
-        // play_files has stamped play_start_time. Simulated by clearing
-        // the stamp under the join lock once the start has gone in.
+        // play_files has stamped play_start_time with the running clock.
+        // Simulated by putting it back to starting under the join lock once
+        // the start has gone in.
         {
             let mut join = player.join.lock().await;
             player
                 .play_from_locked(Duration::from_secs(5), &mut join)
                 .await?;
             tokio::time::sleep(Duration::from_millis(300)).await;
-            *player.play_start_time.lock().await = None;
+            *player.play_start_time.lock().await =
+                Some(PlayPosition::Starting(Duration::from_secs(5)));
         }
         let paused = player.pause().await?;
         assert_eq!(

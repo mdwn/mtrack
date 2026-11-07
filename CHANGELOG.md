@@ -745,6 +745,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The position reads the start position while a play from part way in starts** (#634): after
+  `play_song_from` with `start_time: "95s"` (or any play, seek or resume from a position), the
+  status (dashboard, MCP `status`, gRPC `Status`) gave `elapsed: 0:00.000` with `playing: true` for
+  most of a second, until the audio, MIDI and DMX were ready and the clock started, while the
+  lights already showed the show at 95 s. It now reads 1:35.000 from the moment the start goes in
+  until the clock starts, and runs on from there. A start turned down (a lighting show that does
+  not validate) leaves no position, as before.
+
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as
   `from + rate × ticks`, which rounds differently: a dim from 0 to 35 over 44 ticks was 17 live at

@@ -64,12 +64,11 @@ impl Player {
             self.cut_locked(&mut join).await;
             return Ok(None);
         }
-        // A song just started has no start time yet: it is where it
-        // started, which after a seek or a resume is not its beginning.
-        let position = match (self.elapsed().await?, join.as_ref()) {
-            (Some(position), _) => position,
-            (None, Some(handles)) => handles.start_time,
-            (None, None) => return Ok(None),
+        // A song just started, its clock not yet running, is where it
+        // started (`elapsed` says so), which after a seek or a resume is not
+        // its beginning.
+        let Some(position) = self.elapsed().await? else {
+            return Ok(None);
         };
         // The stop and the position kept for the next play are one step
         // under the join lock, and the song counts as playing throughout,
