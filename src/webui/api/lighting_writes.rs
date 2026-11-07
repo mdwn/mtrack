@@ -93,10 +93,12 @@ pub(crate) fn claim_status(refusal: &Refusal) -> StatusCode {
 }
 
 /// The status of a failed write: 409 for a file to be made that appeared
-/// since it was claimed, 500 otherwise.
+/// since it was claimed, or one to be rewritten that was removed since it
+/// was read; 500 otherwise.
 pub(crate) fn write_status(e: &WriteError) -> StatusCode {
+    // Both are a change made by someone else meanwhile.
     match e.cause() {
-        WriteError::Exists { .. } => StatusCode::CONFLICT,
+        WriteError::Exists { .. } | WriteError::Gone { .. } => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -115,28 +117,25 @@ pub(crate) fn write_status(e: &WriteError) -> StatusCode {
 pub(crate) fn import_error(
     e: &(dyn std::error::Error + 'static),
 ) -> (StatusCode, serde_json::Value) {
-    let unreadable = |refusal: &Refusal| matches!(refusal, Refusal::Unreadable { .. });
+    // An unreadable file or directory is no other name's to get past.
+    let kind_of = |refusal: &Refusal, fallback: &'static str| match refusal {
+        Refusal::Unreadable { .. } => "unreadable",
+        _ => fallback,
+    };
     let (status, kind) = if let Some(venue) = e.downcast_ref::<lighting::import::VenueRefused>() {
         let kind = match &venue.refused {
             Refused::Unreadable { .. } => "unreadable",
-            Refused::Claim(refusal) if unreadable(refusal) => "unreadable",
+            Refused::Claim(refusal) => kind_of(refusal, "venue"),
             _ => "venue",
         };
         (refused_status(&venue.refused), Some(kind))
     } else if let Some(record) = e.downcast_ref::<lighting::import::RecordRefused>() {
-        let kind = if unreadable(&record.refusal) {
-            "unreadable"
-        } else {
-            "record"
-        };
-        (claim_status(&record.refusal), Some(kind))
+        (
+            claim_status(&record.refusal),
+            Some(kind_of(&record.refusal, "record")),
+        )
     } else if let Some(refusal) = e.downcast_ref::<Refusal>() {
-        let kind = if unreadable(refusal) {
-            "unreadable"
-        } else {
-            "name"
-        };
-        (claim_status(refusal), Some(kind))
+        (claim_status(refusal), Some(kind_of(refusal, "name")))
     } else if let Some(write) = e.downcast_ref::<WriteError>() {
         (write_status(write), Some("write"))
     } else if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {

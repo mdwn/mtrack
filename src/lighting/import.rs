@@ -308,7 +308,7 @@ pub fn place_in_library(
     let types = existing_types(fixture_dir);
     let library = super::library::unrecorded_types(project, Some(fixture_dir));
     let copy = library_copy_of(project, bytes);
-    let rel = |file: &str| format!("{}/{file}", super::library::LIBRARY_DIR);
+    let rel = |file: &str| library_file(project, file).1;
 
     // Already in the library: it is the fixture it already is.
     if let Some(file) = &copy {
@@ -450,25 +450,63 @@ pub fn place_in_library(
     })
 }
 
-/// Carries out a [`LibraryEntry`]'s copy, when it is new: the archive put
-/// in the library. The library file written, project-relative, if one was:
-/// a copy stands whatever happens after it, as an import's library always
-/// has.
-pub fn write_library_copy(
-    project: &Path,
-    entry: &LibraryEntry,
-    bytes: &[u8],
-) -> Result<Option<String>, Box<dyn Error>> {
-    let library_dir = project.join(super::library::LIBRARY_DIR);
-    create_dir(&library_dir)?;
-    if entry.existing {
-        return Ok(None);
+/// The library file `file_name`: where it is, and the project-relative name
+/// a record or a venue refers to it by (`lighting/library/<file_name>`).
+pub fn library_file(project: &Path, file_name: &str) -> (PathBuf, String) {
+    let rel = format!("{}/{file_name}", super::library::LIBRARY_DIR);
+    (project.join(&rel), rel)
+}
+
+/// An import's library copies, written one by one before what goes with
+/// them: each stands once written, as an import's library always has, and
+/// [`Self::failed`] says which when something after fails.
+#[derive(Debug, Default)]
+pub struct LibraryCopies {
+    /// Written so far, project-relative.
+    pub written: Vec<String>,
+}
+
+impl LibraryCopies {
+    /// Writes the new library file `file_name`.
+    pub fn write(
+        &mut self,
+        project: &Path,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<(), Box<dyn Error>> {
+        let (path, rel) = library_file(project, file_name);
+        create_dir(path.parent().unwrap_or(project)).map_err(|e| self.failed(e))?;
+        write(&path, bytes).map_err(|e| self.failed(e))?;
+        self.written.push(rel);
+        Ok(())
     }
-    write(&library_dir.join(&entry.file_name), bytes)?;
-    Ok(Some(entry.archive.clone()))
+
+    /// Writes a [`LibraryEntry`]'s copy, when it is new.
+    pub fn write_entry(
+        &mut self,
+        project: &Path,
+        entry: &LibraryEntry,
+        bytes: &[u8],
+    ) -> Result<(), Box<dyn Error>> {
+        if entry.existing {
+            return Ok(());
+        }
+        self.write(project, &entry.file_name, bytes)
+    }
+
+    /// `error`, saying which copies were written before it, in the one
+    /// wording for a failure's outcome ([`super::writes::saved_after_failure`]).
+    pub fn failed(&self, error: Box<dyn Error>) -> Box<dyn Error> {
+        format!(
+            "{error}; {}",
+            super::writes::saved_after_failure(&self.written, &[])
+        )
+        .into()
+    }
 }
 
 /// A pinned [`LibraryEntry`]'s record, ready to be made.
+#[derive(Debug)]
 pub struct RecordWrite {
     pub path: PathBuf,
     pub text: String,
@@ -477,6 +515,15 @@ pub struct RecordWrite {
 }
 
 impl RecordWrite {
+    /// Makes the record's directory: before any library copy is written,
+    /// so a failure here has written nothing.
+    pub fn create_dir(&self) -> Result<(), Box<dyn Error>> {
+        match self.path.parent() {
+            Some(parent) => create_dir(parent),
+            None => Ok(()),
+        }
+    }
+
     /// Makes the record among `changes`, with whatever goes with it.
     pub fn create(
         &self,
@@ -486,8 +533,8 @@ impl RecordWrite {
     }
 }
 
-/// The record a pinned [`LibraryEntry`] writes, once its text is proven to
-/// read back and its directory is there. `None` when the name is not pinned.
+/// The record a pinned [`LibraryEntry`] writes, its text proven to read
+/// back; writing nothing. `None` when the name is not pinned.
 pub fn record_to_write(
     project: &Path,
     entry: &LibraryEntry,
@@ -496,8 +543,6 @@ pub fn record_to_write(
     let Some(record) = &entry.record else {
         return Ok(None);
     };
-    let path = project.join(record);
-    create_dir(path.parent().unwrap_or(project))?;
     let text = gdtf_definition(&entry.name, &entry.archive, &entry.file_name, description);
     // A record that does not read back is not written.
     let parsed = super::parser::parse_fixture_types(&text)?;
@@ -505,7 +550,7 @@ pub fn record_to_write(
         return Err(format!("the record for \"{}\" did not read back", entry.name).into());
     }
     Ok(Some(RecordWrite {
-        path,
+        path: project.join(record),
         text,
         shown: record.clone(),
     }))
@@ -537,14 +582,20 @@ pub fn import_gdtf_bytes(
     )?;
     let already_imported = entry.existing && entry.record.is_none();
     if !already_imported {
-        let kept = write_library_copy(project, &entry, bytes)?;
-        if let Some(record) = record_to_write(project, &entry, &description)? {
+        // Everything that does not need the copy first, so a failure before
+        // it has written nothing.
+        let record = record_to_write(project, &entry, &description)?;
+        if let Some(record) = &record {
+            record.create_dir()?;
+        }
+        let mut copies = LibraryCopies::default();
+        copies.write_entry(project, &entry, bytes)?;
+        if let Some(record) = &record {
             // Made new, as it was claimed; a failure takes back what it made,
             // and says the library copy stands.
-            super::writes::Changes::all_or_nothing_keeping(
-                kept.into_iter().collect(),
-                |changes| record.create(changes),
-            )?;
+            super::writes::Changes::all_or_nothing_keeping(copies.written, |changes| {
+                record.create(changes)
+            })?;
         }
         // The 3D view and the thumbnail draw a GDTF fixture in the first
         // mode it can drive: warm that rig now so they are instant.

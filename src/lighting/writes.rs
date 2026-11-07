@@ -294,24 +294,36 @@ impl std::fmt::Display for WriteError {
                 write!(f, "cannot remove {shown}: {error}")
             }
             WriteError::RolledBack { cause, left, kept } => {
-                write!(f, "{cause}; ")?;
-                if kept.is_empty() {
-                    f.write_str("nothing was saved")?;
-                } else {
-                    write!(
-                        f,
-                        "nothing was saved but the library's {}, which {} kept",
-                        kept.join(", "),
-                        if kept.len() == 1 { "is" } else { "are" }
-                    )?;
-                }
-                if !left.is_empty() {
-                    write!(f, ", and {} could not be put back", left.join(", "))?;
-                }
-                Ok(())
+                write!(f, "{cause}; {}", saved_after_failure(kept, left))
             }
         }
     }
+}
+
+/// `items` as one phrase: "A", "A and B", "A, B and C".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What a failed write says was saved after it: the library copies that
+/// stand whatever happens (`kept`), and the files that could not be put
+/// back (`left`, each with why). The one wording for every importer's and
+/// writer's failure.
+pub fn saved_after_failure(kept: &[String], left: &[String]) -> String {
+    let mut said = match kept {
+        [] if left.is_empty() => return "nothing was saved".to_string(),
+        [] => "nothing else was saved".to_string(),
+        [one] => format!("only the library copy {one} was saved"),
+        many => format!("only the library copies {} were saved", and_list(many)),
+    };
+    if !left.is_empty() {
+        said.push_str(&format!(", but {} could not be put back", and_list(left)));
+    }
+    said
 }
 
 impl std::error::Error for WriteError {}
@@ -378,7 +390,10 @@ impl Changes {
                     path: path.to_path_buf(),
                     shown,
                 }
-            } else if !new && failure.error.kind() == std::io::ErrorKind::NotFound {
+            } else if !new
+                && !failure.touched
+                && failure.error.kind() == std::io::ErrorKind::NotFound
+            {
                 WriteError::Gone {
                     path: path.to_path_buf(),
                     shown,
@@ -452,12 +467,32 @@ impl Changes {
     pub fn roll_back_keeping(self, cause: WriteError, kept: Vec<String>) -> WriteError {
         let mut left = Vec::new();
         for undo in self.done.into_iter().rev() {
-            let (shown, result) = match undo {
-                Undo::Remove { path, shown } => (shown, remove_file(&path)),
-                Undo::Restore { path, shown, was } => (shown, crate::util::write_file(&path, &was)),
+            let (path, shown, result) = match undo {
+                Undo::Remove { path, shown } => {
+                    let result = remove_file(&path);
+                    (path, shown, result)
+                }
+                Undo::Restore { path, shown, was } => {
+                    let result = crate::util::write_file(&path, &was);
+                    (path, shown, result)
+                }
             };
-            if let Err(e) = result {
-                left.push(format!("{shown} ({e})"));
+            // A write that failed part way kept its staged copy, the one
+            // full copy of what it held; once the file is put back that copy
+            // has served, and otherwise it is where the content is.
+            let staged = crate::util::staged_path(&path);
+            match result {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&staged);
+                }
+                Err(e) if staged.exists() => left.push(format!(
+                    "{shown} ({e}; its content is in {})",
+                    staged
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                )),
+                Err(e) => left.push(format!("{shown} ({e})")),
             }
         }
         WriteError::RolledBack {
@@ -658,5 +693,52 @@ mod tests {
         assert!(!made.exists());
         assert_eq!(std::fs::read_to_string(&rewritten).unwrap(), "before\n");
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "theirs\n");
+    }
+
+    #[test]
+    fn a_failure_says_what_was_saved_in_one_wording() {
+        let v = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(saved_after_failure(&[], &[]), "nothing was saved");
+        assert_eq!(
+            saved_after_failure(&v(&["A"]), &[]),
+            "only the library copy A was saved"
+        );
+        assert_eq!(
+            saved_after_failure(&v(&["A", "B", "C"]), &[]),
+            "only the library copies A, B and C were saved"
+        );
+        assert_eq!(
+            saved_after_failure(&[], &v(&["X (e)"])),
+            "nothing else was saved, but X (e) could not be put back"
+        );
+        assert_eq!(
+            saved_after_failure(&v(&["A"]), &v(&["X (e)", "Y (f)"])),
+            "only the library copy A was saved, but X (e) and Y (f) could not be put back"
+        );
+    }
+
+    #[test]
+    fn a_restore_that_fails_leaves_the_staged_copy_and_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("club.venue");
+        std::fs::write(&file, "was\n").unwrap();
+        let rewrite = plan(dir.path(), Write::Rewrite(file.clone()), Some("was\n"));
+
+        // The write fails after truncating, and so does putting it back.
+        crate::util::fail_after_truncating(2);
+        let err = write(&rewrite, "new\n").unwrap_err();
+        crate::util::fail_after_truncating(0);
+
+        let staged = crate::util::staged_path(&file);
+        assert!(staged.exists(), "the one full copy stays");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "was\n");
+        let name = staged.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            err.to_string().ends_with(&format!(
+                "; nothing else was saved, but club.venue (injected failure after truncating; \
+                 its content is in {name}) could not be put back"
+            )),
+            "{err}"
+        );
     }
 }

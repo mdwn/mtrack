@@ -318,11 +318,11 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// writes, so losing power midway leaves a short file. To bound that, the
 /// complete new content is first staged in a sidecar (see [`staged_path`]) and
 /// flushed to disk, and only removed once the destination is durable. A sidecar
-/// left behind therefore means the last write to that file was interrupted (a
-/// crash, a power cut) and holds the content it was trying to write; a write
-/// that fails and says so removes its sidecar, since its caller has both the
-/// error and the content. Recovery is currently manual: copy the sidecar over
-/// the destination. A reader can see
+/// left behind therefore means the last write to that file may not have
+/// completed (a crash, or a failure after the destination was truncated),
+/// and holds the content it was trying to write; a lighting writer that puts
+/// the file back removes it then ([`crate::lighting::writes::Changes`]).
+/// Recovery is otherwise manual: copy the sidecar over the destination. A reader can see
 /// the short file too, while the rewrite is under way, unless it reads
 /// through [`read_file`].
 ///
@@ -466,12 +466,10 @@ pub fn write_file_tracked(
         destination.write_all(contents)?;
         destination.sync_all()
     };
-    if let Err(e) = rewrite() {
-        // A failure said is not an interrupted write: its caller has the
-        // content, and puts back what it must.
-        let _ = std::fs::remove_file(&staged);
-        return Err(touched(e));
-    }
+    // Past the truncation the sidecar is the one full copy of the content:
+    // it stays, for whoever puts the destination back (and removes it once
+    // that is done) or for a person to recover from.
+    rewrite().map_err(touched)?;
 
     // The destination is durable, so the staged copy has served its purpose.
     // Leaving it behind would falsely advertise an interrupted write. The

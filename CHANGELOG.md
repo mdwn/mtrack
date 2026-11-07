@@ -334,34 +334,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     current venue no longer loads).
   - The web UI's and the importers' writes of venue and fixture type files are all or nothing
     (MCP's `write_venue`, `write_fixture_type`, `patch_venue` and `patch_fixture_type` are not
-    yet): a web save, the fixture settings, an MVR import's records and venue, a GDTF import's
-    record, and both renames, which write the type's file, then the venue files, and remove the
-    old type file last. Any failure, the old file's removal included, puts back what was written
-    before it and what the failing write itself changed (a file it made is removed, a file it
-    began rewriting is restored, and the write's staged copy is removed), and never a file
-    someone else made since it was claimed; the answer ends "nothing was saved", or names each
-    file that could not be put back. Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when
+    yet): a web save, the fixture settings, an MVR import's revised MVR, records and venue, a GDTF
+    import's record, and both renames, which write the type's file, then the venue files, and
+    remove the old type file last. Any failure, the old file's removal included, puts back what
+    was written before it and what the failing write itself changed (a file it made is removed,
+    a file it began rewriting is restored), and never a file someone else made since it was
+    claimed; the answer ends "nothing was saved", or "nothing else was saved, but <file> (<why>)
+    could not be put back". Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when
     `brick.fixture` cannot be removed answers 500 "cannot remove brick.fixture: …; nothing was
     saved", `pixelbrick.fixture` removed and the venues as they were, where the venues were left
     renamed. A failed venue or type write likewise, where the venues written before it stayed
-    renamed. An import's library copies stand, as before, and the answer says so: an MVR import
-    whose venue cannot be written removes the GDTF records it wrote and ends "nothing was saved
-    but the library's lighting/library/k.mvr, lighting/library/Astera_PB15.gdtf, which are kept",
-    where the records stayed and the answer did not say what had been written.
-  - A file a save rewrites that was removed since it was read is not made again: "club.venue was
-    removed while saving and was not made again; try again", where the save made it anew (or
-    left it empty).
+    renamed. An import's new library copies stand, as before, and the answer says so: an MVR
+    import whose venue cannot be written removes the GDTF records it wrote, puts back a revised
+    MVR's previous copy (the baseline the next re-import merges against) and ends "only the
+    library copies lighting/library/k.mvr and lighting/library/Astera_PB15.gdtf were saved",
+    where the records and the revised MVR stayed and the answer did not say what had been
+    written. Everything an import can check without its copies is done before the first is
+    written, and a copy that fails names those written before it the same way.
+  - A lighting write that was put back removes the staged copy (`<file>.<pid>.mtrack-new`) its
+    failed write left; one that could not be put back keeps it and says so ("… (<why>; its
+    content is in club.venue.1234.mtrack-new) could not be put back"), as any interrupted write
+    keeps its staged copy.
+  - A web save's file that was removed since it was read is not made again (409): "club.venue
+    was removed while saving and was not made again; try again", where the save made it anew
+    (or left it empty). MCP's writes still make it again.
   - A file a save claimed that appears before it is written is refused in one wording wherever
     it happens, shown as its writer's user knows it (relative to the venues or fixture types
     directory, or the project for a GDTF record): "pixelbrick.fixture appeared after it was
     claimed and was not written over; move or remove it by hand, then try again", where the web
     showed the full path and said "already exists" and a settings pin said "is there now".
-  - A failed write reported with its file (a lighting file, the player config, a playlist or
-    profile, a song's files, the config store, the song cache, a startup write) says "could not
-    write <file>: <reason>", where it said "Failed to write <file>: <reason>" (a playlist or
-    profile, "Failed to write playlist: Failed to write <file>: <reason>"). A write that fails
-    and says so no longer leaves its staged copy (`<file>.<pid>.mtrack-new`) beside the file;
-    one interrupted by a crash still does.
+  - A failed write reported with its file (a web save of a venue or fixture type, the player
+    config, a playlist or profile, a song's files, the config store, the song cache) says "could
+    not write <file>: <reason>", where it said "Failed to write <file>: <reason>" (a playlist or
+    profile, "Failed to write playlist: Failed to write <file>: <reason>"), as the importers and
+    the startup writes already did.
   - A directory that cannot be read while a name is claimed answers 500 wherever it happens,
     the GDTF import (`POST /api/lighting/gdtf/import?name=`) and the MVR import and inspection
     included, where those answered 400 (the GDTF import answered 409 only for a different
