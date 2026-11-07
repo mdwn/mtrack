@@ -1842,6 +1842,49 @@ mod test {
         assert!(!song_dir.join("song.yaml").exists());
     }
 
+    /// Beside a `song.yaml` of another kind (`kind: playlist`), a create
+    /// is refused and a track upload writes no config: neither writes over
+    /// it (`songs::song_config_to_write`), as both did on main.
+    #[tokio::test]
+    async fn create_and_upload_keep_a_song_yaml_of_another_kind() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Pl");
+        std::fs::create_dir(&song_dir).unwrap();
+        let playlist = "kind: playlist\nsongs: []\n";
+        std::fs::write(song_dir.join("song.yaml"), playlist).unwrap();
+
+        let create = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/Pl")
+                    .body(Body::from("name: Pl\ntracks: []\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::CONFLICT);
+
+        let upload = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Pl/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+        assert!(song_dir.join("guitar.wav").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yaml")).unwrap(),
+            playlist
+        );
+    }
+
     /// A track uploaded to a song whose config is `song.yml` leaves that
     /// config alone and writes no second `song.yaml` (`ensure_song_config`).
     #[tokio::test]

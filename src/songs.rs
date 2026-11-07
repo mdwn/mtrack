@@ -2224,7 +2224,8 @@ impl NewSong {
 /// ([`configured_song_names`]), or it is in `taken` (the songs the player
 /// has loaded, for the bulk import); then it takes its path below `root`
 /// (`SongA/stems`), and if that is taken too, the first free ` (2)`,
-/// ` (3)`, …. So no two songs are given one name. The one naming rule of
+/// ` (3)`, …, past the names the other new songs keep. So no two songs are
+/// given one name. The one naming rule of
 /// `songs --init` and the bulk import. An unreadable `root` is an error.
 pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<SongDirs> {
     let mut found = SongDirs::default();
@@ -2241,9 +2242,17 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
         *counts.entry(own_name(dir)).or_default() += 1;
     }
     taken.extend(configured_song_names(root)?);
+    // Each new song's own name that nothing contests is its, before any
+    // other is given a path or a suffix: a `B (2)/` keeps `B (2)`.
+    let uncontested: HashSet<String> = new
+        .iter()
+        .map(|(dir, _)| own_name(dir))
+        .filter(|own| counts[own] == 1 && !taken.contains(own))
+        .collect();
+    taken.extend(uncontested.iter().cloned());
     for (dir, config_path) in new {
         let own = own_name(&dir);
-        let name = if counts[&own] > 1 || taken.contains(&own) {
+        let name = if !uncontested.contains(&own) {
             let relative = dir
                 .strip_prefix(root)
                 .unwrap_or(&dir)
@@ -4467,6 +4476,37 @@ sections:
                 "set/Intro"
             ]
         );
+        Ok(())
+    }
+
+    /// A new song that nothing contests keeps its own name before another is
+    /// given a suffix: beside `Old/song.yaml` naming "B", a new `B/` is
+    /// `B (3)`, as the new `B (2)/` keeps `B (2)`.
+    #[test]
+    fn new_songs_keep_uncontested_names_before_suffixes() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        for dir in ["Old", "B", "B (2)"] {
+            fs::create_dir_all(root.join(dir))?;
+            crate::testutil::write_wav(root.join(dir).join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+
+        let found = super::new_songs(root, std::collections::HashSet::new())?;
+
+        let names: Vec<_> = found
+            .new
+            .iter()
+            .map(|song| (song.dir.clone(), song.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [(root.join("B"), "B (3)"), (root.join("B (2)"), "B (2)")]
+        );
+        assert_eq!(found.kept, [root.join("Old")]);
         Ok(())
     }
 

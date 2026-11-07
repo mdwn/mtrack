@@ -200,7 +200,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   songs. `lib/SongA/stems/a.wav` and `lib/SongB/stems/b.wav` are now `SongA/stems` and
   `SongB/stems`, where both were `stems` and the player loaded one; a new `Intro/` beside an
   `Old/song.yaml` naming its song "Intro" is `Intro (2)`, where the player loaded one of the two.
-  A failed save from `songs --init` now reads "Failed to save: ...", as the bulk import's does.
+  A song that nothing contests keeps its own name before another is given a suffix: beside
+  `Old/song.yaml` naming "B", new `B/` and `B (2)/` are `B (3)` and `B (2)`. A failed save from
+  `songs --init` now reads "Failed to save: ...", as the bulk import's does. A bulk-imported
+  folder whose name is not UTF-8 is named "unreadable file name", as `songs --init` names it;
+  it was "unknown".
+- **The web UI opens a song whose name holds a `/`**: the address takes the song's name as one
+  encoded segment (`#/songs/SongA%2Ftracks`), read before it is decoded. A song named
+  `SongA/tracks` (or ending in `/config`, `/lighting` and the other tabs) opened the song
+  `SongA` on that tab, and the page title named `SongA`.
 
 - **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
   dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is

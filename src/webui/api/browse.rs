@@ -1037,6 +1037,28 @@ mod test {
         assert_eq!(named.name(), "Song A (2)");
     }
 
+    /// A bulk import names a folder past a song configured under the songs
+    /// folder that the player has not loaded (`songs/Later/song.yaml`
+    /// naming "Encore", written since the last reload).
+    #[tokio::test]
+    async fn bulk_import_names_past_songs_configured_under_the_songs_folder() {
+        let (state, _dir) = test_state();
+        let later = state.songs_path().join("Later");
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(later.join("song.yaml"), "name: Encore\ntracks: []\n").unwrap();
+        assert!(state.player.songs().get("Encore").is_err());
+        let encore = _dir.path().join("inbox/Encore");
+        std::fs::create_dir_all(&encore).unwrap();
+        std::fs::write(encore.join("track.wav"), create_test_wav()).unwrap();
+
+        let (status, parsed) = bulk_import(&state, "/inbox").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(parsed["created"], serde_json::json!(["Encore"]));
+        let named = crate::config::Song::deserialize(&encore.join("song.yaml")).unwrap();
+        assert_eq!(named.name(), "Encore (2)");
+    }
+
     /// Create-song from a folder answers 409 beside a `song.yaml` of
     /// another kind, and leaves it (`songs::song_config_to_write`); it wrote
     /// over it on main.

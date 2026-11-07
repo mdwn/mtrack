@@ -26,6 +26,7 @@
   import { playbackStore, venueStore } from "./lib/ws/stores";
   import { confirmNavigation, hasDirty } from "./lib/dirtyGuard";
   import { lightingRoute, redirectRetiredHash } from "./lib/lightingRoute";
+  import { songRoute } from "./lib/songRoute";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -102,9 +103,9 @@
         ? `${get(t)("nav.config")} - ${rest.split("/")[0]}`
         : get(t)("nav.config");
     } else if (currentHash.startsWith("#/songs")) {
-      const rest = decodeURIComponent(currentHash.slice("#/songs/".length));
-      pageTitle = rest
-        ? `${get(t)("nav.songs")} - ${rest.split("/")[0]}`
+      const song = songRoute(currentHash).name;
+      pageTitle = song
+        ? `${get(t)("nav.songs")} - ${song}`
         : get(t)("nav.songs");
     } else if (currentHash.startsWith("#/playlists")) {
       const rest = decodeURIComponent(currentHash.slice("#/playlists/".length));
