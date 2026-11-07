@@ -165,27 +165,49 @@ impl MigrationPlan {
     /// every file it would have rewritten (the profiles losing those
     /// fixtures) as it was; then a backup of every file about to be
     /// overwritten, before any is; then the rewrites, the config last; then
-    /// the deletions. A failure after the first backup names the backups
-    /// taken.
+    /// the deletions. A failure after a file is made or backed up names the
+    /// files made and the backups taken, which are left.
     fn apply(&self) -> Result<(), Box<dyn Error>> {
         // Create directories.
         for dir in &self.dirs_to_create {
             crate::util::create_dir_all(dir)?;
         }
 
+        let mut made = Vec::new();
+        let mut backups = Vec::new();
+        self.apply_files(&mut made, &mut backups).map_err(|e| {
+            let list = |paths: &[PathBuf]| -> String {
+                let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                names.join(", ")
+            };
+            let mut left = Vec::new();
+            if !made.is_empty() {
+                left.push(format!("files made: {}", list(&made)));
+            }
+            if !backups.is_empty() {
+                left.push(format!("backups taken: {}", list(&backups)));
+            }
+            if left.is_empty() {
+                e
+            } else {
+                format!("{e} ({})", left.join("; ")).into()
+            }
+        })
+    }
+
+    /// [`MigrationPlan::apply`] from the new files on, each file made
+    /// pushed to `made` and each backup taken to `backups`.
+    fn apply_files(
+        &self,
+        made: &mut Vec<PathBuf>,
+        backups: &mut Vec<PathBuf>,
+    ) -> Result<(), Box<dyn Error>> {
         // The new files, before anything is rewritten.
         for write in self.files_to_write.iter().filter(|w| w.new) {
             write.write()?;
+            made.push(write.path.clone());
         }
-
-        let mut backups = Vec::new();
-        self.apply_rewrites(&mut backups).map_err(|e| {
-            if backups.is_empty() {
-                return e;
-            }
-            let taken: Vec<String> = backups.iter().map(|b| b.display().to_string()).collect();
-            format!("{e} (backups taken: {})", taken.join(", ")).into()
-        })
+        self.apply_rewrites(backups)
     }
 
     /// [`MigrationPlan::apply`] from the backups on, each backup taken
@@ -973,13 +995,16 @@ dmx:
         assert!(!dir.path().join("pi.yaml.bak").exists(), "no backup taken");
     }
 
-    /// A failure after the backups names the backups taken.
+    /// A failure after the venue is made and the backups are taken names
+    /// them.
     #[test]
-    fn a_failed_rewrite_names_the_backups_taken() {
+    fn a_failed_rewrite_names_the_files_made_and_backups_taken() {
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("pi.yaml");
         std::fs::write(&profile, "old\n").unwrap();
+        let venue = dir.path().join("inline_migrated.venue");
         let mut plan = MigrationPlan::new();
+        plan.create(venue.clone(), "venue\n".into());
         plan.overwrite("Profiles", profile.clone(), Content::Text("new\n".into()));
         // Copied from a file that is not there: the rewrite fails.
         plan.overwrite(
@@ -991,7 +1016,11 @@ dmx:
         let error = plan.apply().unwrap_err().to_string();
         let backup = dir.path().join("pi.yaml.bak");
         assert!(
-            error.contains(&format!("backups taken: {}", backup.display())),
+            error.contains(&format!(
+                "(files made: {}; backups taken: {})",
+                venue.display(),
+                backup.display()
+            )),
             "{error}"
         );
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "old\n");

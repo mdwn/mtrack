@@ -810,8 +810,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     wrote over an `inline_migrated.light` already there and could declare a second venue named
     `inline_migrated`. The venue file is made new, never written over, and before any other file
     is backed up or rewritten: a venue that cannot be made leaves the profiles with their
-    fixtures. A failure after the backups are taken names them (`... (backups taken:
-    profiles/pi-a.yaml.bak, ...)`).
+    fixtures. A failure after the venue is made or the backups are taken names them (`... (files
+    made: lighting/venues/inline_migrated.venue; backups taken: profiles/pi-a.yaml.bak, ...)`).
 
 - **A failed save whose own recovery fails keeps its original safe** (#685): these cases come up
   only when a save fails and then putting the file back fails too.
