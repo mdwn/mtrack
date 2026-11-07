@@ -1219,7 +1219,7 @@ impl McpServer {
                     &songs_root,
                 )
                 .map_err(safepath_err)?;
-                crate::songs::song_config_file(song_dir.as_path())
+                song_dir.join_filename("song.yaml")
             }
         };
         staged_write_string(&yaml_path, &args.yaml, false).await?;

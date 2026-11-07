@@ -810,6 +810,21 @@ impl Song {
         &self.tracks
     }
 
+    /// The files the song's config names: its tracks, MIDI playback file,
+    /// MIDI DMX light shows and DSL light shows.
+    pub fn named_files(&self) -> impl Iterator<Item = &Path> {
+        self.tracks
+            .iter()
+            .map(Track::file)
+            .chain(self.midi_playback.iter().map(MidiPlayback::file_path))
+            .chain(self.light_shows.iter().map(LightShow::dmx_file_path))
+            .chain(
+                self.dsl_lighting_shows
+                    .iter()
+                    .map(DslLightingShow::file_path),
+            )
+    }
+
     /// Gets the beat grid (from the explicit tempo map when configured,
     /// otherwise from click track analysis), if available.
     pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
@@ -2316,11 +2331,12 @@ pub fn is_song_config_name(path: &Path) -> bool {
 /// loader takes as a song's ([`is_song_config`]: `song.yml`, `album.yaml`,
 /// `.song.yaml`), or one named `song.yaml` or `song.yml` that does not read
 /// ([`is_song_config_name`]), which is the song's to fix, not to write
-/// over. Nothing is written beside or over one.
+/// over. One that reads as another `kind` (`kind: playlist`) is not one, as
+/// to the loader. Nothing is written beside or over one.
 pub fn has_song_config(dir: &Path) -> bool {
-    crate::util::files_to_look_up(dir)
-        .iter()
-        .any(|file| is_song_config_name(file) || is_song_config(file))
+    crate::util::files_to_look_up(dir).iter().any(|file| {
+        is_song_config(file) || (is_song_config_name(file) && song_yaml(file) != SongYaml::NotOne)
+    })
 }
 
 /// The file the config of the song in `dir` is read from and written to:
@@ -4879,8 +4895,9 @@ pilot:
 
     /// A directory has a song config when it holds one the loader loads, by
     /// whatever name (`song.yml`, `album.yaml`, the hidden `.song.yaml`), or a
-    /// `song.yaml`/`song.yml` that does not read. A playlist, a `song.YAML`
-    /// (which the loader passes over) or media alone is none.
+    /// `song.yaml`/`song.yml` that does not read. A playlist (`song.yml`
+    /// with `kind: playlist` too), a `song.YAML` (which the loader passes
+    /// over) or media alone is none.
     #[test]
     fn has_song_config_answers_as_the_loader_does() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?;
@@ -4891,6 +4908,12 @@ pilot:
             ("Hidden", ".song.yaml", song("Hidden"), true),
             ("Broken", "song.yaml", "{{not yaml".to_string(), true),
             ("BrokenYml", "song.yml", "{{not yaml".to_string(), true),
+            (
+                "PlaylistYml",
+                "song.yml",
+                "kind: playlist\nsongs: []\n".to_string(),
+                false,
+            ),
             (
                 "Set",
                 "set.yaml",

@@ -595,6 +595,32 @@ mod test {
         assert!(!song_dir.join("song.yaml").exists());
     }
 
+    /// Create-song at a songs root holding a flat-layout song
+    /// (`<root>/flat.yaml`) is refused: the root has a song config.
+    #[tokio::test]
+    async fn create_song_in_directory_conflict_with_a_flat_song() {
+        let (state, dir) = test_state();
+        let songs = dir.path().join("songs");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::fs::write(songs.join("flat.yaml"), "name: Flat\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!songs.join("song.yaml").exists());
+    }
+
     /// The browser leaves hidden entries out: dot-files, AppleDouble files
     /// and hidden directories.
     #[tokio::test]
