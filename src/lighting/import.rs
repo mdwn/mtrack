@@ -70,8 +70,6 @@ pub fn suggested_type_name(name: &str) -> String {
     }
 }
 
-pub(crate) use super::mvr_types::fixture_filename_stem;
-
 /// [`crate::util::write_file`] with the path and any deploy hint in the
 /// error — a bare "Read-only file system (os error 30)" names no file and
 /// no fix.
@@ -361,10 +359,10 @@ pub fn place_in_library(
         }
     };
     let record = if pinned {
-        let mut stem = fixture_filename_stem(&type_name);
+        let mut stem = super::files::stem(&type_name);
         let mut n = 2;
         while fixture_dir.join(format!("{stem}.fixture")).exists() {
-            stem = format!("{}_{n}", fixture_filename_stem(&type_name));
+            stem = format!("{}_{n}", super::files::stem(&type_name));
             n += 1;
         }
         let dir_rel = fixture_dir
@@ -586,7 +584,7 @@ mod tests {
         assert_eq!(report.renamed_from.as_deref(), Some("Synth Brick"));
         assert_eq!(
             report.fixture_file.as_deref(),
-            Some("lighting/fixture_types/synth_brick_a_brick_v2.fixture")
+            Some("lighting/fixture_types/synth_brick_a-brick-v2.fixture")
         );
         let library =
             crate::lighting::library::unrecorded_types(&project, Some(&project.join(TYPES)));
@@ -677,13 +675,6 @@ mod tests {
             .to_string();
         assert!(err.contains("no DMX modes"), "{err}");
         assert!(!project.join("lighting").exists());
-    }
-
-    #[test]
-    fn filename_stems() {
-        assert_eq!(fixture_filename_stem("PB15 PixelBrick"), "pb15_pixelbrick");
-        assert_eq!(fixture_filename_stem("Robe-Esprite"), "robe_esprite");
-        assert_eq!(fixture_filename_stem("///"), "fixture");
     }
 
     #[test]

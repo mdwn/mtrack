@@ -40,7 +40,10 @@ mod tests;
 
 // Re-export public items
 pub(crate) use effect_parse::effect_keyword;
-pub use fixture_venue::{parse_fixture_types, parse_venues};
+pub use fixture_venue::{
+    parse_fixture_types, parse_fixture_types_listed, parse_venues, parse_venues_listed, FileItem,
+    ItemKind, Listed,
+};
 pub use include::{IncludeReader, Sources};
 pub use show::{parse_light_file_with, parse_light_shows, parse_light_shows_with_tempo};
 pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow, LightShows};

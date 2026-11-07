@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use super::distill::DistillCache;
+use super::files;
 use super::gdtf;
 
 use super::patch;
@@ -70,8 +71,13 @@ pub struct LightingSystem {
     /// as written): the fixture loads, and the file should be corrected.
     mode_warnings: HashMap<(String, String), String>,
 
-    /// The file each venue was read from.
-    venue_files: HashMap<String, PathBuf>,
+    /// Every venue file read and what it declared: which file each venue
+    /// was read from, and its [`files::Owner`].
+    venue_record: files::Record,
+
+    /// Every fixture type file read and what it declared, for each type's
+    /// [`files::Owner`]. The library's unrecorded archives are not in it.
+    fixture_type_record: files::Record,
 
     /// Why a fixture type named in a file did not load (a GDTF archive that
     /// would not expand, rich syntax in a `.light` file), by type name.
@@ -82,6 +88,10 @@ pub struct LightingSystem {
     /// Fixture type files that did not parse at all, as `file: error`. The
     /// types inside are unnamed, so these explain any type that is missing.
     fixture_type_file_errors: Vec<String>,
+
+    /// Venue files that did not parse, and venues two files declare, as
+    /// `file: error`, kept as the fixture type files' are.
+    venue_file_errors: Vec<String>,
 
     /// Venues.
     venues: HashMap<String, Venue>,
@@ -157,6 +167,18 @@ fn not_a_file(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Says which files declare a name twice: the parse keeps the last block,
+/// as it always has, and the file is read-only to the web UI.
+fn warn_of_repeats(record: &files::Record, noun: &str) {
+    for (file, name) in record.repeats() {
+        warn!(
+            file = %file.display(),
+            name,
+            "The file declares this {noun} more than once; the last one loads"
+        );
+    }
+}
+
 /// Why [`LightingSystem::type_in_mode`] has no type to drive.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeInModeError {
@@ -217,9 +239,11 @@ impl LightingSystem {
             mode_expansions: HashMap::new(),
             mode_errors: HashMap::new(),
             mode_warnings: HashMap::new(),
-            venue_files: HashMap::new(),
+            venue_record: files::Record::default(),
+            fixture_type_record: files::Record::default(),
             fixture_type_errors: HashMap::new(),
             fixture_type_file_errors: Vec::new(),
+            venue_file_errors: Vec::new(),
             venues: HashMap::new(),
             current_venue: None,
             logical_groups: HashMap::new(),
@@ -257,7 +281,8 @@ impl LightingSystem {
         let mut fresh = LightingSystem::new();
         fresh.load_venues_directory(&source.path)?;
         self.venues = fresh.venues;
-        self.venue_files = fresh.venue_files;
+        self.venue_record = fresh.venue_record;
+        self.venue_file_errors = fresh.venue_file_errors;
         self.group_cache.clear();
         if let Some(root) = self.project_root.clone() {
             self.expand_venue_modes(&root);
@@ -283,6 +308,7 @@ impl LightingSystem {
         self.fixture_types = fresh.fixture_types;
         self.referential = fresh.referential;
         self.fixture_type_files = fresh.fixture_type_files;
+        self.fixture_type_record = fresh.fixture_type_record;
         self.fixture_type_errors = fresh.fixture_type_errors;
         self.fixture_type_file_errors = fresh.fixture_type_file_errors;
         self.mode_warnings = fresh.mode_warnings;
@@ -374,6 +400,39 @@ impl LightingSystem {
                 }
             }
         }
+    }
+
+    /// The file a venue or fixture type was read from, and whether it can
+    /// be edited there, from what the load recorded; nothing is read again.
+    /// `None` for a name no file declares (a library-only GDTF type, say).
+    pub fn owner(&self, kind: files::Kind, name: &str) -> Option<files::Owner> {
+        self.record(kind).owner(name)
+    }
+
+    /// Every venue or fixture type name the load read from a file, with
+    /// its owner, and every file of that kind that did not parse, in file
+    /// order.
+    pub fn owners(&self, kind: files::Kind) -> Vec<files::Listed> {
+        self.record(kind).listing()
+    }
+
+    fn record(&self, kind: files::Kind) -> &files::Record {
+        match kind {
+            files::Kind::Venue => &self.venue_record,
+            files::Kind::FixtureType => &self.fixture_type_record,
+        }
+    }
+
+    /// Venue files that did not parse and venues two files declare, as
+    /// `file: error`, from the last load or venue reload.
+    pub fn venue_file_errors(&self) -> &[String] {
+        &self.venue_file_errors
+    }
+
+    /// Fixture type files that did not parse and types two files declare,
+    /// as `file: error`.
+    pub fn fixture_type_file_errors(&self) -> &[String] {
+        &self.fixture_type_file_errors
     }
 
     /// Returns an iterator over the (name, venue) pairs known to the system.
@@ -520,6 +579,8 @@ impl LightingSystem {
     fn load_fixture_types_directory(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
         not_a_file(dir)?;
         let read = super::project_files::type_files(dir);
+        warn_of_repeats(&read.record, "fixture type");
+        self.fixture_type_record = read.record;
         for declared in read.items {
             self.load_fixture_type(declared.name, declared.item, &declared.file);
         }
@@ -546,10 +607,10 @@ impl LightingSystem {
     fn load_venues_directory(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
         not_a_file(dir)?;
         let read = super::project_files::venues(dir);
+        warn_of_repeats(&read.record, "venue");
+        self.venue_record = read.record;
         for declared in read.items {
             info!(venue = declared.name.as_str(), "Loading venue");
-            self.venue_files
-                .insert(declared.name.clone(), declared.file.clone());
             self.venues.insert(declared.name, declared.item);
         }
         for problem in read.problems {
@@ -558,6 +619,11 @@ impl LightingSystem {
                 error = %problem.error,
                 "Failed to load venue file"
             );
+            self.venue_file_errors.push(format!(
+                "{}: {}",
+                super::project_files::display_in(dir, &problem.file),
+                problem.error
+            ));
         }
         Ok(())
     }
@@ -931,8 +997,8 @@ impl LightingSystem {
     /// A venue's file, for messages; empty when the venue was not read
     /// from one.
     fn venue_file_display(&self, venue: &str) -> String {
-        self.venue_files
-            .get(venue)
+        self.venue_record
+            .file_of(venue)
             .map(|p| p.display().to_string())
             .unwrap_or_default()
     }
@@ -1907,6 +1973,218 @@ mod tests {
         assert_eq!(system.fixture_types_iter().count(), 0);
         assert!(system.fixture_type_file_errors.is_empty());
         assert!(system.library_findings().is_empty());
+    }
+
+    /// A tree with every shape the loader meets: nested files, a name two
+    /// files declare, files declaring several blocks, files that do not
+    /// parse, rich syntax in a `.light` file, a file with no blocks of its
+    /// kind and a library archive.
+    fn mixed_tree() -> tempfile::TempDir {
+        let dir = first_run_project();
+        let base = dir.path();
+        let files: &[(&str, &str)] = &[
+            (
+                "lighting/fixture_types/rig/b.fixture",
+                "fixture_type \"Wash\" {\n  channels: 2\n  channel_map: { \"dimmer\": 1, \"red\": 2 }\n}\n\
+                 fixture_type \"Spot\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n",
+            ),
+            (
+                "lighting/fixture_types/rig/old/par.light",
+                "fixture_type \"Par\" {\n  channels: 3\n  channel_map: { \"dimmer\": 1 }\n}\n",
+            ),
+            ("lighting/fixture_types/broken.light", "fixture_type {"),
+            (
+                "lighting/fixture_types/Club (Main).light",
+                "fixture_type \"Stray\" {\n  channel \"pan\" @ 1 fine 2\n}\n",
+            ),
+            (
+                "lighting/venues/tour/club.light",
+                "venue \"club\" {\n  fixture \"W\" Wash @ 1:1\n}\n\
+                 venue \"bar\" {\n  fixture \"S\" Spot @ 1:1\n  fixture \"X\" Stray @ 1:5\n}\n",
+            ),
+            (
+                "lighting/venues/tour/old/rig.light",
+                "venue \"rig\" {\n  fixture \"Other\" Par @ 2:1\n}\n",
+            ),
+            ("lighting/venues/broken.venue", "venue {"),
+            (
+                "lighting/venues/legacy.light",
+                "venue \"old\" {\n  fixture \"W1\" Par @ 1:1\n  group \"wash\" [\"W1\"]\n}\n",
+            ),
+            ("lighting/venues/empty.venue", ""),
+        ];
+        for (rel, text) in files {
+            let path = base.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        dir
+    }
+
+    /// What a load gives, as text: every venue with its file and fixtures,
+    /// every type with its file, the problems and the current venue's report.
+    fn load_summary(system: &LightingSystem, base: &Path) -> Vec<String> {
+        let rel = |p: &str| p.replace(&format!("{}/", base.display()), "");
+        let mut out = Vec::new();
+        let mut venues: Vec<_> = system.venues_iter().collect();
+        venues.sort_by_key(|(name, _)| name.as_str());
+        for (name, venue) in venues {
+            let mut fixtures: Vec<String> = venue
+                .fixtures()
+                .values()
+                .map(|f| format!("{}:{}", f.name(), f.fixture_type()))
+                .collect();
+            fixtures.sort();
+            out.push(format!(
+                "venue {name} in {} [{}] problems {:?}",
+                rel(&system.venue_file_display(name)),
+                fixtures.join(", "),
+                system.venue_problems(name)
+            ));
+        }
+        let mut types: Vec<_> = system.fixture_types_iter().collect();
+        types.sort_by_key(|(name, _)| name.as_str());
+        for (name, fixture_type) in types {
+            out.push(format!(
+                "type {name} in {} channels {}",
+                rel(&system.fixture_type_files[name].display().to_string()),
+                fixture_type.channels().len()
+            ));
+        }
+        let mut gdtf: Vec<_> = system.gdtf_types_iter().map(|(n, _)| n.clone()).collect();
+        gdtf.sort();
+        for name in gdtf {
+            out.push(format!(
+                "gdtf {name} in {}",
+                rel(&system.fixture_type_files[&name].display().to_string())
+            ));
+        }
+        let mut errors: Vec<_> = system.fixture_type_errors.iter().collect();
+        errors.sort();
+        for (name, error) in errors {
+            out.push(format!("type error {name}: {error}"));
+        }
+        for error in &system.fixture_type_file_errors {
+            out.push(format!("type file error {error}"));
+        }
+        for name in ["Stray", "Missing"] {
+            out.push(format!(
+                "problem {name}: {:?}",
+                system.fixture_type_problem(name)
+            ));
+        }
+        for line in system.current_venue_report() {
+            out.push(format!("report {line}"));
+        }
+        out.into_iter().map(|line| rel(&line)).collect()
+    }
+
+    #[test]
+    fn a_mixed_tree_loads_as_on_main() {
+        let dir = mixed_tree();
+        let system = load_with(dir.path(), None);
+        // Captured from main (54f9718b) before the owner record went in:
+        // what loads, from where, and the problems, are as they were.
+        let main: &[&str] = &[
+            "venue bar in lighting/venues/tour/club.light [S:Spot, X:Stray] problems [(\"X\", \"Fixture type 'Stray' not found for fixture \\\"X\\\": rich channel syntax belongs in a .fixture file, not a .light file (venue \\\"bar\\\", lighting/venues/tour/club.light)\")]",
+            "venue club in lighting/venues/tour/club.light [W:Wash] problems []",
+            "venue rig in lighting/venues/rig.light [Brick:Synth Brick, Dim:Par] problems []",
+            "type Par in lighting/fixture_types/par.light channels 1",
+            "type Spot in lighting/fixture_types/rig/b.fixture channels 1",
+            "type Wash in lighting/fixture_types/rig/b.fixture channels 2",
+            "gdtf Synth Brick in lighting/library/synth.gdtf",
+            "type error Stray: rich channel syntax belongs in a .fixture file, not a .light file",
+            "type file error broken.light: Fixture types DSL parsing error at line 1, column 14: expected fixture_type_name\n\nContent around error:\n   1 | fixture_type {\n     |              ^",
+            "type file error rig/old/par.light: fixture type \"Par\" is defined in both par.light and rig/old/par.light",
+            "problem Stray: Some(\"rich channel syntax belongs in a .fixture file, not a .light file\")",
+            "problem Missing: Some(\"no fixture type named 'Missing' is defined; fixture type files that failed to parse: broken.light: Fixture types DSL parsing error at line 1, column 14: expected fixture_type_name\\n\\nContent around error:\\n   1 | fixture_type {\\n     |              ^; rig/old/par.light: fixture type \\\"Par\\\" is defined in both par.light and rig/old/par.light\")",
+        ];
+        assert_eq!(load_summary(&system, dir.path()), main);
+    }
+
+    #[test]
+    fn a_mixed_tree_keeps_its_venue_problems_as_type_problems_are_kept() {
+        let dir = mixed_tree();
+        let mut system = load_with(dir.path(), None);
+        let errors = system.venue_file_errors().to_vec();
+        assert_eq!(errors.len(), 3, "{errors:#?}");
+        assert!(errors[0].starts_with("broken.venue: "), "{errors:#?}");
+        assert!(errors[1].starts_with("legacy.light: "), "{errors:#?}");
+        assert_eq!(
+            errors[2],
+            "tour/old/rig.light: venue \"rig\" is defined in both rig.light and tour/old/rig.light"
+        );
+        // A reload reads them again rather than adding to them.
+        system.reload_venues().unwrap();
+        assert_eq!(system.venue_file_errors(), errors);
+        system.reload_fixture_types().unwrap();
+        assert_eq!(system.venue_file_errors(), errors);
+        assert_eq!(system.fixture_type_file_errors().len(), 2);
+    }
+
+    #[test]
+    fn a_mixed_tree_records_each_name_s_owner() {
+        use files::{Editable, Kind, ReadOnly};
+        let dir = mixed_tree();
+        let base = dir.path();
+        let mut system = load_with(base, None);
+        let venues = base.join("lighting/venues");
+        let types = base.join("lighting/fixture_types");
+        let owner = |system: &LightingSystem, kind, name| system.owner(kind, name).unwrap();
+
+        let rig = owner(&system, Kind::Venue, "rig");
+        assert_eq!(rig.path, venues.join("rig.light"));
+        assert_eq!(
+            rig.editable,
+            Editable::ReadOnly(ReadOnly::Duplicate {
+                files: vec![venues.join("rig.light"), venues.join("tour/old/rig.light")],
+            })
+        );
+        assert_eq!(
+            owner(&system, Kind::Venue, "bar").editable,
+            Editable::ReadOnly(ReadOnly::Shared {
+                others: vec!["club".to_string()],
+            })
+        );
+        // A venue in a file that does not parse has no owner: the file is
+        // listed, not searched.
+        assert_eq!(system.owner(Kind::Venue, "old"), None);
+        let unparseable: Vec<_> = system
+            .owners(Kind::Venue)
+            .into_iter()
+            .filter(|l| l.name.is_none())
+            .map(|l| l.owner.path)
+            .collect();
+        assert_eq!(
+            unparseable,
+            [venues.join("broken.venue"), venues.join("legacy.light")]
+        );
+
+        // A type that did not load (rich syntax in .light) is still its
+        // file's; a library-only GDTF type is no file's.
+        let stray = owner(&system, Kind::FixtureType, "Stray");
+        assert_eq!(stray.path, types.join("Club (Main).light"));
+        assert_eq!(stray.editable, Editable::Editable);
+        assert_eq!(system.owner(Kind::FixtureType, "Synth Brick"), None);
+        assert_eq!(
+            owner(&system, Kind::FixtureType, "Wash").editable,
+            Editable::ReadOnly(ReadOnly::Shared {
+                others: vec!["Spot".to_string()],
+            })
+        );
+
+        // A reload records the files as they are now.
+        std::fs::remove_file(venues.join("tour/old/rig.light")).unwrap();
+        std::fs::remove_file(types.join("rig/old/par.light")).unwrap();
+        system.reload_fixture_types().unwrap();
+        assert_eq!(
+            owner(&system, Kind::Venue, "rig").editable,
+            Editable::Editable
+        );
+        assert_eq!(
+            owner(&system, Kind::FixtureType, "Par").editable,
+            Editable::Editable
+        );
     }
 
     #[test]

@@ -152,6 +152,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One file name rule for venues and fixture types** (`lighting::files::stem`): the name is
+  NFC-normalised and lowercased one character at a time, so "Café Par" typed on a Mac
+  (decomposed, `e` and a combining accent) and elsewhere give one stem, `café_par`, and "ΟΔΟΣ"
+  gives `οδοσ`; letters, digits and `-` kept, with any combining mark on a kept letter
+  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept); any other run
+  of characters one `_`; no `_` at either end; at most 247 bytes, cut before a letter and its
+  marks rather than through them (a 300-letter name gives a 247-letter stem); `untitled` when
+  nothing is left. It replaces the web UI's rule and the importers' rule, which differed. Files already there load and are found by what they declare, as before; only the
+  name a new file is given, and the file looked at for a name no file declares, change:
+  - A new fixture type saved in the web UI (`PUT /api/lighting/fixture-types/<name>`) and a new
+    venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: "Wash (Front)" is
+    written as `wash_front.light` (or `.fixture`, `.venue`), where it was `wash__front_.light`.
+    A name of nothing but punctuation ("///") is written as `untitled.light`, where it was
+    `___.light`. A name too long for a file name is cut to fit, with room for `.fixture`,
+    where the save failed.
+  - A GDTF imported under a pinned name (`mtrack import-gdtf --name`, the web UI's GDTF import,
+    MCP `import_gdtf`) and a record the Fixture settings save writes for a library fixture keep
+    `-` and letters outside ASCII: "Astera-PixelBrick" is written as
+    `astera-pixelbrick.fixture`, where it was `astera_pixelbrick.fixture`, and "Café Par" as
+    `café_par.fixture`, where it was `caf_par.fixture`. A name of nothing but other characters
+    ("///") gives `untitled.fixture`, where it gave `fixture.fixture`. A file already at that
+    name still gets a `_2` suffix, now after the new stem (`astera-pixelbrick_2.fixture`); a
+    suffixed name is not cut, so one at the length cap can still be too long to write.
+  - A venue seeded from an MVR (`mtrack import-mvr --write`, the web UI's MVR import, MCP
+    `import_mvr`) is written as `built-in.venue` for "built-in", where it was `built_in.venue`.
+    A re-import that finds no venue of that name checks `built-in.venue` and `built-in.light`
+    for another venue in the way, where it checked `built_in.venue` and `built_in.light`.
+  - The web UI's venue and fixture type pages, for a name no file declares, look at the file
+    of the new stem: the fixture type "Wash (Front)" finds a `wash_front.fixture` or
+    `wash_front.light` that does not declare it (and says so), and no longer
+    `wash__front_.light`; the venue "Club (Main)" likewise `club_main.venue` or
+    `club_main.light`.
+  - An MVR export keeps its own file name: the venue "built-in" still exports as
+    `lighting/export/built_in.mvr`.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,
