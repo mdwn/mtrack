@@ -414,6 +414,16 @@
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
+  /** The song name a config's YAML declares, if it reads and has one. */
+  function declaredName(yaml: string): string | null {
+    try {
+      const name = (YAML.parse(yaml) as { name?: unknown } | null)?.name;
+      return typeof name === "string" && name !== "" ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function load() {
     loading = true;
     error = "";
@@ -606,7 +616,10 @@
         await lightingEditorRef.saveLightingFiles("before");
       }
 
-      // Save song config if dirty.
+      // Save song config if dirty. The name the saved config gives the
+      // song: a rename in the editor makes it another song's page, by its
+      // new name (#680), where the next save or delete goes.
+      let savedName: string | null = null;
       if (configDirty) {
         const res = await updateSong(songName, editedYaml);
         if (!res.ok) {
@@ -615,6 +628,7 @@
             data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
           return;
         }
+        savedName = declaredName(editedYaml);
         rawYaml = editedYaml;
       }
 
@@ -622,6 +636,13 @@
       // once the config no longer names them.
       if (lightingDirty && lightingEditorRef) {
         await lightingEditorRef.saveLightingFiles("after");
+      }
+
+      if (savedName && savedName !== songName) {
+        const base = `#/songs/${encodeURIComponent(savedName)}`;
+        window.location.hash =
+          activeTab === "tracks" ? base : `${base}/${activeTab}`;
+        return;
       }
 
       saveMsg = get(t)("common.saved");

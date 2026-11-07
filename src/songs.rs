@@ -2417,9 +2417,16 @@ impl Error for AnotherSongsConfig {}
 /// `Foo/song.yaml` declaring `name: Bar`, saving "Foo" fell back to the
 /// folder and overwrote Bar). No file there, a file that is no song's, or
 /// one that does not read and so goes by its folder's name, as the loader
-/// records it, is no other song's. The one rule of the web UI's and MCP's
-/// song writes and deletes.
-pub fn check_song_config_for(path: &Path, name: &str) -> Result<(), AnotherSongsConfig> {
+/// records it, is no other song's. A write whose config declares the same
+/// song the file does (`writing`) is that song's own edit, as after a
+/// rename in the editor, whose page still goes by the old name: taken. A
+/// delete has no such config (`None`). The one rule of the web UI's and
+/// MCP's song writes and deletes.
+pub fn check_song_config_for(
+    path: &Path,
+    name: &str,
+    writing: Option<&str>,
+) -> Result<(), AnotherSongsConfig> {
     if !path.is_file() {
         return Ok(());
     }
@@ -2428,7 +2435,7 @@ pub fn check_song_config_for(path: &Path, name: &str) -> Result<(), AnotherSongs
         Some(Ok(config)) => config.name().to_string(),
         Some(Err((declares, _))) => declares,
     };
-    if declares == name {
+    if declares == name || writing == Some(declares.as_str()) {
         Ok(())
     } else {
         Err(AnotherSongsConfig {
@@ -6011,10 +6018,10 @@ mod song_config_for_test {
         std::fs::create_dir(&foo).unwrap();
         let config = foo.join("song.yaml");
         // None there yet.
-        assert_eq!(check_song_config_for(&config, "Foo"), Ok(()));
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
         std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
-        assert_eq!(check_song_config_for(&config, "Bar"), Ok(()));
-        let refused = check_song_config_for(&config, "Foo").unwrap_err();
+        assert_eq!(check_song_config_for(&config, "Bar", None), Ok(()));
+        let refused = check_song_config_for(&config, "Foo", None).unwrap_err();
         assert_eq!(refused.declares, "Bar");
         assert_eq!(
             refused.to_string(),
@@ -6023,7 +6030,13 @@ mod song_config_for_test {
         // A song config that does not read goes by its folder, as the
         // loader records its failure.
         std::fs::write(&config, "kind: song\nname: Bar\ntracks: 5\n").unwrap();
-        assert_eq!(check_song_config_for(&config, "Foo"), Ok(()));
-        assert!(check_song_config_for(&config, "Bar").is_err());
+        assert_eq!(check_song_config_for(&config, "Foo", None), Ok(()));
+        assert!(check_song_config_for(&config, "Bar", None).is_err());
+        // A write of Bar's own config, under the folder's name, is Bar's
+        // edit; another song's config over it is not.
+        std::fs::write(&config, "name: Bar\ntracks: []\n").unwrap();
+        assert_eq!(check_song_config_for(&config, "Foo", Some("Bar")), Ok(()));
+        assert!(check_song_config_for(&config, "Foo", Some("Foo")).is_err());
+        assert!(check_song_config_for(&config, "Foo", Some("Qux")).is_err());
     }
 }

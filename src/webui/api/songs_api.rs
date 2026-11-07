@@ -328,7 +328,7 @@ pub(super) async fn delete_song(
     let _playlist_writes = super::playlists::PLAYLIST_WRITES.lock().await;
 
     // Resolve the song's YAML through the registry with path verification.
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, None) {
         Ok(p) => p,
         Err(e) => return *e,
     };
@@ -638,13 +638,15 @@ pub(super) async fn put_song(
     let _writing = SONG_WRITES.lock().await;
     // Look up the song in the registry to get its actual YAML (handles
     // nested folders and flat `<name>.yaml` songs).
-    let config_path = match song_config_path(&state.player, &state.songs_path(), &name) {
+    // Validated before writing to disk; the song it declares is what the
+    // write is checked against, after the lookup.
+    let parsed = validate_song_body(&body);
+    let writing = parsed.as_ref().ok().map(|config| config.name());
+    let config_path = match song_config_path(&state.player, &state.songs_path(), &name, writing) {
         Ok(p) => p,
         Err(e) => return *e,
     };
-
-    // Validate the YAML before writing to disk.
-    if let Err(e) = validate_song_body(&body) {
+    if let Err(e) = parsed {
         return e;
     }
 
@@ -817,11 +819,13 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// seen; within the verified song folder, which is within the songs root.
 /// A 409 when that file is another song's config
 /// ([`songs::check_song_config_for`], #680): a folder named as the song
-/// whose `song.yaml` declares another.
+/// whose `song.yaml` declares another, unless `writing` (the name the
+/// config being written declares) is that song's own.
 fn song_config_path(
     player: &crate::player::Player,
     songs_path: &std::path::Path,
     name: &str,
+    writing: Option<&str>,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
     let song_dir = resolve_song_dir(player, songs_path, name)?;
     let path = player
@@ -829,7 +833,7 @@ fn song_config_path(
         .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
         .unwrap_or_else(|| song_dir.join_filename("song.yaml"));
-    songs::check_song_config_for(&path, name).map_err(|e| {
+    songs::check_song_config_for(&path, name, writing).map_err(|e| {
         Box::new((StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response())
     })?;
     Ok(path)
@@ -1380,6 +1384,26 @@ mod test {
             );
             assert_eq!(std::fs::read_to_string(foo.join("song.yaml")).unwrap(), bar);
         }
+        // A save of Bar's own config under the folder's name is Bar's edit:
+        // the editor's page after it renamed the song still goes by the old
+        // name. The delete stays refused (above).
+        let renamed = "name: Bar\ntracks: []\nloop_playback: true\n";
+        let response = app
+            .clone()
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Foo")
+                    .body(Body::from(renamed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(foo.join("song.yaml")).unwrap(),
+            renamed
+        );
     }
 
     #[tokio::test]
