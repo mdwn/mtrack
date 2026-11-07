@@ -901,7 +901,8 @@ fn find_existing_venue(
         if let Some(Err(error)) = read.map(|read| &read.declared) {
             return Err(format!("{} does not parse: {error}", path.display()).into());
         }
-        let holds = venues.record.names_in(&path).unwrap_or_default();
+        let holds =
+            crate::lighting::files::unique(venues.record.names_in(&path).unwrap_or_default());
         return Err(format!(
             "{} exists but does not define a venue named \"{venue_name}\" (it holds: {}); \
              import under a different --name",

@@ -68,39 +68,68 @@ impl Kind {
 /// (`fixture`), a file name fits in 255 bytes.
 pub const MAX_STEM_BYTES: usize = 255 - ".fixture".len();
 
+/// A name or file stem folded for comparison: NFC, each character
+/// lowercased on its own (so "Σ" is always "σ", never the final "ς"),
+/// then NFC again. [`stem`] folds, and so does every comparison of a stem
+/// with a file already there, so the two always agree.
+pub fn fold(s: &str) -> String {
+    s.nfc()
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .nfc()
+        .collect()
+}
+
+/// Whether two names are the same name: equal once NFC-normalised. A name
+/// stays as its file writes it; only the comparison normalises.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.nfc().eq(b.nfc())
+}
+
 /// A venue or fixture type name as a file stem:
-/// - NFC-normalised, so a name typed on a Mac (decomposed) and elsewhere
-///   gives one stem;
-/// - lowercase, letters, digits and `-` kept, any run of anything else one
-///   `_`, no `_` at either end. A letter whose lowercase adds a mark
-///   ("İ" is "i" and a combining dot) keeps only its letters, so
-///   "İstanbul" is `istanbul`;
-/// - at most [`MAX_STEM_BYTES`], cut on a character boundary;
+/// - [`fold`]ed: NFC and lowercase, so a name typed on a Mac (decomposed)
+///   and elsewhere gives one stem;
+/// - letters, digits and `-` kept, with any combining mark that follows a
+///   kept character ("n̈", and the dot "İ" lowercases to); any other run
+///   one `_`; no `_` at either end;
+/// - at most [`MAX_STEM_BYTES`], cut before a character and its marks
+///   rather than through them;
 /// - `untitled` when nothing is left.
 ///
 /// "Astera-PixelBrick" is `astera-pixelbrick`; "Club (Main)" is
 /// `club_main`.
 pub fn stem(name: &str) -> String {
+    use unicode_normalization::char::is_combining_mark;
     let mut out = String::with_capacity(name.len());
-    for c in name.nfc() {
-        let letter = c.is_alphanumeric();
-        for l in c.to_lowercase() {
-            if l.is_alphanumeric() || l == '-' {
-                out.push(l);
-            } else if letter {
-                // Part of a letter's lowercase (a combining mark): not a
-                // separator.
-            } else if !out.ends_with('_') {
+    let mut after_kept = false;
+    for c in fold(name).chars() {
+        if c.is_alphanumeric() || c == '-' || (after_kept && is_combining_mark(c)) {
+            out.push(c);
+            after_kept = true;
+        } else {
+            if !out.ends_with('_') {
                 out.push('_');
             }
+            after_kept = false;
         }
     }
-    let out: String = out.nfc().collect();
     let mut cut = out.trim_matches('_');
     if cut.len() > MAX_STEM_BYTES {
         let mut end = MAX_STEM_BYTES;
         while !cut.is_char_boundary(end) {
             end -= 1;
+        }
+        // A cut just before a combining mark would part it from its base:
+        // take the base and its marks off too.
+        if cut[end..].chars().next().is_some_and(is_combining_mark) {
+            let kept = &cut[..end];
+            let marks = kept
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| is_combining_mark(*c))
+                .last()
+                .map_or(end, |(i, _)| i);
+            end = kept[..marks].char_indices().last().map_or(0, |(i, _)| i);
         }
         cut = cut[..end].trim_matches('_');
     }
@@ -208,6 +237,19 @@ impl Record {
         self.files
             .iter()
             .find(|read| read.blocks_of(name) > 0)
+            .map(|read| read.file.as_path())
+    }
+
+    /// The first file declaring `name` or a name [`same_name`] as it: what
+    /// a new name must not take. [`Self::file_of`] is the exact name's.
+    pub fn file_declaring_same(&self, name: &str) -> Option<&Path> {
+        self.files
+            .iter()
+            .find(|read| {
+                read.declared
+                    .as_ref()
+                    .is_ok_and(|c| c.names.iter().any(|n| same_name(n, name)))
+            })
             .map(|read| read.file.as_path())
     }
 
@@ -413,7 +455,7 @@ pub fn claim_record_for(
 }
 
 /// `names` without repeats, in first-seen order.
-fn unique(names: &[String]) -> Vec<String> {
+pub fn unique(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for name in names {
         if !out.contains(name) {
@@ -434,7 +476,7 @@ fn claim(
         Kind::Venue => super::project_files::venues(dir).record,
         Kind::FixtureType => super::project_files::type_files(dir).record,
     };
-    if let Some(file) = record.file_of(name) {
+    if let Some(file) = record.file_declaring_same(name) {
         return Err(Refusal::Declared {
             kind,
             name: name.to_string(),
@@ -444,7 +486,7 @@ fn claim(
     if kind == Kind::FixtureType {
         if let Some(other) = library
             .iter()
-            .find(|t| t.name == name && Some(t.archive.as_str()) != own_archive)
+            .find(|t| same_name(&t.name, name) && Some(t.archive.as_str()) != own_archive)
         {
             return Err(Refusal::Library {
                 name: name.to_string(),
@@ -471,7 +513,7 @@ fn claim(
         ) else {
             return false;
         };
-        file_stem.nfc().collect::<String>().to_lowercase() == wanted
+        fold(file_stem) == wanted
             && kind
                 .extensions()
                 .iter()
@@ -531,10 +573,44 @@ mod tests {
     }
 
     #[test]
-    fn stem_of_a_letter_whose_lowercase_adds_a_mark_keeps_the_letter() {
-        // "İ".to_lowercase() is "i" and U+0307: the mark is no separator.
-        assert_eq!(stem("İstanbul"), "istanbul");
-        assert_eq!(stem("İSTANBUL Club"), "istanbul_club");
+    fn stem_keeps_the_marks_of_a_kept_character() {
+        // "İ" lowercases to "i" and a combining dot (U+0307), which NFC
+        // cannot compose: the dot stays with its "i".
+        assert_eq!(stem("İstanbul"), "i\u{307}stanbul");
+        assert_eq!(stem("İSTANBUL Club"), "i\u{307}stanbul_club");
+        // A mark with no composed form stays with its letter.
+        assert_eq!(stem("Spın\u{308}al Tap"), "spın\u{308}al_tap");
+        // A mark after a separator is not a character of the name.
+        assert_eq!(stem("a \u{308}b"), "a_b");
+    }
+
+    #[test]
+    fn fold_lowercases_each_character_on_its_own() {
+        // `str::to_lowercase` would end "ΟΔΟΣ" in a final sigma.
+        assert_eq!("ΟΔΟΣ".to_lowercase(), "οδος");
+        assert_eq!(fold("ΟΔΟΣ"), "οδοσ");
+        assert_eq!(stem("ΟΔΟΣ"), "οδοσ");
+        assert_eq!(fold("ΟΔΟΣ"), fold("οδος".to_uppercase().as_str()));
+        assert_eq!(fold("İ"), "i\u{307}");
+        assert_eq!(fold("Cafe\u{301}"), "caf\u{e9}");
+    }
+
+    #[test]
+    fn the_stem_of_a_folded_name_is_the_stem_of_the_name() {
+        for name in [
+            "ΟΔΟΣ",
+            "İstanbul",
+            "i\u{307}stanbul",
+            "Cafe\u{301} Par",
+            "Spın\u{308}al Tap",
+            "Club (Main)",
+            "Astera-PixelBrick",
+            "STRASSE ß",
+            "///",
+        ] {
+            assert_eq!(stem(name), stem(&fold(name)), "{name:?}");
+            assert_eq!(fold(&stem(name)), stem(name), "{name:?}");
+        }
     }
 
     #[test]
@@ -551,6 +627,20 @@ mod tests {
         // A cut that ends on a separator is trimmed.
         let name = format!("{} b", "a".repeat(MAX_STEM_BYTES - 1));
         assert_eq!(stem(&name), "a".repeat(MAX_STEM_BYTES - 1));
+    }
+
+    #[test]
+    fn a_cut_never_parts_a_character_from_its_marks() {
+        // "हि" is a letter and a vowel sign (a combining mark), 3 bytes
+        // each. Placed so the cut falls between them, both go.
+        let name = format!("{}हि", "a".repeat(MAX_STEM_BYTES - 3));
+        assert_eq!(stem(&name), "a".repeat(MAX_STEM_BYTES - 3));
+        // A whole cluster that fits is kept.
+        let name = format!("{}हि", "a".repeat(MAX_STEM_BYTES - 6));
+        assert_eq!(stem(&name), format!("{}हि", "a".repeat(MAX_STEM_BYTES - 6)));
+        // Two marks on one base: the base goes with both.
+        let name = format!("{}n\u{308}\u{301}", "a".repeat(MAX_STEM_BYTES - 3));
+        assert_eq!(stem(&name), "a".repeat(MAX_STEM_BYTES - 3));
     }
 
     #[test]
@@ -734,12 +824,18 @@ mod tests {
             "tempo {\n  start: 0.0s\n  bpm: 120\n  time_signature: 4/4\n}\n",
             &["tempo"],
         );
+        mixed(
+            "sequence \"hit\" {\n    @1/1\n    front_wash: static, color: \"red\"\n}\n",
+            &["sequence \"hit\""],
+        );
+        mixed("include \"common.light\"\n", &["include \"common.light\""]);
     }
 
     #[test]
     fn a_venue_declared_twice_in_one_file_is_a_duplicate() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "twice.venue", &format!("{VENUE}{VENUE}"));
+        let second = "venue \"house\" {\n  fixture \"Dim\" Par @ 1:1\n}\n";
+        write(dir.path(), "twice.venue", &format!("{VENUE}{second}"));
         let read = crate::lighting::project_files::venues(dir.path());
         assert_eq!(
             read.record.owner("house").unwrap().editable,
@@ -750,8 +846,9 @@ mod tests {
                 ],
             })
         );
-        // It still loads, as before.
+        // It still loads, as before: the last block.
         assert_eq!(read.items.len(), 1);
+        assert_eq!(read.items[0].item.fixtures().len(), 1);
     }
 
     #[test]
@@ -882,6 +979,52 @@ mod tests {
             "brick.fixture",
             "fixture_type \"Synth Brick\" from gdtf(\"lighting/library/synth.gdtf\") {\n}\n",
         );
-        assert!(claim_record_for(dir.path(), synth, "Synth Brick", &library).is_err());
+        let error = claim_record_for(dir.path(), synth, "Synth Brick", &library).unwrap_err();
+        assert!(
+            matches!(&error, Refusal::Declared { file, .. } if file == "brick.fixture"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_name_is_taken_whatever_its_normalisation() {
+        let dir = tempfile::tempdir().unwrap();
+        // Declared decomposed, in a file whose stem is not the name's.
+        write(dir.path(), "old.venue", "venue \"Cafe\u{301}\" {\n}\n");
+        let error = claim_new(Kind::Venue, dir.path(), "Caf\u{e9}", &[]).unwrap_err();
+        assert!(
+            matches!(&error, Refusal::Declared { file, .. } if file == "old.venue"),
+            "{error:?}"
+        );
+        // The name stays as the file writes it.
+        let record = crate::lighting::project_files::venues(dir.path()).record;
+        assert!(record.owner("Cafe\u{301}").is_some());
+        assert!(record.owner("Caf\u{e9}").is_none());
+
+        let library = [library_type(
+            "Cafe\u{301} Par",
+            "lighting/library/cafe.gdtf",
+        )];
+        let error =
+            claim_new(Kind::FixtureType, dir.path(), "Caf\u{e9} Par", &library).unwrap_err();
+        assert!(matches!(error, Refusal::Library { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_final_sigma_or_a_dotted_i_file_blocks_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "ΟΔΟΣ.venue", "");
+        let error = claim_new(Kind::Venue, dir.path(), "ΟΔΟΣ", &[]).unwrap_err();
+        assert!(matches!(error, Refusal::Taken { .. }), "{error:?}");
+
+        // İ both ways: a file named with the capital blocks the folded
+        // name, and a file named folded blocks the capital.
+        write(dir.path(), "İstanbul.venue", "");
+        let error = claim_new(Kind::Venue, dir.path(), "i\u{307}stanbul", &[]).unwrap_err();
+        assert!(matches!(error, Refusal::Taken { .. }), "{error:?}");
+        let other = tempfile::tempdir().unwrap();
+        write(other.path(), "i\u{307}stanbul.venue", "");
+        let error = claim_new(Kind::Venue, other.path(), "İstanbul", &[]).unwrap_err();
+        assert!(matches!(error, Refusal::Taken { .. }), "{error:?}");
     }
 }
