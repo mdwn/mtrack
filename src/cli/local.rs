@@ -356,17 +356,15 @@ pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(
         } else {
             match config::Player::deserialize(config_file) {
                 Ok(player_config) => {
-                    if let Some(dmx) = player_config.dmx() {
-                        if let Some(lighting) = dmx.lighting() {
-                            let groups_count = lighting.groups().len();
-                            // Clone the lighting config to own it
-                            (Some(lighting.clone()), groups_count)
-                        } else {
-                            eprintln!("⚠️  Warning: No lighting configuration found in DMX config");
-                            (None, 0)
-                        }
+                    // This host's profile, as the player reads it.
+                    if let Some(lighting) = player_config.host_lighting() {
+                        let groups_count = lighting.groups().len();
+                        // Clone the lighting config to own it
+                        (Some(lighting.clone()), groups_count)
                     } else {
-                        eprintln!("⚠️  Warning: No DMX configuration found in config file");
+                        eprintln!(
+                            "⚠️  Warning: No lighting configuration found in this host's profile"
+                        );
                         (None, 0)
                     }
                 }
@@ -591,13 +589,8 @@ pub(super) fn project_lighting(
     venues_dir: Option<String>,
 ) -> Result<(std::path::PathBuf, crate::config::lighting::ProjectDirs), Box<dyn Error>> {
     let config_path = super::migrate::resolve_config_path(project);
-    let dirs = if config_path.is_file() {
-        config::Player::deserialize(&config_path)
-            .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?
-            .lighting_dirs()
-    } else {
-        crate::config::lighting::ProjectDirs::of(None)
-    };
+    let dirs = config::Player::lighting_dirs_at(&config_path)
+        .map_err(|e| format!("cannot read {}: {e}", config_path.display()))?;
     let dirs = crate::config::lighting::ProjectDirs {
         fixture_types: fixture_types_dir.unwrap_or(dirs.fixture_types),
         venues: venues_dir.unwrap_or(dirs.venues),

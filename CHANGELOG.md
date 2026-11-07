@@ -414,6 +414,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     relative to it, nested too (`tour/shared.light`), where only a top-level basename was taken.
   - A write that fails says "could not write <file>: <reason>", as the web UI does, where MCP said
     "write failed: <reason>"; this holds for every MCP file write.
+  - The venue and fixture type tools no longer make the configured directory on every call (a
+    listing, a read, a refused write): a save makes it once its text has passed its checks, and a
+    fixture type save makes only the fixture types directory.
 - **MCP lists venues and fixture types as the loader reads them, in the host's directories**:
   `list_venue_files` and `list_fixture_type_files` list every venue or type file at any depth
   (`tour/shared.light`), where only top-level files were listed, and add each name's owner
@@ -423,6 +426,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directories of the profile this host runs, as the engine does, where it used the first
   profile's: with a profile for `pi-a` naming `other/venues` listed before one for this host
   naming `rig/venues`, MCP now reads and writes `rig/venues`.
+- **Every config read of the lighting section uses the profile this host runs**: with no engine
+  running, the web UI's lighting groups (`GET /api/lighting/groups`), the current venue a venue or
+  fixture type save checks (`venue_error`), and `mtrack verify-light-show --config` now read this
+  host's profile, as the engine does, where they read the first profile: with a profile for
+  `pi-a` declaring group `elsewhere` listed before this host's declaring `here`, the groups are
+  `here`. `verify-light-show` says "No lighting configuration found in this host's profile" where
+  it said there was none in the DMX config, or no DMX configuration.
 - **`PUT` and `DELETE /api/lighting/<path>` write song light shows only**: a path inside the
   venues or fixture types directory this host's profile gives is refused with 400 ("lighting/
   venues/club.light is in the venues directory (lighting/venues): a venue is saved by name, on

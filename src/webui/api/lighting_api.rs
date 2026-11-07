@@ -349,16 +349,13 @@ async fn refuse_venue_or_type_file(
     path: &std::path::Path,
     name: &str,
 ) -> Result<(), lighting_writes::Answer> {
-    let dirs = match state.player.config_store() {
-        Some(store) => store.read_config().await.lighting_dirs(),
-        // codeql[rust/path-injection] config_path is set at startup, not user input.
-        None => crate::config::Player::deserialize(&state.config_path)
-            .map(|config| config.lighting_dirs())
-            .unwrap_or_else(|_| crate::config::lighting::ProjectDirs::of(None)),
-    };
-    let project = crate::util::project_dir_of(&state.config_path);
+    let config_path = state.config_path.clone();
+    let project = crate::util::project_dir_of(&config_path);
     let (path, name) = (path.to_path_buf(), name.to_string());
     let refused = tokio::task::spawn_blocking(move || {
+        // codeql[rust/path-injection] config_path is set at startup, not user input.
+        let dirs = crate::config::Player::lighting_dirs_at(&config_path)
+            .unwrap_or_else(|_| crate::config::lighting::ProjectDirs::of(None));
         [
             (Kind::Venue, dirs.venues),
             (Kind::FixtureType, dirs.fixture_types),
@@ -1502,7 +1499,13 @@ pub(super) async fn put_fixture_type(
     .rename;
     let venue_error = match &rename {
         Some(_) => {
-            super::fixture_settings::reload_types_and_venues(&state, &name, &venues_dir).await
+            super::fixture_settings::reload_types_and_venues(
+                &state.player,
+                &state.config_path,
+                &name,
+                &venues_dir,
+            )
+            .await
         }
         None => None,
     };
@@ -2011,8 +2014,7 @@ async fn groups_from_config(config_path: &std::path::Path) -> axum::response::Re
         crate::config::Player::deserialize(&path)
             .map(|player| {
                 player
-                    .dmx()
-                    .and_then(|dmx| dmx.lighting())
+                    .host_lighting()
                     .map(|lighting| {
                         let mut names: Vec<String> = lighting.groups().keys().cloned().collect();
                         names.sort();
@@ -2276,8 +2278,19 @@ pub(super) async fn venue_error_after_save(
     name: &str,
     venues_dir: &std::path::Path,
 ) -> Option<crate::lighting::findings::VenueError> {
-    let player = state.player.clone();
-    let config_path = state.config_path.clone();
+    venue_error_of(&state.player, &state.config_path, name, venues_dir).await
+}
+
+/// [`venue_error_after_save`] for `player`, whose config is at
+/// `config_path`: what MCP's writes answer too.
+pub(crate) async fn venue_error_of(
+    player: &std::sync::Arc<crate::player::Player>,
+    config_path: &std::path::Path,
+    name: &str,
+    venues_dir: &std::path::Path,
+) -> Option<crate::lighting::findings::VenueError> {
+    let player = player.clone();
+    let config_path = config_path.to_path_buf();
     let venue = name.to_string();
     let venues_dir = venues_dir.to_path_buf();
     let found = tokio::task::spawn_blocking(move || {
@@ -2290,7 +2303,7 @@ pub(super) async fn venue_error_after_save(
         }
         // codeql[rust/path-injection] config_path is set at startup, not user input.
         let config = crate::config::Player::deserialize(&config_path).ok()?;
-        let lighting = config.dmx().and_then(|d| d.lighting())?;
+        let lighting = config.host_lighting()?;
         if lighting.current_venue() != Some(venue.as_str()) {
             return None;
         }
@@ -2779,6 +2792,55 @@ mod test {
     /// by the engine. Answering `{"groups": []}` there emptied the cue-target
     /// autocomplete with no error to explain it, because the endpoint only read
     /// them off a live engine.
+    #[tokio::test]
+    async fn lighting_groups_come_from_this_hosts_profile() {
+        let (state, dir) = test_state();
+        std::fs::write(
+            &state.config_path,
+            r#"songs: songs
+profiles:
+  - hostname: not-this-host-x9
+    dmx:
+      universes: []
+      lighting:
+        groups:
+          elsewhere:
+            name: elsewhere
+            constraints:
+              - AllOf: ["x"]
+  - dmx:
+      universes: []
+      lighting:
+        groups:
+          here:
+            name: here
+            constraints:
+              - AllOf: ["y"]
+"#,
+        )
+        .unwrap();
+        let _keep = dir;
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<&str> = parsed["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .filter_map(|g| g["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["here"], "{parsed}");
+    }
+
     #[tokio::test]
     async fn lighting_groups_come_from_the_config_without_a_dmx_engine() {
         let (state, dir) = test_state();

@@ -2098,7 +2098,13 @@ impl McpServer {
     /// project, as the engine reads them: the host-matched profile's
     /// configured ones, else the defaults.
     async fn project_lighting_dirs(&self) -> Result<(String, String), McpError> {
-        let dirs = self.config_store()?.read_config().await.lighting_dirs();
+        let config_path = self.config_store()?.path().to_path_buf();
+        let dirs = tokio::task::spawn_blocking(move || {
+            crate::config::Player::lighting_dirs_at(&config_path)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("the config does not load: {e}"), None))?;
         Ok((dirs.fixture_types, dirs.venues))
     }
 
@@ -2489,6 +2495,7 @@ impl McpServer {
         let ext = crate::webui::api::lighting_api::fixture_type_extension(args.ext.as_deref())
             .map_err(answer_err)?;
         let renaming = args.from.is_some();
+        let type_name = args.name.clone();
         let save = self
             .type_save(
                 args.name,
@@ -2504,8 +2511,17 @@ impl McpServer {
             "rename": saved.rename,
         });
         if renaming {
-            if let Some(error) = self.reload_types_and_venues().await {
-                body["venue_error"] = error;
+            let venues_dir = self.resolve_lighting_dir(Kind::Venue).await?;
+            let config_path = self.config_store()?.path().to_path_buf();
+            let error = crate::webui::api::fixture_settings::reload_types_and_venues(
+                &self.player,
+                &config_path,
+                &type_name,
+                &venues_dir,
+            )
+            .await;
+            if let Some(error) = error {
+                body["venue_error"] = json!(error);
             }
         }
         Ok(ok_json(body))
@@ -2529,19 +2545,6 @@ impl McpServer {
             from_form: false,
             body,
         })
-    }
-
-    /// After a fixture type's rename rewrote venues: the engine's types
-    /// re-read, then its venues ([`Self::reload_venue_if_current`]), as
-    /// the web UI's rename does; whether the current venue no longer
-    /// registers.
-    async fn reload_types_and_venues(&self) -> Option<Value> {
-        let player = self.player.clone();
-        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || player.reload_fixture_types()).await
-        {
-            tracing::warn!(error = %e, "fixture type written, but the running engine could not reload it");
-        }
-        self.reload_venue_if_current().await.1
     }
 
     #[tool(description = "Validate and write a lighting `.light` file for a \
@@ -3911,25 +3914,23 @@ impl McpServer {
 
     /// Resolves the project's lighting subdirectory (venues or fixture types:
     /// the host-matched profile's configured one, else the default the
-    /// engine reads) to an absolute path. The directory is created if it
-    /// doesn't yet exist *and* lies inside the project directory, so write
-    /// tools work against fresh configs without making directories wherever
-    /// a config points.
+    /// engine reads) to an absolute path inside the project, as the web UI
+    /// resolves it, without creating it: a save makes it once its text has
+    /// passed its checks ([`lighting_writes`]), so a refused one makes
+    /// nothing.
     pub(crate) async fn resolve_lighting_dir(
         &self,
         kind: Kind,
     ) -> Result<std::path::PathBuf, McpError> {
+        use crate::webui::safe_path::{SafePath, VerifiedRoot};
         let (fixture_types, venues) = self.project_lighting_dirs().await?;
         let rel = match kind {
             Kind::Venue => venues,
             Kind::FixtureType => fixture_types,
         };
         let project = crate::util::project_dir_of(self.config_store()?.path());
-        let dir = project.join(rel);
-        let created = crate::util::create_dir_within_async(dir.clone(), project)
-            .await
-            .map_err(create_within_err)?;
-        Ok(created.into_path_buf())
+        let root = VerifiedRoot::new(&project).map_err(safepath_err)?;
+        SafePath::validate_relative(&rel, &root).map_err(safepath_err)
     }
 
     /// The project root, canonical, as the web UI's lighting writes take it.
@@ -5284,6 +5285,38 @@ profiles:
                 .await,
         );
         drop(fixture);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_save_makes_no_directory() {
+        let (server, fixture) = server(&[]).await;
+        let root = fixture.root.clone();
+        let _ = answer(server.list_venue_files().await);
+        let _ = refusal(
+            server
+                .write_venue(Parameters(write_venue_args("New", venue("Else", ""), None)))
+                .await,
+        );
+        let _ = refusal(
+            server
+                .write_fixture_type(Parameters(write_type_args(
+                    "P",
+                    "fixture_type {".into(),
+                    None,
+                )))
+                .await,
+        );
+        assert!(!root.join("rig").exists(), "nothing made");
+        let _ = answer(
+            server
+                .write_fixture_type(Parameters(write_type_args("P", par("P", 1), None)))
+                .await,
+        );
+        assert!(root.join("rig/types/p.fixture").is_file());
+        assert!(
+            !root.join("rig/venues").exists(),
+            "a type save makes no venues dir"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

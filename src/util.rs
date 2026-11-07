@@ -1379,9 +1379,11 @@ pub fn project_dir_of(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Whether `path`, which need not exist, is `dir` or inside it, however
-/// either is spelled: the nearest of `path` and its ancestors that is there
-/// is resolved (`..`, symlinks), then it and each ancestor of it is compared
+/// Whether `path`, which need not exist, is `dir` or inside it. `path` is
+/// expected already resolved, as `SafePath` resolves a request's path: a
+/// `..` after a component that is not there is not normalised here. The
+/// nearest of `path` and its ancestors that is there is canonicalized
+/// (symlinks), then it and each ancestor of it is compared
 /// with `dir` by identity (device and inode on Unix), so a name in another
 /// case on a case-insensitive file system, or a second path to the same
 /// directory, is the same directory. `false` when `dir` is not there:
