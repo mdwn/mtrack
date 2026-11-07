@@ -57,6 +57,9 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError, Peer, RoleServer, ServerHandler,
 };
 use schemars::JsonSchema;
+
+use crate::lighting::files::Kind;
+use crate::webui::api::lighting_writes;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
@@ -440,17 +443,45 @@ pub struct WriteSongLightingArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LightingFileArgs {
-    /// Basename of a `.light` file (no path separators).
+    /// The file's path relative to the configured directory, as the
+    /// listing gives it (`club.venue`, `tour/old.light`).
     pub file: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct WriteLightingFileArgs {
-    /// Basename of the `.light` file to write (no path separators).
-    pub file: String,
-    /// Full `.light` DSL source. Validated before being written.
+pub struct LightingNameArgs {
+    /// The venue's or fixture type's name, as its file declares it.
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WriteVenueArgs {
+    /// The venue's name: the one venue `source` declares.
+    pub name: String,
+    /// The venue's whole file: this one venue and nothing else.
     pub source: String,
+    /// The venue's old name, to rename it.
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFixtureTypeArgs {
+    /// The fixture type's name: the one type `source` declares.
+    pub name: String,
+    /// The type's whole file: this one fixture type and nothing else.
+    pub source: String,
+    /// The type's old name, to rename it; every venue line naming the old
+    /// name is retyped.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// `fixture` moves a `.light` type to a `.fixture`; `light` keeps a
+    /// `.light` (refused for a `.fixture`). New types are `.fixture`.
+    #[serde(default)]
+    pub ext: Option<String>,
 }
 
 /// String replacement parameters shared by every patch tool. Matches the
@@ -525,8 +556,8 @@ pub struct PatchSongLightingArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatchLightingFileArgs {
-    /// Basename of the `.light` file under the configured directory.
-    pub file: String,
+    /// The venue's or fixture type's name, as its file declares it.
+    pub name: String,
     /// Exact text to replace. Must occur in the file.
     pub old_string: String,
     /// Replacement text.
@@ -2064,15 +2095,11 @@ impl McpServer {
     }
 
     /// The project's fixture types and venues directories, relative to the
-    /// project, as the engine reads them: the active profile's configured
-    /// ones, else the defaults.
+    /// project, as the engine reads them: the host-matched profile's
+    /// configured ones, else the defaults.
     async fn project_lighting_dirs(&self) -> Result<(String, String), McpError> {
-        let cfg = self.config_store()?.read_config().await;
-        let lighting = cfg.lighting_from_profiles();
-        Ok((
-            crate::config::lighting::fixture_types_dir(lighting).to_string(),
-            crate::config::lighting::venues_dir(lighting).to_string(),
-        ))
+        let dirs = self.config_store()?.read_config().await.lighting_dirs();
+        Ok((dirs.fixture_types, dirs.venues))
     }
 
     #[tool(description = "Resolve an MVR venue archive against the project and \
@@ -2182,26 +2209,38 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the venue files (`.light` and `.venue`) in the \
-        configured venues directory. Returns the resolved directory and a list \
-        of basenames.")]
+    #[tool(description = "List the venues in the configured venues directory \
+        (the host's profile's), as the lighting system reads them: every \
+        `.light` and `.venue` file at any depth (`files`, relative to `dir`), \
+        and each venue with its file and whether it can be written by name \
+        (`venues`: `{name, file, editable, reason}`; `name` is null for a \
+        file that does not parse). A venue whose file is not its alone (it \
+        shares the file, the file holds other items, or the name is declared \
+        twice) is read-only: `reason` says why, and the file is edited by \
+        hand.")]
     async fn list_venue_files(&self) -> Result<CallToolResult, McpError> {
-        let dir = self.resolve_lighting_dir(LightingDirKind::Venues).await?;
-        let entries = list_light_files(&dir, LightingDirKind::Venues).await?;
+        let dir = self.resolve_lighting_dir(Kind::Venue).await?;
+        let listed = dir.clone();
+        let (files, venues) = tokio::task::spawn_blocking(move || {
+            let record = crate::lighting::project_files::venues(&listed).record;
+            listing_of(Kind::Venue, &listed, &record)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?;
         Ok(ok_json(json!({
             "dir": dir.display().to_string(),
-            "files": entries,
+            "files": files,
+            "venues": venues,
         })))
     }
 
-    #[tool(description = "Read a venue file (`.light` or `.venue`) by basename.")]
+    #[tool(description = "Read any file in the configured venues directory \
+        by its path relative to it, as list_venue_files gives it.")]
     async fn read_venue(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
-            .await?;
+        let path = self.resolve_lighting_file(Kind::Venue, &args.file).await?;
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2210,31 +2249,39 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Validate and write a venue file (`.light`, or `.venue` \
-        for one using positions, rotations, a `beam_angle`, focus points or MVR \
-        provenance) into the \
-        configured venues directory. The DSL is parsed with the in-tree venue \
-        parser; on failure the file is not written."
+        description = "Write a venue by name, by the web UI's rules: `source` \
+        is the venue's whole file and declares this one venue and nothing \
+        else. A new venue is written to `<venues dir>/<stem>.venue` and is \
+        refused when the name or that file is taken; an existing one is \
+        rewritten where it lives, only when its file is its alone (otherwise \
+        it is read-only, refused with the file and why). `from` renames: a \
+        file at the old name's own place moves to the new name's, any other \
+        keeps its file name. A `.light` venue whose text needs the newer \
+        format (positions, rotations, a `beam_angle`, a mode, focus points or \
+        MVR provenance) moves to `<its stem>.venue`."
     )]
     async fn write_venue(
         &self,
-        Parameters(args): Parameters<WriteLightingFileArgs>,
+        Parameters(args): Parameters<WriteVenueArgs>,
     ) -> Result<CallToolResult, McpError> {
-        crate::lighting::parser::parse_venues(&args.source)
-            .map_err(|e| McpError::invalid_params(format!("invalid venue: {e}"), None))?;
-        let path = self
-            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
-            .await?;
-        // Taken turns with the web UI's venue saves, which check the file's
-        // version before writing. Held from the check on the file's name,
-        // which goes by whether the file is there.
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        validate_name_to_write(&path, &args.file)?;
-        staged_write_string(&path, &args.source, false).await?;
+        let dir = self.resolve_lighting_dir(Kind::Venue).await?;
+        let project = self.project_root()?;
+        let saved = save_by_name(move || {
+            lighting_writes::save_venue(lighting_writes::VenueSave {
+                project,
+                dir,
+                name: args.name,
+                from: args.from,
+                expected: None,
+                needs_new_format: None,
+                body: lighting_writes::Body::Text(args.source),
+            })
+        })
+        .await?;
         let (reloaded, venue_error) = self.reload_venue_if_current().await;
         let mut body = json!({
-            "path": path.display().to_string(),
-            "bytes": args.source.len(),
+            "path": saved.file.display().to_string(),
+            "bytes": saved.text.len(),
             "reloaded": reloaded,
         });
         if let Some(error) = venue_error {
@@ -2276,32 +2323,37 @@ impl McpServer {
         (reloaded, venue_error)
     }
 
-    #[tool(description = "Delete a venue file (`.light` or `.venue`) from the \
-        configured venues directory.")]
+    #[tool(description = "Delete a venue by name, by the web UI's rules: its \
+        file is removed only when it is the venue's alone; a read-only venue \
+        is refused with the file and why.")]
     async fn delete_venue(
         &self,
-        Parameters(args): Parameters<LightingFileArgs>,
+        Parameters(args): Parameters<LightingNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
-            .await?;
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        remove_lighting_file(&path).await?;
-        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+        let dir = self.resolve_lighting_dir(Kind::Venue).await?;
+        let deleted = save_by_name(move || lighting_writes::delete_venue(&dir, &args.name)).await?;
+        Ok(ok_json(json!({"deleted": deleted.display().to_string()})))
     }
 
-    #[tool(description = "Delete a fixture-type `.light` file from the \
-        configured fixture types directory.")]
+    #[tool(description = "Delete a fixture type by name, by the web UI's \
+        rules: its file is removed only when it is the type's alone (a \
+        read-only type is refused with the file and why), with its GDTF \
+        archive when no other type uses it; a GDTF in the library with no \
+        record is its archive, deleted.")]
     async fn delete_fixture_type(
         &self,
-        Parameters(args): Parameters<LightingFileArgs>,
+        Parameters(args): Parameters<LightingNameArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
-            .await?;
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        remove_lighting_file(&path).await?;
-        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+        let dir = self.resolve_lighting_dir(Kind::FixtureType).await?;
+        let root = self.project_root()?;
+        let deleted =
+            save_by_name(move || lighting_writes::delete_fixture_type(&root, &dir, &args.name))
+                .await?;
+        Ok(ok_json(json!({
+            "deleted": deleted.file.map(|f| f.display().to_string()),
+            "archive_removed": deleted.archive_removed,
+            "archive_kept": deleted.archive_kept,
+        })))
     }
 
     #[tool(description = "Delete a lighting `.light` file belonging to a song, \
@@ -2370,27 +2422,47 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the fixture-type `.light` or `.fixture` files \
-        in the configured fixture types directory.")]
+    #[tool(description = "List the fixture types in the configured fixture \
+        types directory (the host's profile's), as the lighting system reads \
+        them: every `.light` and `.fixture` file at any depth (`files`, \
+        relative to `dir`), each type with its file and whether it can be \
+        written by name (`fixture_types`: `{name, file, editable, reason}`; \
+        `name` is null for a file that does not parse), and the library's \
+        GDTF types with no record (`library`: `{name, archive}`).")]
     async fn list_fixture_type_files(&self) -> Result<CallToolResult, McpError> {
-        let dir = self
-            .resolve_lighting_dir(LightingDirKind::FixtureTypes)
-            .await?;
-        let entries = list_light_files(&dir, LightingDirKind::FixtureTypes).await?;
+        let dir = self.resolve_lighting_dir(Kind::FixtureType).await?;
+        let root = self.project_root()?;
+        let listed = dir.clone();
+        let (files, types, library) = tokio::task::spawn_blocking(move || {
+            let project = crate::lighting::project_files::fixture_types(&root, Some(&listed));
+            let (files, types) = listing_of(Kind::FixtureType, &listed, &project.files.record);
+            let library: Vec<Value> = project
+                .library
+                .types
+                .iter()
+                .map(|t| json!({"name": t.name, "archive": t.archive}))
+                .collect();
+            (files, types, library)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?;
         Ok(ok_json(json!({
             "dir": dir.display().to_string(),
-            "files": entries,
+            "files": files,
+            "fixture_types": types,
+            "library": library,
         })))
     }
 
-    #[tool(description = "Read a fixture-type `.light` or `.fixture` file by \
-        basename.")]
+    #[tool(description = "Read any file in the configured fixture types \
+        directory by its path relative to it, as list_fixture_type_files \
+        gives it.")]
     async fn read_fixture_type(
         &self,
         Parameters(args): Parameters<LightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self
-            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
+            .resolve_lighting_file(Kind::FixtureType, &args.file)
             .await?;
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
@@ -2399,27 +2471,77 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Validate and write a fixture-type `.light` or \
-        `.fixture` file into the configured fixture types directory. The DSL \
-        is parsed first; on failure the file is not written.")]
+    #[tool(description = "Write a fixture type by name, by the web UI's \
+        rules: `source` is the type's whole file and declares this one type \
+        and nothing else. A new type is written to `<fixture types \
+        dir>/<stem>.fixture` and is refused when the name, that file or an \
+        unrecorded library GDTF's name is taken; an existing one is \
+        rewritten where it lives, only when its file is its alone (otherwise \
+        it is read-only, refused with the file and why). `from` renames, \
+        retyping every venue line naming the old name (refused, nothing \
+        written, when a venue file cannot be). A `.light` type whose text \
+        needs a `.fixture` (rich channels, a GDTF reference, or `ext: \
+        fixture`) moves to `<its stem>.fixture`.")]
     async fn write_fixture_type(
         &self,
-        Parameters(args): Parameters<WriteLightingFileArgs>,
+        Parameters(args): Parameters<WriteFixtureTypeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let types = crate::lighting::parser::parse_fixture_types(&args.source)
-            .map_err(|e| McpError::invalid_params(format!("invalid fixture type: {e}"), None))?;
-        refuse_rich_channels_in_light(&args.file, types.values())?;
-        let path = self
-            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
+        let ext = crate::webui::api::lighting_api::fixture_type_extension(args.ext.as_deref())
+            .map_err(answer_err)?;
+        let renaming = args.from.is_some();
+        let save = self
+            .type_save(
+                args.name,
+                args.from,
+                ext,
+                lighting_writes::Body::Text(args.source),
+            )
             .await?;
-        // Held from the check on the file's name, as write_venue holds it.
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        validate_name_to_write(&path, &args.file)?;
-        staged_write_string(&path, &args.source, false).await?;
-        Ok(ok_json(json!({
-            "path": path.display().to_string(),
-            "bytes": args.source.len(),
-        })))
+        let saved = save_by_name(move || lighting_writes::save_fixture_type(save)).await?;
+        let mut body = json!({
+            "path": saved.file.display().to_string(),
+            "bytes": saved.text.len(),
+            "rename": saved.rename,
+        });
+        if renaming {
+            if let Some(error) = self.reload_types_and_venues().await {
+                body["venue_error"] = error;
+            }
+        }
+        Ok(ok_json(body))
+    }
+
+    /// A fixture type save in the host's directories.
+    async fn type_save(
+        &self,
+        name: String,
+        from: Option<String>,
+        ext: Option<&'static str>,
+        body: lighting_writes::Body,
+    ) -> Result<lighting_writes::TypeSave, McpError> {
+        Ok(lighting_writes::TypeSave {
+            root: self.project_root()?,
+            dir: self.resolve_lighting_dir(Kind::FixtureType).await?,
+            venues_dir: self.resolve_lighting_dir(Kind::Venue).await?,
+            name,
+            from,
+            ext,
+            from_form: false,
+            body,
+        })
+    }
+
+    /// After a fixture type's rename rewrote venues: the engine's types
+    /// re-read, then its venues ([`Self::reload_venue_if_current`]), as
+    /// the web UI's rename does; whether the current venue no longer
+    /// registers.
+    async fn reload_types_and_venues(&self) -> Option<Value> {
+        let player = self.player.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || player.reload_fixture_types()).await
+        {
+            tracing::warn!(error = %e, "fixture type written, but the running engine could not reload it");
+        }
+        self.reload_venue_if_current().await.1
     }
 
     #[tool(description = "Validate and write a lighting `.light` file for a \
@@ -2647,66 +2769,62 @@ impl McpServer {
         Ok(patch_response(&path, &original, &updated))
     }
 
-    #[tool(
-        description = "Patch a venue file (`.light` or `.venue`) with a string \
-        replacement. The result is parsed with the venue parser before being written."
-    )]
+    #[tool(description = "Patch a venue by name with a string replacement, by \
+        the web UI's rules: only a venue whose file is its alone (a \
+        read-only one is refused with the file and why), and the result must \
+        still declare this one venue and nothing else. A `.light` venue whose \
+        patched text needs the newer format moves to `<its stem>.venue`.")]
     async fn patch_venue(
         &self,
         Parameters(args): Parameters<PatchLightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_lighting_file(LightingDirKind::Venues, &args.file)
-            .await?;
-        // Held from the read, as patch_song holds its own.
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        let original = read_text(&path).await?;
-        let updated = apply_patch(
-            &original,
-            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
-        )?;
-        crate::lighting::parser::parse_venues(&updated).map_err(|e| {
-            McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
-        })?;
-        staged_write_string(&path, &updated, false).await?;
+        let dir = self.resolve_lighting_dir(Kind::Venue).await?;
+        let project = self.project_root()?;
+        let patch = patch_of(&args);
+        let saved = save_by_name(move || {
+            lighting_writes::save_venue(lighting_writes::VenueSave {
+                project,
+                dir,
+                name: args.name,
+                from: None,
+                expected: None,
+                needs_new_format: None,
+                body: lighting_writes::Body::Patch(patch),
+            })
+        })
+        .await?;
+        let before = saved.before.as_deref().unwrap_or_default();
         let (_, venue_error) = self.reload_venue_if_current().await;
         let Some(error) = venue_error else {
-            return Ok(patch_response(&path, &original, &updated));
+            return Ok(patch_response(&saved.file, before, &saved.text));
         };
         // The patch landed; the current venue no longer registers.
         Ok(ok_json(json!({
-            "path": path.display().to_string(),
-            "bytes_before": original.len(),
-            "bytes_after": updated.len(),
-            "contents": updated,
+            "path": saved.file.display().to_string(),
+            "bytes_before": before.len(),
+            "bytes_after": saved.text.len(),
+            "contents": saved.text,
             "venue_error": error,
         })))
     }
 
-    #[tool(description = "Patch a fixture-type `.light` file with a string \
-        replacement. The result is parsed with the fixture-type parser before \
-        being written.")]
+    #[tool(description = "Patch a fixture type by name with a string \
+        replacement, by the web UI's rules: only a type whose file is its \
+        alone (a read-only one is refused with the file and why), and the \
+        result must still declare this one type and nothing else. A `.light` \
+        type whose patched text needs a `.fixture` moves to `<its \
+        stem>.fixture`.")]
     async fn patch_fixture_type(
         &self,
         Parameters(args): Parameters<PatchLightingFileArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let path = self
-            .resolve_lighting_file(LightingDirKind::FixtureTypes, &args.file)
+        let patch = patch_of(&args);
+        let save = self
+            .type_save(args.name, None, None, lighting_writes::Body::Patch(patch))
             .await?;
-        // A fixture's settings save in the web UI rewrites its type under
-        // the venues' lock: held from the read, as patch_venue holds it.
-        let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        let original = read_text(&path).await?;
-        let updated = apply_patch(
-            &original,
-            &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
-        )?;
-        let types = crate::lighting::parser::parse_fixture_types(&updated).map_err(|e| {
-            McpError::invalid_params(format!("patched fixture type is invalid: {e}"), None)
-        })?;
-        refuse_rich_channels_in_light(&args.file, types.values())?;
-        staged_write_string(&path, &updated, false).await?;
-        Ok(patch_response(&path, &original, &updated))
+        let saved = save_by_name(move || lighting_writes::save_fixture_type(save)).await?;
+        let before = saved.before.as_deref().unwrap_or_default();
+        Ok(patch_response(&saved.file, before, &saved.text))
     }
 }
 
@@ -3792,23 +3910,21 @@ impl McpServer {
     }
 
     /// Resolves the project's lighting subdirectory (venues or fixture types:
-    /// the profile's configured one, else the default the engine reads) to
-    /// an absolute path. The directory is created if it doesn't yet exist
-    /// *and* lies inside the project directory, so write tools work against
-    /// fresh configs without making directories wherever a config points.
+    /// the host-matched profile's configured one, else the default the
+    /// engine reads) to an absolute path. The directory is created if it
+    /// doesn't yet exist *and* lies inside the project directory, so write
+    /// tools work against fresh configs without making directories wherever
+    /// a config points.
     pub(crate) async fn resolve_lighting_dir(
         &self,
-        kind: LightingDirKind,
+        kind: Kind,
     ) -> Result<std::path::PathBuf, McpError> {
-        let store = self.config_store()?;
-        let config_path = store.path().to_path_buf();
-        let cfg = store.read_config().await;
-        let lighting = cfg.lighting_from_profiles();
+        let (fixture_types, venues) = self.project_lighting_dirs().await?;
         let rel = match kind {
-            LightingDirKind::Venues => crate::config::lighting::venues_dir(lighting),
-            LightingDirKind::FixtureTypes => crate::config::lighting::fixture_types_dir(lighting),
+            Kind::Venue => venues,
+            Kind::FixtureType => fixture_types,
         };
-        let project = crate::util::project_dir_of(&config_path);
+        let project = crate::util::project_dir_of(self.config_store()?.path());
         let dir = project.join(rel);
         let created = crate::util::create_dir_within_async(dir.clone(), project)
             .await
@@ -3816,17 +3932,30 @@ impl McpServer {
         Ok(created.into_path_buf())
     }
 
-    /// Resolves a single `.light` filename inside a lighting subdirectory,
-    /// after validating the basename for path-traversal safety and the
-    /// `.light` extension.
+    /// The project root, canonical, as the web UI's lighting writes take it.
+    fn project_root(&self) -> Result<std::path::PathBuf, McpError> {
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        project.canonicalize().map_err(|e| {
+            McpError::internal_error(
+                format!("cannot resolve the project {}: {e}", project.display()),
+                None,
+            )
+        })
+    }
+
+    /// Resolves a file in a lighting subdirectory by its path relative to
+    /// it, at any depth: kept inside the directory however it is spelled
+    /// (`..`, a symlink out).
     pub(crate) async fn resolve_lighting_file(
         &self,
-        kind: LightingDirKind,
-        name: &str,
+        kind: Kind,
+        file: &str,
     ) -> Result<std::path::PathBuf, McpError> {
-        validate_lighting_dir_filename(kind, name)?;
+        use crate::webui::safe_path::{SafePath, VerifiedRoot};
         let dir = self.resolve_lighting_dir(kind).await?;
-        Ok(dir.join(name))
+        let root = VerifiedRoot::new(&dir).map_err(safepath_err)?;
+        let path = SafePath::resolve(&dir.join(file), &root).map_err(safepath_err)?;
+        Ok(path.as_path().to_path_buf())
     }
 
     /// Rescans songs from disk and rebuilds the player's playlists. Used after
@@ -4001,14 +4130,6 @@ pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpEr
     McpError::invalid_params(err.to_string(), None)
 }
 
-/// Validates `name`, already checked safe, for a write to `path`: a file not
-/// there yet is being created, and its name must also pass the rules for new
-/// names. One already there is written under its own name.
-fn validate_name_to_write(path: &std::path::Path, name: &str) -> Result<(), McpError> {
-    crate::webui::safe_path::SafePath::validate_name_to_write(name, path.exists())
-        .map_err(safepath_err)
-}
-
 /// [`find_song_lighting_path`], or the one error every lighting-file tool
 /// gives for a file the song does not have.
 fn existing_song_lighting_path(
@@ -4103,51 +4224,6 @@ fn is_directory_layout(song: &crate::songs::Song) -> bool {
 }
 
 /// Validates that `name` is a single path segment ending in `.light`.
-/// A fixture-type or venue file name: `.light`, or the directory's typed
-/// peer extension (`.fixture` / `.venue`).
-pub(crate) fn validate_lighting_dir_filename(
-    kind: LightingDirKind,
-    name: &str,
-) -> Result<(), McpError> {
-    crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    let typed = kind.typed_extension();
-    if !name.ends_with(".light") && !name.ends_with(&format!(".{typed}")) {
-        return Err(McpError::invalid_params(
-            format!(
-                "{} filename must end with .light or .{typed}",
-                kind.field_name()
-            ),
-            None,
-        ));
-    }
-    Ok(())
-}
-
-/// The extension is the version marker: rich channel syntax (fine bytes,
-/// ranges, functions) is the v2 DSL and lives in `.fixture` files.
-fn refuse_rich_channels_in_light<'a>(
-    file: &str,
-    types: impl Iterator<Item = &'a crate::lighting::types::FixtureType>,
-) -> Result<(), McpError> {
-    if !file.ends_with(".light") {
-        return Ok(());
-    }
-    for fixture_type in types {
-        if fixture_type.uses_rich_channels() {
-            return Err(McpError::invalid_params(
-                format!(
-                    "fixture type \"{}\" uses rich channel syntax (fine, range, functions), \
-                     which belongs in a .fixture file — write it as {} instead",
-                    fixture_type.name(),
-                    file.trim_end_matches(".light").to_string() + ".fixture"
-                ),
-                None,
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
     if crate::songs::FileKind::of(std::path::Path::new(name)) != crate::songs::FileKind::Lighting {
@@ -4165,31 +4241,6 @@ pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
 struct GroupSnapshot {
     venue: Option<String>,
     logical_defs: Vec<(String, Vec<String>)>,
-}
-
-/// Identifies one of the two lighting subdirectories configured under
-/// `lighting.directories`. Used by the venue / fixture-type tools.
-#[derive(Copy, Clone, Debug)]
-pub(crate) enum LightingDirKind {
-    Venues,
-    FixtureTypes,
-}
-
-impl LightingDirKind {
-    /// The extension of the directory's typed files, a peer of `.light`.
-    pub(crate) fn typed_extension(self) -> &'static str {
-        match self {
-            LightingDirKind::Venues => "venue",
-            LightingDirKind::FixtureTypes => "fixture",
-        }
-    }
-
-    pub(crate) fn field_name(self) -> &'static str {
-        match self {
-            LightingDirKind::Venues => "venues",
-            LightingDirKind::FixtureTypes => "fixture_types",
-        }
-    }
 }
 
 /// Applies a string-replacement patch with the same semantics as Claude Code's
@@ -4269,32 +4320,51 @@ pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError
         })
 }
 
-/// Lists `.light` files directly under `dir` (no recursion). Subdirectories
-/// and other extensions are skipped silently.
-pub(crate) async fn list_light_files(
+/// A listing of one kind's directory as the loader reads it: every file
+/// (relative to `dir`, at any depth) and each name with its owner
+/// ([`lighting_writes::owners_listing`]).
+fn listing_of(
+    kind: Kind,
     dir: &std::path::Path,
-    kind: LightingDirKind,
-) -> Result<Vec<String>, McpError> {
-    let typed = kind.typed_extension();
-    let mut out = Vec::new();
-    let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
-        McpError::internal_error(format!("failed to list {}: {e}", dir.display()), None)
-    })?;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| McpError::internal_error(format!("read_dir entry: {e}"), None))?
-    {
-        let path = entry.path();
-        let extension = path.extension().and_then(|e| e.to_str());
-        if path.is_file() && (extension == Some("light") || extension == Some(typed)) {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                out.push(name.to_string());
-            }
-        }
+    record: &crate::lighting::files::Record,
+) -> (Vec<String>, Value) {
+    let files = record
+        .files()
+        .iter()
+        .map(|read| crate::lighting::project_files::display_in(dir, &read.file))
+        .collect();
+    (files, lighting_writes::owners_listing(kind, dir, record))
+}
+
+/// An answer of the web UI's venue and fixture type writers as a tool
+/// error: the same message and body, `invalid_params` for a refusal and
+/// `internal_error` for a server-side failure, by the web API's status.
+fn answer_err(answer: lighting_writes::Answer) -> McpError {
+    let message = answer.message().to_string();
+    if answer.status.is_server_error() {
+        McpError::internal_error(message, Some(answer.body))
+    } else {
+        McpError::invalid_params(message, Some(answer.body))
     }
-    out.sort();
-    Ok(out)
+}
+
+/// Runs one of the web UI's venue and fixture type writers, which hold the
+/// venue write lock, off the async workers; a refusal as [`answer_err`].
+async fn save_by_name<T: Send + 'static>(
+    write: impl FnOnce() -> Result<T, lighting_writes::Answer> + Send + 'static,
+) -> Result<T, McpError> {
+    tokio::task::spawn_blocking(write)
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(answer_err)
+}
+
+/// A patch tool's string replacement as the writers' change of a file.
+fn patch_of(args: &PatchLightingFileArgs) -> lighting_writes::Patch {
+    let fields = PatchFields::of(&args.old_string, &args.new_string, args.replace_all);
+    Box::new(move |text| {
+        apply_patch(text, &fields).map_err(|e| lighting_writes::Answer::bad(e.message))
+    })
 }
 
 /// Writes a string to `path` the same way the config store does, preserving the
@@ -4331,14 +4401,10 @@ pub(crate) async fn staged_write_string(
                 None,
             );
         }
-        let mut message = format!("write failed: {e}");
-        if let Some(hint) =
-            crate::util::write_failure_hint(crate::util::WriteTarget::File(path), &e)
-        {
-            message.push(' ');
-            message.push_str(&hint);
-        }
-        McpError::internal_error(message, None)
+        McpError::internal_error(
+            crate::util::write_failure_message(crate::util::WriteTarget::File(path), &e),
+            None,
+        )
     })
 }
 
@@ -5039,5 +5105,504 @@ mod directory_layout_tests {
         assert!(super::is_directory_layout(&*songs.get("B")?));
         assert!(!super::is_directory_layout(&*songs.get("Flat")?));
         Ok(())
+    }
+}
+
+/// The venue and fixture type tools, by name, by the web UI's rules
+/// ([`lighting_writes`]), in the host's profile's directories.
+#[cfg(test)]
+mod lighting_tool_tests {
+    use super::*;
+    use crate::controller::mcp::integration_test::{
+        build_standalone_player, setup_standalone_fixture, StandaloneFixture,
+    };
+    use std::path::Path;
+
+    /// A player whose config gives this host's profile `rig/venues` and
+    /// `rig/types`, after a profile for another host naming others; `files`
+    /// (path under the project, text) written first.
+    async fn server(files: &[(&str, &str)]) -> (McpServer, StandaloneFixture) {
+        let fixture = setup_standalone_fixture().expect("fixture");
+        let yaml = format!(
+            r#"songs: {songs}
+playlist: {playlist}
+profiles:
+  - hostname: not-this-host-x9
+    audio:
+      device: "mock-device"
+    dmx:
+      universes:
+        - universe: 1
+          name: other
+      lighting:
+        directories:
+          fixture_types: other/types
+          venues: other/venues
+  - audio:
+      device: "mock-device"
+    dmx:
+      universes:
+        - universe: 1
+          name: rig
+      lighting:
+        directories:
+          fixture_types: rig/types
+          venues: rig/venues
+"#,
+            songs = fixture.root.join("songs").display(),
+            playlist = fixture.root.join("playlist.yaml").display(),
+        );
+        std::fs::write(&fixture.config_path, yaml).unwrap();
+        for (path, text) in files {
+            let path = fixture.root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let player = build_standalone_player(&fixture).await.expect("player");
+        (McpServer::new(player), fixture)
+    }
+
+    /// A tool's JSON answer.
+    fn answer(result: Result<CallToolResult, McpError>) -> Value {
+        let result = result.unwrap_or_else(|e| panic!("tool failed: {e:?}"));
+        let value = serde_json::to_value(&result).unwrap();
+        serde_json::from_str(value["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    /// A tool's refusal message.
+    fn refusal(result: Result<CallToolResult, McpError>) -> String {
+        match result {
+            Ok(ok) => panic!("expected a refusal, got {ok:?}"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    fn venue(name: &str, extra: &str) -> String {
+        format!("venue \"{name}\" {{\n  fixture \"A\" Par{extra} @ 1:1\n}}\n")
+    }
+
+    fn par(name: &str, channels: u8) -> String {
+        format!(
+            "fixture_type \"{name}\" {{\n  channels: {channels}\n  channel_map: {{ \"dimmer\": 1 }}\n}}\n"
+        )
+    }
+
+    fn rich(name: &str) -> String {
+        format!(
+            "fixture_type \"{name}\" {{\n  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n}}\n"
+        )
+    }
+
+    fn write_venue_args(name: &str, source: String, from: Option<&str>) -> WriteVenueArgs {
+        WriteVenueArgs {
+            name: name.to_string(),
+            source,
+            from: from.map(str::to_string),
+        }
+    }
+
+    fn write_type_args(name: &str, source: String, from: Option<&str>) -> WriteFixtureTypeArgs {
+        WriteFixtureTypeArgs {
+            name: name.to_string(),
+            source,
+            from: from.map(str::to_string),
+            ext: None,
+        }
+    }
+
+    fn patch_args(name: &str, old: &str, new: &str) -> PatchLightingFileArgs {
+        PatchLightingFileArgs {
+            name: name.to_string(),
+            old_string: old.to_string(),
+            new_string: new.to_string(),
+            replace_all: false,
+        }
+    }
+
+    fn name_args(name: &str) -> LightingNameArgs {
+        LightingNameArgs {
+            name: name.to_string(),
+        }
+    }
+
+    fn read(root: &Path, path: &str) -> Option<String> {
+        std::fs::read_to_string(root.join(path)).ok()
+    }
+
+    const SHARED: &str = "venue \"A\" {\n}\nvenue \"B\" {\n}\n";
+    const SHARED_REASON: &str =
+        "Defined in tour/shared.light alongside venue \"B\"; edit that file by hand.";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_venue_listing_is_the_loaders_in_the_hosts_dir() {
+        let (server, fixture) = server(&[
+            ("rig/venues/tour/shared.light", SHARED),
+            ("rig/venues/old.light", &venue("Old", "")),
+            ("rig/venues/broken.venue", "venue \"Broken\" {"),
+            ("other/venues/ghost.venue", &venue("Ghost", "")),
+        ])
+        .await;
+        let listed = answer(server.list_venue_files().await);
+        assert!(
+            listed["dir"].as_str().unwrap().ends_with("rig/venues"),
+            "{listed}"
+        );
+        assert_eq!(
+            listed["files"],
+            json!(["broken.venue", "old.light", "tour/shared.light"]),
+            "{listed}"
+        );
+        let venues = listed["venues"].as_array().unwrap();
+        let of = |name: Option<&str>| {
+            venues
+                .iter()
+                .find(|v| v["name"].as_str() == name)
+                .unwrap_or_else(|| panic!("{name:?} in {listed}"))
+                .clone()
+        };
+        assert_eq!(of(Some("Old"))["editable"], true);
+        assert_eq!(of(Some("Old"))["file"], "old.light");
+        assert_eq!(of(Some("A"))["editable"], false);
+        assert_eq!(of(Some("A"))["reason"], SHARED_REASON);
+        assert_eq!(of(None)["file"], "broken.venue");
+        assert!(!listed.to_string().contains("Ghost"), "{listed}");
+
+        // Any file there is read by its path, nested too; nothing outside.
+        let nested = answer(
+            server
+                .read_venue(Parameters(LightingFileArgs {
+                    file: "tour/shared.light".to_string(),
+                }))
+                .await,
+        );
+        assert_eq!(nested["source"], SHARED);
+        let _ = refusal(
+            server
+                .read_venue(Parameters(LightingFileArgs {
+                    file: "../../other/venues/ghost.venue".to_string(),
+                }))
+                .await,
+        );
+        drop(fixture);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn venue_tools_write_by_name_by_the_web_rules() {
+        let (server, fixture) = server(&[
+            ("rig/venues/tour/shared.light", SHARED),
+            ("rig/venues/old.light", &venue("Old", "")),
+            ("rig/venues/older.light", &venue("Older", "")),
+        ])
+        .await;
+        let root = fixture.root.clone();
+
+        // Create: at the canonical path.
+        let wrote = answer(
+            server
+                .write_venue(Parameters(write_venue_args(
+                    "Club (Main)",
+                    venue("Club (Main)", ""),
+                    None,
+                )))
+                .await,
+        );
+        assert!(wrote["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("rig/venues/club_main.venue"));
+        assert_eq!(
+            read(&root, "rig/venues/club_main.venue"),
+            Some(venue("Club (Main)", ""))
+        );
+        // A taken name, or a body that is not this one venue, is refused.
+        let taken = refusal(
+            server
+                .write_venue(Parameters(write_venue_args("OLD", venue("OLD", ""), None)))
+                .await,
+        );
+        assert_eq!(taken, "old.light is taken by \"Old\"; choose another name");
+        let other = refusal(
+            server
+                .write_venue(Parameters(write_venue_args("New", venue("Else", ""), None)))
+                .await,
+        );
+        assert!(other.contains("declares no venue named \"New\""), "{other}");
+        assert_eq!(read(&root, "rig/venues/new.venue"), None);
+
+        // Edit: in place.
+        let _ = answer(
+            server
+                .write_venue(Parameters(write_venue_args(
+                    "Club (Main)",
+                    venue("Club (Main)", "").replace("1:1", "1:1 tags [\"wash\"]"),
+                    None,
+                )))
+                .await,
+        );
+        assert!(read(&root, "rig/venues/club_main.venue")
+            .unwrap()
+            .contains("wash"));
+
+        // Patch: in place.
+        let patched = answer(
+            server
+                .patch_venue(Parameters(patch_args(
+                    "Club (Main)",
+                    "\"wash\"",
+                    "\"spot\"",
+                )))
+                .await,
+        );
+        assert!(patched["contents"].as_str().unwrap().contains("spot"));
+        assert!(read(&root, "rig/venues/club_main.venue")
+            .unwrap()
+            .contains("spot"));
+
+        // Rename: a canonical file moves to the new name's.
+        let _ = answer(
+            server
+                .write_venue(Parameters(write_venue_args(
+                    "Hall",
+                    venue("Hall", ""),
+                    Some("Club (Main)"),
+                )))
+                .await,
+        );
+        assert_eq!(read(&root, "rig/venues/club_main.venue"), None);
+        assert_eq!(
+            read(&root, "rig/venues/hall.venue"),
+            Some(venue("Hall", ""))
+        );
+
+        // Read-only: refused with the web UI's message, and nothing changes.
+        for result in [
+            server
+                .write_venue(Parameters(write_venue_args("A", venue("A", ""), None)))
+                .await,
+            server
+                .patch_venue(Parameters(patch_args(
+                    "A",
+                    "{\n}",
+                    "{\n  fixture \"X\" Par @ 1:1\n}",
+                )))
+                .await,
+            server.delete_venue(Parameters(name_args("A"))).await,
+        ] {
+            assert_eq!(refusal(result), SHARED_REASON);
+        }
+        assert_eq!(
+            read(&root, "rig/venues/tour/shared.light").as_deref(),
+            Some(SHARED)
+        );
+
+        // A `.light` whose text needs the newer format moves to its stem's
+        // `.venue`, written whole or patched.
+        let _ = answer(
+            server
+                .write_venue(Parameters(write_venue_args(
+                    "Old",
+                    venue("Old", " mode \"8ch\""),
+                    None,
+                )))
+                .await,
+        );
+        assert_eq!(read(&root, "rig/venues/old.light"), None);
+        assert_eq!(
+            read(&root, "rig/venues/old.venue"),
+            Some(venue("Old", " mode \"8ch\""))
+        );
+        let _ = answer(
+            server
+                .patch_venue(Parameters(patch_args(
+                    "Older",
+                    " Par @",
+                    " Par mode \"8ch\" @",
+                )))
+                .await,
+        );
+        assert_eq!(read(&root, "rig/venues/older.light"), None);
+        assert!(read(&root, "rig/venues/older.venue")
+            .unwrap()
+            .contains("mode \"8ch\""));
+
+        // Delete: the venue's own file; a name no file declares is not found.
+        let deleted = answer(server.delete_venue(Parameters(name_args("Hall"))).await);
+        assert!(deleted["deleted"].as_str().unwrap().ends_with("hall.venue"));
+        assert_eq!(read(&root, "rig/venues/hall.venue"), None);
+        let missing = refusal(server.delete_venue(Parameters(name_args("Hall"))).await);
+        assert_eq!(missing, "Venue not found: Hall");
+        let missing = refusal(
+            server
+                .patch_venue(Parameters(patch_args("Nowhere", "a", "b")))
+                .await,
+        );
+        assert_eq!(missing, "Venue not found: Nowhere");
+        // The other host's directory was never touched.
+        assert!(!root.join("other").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fixture_type_tools_write_by_name_by_the_web_rules() {
+        let (server, fixture) = server(&[
+            (
+                "rig/types/pars.light",
+                &format!("{}{}", par("P1", 1), par("P2", 1)),
+            ),
+            ("rig/types/old_par.light", &par("OldPar", 1)),
+            ("rig/types/older_par.light", &par("OlderPar", 1)),
+            (
+                "rig/venues/club.venue",
+                "venue \"club\" {\n  fixture \"A\" \"New Par\" @ 1:1\n}\n",
+            ),
+        ])
+        .await;
+        let root = fixture.root.clone();
+        std::fs::create_dir_all(root.join("lighting/library")).unwrap();
+        std::fs::write(
+            root.join("lighting/library/synth.gdtf"),
+            crate::testutil::lighting::synthetic_gdtf(),
+        )
+        .unwrap();
+
+        let listed = answer(server.list_fixture_type_files().await);
+        assert!(listed["dir"].as_str().unwrap().ends_with("rig/types"));
+        assert_eq!(
+            listed["files"],
+            json!(["old_par.light", "older_par.light", "pars.light"]),
+            "{listed}"
+        );
+        let p1 = listed["fixture_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "P1")
+            .unwrap()
+            .clone();
+        assert_eq!(p1["editable"], false, "{listed}");
+        let library = listed["library"][0]["name"].as_str().unwrap().to_string();
+        assert_eq!(
+            listed["library"][0]["archive"],
+            "lighting/library/synth.gdtf"
+        );
+
+        // Create: at `<stem>.fixture`; a library GDTF's name is taken.
+        let _ = answer(
+            server
+                .write_fixture_type(Parameters(write_type_args(
+                    "New Par",
+                    par("New Par", 1),
+                    None,
+                )))
+                .await,
+        );
+        assert_eq!(
+            read(&root, "rig/types/new_par.fixture"),
+            Some(par("New Par", 1))
+        );
+        let taken = refusal(
+            server
+                .write_fixture_type(Parameters(write_type_args(
+                    &library,
+                    par(&library, 1),
+                    None,
+                )))
+                .await,
+        );
+        assert!(taken.contains("GDTF library type"), "{taken}");
+
+        // Edit and patch: in place.
+        let _ = answer(
+            server
+                .write_fixture_type(Parameters(write_type_args(
+                    "New Par",
+                    par("New Par", 2),
+                    None,
+                )))
+                .await,
+        );
+        let _ = answer(
+            server
+                .patch_fixture_type(Parameters(patch_args(
+                    "New Par",
+                    "channels: 2",
+                    "channels: 3",
+                )))
+                .await,
+        );
+        assert_eq!(
+            read(&root, "rig/types/new_par.fixture"),
+            Some(par("New Par", 3))
+        );
+
+        // Rename: the file moves, and the venue using it is retyped.
+        let renamed = answer(
+            server
+                .write_fixture_type(Parameters(write_type_args(
+                    "Wash",
+                    par("Wash", 3),
+                    Some("New Par"),
+                )))
+                .await,
+        );
+        assert_eq!(renamed["rename"]["to"], "Wash", "{renamed}");
+        assert_eq!(read(&root, "rig/types/new_par.fixture"), None);
+        assert_eq!(read(&root, "rig/types/wash.fixture"), Some(par("Wash", 3)));
+        let club = read(&root, "rig/venues/club.venue").unwrap();
+        assert!(club.contains("Wash") && !club.contains("New Par"), "{club}");
+
+        // Read-only: refused with the web UI's message.
+        let reason = "Defined in pars.light alongside fixture type \"P2\"; edit that file by hand.";
+        for result in [
+            server
+                .write_fixture_type(Parameters(write_type_args("P1", par("P1", 2), None)))
+                .await,
+            server
+                .patch_fixture_type(Parameters(patch_args("P1", "channels: 1", "channels: 2")))
+                .await,
+            server
+                .delete_fixture_type(Parameters(name_args("P1")))
+                .await,
+        ] {
+            assert_eq!(refusal(result), reason);
+        }
+
+        // A `.light` whose text needs a `.fixture` moves to its stem's.
+        let _ = answer(
+            server
+                .write_fixture_type(Parameters(write_type_args("OldPar", rich("OldPar"), None)))
+                .await,
+        );
+        assert_eq!(read(&root, "rig/types/old_par.light"), None);
+        assert_eq!(
+            read(&root, "rig/types/old_par.fixture"),
+            Some(rich("OldPar"))
+        );
+        let _ = answer(
+            server
+                .patch_fixture_type(Parameters(patch_args(
+                    "OlderPar",
+                    "  channels: 1\n  channel_map: { \"dimmer\": 1 }\n",
+                    "  channel \"pan\" @ 1 fine 2 range -270deg..270deg\n",
+                )))
+                .await,
+        );
+        assert_eq!(read(&root, "rig/types/older_par.light"), None);
+        assert_eq!(
+            read(&root, "rig/types/older_par.fixture"),
+            Some(rich("OlderPar"))
+        );
+
+        // Delete: the type's own file.
+        let deleted = answer(
+            server
+                .delete_fixture_type(Parameters(name_args("Wash")))
+                .await,
+        );
+        assert!(deleted["deleted"]
+            .as_str()
+            .unwrap()
+            .ends_with("wash.fixture"));
+        assert_eq!(read(&root, "rig/types/wash.fixture"), None);
+        assert!(!root.join("other").exists());
     }
 }

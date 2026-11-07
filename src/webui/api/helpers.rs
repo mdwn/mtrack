@@ -180,24 +180,34 @@ pub(crate) async fn ensure_configured_dir(
 ) -> Result<PathBuf, axum::response::Response> {
     let owned = dir.to_path_buf();
     let project = project_dir(state);
-    let outcome =
-        tokio::task::spawn_blocking(move || crate::util::create_dir_within(&owned, &project)).await;
+    let outcome = tokio::task::spawn_blocking(move || make_configured_dir(&owned, &project)).await;
 
     match outcome {
-        Ok(Ok(created)) => Ok(created.into_path_buf()),
-        Ok(Err(e)) => {
-            let status = match e {
-                crate::util::CreateWithinError::Io { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-                _ => StatusCode::BAD_REQUEST,
-            };
-            Err((status, Json(json!({"error": e.to_string()}))).into_response())
-        }
+        Ok(Ok(created)) => Ok(created),
+        Ok(Err((status, error))) => Err((status, Json(json!({"error": error}))).into_response()),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to create directory: {e}")})),
         )
             .into_response()),
     }
+}
+
+/// [`ensure_configured_dir`] on a blocking thread, with `project` the
+/// directory it must be inside: the directory made, or the status and why.
+pub(crate) fn make_configured_dir(
+    dir: &std::path::Path,
+    project: &std::path::Path,
+) -> Result<PathBuf, (StatusCode, String)> {
+    crate::util::create_dir_within(dir, project)
+        .map(|created| created.into_path_buf())
+        .map_err(|e| {
+            let status = match e {
+                crate::util::CreateWithinError::Io { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, e.to_string())
+        })
 }
 
 /// Wraps a blocking filesystem operation in `tokio::task::spawn_blocking`,

@@ -784,12 +784,23 @@ impl Player {
         self.dmx.as_mut().and_then(|d| d.lighting_mut())
     }
 
-    /// Returns a reference to the DMX config's lighting section (through all profiles).
-    /// Checks the first profile's DMX config for lighting.
-    pub fn lighting_from_profiles(&self) -> Option<&Lighting> {
-        self.first_profile()
+    /// The lighting section of the profile `hostname` runs: the first of
+    /// [`Self::profiles`] for it, as the engine picks its profile, so every
+    /// surface reads the directories the engine loads from.
+    pub fn lighting_for_host(&self, hostname: &str) -> Option<&Lighting> {
+        self.profiles(hostname)
+            .first()
             .and_then(|p| p.dmx())
             .and_then(|d| d.lighting())
+    }
+
+    /// The project's lighting directories on this host
+    /// ([`super::resolve_hostname`]): the host-matched profile's, else the
+    /// defaults, as the engine loads them.
+    pub fn lighting_dirs(&self) -> super::lighting::ProjectDirs {
+        super::lighting::ProjectDirs::of(
+            self.lighting_for_host(&super::hostname::resolve_hostname()),
+        )
     }
 
     /// Deserializes a config file without running normalize() or loading profiles_dir.

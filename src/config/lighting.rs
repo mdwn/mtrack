@@ -86,6 +86,27 @@ pub fn venues_dir(lighting: Option<&Lighting>) -> &str {
     lighting.map_or(DEFAULT_VENUES_DIR, Lighting::venues_dir)
 }
 
+/// A project's fixture types and venues directories, relative to the
+/// project: a profile's configured ones, else the defaults. What the
+/// engine reads on this host is the host-matched profile's
+/// (`Player::lighting_dirs`), the one answer the web UI's server side, MCP
+/// and the CLI give.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDirs {
+    pub fixture_types: String,
+    pub venues: String,
+}
+
+impl ProjectDirs {
+    /// The directories of a profile's lighting section, or the defaults.
+    pub fn of(lighting: Option<&Lighting>) -> Self {
+        ProjectDirs {
+            fixture_types: fixture_types_dir(lighting).to_string(),
+            venues: venues_dir(lighting).to_string(),
+        }
+    }
+}
+
 /// What the loader says about a profile that still patches fixtures inline
 /// (`dmx.lighting.fixtures`, retired): they never lit, and venue files are
 /// the one way to patch a fixture.
