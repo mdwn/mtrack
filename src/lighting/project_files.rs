@@ -149,6 +149,19 @@ pub fn new_file_stem(
         .expect("some suffix is free")
 }
 
+/// Whether `path` is the file `name` takes in `dir` by its stem
+/// ([`name_stem`], in any case), directly in `dir`: where a broken file a
+/// person chose to replace is written over. A broken candidate found
+/// elsewhere (`ideas.light` mentioning "Club") is set aside, and the name
+/// gets a file of its own ([`new_file_stem`]).
+pub fn is_at_stem(dir: &Path, path: &Path, name: &str) -> bool {
+    path.parent() == Some(dir)
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.to_lowercase() == name_stem(name))
+}
+
 /// Why a lighting file does not read, and the named blocks it seems to
 /// open all the same (`venue "Club"`, `fixture_type "Par"`): information to
 /// show, and to find a half-edited file by the name it opens.

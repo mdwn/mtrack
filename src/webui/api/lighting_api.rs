@@ -1879,28 +1879,16 @@ pub(super) async fn put_fixture_type(
     let types_root = canonical_project_root(&project_root(&state.config_path)?)?;
     let found = locate_fixture_type_file(&types_root, &dir, &name).await?;
     // The type's other broken candidates, which the save acts on too.
-    let also_broken = found
+    let mut also_broken = found
         .as_ref()
         .map(|f| f.also_broken.clone())
         .unwrap_or_default();
-    let located = found.map(|f| (f.path, f.others));
+    let mut located = found.map(|f| (f.path, f.others));
     validate_lighting_name_to_write(&name, located.is_some())?;
     let replace_broken = replace_broken_files(&raw_query);
     // An existing type is saved back to the file it lives in, whatever that
     // file is called; only a new type is named after itself, past a file at
     // its stem that holds other types (`project_files::new_file_stem`).
-    let stem = match located
-        .as_ref()
-        .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
-    {
-        Some(stem) => stem.to_string(),
-        None => {
-            lighting::project_files::new_file_stem(&dir, &name, FIXTURE_TYPE_EXTENSIONS, &|_| false)
-        }
-    };
-    let existing_extension = located
-        .as_ref()
-        .and_then(|(path, _)| crate::songs::extension_of(path));
 
     // The file found must hold the type, or be a broken one the person
     // chose to replace (the one rule, `require_declares`), before what the
@@ -1922,6 +1910,31 @@ pub(super) async fn put_fixture_type(
         .contains(path),
         None => false,
     };
+    // A broken candidate the person chose to replace that is not at the
+    // type's stem (`ideas.light` mentioning it) is set aside, and the type
+    // gets a file of its own: it is not written into that file.
+    if located_broken
+        && located
+            .as_ref()
+            .is_some_and(|(path, _)| !lighting::project_files::is_at_stem(&dir, path, &name))
+    {
+        if let Some((path, _)) = located.take() {
+            also_broken.push(path);
+        }
+    }
+    let located_broken = located_broken && located.is_some();
+    let stem = match located
+        .as_ref()
+        .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
+    {
+        Some(stem) => stem.to_string(),
+        None => {
+            lighting::project_files::new_file_stem(&dir, &name, FIXTURE_TYPE_EXTENSIONS, &|_| false)
+        }
+    };
+    let existing_extension = located
+        .as_ref()
+        .and_then(|(path, _)| crate::songs::extension_of(path));
 
     // The channel-map form writes one type, so it cannot carry the others a
     // shared file declares. Raw text is the whole file and says what it means.
@@ -3049,6 +3062,21 @@ pub(super) async fn put_venue(
         // content outgrows `.light`, in which case it moves to `.venue` and
         // the `.light` original is retired after the durable write.
         let file_path = match &located {
+            // A broken candidate not at the venue's stem (`ideas.light`
+            // mentioning it) is set aside if replaced, and the venue gets a
+            // file of its own: it is not written into that file.
+            Some(l)
+                if l.broken.is_some()
+                    && !lighting::project_files::is_at_stem(&dir, &l.path, &name) =>
+            {
+                dir.join(format!(
+                    "{}.{}",
+                    lighting::project_files::new_file_stem(&dir, &name, VENUE_EXTENSIONS, &|_| {
+                        false
+                    }),
+                    if typed { "venue" } else { "light" }
+                ))
+            }
             Some(l)
                 if !typed || crate::songs::extension_of(&l.path).as_deref() == Some("venue") =>
             {
@@ -6045,6 +6073,49 @@ show "test" {
         assert!(!dir.join("club_2.light").exists());
     }
 
+    /// Replacing a broken candidate that is not at the name's stem
+    /// (`ideas.light`, comments only, mentioning "Club") sets it aside and
+    /// writes the venue, or type, to a file of its own at its stem, never
+    /// into that file.
+    #[tokio::test]
+    async fn replacing_a_candidate_off_the_stem_writes_the_name_its_own_file() {
+        let (state, _dir) = test_state();
+        for (rel, kind, name, body) in [
+            ("v_ideas", "venues", "Club", sample_venue_dsl("Club")),
+            (
+                "ft_ideas",
+                "fixture-types",
+                "Par",
+                sample_fixture_type_dsl("Par"),
+            ),
+        ] {
+            let dir = _dir.path().join(rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            let ideas = format!("// ideas for \"{name}\"\n");
+            std::fs::write(dir.join("ideas.light"), &ideas).unwrap();
+            let send = |query: &'static str| {
+                fixture_type_request(
+                    state.clone(),
+                    "PUT",
+                    format!("/lighting/{kind}/{name}?dir={rel}{query}"),
+                    "text/plain",
+                    Body::from(body.clone()),
+                )
+            };
+            let (status, parsed) = send("").await;
+            assert_eq!(status, StatusCode::CONFLICT, "{kind}: {parsed}");
+            assert_eq!(parsed["broken_files"][0]["file"], "ideas.light", "{parsed}");
+            let (status, parsed) = send("&replace_broken=ideas.light").await;
+            assert_eq!(status, StatusCode::OK, "{kind}: {parsed}");
+            let own = dir.join(format!("{}.light", name.to_lowercase()));
+            assert_eq!(std::fs::read_to_string(&own).unwrap(), body, "{kind}");
+            assert!(!dir.join("ideas.light").exists(), "{kind}");
+            let kept = parsed["kept"][0].as_str().unwrap();
+            assert!(kept.starts_with("ideas.light.replaced-"), "{kind}: {kept}");
+            assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), ideas);
+        }
+    }
+
     /// A raw-text save that would retire a `.light` twin holding another
     /// venue too is refused, as a fixture type's is: Arena is not lost.
     #[tokio::test]
@@ -8711,10 +8782,13 @@ show "test" {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{parsed}");
+        // Neither is at the venue's stem: both are set aside, and the venue
+        // gets a file of its own.
         assert_eq!(
-            std::fs::read_to_string(dir.join("a/club.light")).unwrap(),
+            std::fs::read_to_string(dir.join("club.light")).unwrap(),
             sample_venue_dsl("Club")
         );
+        assert!(!dir.join("a/club.light").exists());
         assert!(!dir.join("b/club.light").exists());
         assert_eq!(parsed["kept"].as_array().map(Vec::len), Some(2), "{parsed}");
 
