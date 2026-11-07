@@ -82,39 +82,60 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
-/// The YAML config files in `dir`: every file whose name ends in `.yaml`
-/// or `.yml`, lowercase as written (`songs::is_yaml_config`), by the names
-/// the directory lists, sorted by file name. An entry that cannot be read
-/// is passed over with a warning.
-pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+/// The regular files in `dir`, as it lists them, sorted by file name: the
+/// one listing every lookup and list of named files below works from. Names
+/// are kept as the filesystem has them, UTF-8 or not. An entry that cannot
+/// be read is passed over with a warning.
+pub fn files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(e) => {
-                tracing::warn!("{}: an entry could not be read: {e}", dir.display());
-                continue;
-            }
-        };
-        if path.is_file() && crate::songs::is_yaml_config(&path) {
-            found.push(path);
+        match entry {
+            Ok(entry) if entry.path().is_file() => found.push(entry.path()),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("{}: an entry could not be read: {e}", dir.display()),
         }
     }
     found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     Ok(found)
 }
 
-/// Of `files` (one directory's [`yaml_config_files`]), those named for
-/// `name`: `<name>.yaml`, then `<name>.yml`, matched against the names as
-/// listed, so a `set.YML` on a case-insensitive filesystem is not `set.yml`.
-fn yaml_files_named<'a>(files: &'a [PathBuf], name: &str) -> Vec<&'a PathBuf> {
+/// [`files_in`] for a lookup by name: a directory that is not there lists
+/// nothing (the name's file is new), and one that cannot be listed lists
+/// nothing too, with a warning.
+pub fn files_to_look_up(dir: &Path) -> Vec<PathBuf> {
+    files_in(dir).unwrap_or_else(|e| {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("{}: could not be listed: {e}", dir.display());
+        }
+        Vec::new()
+    })
+}
+
+/// The YAML config files in `dir` ([`files_in`]): every file whose name
+/// ends in `.yaml` or `.yml`, lowercase as written (`songs::is_yaml_config`),
+/// sorted by file name.
+pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(files_in(dir)?
+        .into_iter()
+        .filter(|path| crate::songs::is_yaml_config(path))
+        .collect())
+}
+
+/// The one rule for a name's YAML file: of `files` (one directory's
+/// [`files_in`]), those named for `stem`, `<stem>.yaml` then `<stem>.yml`
+/// (`songs::YAML_EXTENSIONS`), matched against the names as listed, so a
+/// `set.YML` on a case-insensitive filesystem is not `set.yml`. The first is
+/// the name's file.
+fn yaml_files_named<'a>(files: &'a [PathBuf], stem: &std::ffi::OsStr) -> Vec<&'a PathBuf> {
     crate::songs::YAML_EXTENSIONS
         .iter()
         .filter_map(|ext| {
-            let file_name = format!("{name}.{ext}");
+            let mut file_name = stem.to_os_string();
+            file_name.push(".");
+            file_name.push(ext);
             files
                 .iter()
-                .find(|file| file.file_name().and_then(|n| n.to_str()) == Some(&file_name))
+                .find(|file| file.file_name() == Some(file_name.as_os_str()))
         })
         .collect()
 }
@@ -151,55 +172,42 @@ impl NamedFile {
 
 /// A file to create is named as one already there but for case
 /// (`Set.yaml` for a new `set.yaml`), which a case-insensitive filesystem
-/// takes for the same file: it is refused, not overwritten.
+/// takes for the same file: it is refused, not written into.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` already exists; names differ only in case")]
 pub struct CaseClash(pub String);
 
-/// The names of the regular files in `dir`, as it lists them: what the
-/// lookups below match against. A directory that cannot be listed lists
-/// none.
-pub fn file_names_in(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_file())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect()
-}
-
-/// The file `file_name` in `dir`, whose regular files are `names`
-/// ([`file_names_in`]): `Found` when listed as written, else `New`, unless
-/// a listed name differs from it only in case ([`CaseClash`]).
-pub fn file_among(dir: &Path, names: &[String], file_name: &str) -> Result<NamedFile, CaseClash> {
-    if names.iter().any(|listed| listed == file_name) {
+/// The file `file_name` in `dir`, whose regular files are `files`
+/// ([`files_in`]): `Found` when listed as written, else `New`, unless a
+/// listed name differs from it only in case ([`CaseClash`]).
+pub fn file_among(
+    dir: &Path,
+    files: &[PathBuf],
+    file_name: &std::ffi::OsStr,
+) -> Result<NamedFile, CaseClash> {
+    let mut names = files.iter().filter_map(|file| file.file_name());
+    if names.clone().any(|listed| listed == file_name) {
         return Ok(NamedFile::Found(dir.join(file_name)));
     }
-    let folded = file_name.to_lowercase();
-    match names.iter().find(|listed| listed.to_lowercase() == folded) {
-        Some(listed) => Err(CaseClash(listed.clone())),
+    let folded = file_name.to_string_lossy().to_lowercase();
+    match names.find(|listed| listed.to_string_lossy().to_lowercase() == folded) {
+        Some(listed) => Err(CaseClash(listed.to_string_lossy().into_owned())),
         None => Ok(NamedFile::New(dir.join(file_name))),
     }
 }
 
-/// The YAML file in `dir` (whose regular files are `names`) that holds
-/// `name` (a playlist, a profile): `<name>.yaml`, else `<name>.yml`, as
-/// listed, else a new `<name>.yaml` ([`file_among`]: refused beside a
-/// `Set.yaml`).
-pub fn yaml_file_among(dir: &Path, names: &[String], name: &str) -> Result<NamedFile, CaseClash> {
-    for ext in crate::songs::YAML_EXTENSIONS {
-        let file_name = format!("{name}.{ext}");
-        if names.contains(&file_name) {
-            return Ok(NamedFile::Found(dir.join(file_name)));
-        }
+/// The YAML file in `dir` (whose regular files are `files`) that holds
+/// `name` (a playlist, a profile): the first of [`yaml_files_named`], else
+/// a new `<name>.yaml` ([`file_among`]: refused beside a `Set.yaml`).
+pub fn yaml_file_among(dir: &Path, files: &[PathBuf], name: &str) -> Result<NamedFile, CaseClash> {
+    match yaml_files_named(files, std::ffi::OsStr::new(name)).first() {
+        Some(file) => Ok(NamedFile::Found((*file).clone())),
+        None => file_among(
+            dir,
+            files,
+            std::ffi::OsStr::new(&format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])),
+        ),
     }
-    file_among(
-        dir,
-        names,
-        &format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0]),
-    )
 }
 
 /// The YAML file in `dir` that holds `name` ([`yaml_file_among`], by the
@@ -207,25 +215,26 @@ pub fn yaml_file_among(dir: &Path, names: &[String], name: &str) -> Result<Named
 /// it, so a `.yml` is saved into itself. `name` is not checked for path
 /// safety here.
 pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
-    yaml_file_among(dir, &file_names_in(dir), name)
+    yaml_file_among(dir, &files_to_look_up(dir), name)
 }
 
 /// The YAML config files in `dir`, one for each name: the file
-/// [`yaml_file_at`] takes for it, with the other a name has (its `.yml`
-/// beside its `.yaml`), which is not read. Sorted by file name.
+/// [`yaml_file_at`] takes for it ([`yaml_files_named`]), with the other a
+/// name has (its `.yml` beside its `.yaml`), which is not read. Sorted by
+/// file name.
 pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
-    let files = yaml_config_files(dir)?;
+    let files = files_in(dir)?;
     Ok(files
         .iter()
-        .filter_map(|file| {
-            let name = file.file_stem()?.to_str()?;
-            match yaml_files_named(&files, name).as_slice() {
+        .filter(|file| crate::songs::is_yaml_config(file))
+        .filter_map(
+            |file| match yaml_files_named(&files, file.file_stem()?).as_slice() {
                 [taken, unread @ ..] if *taken == file => {
                     Some((file.clone(), unread.first().map(|f| (*f).clone())))
                 }
                 _ => None,
-            }
-        })
+            },
+        )
         .collect())
 }
 
@@ -1406,7 +1415,7 @@ mod test {
     fn a_names_file_is_found_by_the_listing() {
         use super::{file_among, yaml_file_among, CaseClash, NamedFile};
         let dir = std::path::Path::new("/p");
-        let names = |listed: &[&str]| listed.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let names = |listed: &[&str]| listed.iter().map(|n| dir.join(n)).collect::<Vec<_>>();
         let found = |file: &str| Ok(NamedFile::Found(dir.join(file)));
         let new = |file: &str| Ok(NamedFile::New(dir.join(file)));
         let clash = |file: &str| Err(CaseClash(file.to_string()));
@@ -1442,14 +1451,42 @@ mod test {
         );
 
         assert_eq!(
-            file_among(dir, &names(&["stage.yml"]), "stage.yml"),
+            file_among(
+                dir,
+                &names(&["stage.yml"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
             found("stage.yml")
         );
         assert_eq!(
-            file_among(dir, &names(&["Stage.YML"]), "stage.yml"),
+            file_among(
+                dir,
+                &names(&["Stage.YML"]),
+                std::ffi::OsStr::new("stage.yml")
+            ),
             clash("Stage.YML")
         );
-        assert_eq!(file_among(dir, &names(&[]), "stage.yml"), new("stage.yml"));
+        assert_eq!(
+            file_among(dir, &names(&[]), std::ffi::OsStr::new("stage.yml")),
+            new("stage.yml")
+        );
+    }
+
+    /// The listing keeps a name that is not UTF-8 as the filesystem has it,
+    /// and the one rule finds its YAML file by it.
+    #[cfg(unix)]
+    #[test]
+    fn the_listing_keeps_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
+        std::fs::write(dir.join(name), "").unwrap();
+        assert_eq!(super::files_in(dir).unwrap(), vec![dir.join(name)]);
+        assert_eq!(
+            super::yaml_files_by_name(dir).unwrap(),
+            vec![(dir.join(name), None)]
+        );
     }
 
     /// On disk, the lookup lists the directory: regular files only, so a

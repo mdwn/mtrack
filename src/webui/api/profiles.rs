@@ -170,11 +170,13 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
         // The profile files the config loads, as it lists them.
         let mut items: Vec<ProfileFileInfo> = Vec::new();
         for path in crate::config::list_profile_files(&profiles_dir)? {
-            let file = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
+            // A name the API cannot take back as written is listed, but
+            // not as one to act on: a lossy name would reach another file.
+            let name = path.file_name().unwrap_or_default();
+            let file = name.to_string_lossy().into_owned();
+            let addressable = name
+                .to_str()
+                .is_some_and(|name| super::super::safe_path::SafePath::validate_name(name).is_ok());
             let filename = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -196,6 +198,7 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
 
             items.push(ProfileFileInfo {
                 file,
+                addressable,
                 hostname: profile.hostname().map(str::to_string),
                 has_audio: profile.audio_config().is_some(),
                 has_midi: profile.midi().is_some(),
@@ -1039,6 +1042,82 @@ mod test {
         assert_eq!(status, StatusCode::OK);
         assert!(!profiles_dir.join("stage.yml").exists());
         assert!(profiles_dir.join("stage.yaml").exists());
+    }
+
+    /// `GET /api/profiles/stage.yaml` with only `stage.yaml.yaml` there
+    /// reads that file (a full name not listed is tried as a stem); a PUT to
+    /// `x.yml` creates `x.yml`. A file whose name is not UTF-8 is listed, but
+    /// not as one the API can address.
+    #[tokio::test]
+    async fn profiles_by_full_name_stem_and_unaddressable() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        write_profile_file(&profiles_dir, "stage.yaml.yaml", HOST_A);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
+            std::fs::write(profiles_dir.join(name), HOST_A).unwrap();
+        }
+        state.profiles_dir = Some(profiles_dir.clone());
+        let app = router().with_state(state);
+        let call = |method: &'static str, uri: &'static str, body: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        http::Request::builder()
+                            .method(method)
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), response_body(response).await)
+            }
+        };
+
+        let (status, body) = call("GET", "/profiles/stage.yaml", "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("dev-a"), "{body}");
+        assert!(!profiles_dir.join("stage.yaml").exists());
+
+        let put = r#"{"audio": {"device": "dev-x", "track_mappings": {"drums": [1]}}}"#;
+        let (status, body) = call("PUT", "/profiles/x.yml", put).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(std::fs::read_to_string(profiles_dir.join("x.yml"))
+            .unwrap()
+            .contains("dev-x"));
+        assert!(!profiles_dir.join("x.yml.yaml").exists());
+
+        let (status, body) = call("GET", "/profiles", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let addressable: Vec<_> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["file"].as_str().unwrap().to_string(),
+                    p["addressable"].clone(),
+                )
+            })
+            .collect();
+        let mut expected = vec![
+            ("stage.yaml.yaml".to_string(), serde_json::json!(true)),
+            ("x.yml".to_string(), serde_json::json!(true)),
+        ];
+        if cfg!(unix) {
+            expected.insert(
+                0,
+                ("caf\u{fffd}.yaml".to_string(), serde_json::json!(false)),
+            );
+        }
+        assert_eq!(addressable, expected, "{body}");
     }
 
     #[tokio::test]

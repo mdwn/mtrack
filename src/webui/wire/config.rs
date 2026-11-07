@@ -89,6 +89,10 @@ pub struct ProfileFileInfo {
     pub file: String,
     /// The file's stem (`stage`), for clients that address a profile by it.
     pub filename: String,
+    /// Whether `/api/profiles/{file}` reaches this file: false for a name
+    /// that is not UTF-8 (`file` is then shown with replacement characters)
+    /// or not safe in a URL path, which the web UI shows read-only.
+    pub addressable: bool,
     pub hostname: Option<String>,
     pub has_audio: bool,
     pub has_midi: bool,

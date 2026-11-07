@@ -47,20 +47,28 @@ pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError
 }
 
 /// The file in the profiles directory `dir` that `name` addresses, by the
-/// directory's listing: a full file name (`stage.yml`) is that file
-/// (`util::file_among`), so two files sharing a stem are each addressed;
-/// a stem (`stage`) is its `.yaml`, else its `.yml`, else a new `.yaml`
-/// (`util::yaml_file_at`). A new file named as one there but for case is
-/// refused. `name` is not checked for path safety here.
+/// directory's listing: a full file name it lists (`stage.yml`) is that
+/// file (`util::file_among`), so two files sharing a stem are each
+/// addressed; else a stem's file (`util::yaml_file_among`: `stage` is its
+/// `.yaml`, else its `.yml`; `stage.yaml` with only `stage.yaml.yaml`
+/// there is that). With neither, a full file name is created as written
+/// (`x.yml`) and a stem as `<stem>.yaml`. A new file named as one there
+/// but for case is refused. `name` is not checked for path safety here.
 pub(crate) fn profile_file(
     dir: &Path,
     name: &str,
 ) -> Result<crate::util::NamedFile, crate::util::CaseClash> {
-    let names = crate::util::file_names_in(dir);
-    if crate::songs::is_yaml_config(Path::new(name)) {
-        crate::util::file_among(dir, &names, name)
-    } else {
-        crate::util::yaml_file_among(dir, &names, name)
+    let files = crate::util::files_to_look_up(dir);
+    let as_stem = crate::util::yaml_file_among(dir, &files, name);
+    if !crate::songs::is_yaml_config(Path::new(name)) {
+        return as_stem;
+    }
+    match crate::util::file_among(dir, &files, std::ffi::OsStr::new(name)) {
+        Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+        full => match as_stem {
+            Ok(found @ crate::util::NamedFile::Found(_)) => Ok(found),
+            _ => full,
+        },
     }
 }
 
@@ -1736,6 +1744,30 @@ profiles:
             .map(|p| p.audio_config().unwrap().audio().device().to_string())
             .collect();
         assert_eq!(devices, ["device-b", "device-a", "catch-all"]);
+    }
+
+    /// A full file name the directory does not list is tried as a stem:
+    /// `stage.yaml` with only `stage.yaml.yaml` there is that file. With
+    /// neither, it is created as written: `x.yml`, not `x.yml.yaml`.
+    #[test]
+    fn profile_file_tries_a_full_name_as_a_stem() {
+        use crate::util::NamedFile;
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        std::fs::write(dir.join("stage.yaml.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml.yaml")))
+        );
+        assert_eq!(
+            super::profile_file(dir, "x.yml"),
+            Ok(NamedFile::New(dir.join("x.yml")))
+        );
+        std::fs::write(dir.join("stage.yaml"), "").unwrap();
+        assert_eq!(
+            super::profile_file(dir, "stage.yaml"),
+            Ok(NamedFile::Found(dir.join("stage.yaml")))
+        );
     }
 
     #[test]

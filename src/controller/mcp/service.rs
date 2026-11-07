@@ -1280,8 +1280,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let file = self.resolve_playlist_path(args.name.as_deref()).await?;
-        let path = file.path().to_path_buf();
+        let target = self.resolve_playlist_path(args.name.as_deref()).await?;
+        let path = target.path().to_path_buf();
         // Taken turns with the web UI's playlist saves, which read the file
         // to keep what the editor does not send.
         let _writing = crate::webui::api::playlists::PLAYLIST_WRITES.lock().await;
@@ -1289,7 +1289,7 @@ impl McpServer {
         // are: a web song delete holds it while it takes the song off every
         // playlist, and a check before it would write the deleted song back.
         self.validate_playlist(&args.yaml)?;
-        if let Some(name) = &args.name {
+        if let (Some(name), PlaylistTarget::Named(file)) = (&args.name, &target) {
             crate::webui::safe_path::SafePath::validate_name_to_write(name, file.exists())
                 .map_err(safepath_err)?;
         }
@@ -3861,7 +3861,7 @@ impl McpServer {
     pub(crate) async fn resolve_playlist_path(
         &self,
         name: Option<&str>,
-    ) -> Result<crate::util::NamedFile, McpError> {
+    ) -> Result<PlaylistTarget, McpError> {
         let store = self.config_store()?;
         let config_path = store.path().to_path_buf();
         // The playlists the player reloads from, so a playlist written here
@@ -3881,21 +3881,32 @@ impl McpServer {
                     McpError::invalid_params("no playlists directory configured", None)
                 })?;
                 crate::playlist::playlist_file(&dir, n)
+                    .map(PlaylistTarget::Named)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))
             }
-            // The one file the config names, not looked up by name.
             None => sources
                 .legacy_playlist
-                .map(|path| {
-                    if path.is_file() {
-                        crate::util::NamedFile::Found(path)
-                    } else {
-                        crate::util::NamedFile::New(path)
-                    }
-                })
+                .map(PlaylistTarget::Legacy)
                 .ok_or_else(|| {
                     McpError::invalid_params("no top-level playlist file configured", None)
                 }),
+        }
+    }
+}
+
+/// The file a playlist tool acts on: the top-level `playlist:` file the
+/// config names, or a named playlist's file as the playlists directory's
+/// listing has it.
+pub(crate) enum PlaylistTarget {
+    Legacy(std::path::PathBuf),
+    Named(crate::util::NamedFile),
+}
+
+impl PlaylistTarget {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            PlaylistTarget::Legacy(path) => path,
+            PlaylistTarget::Named(file) => file.path(),
         }
     }
 }
