@@ -448,9 +448,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with a plain 409 ("it defines nothing"). A file holding only shows, sequences, tempo or
   includes (a sequence library in a shared directory) reads, and is refused, never offered for
   replacing. A save that moves a venue or fixture type to its other
-  form sets the twin it retires aside as `<file>.replaced-<time>` too (named in the reply, and
-  said by the editor ("The old file was kept as …") as after a confirmed Replace; put back if the
-  write fails); it removed it. A venue's raw-text save that would retire a `.light`
+  form sets the twin it retires aside as `<file>.replaced-<time>` too, once the save is written,
+  so the name always has a file (named in the reply, and said by the editor ("The old file was
+  kept as …") as after a confirmed Replace); it removed it. Replacing a broken candidate found
+  off the name's stem (`ideas.light`, comments only, mentioning "Club"; `a/club.light` in a
+  subdirectory) sets it aside and writes the venue or type to a file of its own at its stem; it
+  wrote the name into that file. A channel-map form save over a broken `par.fixture` offers to
+  replace it, as any save does; it was refused as a form the editor cannot write. A venue's raw-text save that would retire a `.light`
   twin holding another venue (`club.light` holding Club and Arena) is refused with 409 naming
   Arena, by the rule a fixture type's save takes; Arena was lost. A typed venue moving from
   `club.light` onto a broken `club.venue` the person chose to replace is saved; it was refused as
@@ -474,10 +478,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such a song likewise finds its folder's `song.yml`, and refuses (409, "cannot be deleted") a
   folder holding another song's config, which it looked for a `song.yaml` in. A config in the
   folder that names another song (`Foo/song.yml` holding "Bar") is that song's: `PUT` and
-  `DELETE /api/songs/Foo` refuse it with 409, where the delete removed Bar's config; one that does
-  not read is not deleted. A save of text naming the song the folder's config names is written
-  there, so a song renamed in the editor (Foo to Bar) saves again, and the editor opens it under
-  its new name.
+  `DELETE /api/songs/Foo` and MCP `write_song` refuse it (409 in the web UI), where the delete
+  removed Bar's config and `write_song` overwrote it; one that does not read is not deleted. A
+  save of text naming the song the folder's config names is written there, so a song renamed in
+  the editor (Foo to Bar) saves again, and the editor goes on under its new name as soon as the
+  config is saved.
 - **One rule for a file's kind by its extension**: a media, MIDI or lighting file's extension is
   read in any case (`Bass.WAV`, `Show.LIGHT`, `Club.VENUE`, `Par.FIXTURE`, and GDTF, MVR and GLB
   files as before), and a config's name stays lowercase: a song, playlist or profile config, and
@@ -506,7 +511,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its save and validation answered 400, and the save wrote any extension. The save and the
   validation's `?file=` hold the path inside the songs directory by the containment rule MCP's
   tools take, refuse a link to nothing and a hidden name, and the file list shows a song's
-  `show.dsl` too. A fixture type save
+  `show.dsl` too, and a song's file list calls it a light show. A show a song names is one to
+  the end: the song editor deletes a removed show before saving the config that stops naming it
+  (it was refused afterwards), and a song that fails to load still names its shows, so one
+  deleted by hand can be written again. A show is found by being named, so a named
+  `.draft.light` is listed, validated, saved and deleted although hidden. A fixture type save
   retires only the type's own files in its other form: saving `Par` from `Par.light` as a
   `.fixture` removed whatever other file sat at the stem, so a `Par.LIGHT` holding `Spot` was
   deleted; it now stays. A save in a form already at the stem in another spelling (`Par.FIXTURE`)
@@ -519,10 +528,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignores case such a save is refused rather than written into that file. The web UI's
   lighting file list and the venue and fixture type loaders now leave out hidden directories
   (`.git/`) and hidden files (`venues/.club.light`), by one rule (a name starting with a dot) that
-  the song loader, `mtrack songs --init` and the bulk import, the song file listing and the file
-  browser take too: init put `.draft.light` and `._Show.light` in a new config, the loader read
-  a hidden `._song.yaml`, and the song file listing showed hidden files. No save writes under a
-  hidden name or directory (`PUT /api/lighting/Foo/.x.light` wrote one). The list passes over a subdirectory it cannot read, with a
+  `mtrack songs --init` and the bulk import, the song file listing, the file browser, a new
+  name's check and the MVR export's file name take too: init put `.draft.light` and
+  `._Show.light` in a new config, and the song file listing showed hidden files. The song loader
+  still reads a hidden config (`Foo/.song.yaml` is a song, as before) and passes over hidden
+  directories, and now AppleDouble files too (`._song.yaml`, the binary resource fork macOS
+  writes beside a file); init and the bulk import take a folder for a song's by the same rule.
+  No save writes under a hidden name or directory a song does not name
+  (`PUT /api/lighting/Foo/.x.light` wrote one). The list passes over a subdirectory it cannot read, with a
   warning, and lists the rest (it answered 500 "Failed to scan for lighting files"); a songs
   directory it cannot read or reach is still that 500. A venues or fixture types directory that
   cannot be read is an error rather than an empty one: the Fixtures page's settings save refuses
@@ -586,9 +599,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are each named by their path below the directory init was run on, by init and the bulk import
   alike, as is a new directory whose name a song already configured has (`Intro/` beside a
   `Live/song.yaml` naming "Intro", whether that song loads or fails; at the top it is
-  "Intro (2)"). Init and the bulk import read the names configs declare without loading any song
-  (they loaded every song first, click analysis and cache writes included), and a tree they
-  cannot read is reported rather than taken for one with no songs, and the loader warns when two songs share a name instead of dropping one silently.
+  "Intro (2)"); a bulk import names past every song in the songs directory, not only those in the
+  folder it imports, and no new song is named as another new one. Init and the bulk import read
+  the names configs declare without loading any song (they loaded every song first, click
+  analysis and cache writes included). The song loader, init and the bulk import walk the songs
+  tree by one rule: a folder in it that cannot be read is passed over with a warning, and the
+  rest are found (the loader failed altogether); only a songs directory that cannot be read is an
+  error, which the bulk import reports rather than taking it for one with no songs, and the loader warns when two songs share a name instead of dropping one silently.
 - **An audio file's extension is read in any case**: `Bass.WAV` in a song directory was listed
   as audio by the web UI but ignored by `mtrack songs --init` ("Unknown extension: WAV") and
   refused by the track and sample uploads (400 "Unsupported file type: .WAV"). All of them now
