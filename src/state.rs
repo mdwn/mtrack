@@ -1050,7 +1050,7 @@ mod tests {
         let (mut rx, handle) = start_sampler(engine);
 
         // Wait for the sampler to produce a snapshot
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(result.is_ok(), "timed out waiting for sampler");
 
         let snapshot = rx.borrow().clone();
@@ -1085,7 +1085,7 @@ mod tests {
 
         let (mut rx, handle) = start_sampler(engine);
 
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        let result = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(result.is_ok(), "timed out waiting for sampler");
 
         let snapshot = rx.borrow().clone();
@@ -1117,7 +1117,7 @@ mod tests {
         let (mut rx, handle) = start_sampler(engine.clone());
 
         // The first snapshot always goes out.
-        let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        let first = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(first.is_ok(), "timed out waiting for the first snapshot");
 
         // Nothing changes: no wake-up, however many ticks pass.
@@ -1145,7 +1145,7 @@ mod tests {
                 .update(std::time::Duration::from_millis(10), None)
                 .unwrap();
         }
-        let changed = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        let changed = tokio::time::timeout(crate::testutil::PATIENCE, rx.changed()).await;
         assert!(changed.is_ok(), "a change did not wake the subscriber");
         assert!(!rx.borrow().fixtures.is_empty());
 

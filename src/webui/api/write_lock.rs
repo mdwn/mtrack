@@ -80,12 +80,10 @@ impl WriteLock {
     /// `since`: what the test started is waiting on it.
     #[cfg(test)]
     pub(crate) async fn wait_for_another(&self, since: usize) {
-        tokio::time::timeout(crate::testutil::PATIENCE, async {
-            while self.asked() <= since {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("what the test started never asked for the lock it holds");
+        crate::testutil::eventually_async(
+            || async { self.asked() > since },
+            "what the test started never asked for the lock it holds",
+        )
+        .await;
     }
 }

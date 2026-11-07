@@ -1275,7 +1275,7 @@ mod test {
 
         // play_start_time is set asynchronously after clock.start(), so
         // elapsed may briefly be None even though playing is true. Poll.
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         loop {
             let resp = client.status(StatusRequest {}).await?;
             let status = resp.into_inner();

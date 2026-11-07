@@ -2211,7 +2211,7 @@ mod test {
 
     /// Waits up to a generous while for `thread` to end; whether it did.
     fn ended_soon(thread: &std::thread::JoinHandle<()>) -> bool {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !thread.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -6819,8 +6819,8 @@ mod test {
                     .map_err(|e| e.to_string())
                 })
             };
-            ready_rx.recv_timeout(Duration::from_secs(5))?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            ready_rx.recv_timeout(crate::testutil::PATIENCE)?;
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
             let mut red = 0.0;
             while std::time::Instant::now() < deadline {
                 red = engine.get_universe(5).unwrap().get_target_value(0);
@@ -6895,7 +6895,7 @@ mod test {
                     .map_err(|e| e.to_string())
                 })
             };
-            ready_rx.recv_timeout(Duration::from_secs(5))?;
+            ready_rx.recv_timeout(crate::testutil::PATIENCE)?;
             std::thread::sleep(Duration::from_millis(200));
             let red = engine.get_universe(5).unwrap().get_target_value(0);
             let through_store = engine.midi_dmx_store.read().has_active_slots();

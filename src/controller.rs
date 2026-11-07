@@ -857,7 +857,7 @@ mod test {
         assert!(controller.update(vec![mcp()], player.clone(), false));
         // Aborted, it finishes when its runtime gets to it: under load, and
         // under coverage on CI, that can be well past a fixed sleep.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !grpc_task.is_finished() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

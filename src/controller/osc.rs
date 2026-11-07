@@ -1623,7 +1623,7 @@ mod test {
             .expect_err("OSC monitor task should be cancelled");
         assert!(aborted.is_cancelled());
 
-        let rebound = timeout(Duration::from_secs(1), async {
+        let rebound = timeout(crate::testutil::PATIENCE, async {
             loop {
                 match UdpSocket::bind(format!("127.0.0.1:{}", port)).await {
                     Ok(socket) => break socket,
