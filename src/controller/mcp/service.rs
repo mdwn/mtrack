@@ -2337,11 +2337,7 @@ impl McpServer {
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
 
         let config_path = song.config_path_or_default();
-        let reference = path
-            .strip_prefix(song.base_path())
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let reference = shown_in(song.base_path(), &path);
 
         // The web UI's rule for deleting a light show, checked before the
         // song's config is touched.
@@ -2615,11 +2611,7 @@ impl McpServer {
 
         // The reference is stored relative to the song directory, matching how
         // a hand-written block spells it.
-        let reference = path
-            .strip_prefix(song.base_path())
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let reference = shown_in(song.base_path(), path);
 
         let original = read_text(&config_path).await?;
         let Some(updated) = register_lighting_file(&original, &reference) else {

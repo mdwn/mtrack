@@ -686,18 +686,43 @@ pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
     }
 }
 
-/// The names a file's kept original may take, in turn.
-fn original_names(path: &Path) -> impl Iterator<Item = (String, PathBuf)> + '_ {
+/// The names a file kept beside `path` may take, in turn, with the name
+/// alone: `<file><suffix>`, then `<file><suffix>-2`, `-3`…, appended to
+/// the whole file name. A kept original's (`.mtrack-original`) and `mtrack
+/// migrate`'s backups' (`.bak`).
+pub fn kept_names<'a>(
+    path: &'a Path,
+    suffix: &'a str,
+) -> impl Iterator<Item = (String, PathBuf)> + 'a {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     (1u32..).map(move |n| {
         let candidate = if n == 1 {
-            format!("{name}{ORIGINAL_SUFFIX}")
+            format!("{name}{suffix}")
         } else {
-            format!("{name}{ORIGINAL_SUFFIX}-{n}")
+            format!("{name}{suffix}-{n}")
         };
         let file = path.with_file_name(&candidate);
         (candidate, file)
     })
+}
+
+/// Makes a file at the first free one of `path`'s [`kept_names`] with
+/// `make`, which makes it new and answers `AlreadyExists` for a name
+/// taken, so nothing there is written over: the next name is tried.
+/// Answers the name made and its path.
+pub fn make_first_free(
+    path: &Path,
+    suffix: &str,
+    mut make: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<(String, PathBuf)> {
+    for (name, file) in kept_names(path, suffix) {
+        match make(&file) {
+            Ok(()) => return Ok((name, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only with the integers")
 }
 
 /// Links `staged` to the first free original name of `path`; its name.
@@ -706,49 +731,41 @@ fn link_original(path: &Path, staged: &Path) -> std::io::Result<String> {
     if next_fault() == Fault::Link {
         return Err(std::io::Error::other("injected link failure"));
     }
-    for (name, file) in original_names(path) {
-        match std::fs::hard_link(staged, &file) {
-            Ok(()) => return Ok(name),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!("the names run out only with the integers")
+    make_first_free(path, ORIGINAL_SUFFIX, |file| {
+        std::fs::hard_link(staged, file)
+    })
+    .map(|(name, _)| name)
 }
 
 /// Moves `staged` to the first free original name of `path`; its name.
 /// A rename replaces what is at its target, so a name is taken only when
-/// nothing is there: the kept originals are made only by [`restore_file`],
-/// under the file's writer lock, which the caller holds.
+/// nothing is there. That is checked before the rename, not by it: the
+/// file's writer lock, which the caller holds, keeps this process's other
+/// writers out between the two, but it is this process's alone, so another
+/// process making that name in between is written over. Only a last
+/// resort, when the original can be neither linked nor written out, runs
+/// this.
 fn rename_original(path: &Path, staged: &Path) -> std::io::Result<String> {
     #[cfg(test)]
     if next_fault() == Fault::Rename {
         return Err(std::io::Error::other("injected rename failure"));
     }
-    for (name, file) in original_names(path) {
-        match std::fs::symlink_metadata(&file) {
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::rename(staged, &file)?;
-                return Ok(name);
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!("the names run out only with the integers")
+    make_first_free(
+        path,
+        ORIGINAL_SUFFIX,
+        |file| match std::fs::symlink_metadata(file) {
+            Ok(_) => Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::rename(staged, file),
+            Err(e) => Err(e),
+        },
+    )
+    .map(|(name, _)| name)
 }
 
 /// Writes `was` to the first free original name of `path`, made new; its
 /// name.
 fn write_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
-    for (name, file) in original_names(path) {
-        match write_file_tracked(&file, was, WriteMode::CreateNew) {
-            Ok(()) => return Ok(name),
-            Err(f) if f.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(f) => return Err(f.error),
-        }
-    }
-    unreachable!("the names run out only with the integers")
+    make_first_free(path, ORIGINAL_SUFFIX, |file| write_new_file(file, was)).map(|(name, _)| name)
 }
 
 /// A failure a test injects into [`write_file_tracked`] (and so every

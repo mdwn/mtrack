@@ -52,23 +52,16 @@ struct FileWrite {
     new: bool,
 }
 
-/// The names a backup of `path` may take, in turn: `<file>.bak`, then
-/// `<file>.bak-2`, `-3`… Appended to the whole file name, so a backup is
-/// never taken for a config, profile, playlist or venue file.
-fn backup_names(path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    (1u32..).map(move |n| {
-        path.with_file_name(if n == 1 {
-            format!("{name}.bak")
-        } else {
-            format!("{name}.bak-{n}")
-        })
-    })
-}
+/// The suffix a backup of a file takes ([`crate::util::kept_names`]):
+/// `<file>.bak`, then `<file>.bak-2`, `-3`… Appended to the whole file
+/// name, so a backup is never taken for a config, profile, playlist or
+/// venue file.
+const BACKUP_SUFFIX: &str = ".bak";
 
 /// The backup [`back_up`] would make of `path` now: its first free name.
 fn next_backup(path: &Path) -> PathBuf {
-    backup_names(path)
+    crate::util::kept_names(path, BACKUP_SUFFIX)
+        .map(|(_, backup)| backup)
         .find(|backup| std::fs::symlink_metadata(backup).is_err())
         .unwrap_or_else(|| unreachable!("the names run out only with the integers"))
 }
@@ -78,14 +71,11 @@ fn next_backup(path: &Path) -> PathBuf {
 /// overwrites (#671). Answers the backup.
 fn back_up(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let contents = crate::util::read_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    for backup in backup_names(path) {
-        match crate::util::write_new_file(&backup, &contents) {
-            Ok(()) => return Ok(backup),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("{}: {e}", backup.display()).into()),
-        }
-    }
-    unreachable!("the names run out only with the integers")
+    crate::util::make_first_free(path, BACKUP_SUFFIX, |backup| {
+        crate::util::write_new_file(backup, &contents)
+    })
+    .map(|(_, backup)| backup)
+    .map_err(|e| format!("backing up {}: {e}", path.display()).into())
 }
 
 /// Collected migration results that can be applied or reported.
