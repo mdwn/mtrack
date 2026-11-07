@@ -68,13 +68,15 @@ pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
 }
 
 /// Where a channel written at `from`, moving `rate` a tick toward `target`,
-/// is `ticks` ticks on: [`dim_step`] that many times, as the store and the
-/// universe thread take it a tick at a time, then the part of a step a
-/// part tick makes. Stepped, not `from + rate × ticks`: the sum of the
-/// steps rounds otherwise, so a seek's replay landed a byte off what the
-/// live run sent (#646: 0 → 35 over 44 ticks, tick 22, 18 for 17).
+/// is `ticks` ticks on: [`dim_step`] once for each whole tick, as the store
+/// and the universe thread take it a tick at a time; a part tick moves it
+/// no further, so every level is one the live run sends. Stepped, not
+/// `from + rate × ticks`: the sum of the steps rounds otherwise, so a
+/// seek's replay landed a byte off what the live run sent (#646: 0 → 35
+/// over 44 ticks, tick 22, 18 for 17). An instant write (no rate, or a
+/// dim over no ticks: infinite, or no number) is there at once.
 pub(crate) fn dimmed_at(from: f64, target: f64, rate: f64, ticks: f64) -> f64 {
-    if rate == 0.0 {
+    if rate == 0.0 || !rate.is_finite() {
         return target;
     }
     let whole = ticks.floor();
@@ -88,10 +90,6 @@ pub(crate) fn dimmed_at(from: f64, target: f64, rate: f64, ticks: f64) -> f64 {
         }
         value = next;
         n += 1.0;
-    }
-    let part = rate * (ticks - whole);
-    if part != 0.0 && value != target {
-        value = dim_step(value, target, part);
     }
     value
 }
@@ -435,7 +433,8 @@ mod dimming_test {
     /// #646: 0 → 35 over 44 ticks, stepped, is 17.499999999999996 at tick
     /// 22, which goes out as 17; `from + rate × ticks` made it 17.5, 18.
     /// The replay and the live run send the same byte at every tick, and a
-    /// part tick lies between its two.
+    /// part tick is where its whole tick left it: no level the live run
+    /// never sends.
     #[test]
     fn a_replayed_dim_sends_the_bytes_the_live_run_sent() {
         let rate = dim_rate(0.0, 35.0, 44.0);
@@ -446,8 +445,10 @@ mod dimming_test {
             assert_eq!(dmx_byte(replayed), dmx_byte(current), "tick {n}");
         }
         assert_eq!(dmx_byte(dimmed_at(0.0, 35.0, rate, 22.0)), 17);
-        let half = dimmed_at(0.0, 35.0, rate, 21.5);
-        assert!(dimmed_at(0.0, 35.0, rate, 21.0) < half && half < dimmed_at(0.0, 35.0, rate, 22.0));
+        assert_eq!(
+            dimmed_at(0.0, 35.0, rate, 21.5),
+            dimmed_at(0.0, 35.0, rate, 21.0)
+        );
         assert_eq!(dimmed_at(0.0, 35.0, rate, 1e6), 35.0);
     }
 
