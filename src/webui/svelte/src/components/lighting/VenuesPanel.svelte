@@ -40,7 +40,7 @@
   import { untrack } from "svelte";
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
-  import { latestLoad } from "../../lib/util/latest";
+  import { newestLoad } from "../../lib/util/latest";
   import { nextFixtureName, nextPatch } from "../../lib/lighting/venueRows";
   import {
     ConflictError,
@@ -182,12 +182,11 @@
     }
   }
 
-  const venuesLoad = latestLoad();
-
-  async function loadVenues() {
-    // Only the newest load's answer is kept: an older one, for a directory
-    // since changed, can answer after it.
-    const current = venuesLoad();
+  /** Re-reads the venue list. Only the newest read's answer is kept: an
+   *  older one, for a directory since changed, can answer after it. Those
+   *  awaiting it (opening the editor, after a save) read the list once the
+   *  newest read is in, whichever call started it. */
+  const loadVenues = newestLoad(async (current) => {
     venueLoading = true;
     venueError = "";
     venueFileErrors = [];
@@ -212,7 +211,7 @@
     } finally {
       if (current()) venueLoading = false;
     }
-  }
+  });
 
   // Re-read on a directory change, and whenever a fixture type or a venue
   // changed anywhere on the page (the plot, the inspector, the fixture

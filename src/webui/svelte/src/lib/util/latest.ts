@@ -23,3 +23,24 @@ export function latestLoad(): () => () => boolean {
     return () => mine === latest;
   };
 }
+
+/** A load awaited by callers that read what it loaded, repeated as its
+ *  inputs change. `load` applies its answer only while `current()` holds
+ *  (see [`latestLoad`]); a call resolves once the newest load started by
+ *  then has finished, so a caller whose own answer went stale still finds
+ *  the newest one applied, not nothing. */
+export function newestLoad(
+  load: (current: () => boolean) => Promise<void>,
+): () => Promise<void> {
+  const start = latestLoad();
+  let newest: Promise<void> = Promise.resolve();
+  return async () => {
+    let waited = load(start());
+    newest = waited;
+    await waited;
+    while (waited !== newest) {
+      waited = newest;
+      await waited;
+    }
+  };
+}
