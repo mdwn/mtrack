@@ -49,7 +49,7 @@ enum Kind {
 
 /// The text before a `#` that is outside quotes, and the comment from the
 /// `#` on.
-pub(super) fn split_comment(line: &str) -> (&str, Option<&str>) {
+fn split_comment(line: &str) -> (&str, Option<&str>) {
     let mut quoted = false;
     for (i, c) in line.char_indices() {
         match c {
@@ -113,12 +113,14 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
 }
 
 /// The line that opens venue `name`'s block: the first that starts (after
-/// its indent) with `venue "<name>"` and holds its `{`.
-fn header_line(lines: &[&str], name: &str) -> Option<usize> {
+/// its indent) with `venue "<name>"` and holds its `{`. With it, the
+/// length of that `venue "<name>"`.
+fn header_line(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     let header = format!("venue \"{name}\"");
     lines
         .iter()
         .position(|l| l.trim_start().starts_with(&header) && l.contains('{'))
+        .map(|at| (at, header.len()))
 }
 
 /// Renames the venue `old` in `content` to `new`: the name in its opening
@@ -126,11 +128,11 @@ fn header_line(lines: &[&str], name: &str) -> Option<usize> {
 /// kept.
 pub fn rename_venue(content: &str, old: &str, new: &str) -> Result<String, String> {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let at = header_line(&lines, old)
+    let (at, header) = header_line(&lines, old)
         .ok_or_else(|| format!("cannot find the block of venue \"{old}\" to rename"))?;
     let line = lines[at];
     let indent = line.len() - line.trim_start().len();
-    let rest = &line[indent + format!("venue \"{old}\"").len()..];
+    let rest = &line[indent + header..];
     let mut out = String::with_capacity(content.len() + new.len());
     for (i, l) in lines.iter().enumerate() {
         if i == at {
@@ -150,7 +152,7 @@ pub fn patch_venue_with(
     notes: &PatchNotes,
 ) -> Result<String, String> {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let open = header_line(&lines, name)
+    let (open, _) = header_line(&lines, name)
         .ok_or_else(|| format!("cannot find the block of venue \"{name}\" to patch"))?;
     let close = lines[open + 1..]
         .iter()

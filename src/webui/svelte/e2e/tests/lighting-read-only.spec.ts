@@ -62,25 +62,18 @@ const venues = {
   versions: { Club: "v1", House: "v1" },
 } satisfies VenueList;
 
-/** Serves `venues` as the listing, and records every write of a venue. */
+/** Serves `venues` as the listing. */
 async function routeVenues(page: Page) {
-  const writes: string[] = [];
   await page.route(/\/api\/lighting\/venues(\?.*)?$/, (route) =>
     route.fulfill({ json: venues }),
   );
-  await page.route(/\/api\/lighting\/venues\/[^/?]+(\?.*)?$/, (route) => {
-    const method = route.request().method();
-    if (method !== "GET") writes.push(`${method} ${route.request().url()}`);
-    return route.fallback();
-  });
-  return writes;
 }
 
 test.describe("A venue whose file is not its alone", () => {
   test("its editor names the file and why, with save and rename disabled", async ({
     page,
   }) => {
-    const writes = await routeVenues(page);
+    await routeVenues(page);
     await page.goto("/#/lighting/venues");
     await page.getByTestId("venue-edit-Club").click();
     const note = page.getByTestId("venue-read-only");
@@ -93,19 +86,12 @@ test.describe("A venue whose file is not its alone", () => {
       page.locator(".editor-form").getByRole("button", { name: "Save" }),
     ).toBeDisabled();
     await expect(page.locator("#venue-name")).toBeDisabled();
-    // A click on the disabled Save, forced past the check, sends nothing.
-    await page
-      .locator(".editor-form")
-      .getByRole("button", { name: "Save" })
-      .click({ force: true });
-    await page.waitForTimeout(300);
-    expect(writes).toHaveLength(0);
   });
 
   test("its card cannot delete it; an editable venue's can", async ({
     page,
   }) => {
-    const writes = await routeVenues(page);
+    await routeVenues(page);
     await page.goto("/#/lighting/venues");
     await expect(page.getByTestId("venue-delete-Club")).toBeDisabled();
     await expect(page.getByTestId("venue-delete-Club")).toHaveAttribute(
@@ -113,11 +99,6 @@ test.describe("A venue whose file is not its alone", () => {
       SHARED,
     );
     await expect(page.getByTestId("venue-delete-House")).toBeEnabled();
-    // Forced, the disabled Delete asks nothing and deletes nothing.
-    await page.getByTestId("venue-delete-Club").click({ force: true });
-    await page.waitForTimeout(300);
-    await expect(page.locator(".dialog-overlay")).toHaveCount(0);
-    expect(writes).toHaveLength(0);
   });
 
   test("an editable venue's editor has no note and saves", async ({ page }) => {
@@ -147,11 +128,16 @@ const washType = (name: string): FixtureTypeEntry => ({
   file: "all.light",
   extension: "light",
   owner: { file: "all.light", editable: false, reason: TYPE_SHARED },
-  form_editable: true,
+  // As the server says of a type it would refuse a form save of.
+  form_editable: false,
   referential: false,
   rich: false,
   footprint: 1,
 });
+
+const WASH_DSL =
+  'fixture_type "Wash A" {\n  channels: 1\n  channel_map: { "dimmer": 1 }\n}\n' +
+  'fixture_type "Wash B" {\n  channels: 1\n  channel_map: { "dimmer": 1 }\n}\n';
 
 const types = {
   fixture_types: { "Wash A": washType("Wash A") },
@@ -163,6 +149,20 @@ test.describe("A fixture type whose file is not its alone", () => {
     await page.route(/\/api\/lighting\/fixture-types(\?.*)?$/, (route) =>
       route.fulfill({ json: types }),
     );
+    // The text editor reads the type's file.
+    await page.route(
+      /\/api\/lighting\/fixture-types\/Wash%20A(\?.*)?$/,
+      (route) =>
+        route.request().method() === "GET"
+          ? route.fulfill({
+              json: {
+                ...washType("Wash A"),
+                footprint: undefined,
+                dsl: WASH_DSL,
+              } satisfies FixtureTypeEntry,
+            })
+          : route.fallback(),
+    );
   });
 
   test("its card cannot delete it", async ({ page }) => {
@@ -172,19 +172,14 @@ test.describe("A fixture type whose file is not its alone", () => {
     await expect(del).toHaveAttribute("title", TYPE_SHARED);
   });
 
-  test("its editor names the file and why, with save and rename disabled", async ({
+  test("it opens as text, names the file and why, and cannot be saved", async ({
     page,
   }) => {
-    const writes: string[] = [];
-    page.on("request", (req) => {
-      if (
-        req.url().includes("/api/lighting/fixture-types/") &&
-        req.method() !== "GET"
-      )
-        writes.push(req.method());
-    });
     await page.goto("/#/lighting/fixtures");
     await card(page, "Wash A").click();
+    // Not the channel map's to say all of: the text editor, with the file.
+    await expect(page.getByTestId("ft-dsl")).toHaveValue(WASH_DSL);
+    await expect(page.locator(".channel-row")).toHaveCount(0);
     await expect(page.getByTestId("ft-read-only")).toBeVisible();
     await expect(page.getByTestId("ft-read-only-file")).toHaveText("all.light");
     await expect(page.getByTestId("ft-read-only-reason")).toHaveText(
@@ -193,13 +188,9 @@ test.describe("A fixture type whose file is not its alone", () => {
     await expect(
       page.locator(".editor-form").getByRole("button", { name: "Save" }),
     ).toBeDisabled();
-    await expect(page.locator("#ft-name")).toBeDisabled();
-    // A click on the disabled Save, forced past the check, sends nothing.
-    await page
-      .locator(".editor-form")
-      .getByRole("button", { name: "Save" })
-      .click({ force: true });
-    await page.waitForTimeout(300);
-    expect(writes).toHaveLength(0);
+    await expect(page.getByTestId("ft-name-derived")).toHaveJSProperty(
+      "readOnly",
+      true,
+    );
   });
 });

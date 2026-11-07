@@ -204,7 +204,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The channel map edits only a type it can say all of: a file holding that one type and only
     `channels`, `channel_map` and the strobe frequencies and offset, with no comment. The listing
     says which, `form_editable`; any other type opens as text, and a form save of it answers 400
-    ("edit this type as text"). A data-loss fix: a `.light` type with a comment, a
+    ("edit this type as text"), where it answered 409 (for a `.fixture`). The count, if
+    given, must be the map's, and no field or channel may be given twice. A data-loss fix: a `.light` type with a comment, a
     `strobe_curve`, `special_cases` or `movement` limits opened in the channel map, and its save
     regenerated the file without them. A plain `.fixture` (as a new type from the channel map
     is) opens in the channel map, where every `.fixture` opened as text.

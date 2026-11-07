@@ -29,29 +29,34 @@ use super::parser::parse_fixture_types;
 use super::parser::utils::items;
 use super::types::{MovementLimits, StrobeCurve};
 
-/// What the fixture page's settings form owns in a type's file.
 /// Whether the web UI's channel-map form can say everything `text`, a
 /// fixture type file, says about the type `name`, so that a form save loses
-/// nothing: the file holds that one type and nothing else, no comment, and
-/// the type is its channel map and the three strobe numbers alone (no rich
-/// channel, GDTF source, movement limits, strobe curve, special cases or
-/// anything else the form does not carry). The one rule for which editor a
-/// type opens in, and for whether a form save of it is taken.
+/// nothing:
+/// - the file holds that one type and nothing else, and no comment (by the
+///   grammar's comment rule, [`super::parser::document::has_comment`]);
+/// - the type is its channel map and the three strobe numbers alone: no
+///   rich channel, GDTF source, movement limits, strobe curve, special
+///   cases or anything else the form does not carry;
+/// - each of those at most once, no channel twice in the map, and a
+///   `channels` count, if any, that is the map's.
+///
+/// The one rule for which editor a type opens in, and for whether a form
+/// save of it is taken.
 pub fn form_expresses(text: &str, name: &str) -> bool {
     use super::files::{Contents, Editable, Kind};
     let alone = Contents::parse(Kind::FixtureType, text)
         .ok()
         .and_then(|contents| contents.alone(name))
         == Some(Editable::Editable);
-    let commented = text
-        .lines()
-        .any(|line| super::venue_patch::split_comment(line).1.is_some());
-    if !alone || commented {
+    if !alone {
         return false;
     }
     let Ok(pairs) = LightingParser::parse(Rule::file, text) else {
         return false;
     };
+    if super::parser::document::has_comment(text, pairs.clone()) {
+        return false;
+    }
     let Some(declaration) = items(pairs)
         .filter(|p| p.as_rule() == Rule::fixture_type)
         .find(|p| {
@@ -63,24 +68,60 @@ pub fn form_expresses(text: &str, name: &str) -> bool {
     else {
         return false;
     };
-    // What the form writes, and nothing else: no GDTF source, and in the
-    // body only the channel count, the map and the three strobe numbers.
-    declaration.into_inner().all(|child| match child.as_rule() {
-        Rule::fixture_type_name => true,
-        Rule::fixture_type_content => child.into_inner().all(|field| {
-            matches!(
-                field.as_rule(),
-                Rule::channels
-                    | Rule::channel_map
-                    | Rule::max_strobe_frequency
-                    | Rule::min_strobe_frequency
-                    | Rule::strobe_dmx_offset
-            )
-        }),
-        _ => false,
-    })
+    let mut fields = Vec::new();
+    for child in declaration.into_inner() {
+        match child.as_rule() {
+            Rule::fixture_type_name => {}
+            Rule::fixture_type_content => fields.extend(child.into_inner()),
+            // A GDTF source, or anything else the form does not write.
+            _ => return false,
+        }
+    }
+    // What the form writes, each at most once.
+    let mut seen = std::collections::HashSet::new();
+    let mut count: Option<f64> = None;
+    let mut keys: Vec<String> = Vec::new();
+    for field in fields {
+        let rule = field.as_rule();
+        let known = matches!(
+            rule,
+            Rule::channels
+                | Rule::channel_map
+                | Rule::max_strobe_frequency
+                | Rule::min_strobe_frequency
+                | Rule::strobe_dmx_offset
+        );
+        if !known || !seen.insert(rule) {
+            return false;
+        }
+        match rule {
+            Rule::channels => {
+                count = field
+                    .into_inner()
+                    .next()
+                    .and_then(|n| n.as_str().trim().parse().ok());
+                if count.is_none() {
+                    return false;
+                }
+            }
+            Rule::channel_map => {
+                for mapping in field.into_inner().flat_map(|list| list.into_inner()) {
+                    if let Some(key) = mapping
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::channel_name)
+                    {
+                        keys.push(key.as_str().trim().to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let distinct: std::collections::HashSet<&String> = keys.iter().collect();
+    distinct.len() == keys.len() && count.is_none_or(|n| n == keys.len() as f64)
 }
 
+/// What the fixture page's settings form owns in a type's file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FixtureSettings {
     /// The type's name: what venue fixture lines and shows call it.
@@ -467,6 +508,42 @@ mod tests {
     }
 
     #[test]
+    fn the_form_expresses_no_repeat_and_only_the_maps_own_count() {
+        let typed = |body: &str| format!("fixture_type \"Par\" {{\n{body}}}\n");
+        let map = "  channel_map: { \"red\": 1, \"green\": 2 }\n";
+        assert!(form_expresses(&typed(map), "Par"));
+        assert!(form_expresses(
+            &typed(&format!("  channels: 2\n{map}")),
+            "Par"
+        ));
+        for (what, body) in [
+            (
+                "a count that is not the map's",
+                format!("  channels: 3\n{map}"),
+            ),
+            (
+                "a second map",
+                format!("{map}  channel_map: {{ \"blue\": 3 }}\n"),
+            ),
+            (
+                "a repeated key",
+                "  channel_map: { \"red\": 1, \"red\": 2 }\n".to_string(),
+            ),
+            (
+                "a repeated strobe field",
+                format!("{map}  max_strobe_frequency: 20.0\n  max_strobe_frequency: 25.0\n"),
+            ),
+            (
+                "a repeated count",
+                format!("  channels: 2\n  channels: 2\n{map}"),
+            ),
+        ] {
+            let text = typed(&body);
+            assert!(!form_expresses(&text, "Par"), "{what}: {text}");
+        }
+    }
+
+    #[test]
     fn the_form_expresses_only_a_plain_type_alone_in_its_file() {
         let plain = "fixture_type \"Par\" {\n  channels: 2\n  channel_map: { \"dimmer\": 1, \"strobe\": 2 }\n  max_strobe_frequency: 20.0\n  min_strobe_frequency: 0.5\n  strobe_dmx_offset: 7\n}\n";
         assert!(form_expresses(plain, "Par"));
@@ -506,6 +583,23 @@ mod tests {
         // A `#` inside a name is not a comment.
         let hash = plain.replace("\"Par\"", "\"Par #3\"");
         assert!(form_expresses(&hash, "Par #3"));
+        // A string over two lines does not hide a comment after it: the
+        // grammar's comment rule finds it, not a line scan.
+        let spanning =
+            "fixture_type \"Par\" {\n  channels: 1\n  channel_map: { \"dim\nmer\": 1 } # mine\n}\n";
+        assert!(crate::lighting::parser::parse_fixture_types(spanning).is_ok());
+        {
+            assert!(!form_expresses(spanning, "Par"), "{spanning}");
+            assert!(form_expresses(&spanning.replace(" # mine", ""), "Par"));
+        }
+        let spanning_name =
+            "fixture_type \"Par\n#1\" {\n  channels: 1\n  channel_map: { \"dimmer\": 1 }\n}\n";
+        assert!(crate::lighting::parser::parse_fixture_types(spanning_name).is_ok());
+        {
+            assert!(form_expresses(spanning_name, "Par\n#1"));
+            let commented = spanning_name.replace("channels: 1", "channels: 1 # mine");
+            assert!(!form_expresses(&commented, "Par\n#1"));
+        }
         assert!(!form_expresses(plain, "Other"));
     }
 }
