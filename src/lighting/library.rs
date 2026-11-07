@@ -45,6 +45,14 @@ use super::gdtf;
 /// directory override does not move it.
 pub const LIBRARY_DIR: &str = "lighting/library";
 
+/// The library file `file_name`: where it is in `project`, and the
+/// project-relative name records and venues refer to it by
+/// (`lighting/library/<file_name>`). The one place a library path is built.
+pub fn library_file(project: &Path, file_name: &str) -> (PathBuf, String) {
+    let rel = format!("{LIBRARY_DIR}/{file_name}");
+    (project.join(&rel), rel)
+}
+
 /// The name index's file in the project's cache, and its format version.
 const INDEX_FILE: &str = "lighting/.cache/library-names-v1.json";
 const INDEX_VERSION: u32 = 1;
@@ -303,7 +311,7 @@ pub fn unrecorded_types_given(
         taken_by.insert(name.clone(), file_name.clone());
         library.types.push(LibraryType {
             name,
-            archive: format!("{LIBRARY_DIR}/{file_name}"),
+            archive: library_file(project, &file_name).1,
             file_name,
             fixture: names.fixture,
             manufacturer: names.manufacturer,

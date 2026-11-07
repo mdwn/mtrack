@@ -339,8 +339,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     remove the old type file last. Any failure, the old file's removal included, puts back what
     was written before it and what the failing write itself changed (a file it made is removed,
     a file it began rewriting is restored), and never a file someone else made since it was
-    claimed; the answer ends "nothing was saved", or "nothing else was saved, but <file> (<why>)
-    could not be put back". Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when
+    claimed; the answer ends "nothing was saved", or "nothing was saved, but <file> (<why>) could
+    not be put back". Renaming "Brick" (in `brick.fixture`) to "PixelBrick" when
     `brick.fixture` cannot be removed answers 500 "cannot remove brick.fixture: …; nothing was
     saved", `pixelbrick.fixture` removed and the venues as they were, where the venues were left
     renamed. A failed venue or type write likewise, where the venues written before it stayed
@@ -350,11 +350,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     library copies lighting/library/k.mvr and lighting/library/Astera_PB15.gdtf were saved",
     where the records and the revised MVR stayed and the answer did not say what had been
     written. Everything an import can check without its copies is done before the first is
-    written, and a copy that fails names those written before it the same way.
-  - A lighting write that was put back removes the staged copy (`<file>.<pid>.mtrack-new`) its
-    failed write left; one that could not be put back keeps it and says so ("… (<why>; its
-    content is in club.venue.1234.mtrack-new) could not be put back"), as any interrupted write
-    keeps its staged copy.
+    written, and a copy that fails names those written before it the same way; a copy that
+    fails part way is removed with its staged copy, so no partial `.gdtf` or `.mvr` (nor a
+    `.mtrack-new` beside it, which a re-import took for the same archive) is left in the
+    library.
+  - A file one of these writes cannot put back is left as the failed write left it, and its
+    original goes to a new file beside it that no later save writes over,
+    `<file>.mtrack-original` (`-2`, `-3`… when taken): "nothing was saved, but club.venue
+    (<why>; it is left as the failed save wrote it, perhaps empty, and its original is in
+    club.venue.mtrack-original) could not be put back", or that the original could not be kept
+    either. The staged copies (`<file>.<pid>.mtrack-new`) of these writes are removed once put
+    back or not; a write interrupted by a crash still leaves its staged copy.
   - A web save's file that was removed since it was read is not made again (409): "club.venue
     was removed while saving and was not made again; try again", where the save made it anew
     (or left it empty). MCP's writes still make it again.

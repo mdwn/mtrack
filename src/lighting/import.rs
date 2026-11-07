@@ -248,7 +248,10 @@ fn library_copy_of(project: &Path, bytes: &[u8]) -> Option<String> {
         .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
-            p.is_file() && std::fs::metadata(p).is_ok_and(|m| m.len() == bytes.len() as u64)
+            // A write's staged copy is not a library file.
+            !crate::util::is_staged(p)
+                && p.is_file()
+                && std::fs::metadata(p).is_ok_and(|m| m.len() == bytes.len() as u64)
         })
         .collect();
     paths.sort();
@@ -308,7 +311,7 @@ pub fn place_in_library(
     let types = existing_types(fixture_dir);
     let library = super::library::unrecorded_types(project, Some(fixture_dir));
     let copy = library_copy_of(project, bytes);
-    let rel = |file: &str| library_file(project, file).1;
+    let rel = |file: &str| super::library::library_file(project, file).1;
 
     // Already in the library: it is the fixture it already is.
     if let Some(file) = &copy {
@@ -450,13 +453,6 @@ pub fn place_in_library(
     })
 }
 
-/// The library file `file_name`: where it is, and the project-relative name
-/// a record or a venue refers to it by (`lighting/library/<file_name>`).
-pub fn library_file(project: &Path, file_name: &str) -> (PathBuf, String) {
-    let rel = format!("{}/{file_name}", super::library::LIBRARY_DIR);
-    (project.join(&rel), rel)
-}
-
 /// An import's library copies, written one by one before what goes with
 /// them: each stands once written, as an import's library always has, and
 /// [`Self::failed`] says which when something after fails.
@@ -468,15 +464,35 @@ pub struct LibraryCopies {
 
 impl LibraryCopies {
     /// Writes the new library file `file_name`.
+    /// Writes the new library file `file_name`: made with `create_new`
+    /// (its name was checked free), and, when the write fails after making
+    /// it, removed again with its staged copy, so no partial copy is left
+    /// for a later import to take for one.
     pub fn write(
         &mut self,
         project: &Path,
         file_name: &str,
         bytes: &[u8],
     ) -> Result<(), Box<dyn Error>> {
-        let (path, rel) = library_file(project, file_name);
+        let (path, rel) = super::library::library_file(project, file_name);
         create_dir(path.parent().unwrap_or(project)).map_err(|e| self.failed(e))?;
-        write(&path, bytes).map_err(|e| self.failed(e))?;
+        if let Err(failure) =
+            crate::util::write_file_tracked(&path, bytes, crate::util::WriteMode::CreateNew)
+        {
+            if failure.complete {
+                // Written in full; only the staged copy stayed.
+                let _ = std::fs::remove_file(crate::util::staged_path(&path));
+            } else {
+                if failure.touched {
+                    let _ = std::fs::remove_file(&path);
+                    let _ = std::fs::remove_file(crate::util::staged_path(&path));
+                }
+                return Err(self.failed(annotate(
+                    crate::util::WriteTarget::File(&path),
+                    failure.error,
+                )));
+            }
+        }
         self.written.push(rel);
         Ok(())
     }
@@ -940,6 +956,33 @@ mod tests {
         );
         assert_eq!(type_files_in(&project), ["synth_brick_v2.fixture"]);
         assert!(!project.join("lighting/library/v2.gdtf").exists());
+    }
+
+    #[test]
+    fn a_library_copy_that_fails_part_way_leaves_nothing_and_the_retry_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let bytes = synthetic_bytes("Synth Brick");
+
+        crate::util::inject_faults(&[crate::util::Fault::AfterTruncating]);
+        let err = import_gdtf_bytes(&bytes, "synth.gdtf", None, &project, TYPES)
+            .unwrap_err()
+            .to_string();
+        crate::util::inject_faults(&[]);
+
+        assert!(err.contains("synth.gdtf"), "{err}");
+        assert!(err.ends_with("; nothing was saved"), "{err}");
+        let library = project.join("lighting/library");
+        let left: Vec<_> = std::fs::read_dir(&library)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "no partial copy or staged copy: {left:?}");
+
+        let report = import_gdtf_bytes(&bytes, "synth.gdtf", None, &project, TYPES).unwrap();
+        assert!(!report.already_imported);
+        assert_eq!(report.type_name, "Synth Brick");
+        assert_eq!(std::fs::read(library.join("synth.gdtf")).unwrap(), bytes);
     }
 
     #[test]

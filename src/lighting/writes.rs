@@ -316,7 +316,7 @@ fn and_list(items: &[String]) -> String {
 pub fn saved_after_failure(kept: &[String], left: &[String]) -> String {
     let mut said = match kept {
         [] if left.is_empty() => return "nothing was saved".to_string(),
-        [] => "nothing else was saved".to_string(),
+        [] => "nothing was saved".to_string(),
         [one] => format!("only the library copy {one} was saved"),
         many => format!("only the library copies {} were saved", and_list(many)),
     };
@@ -366,7 +366,14 @@ impl Changes {
         } else {
             crate::util::WriteMode::ReplaceExisting
         };
-        let result = crate::util::write_file_tracked(path, contents, mode);
+        let result = match crate::util::write_file_tracked(path, contents, mode) {
+            // Written in full; only the staged copy's removal failed.
+            Err(failure) if failure.complete => {
+                let _ = std::fs::remove_file(crate::util::staged_path(path));
+                Ok(())
+            }
+            other => other,
+        };
         let touched = match &result {
             Ok(()) => true,
             Err(failure) => failure.touched,
@@ -467,32 +474,19 @@ impl Changes {
     pub fn roll_back_keeping(self, cause: WriteError, kept: Vec<String>) -> WriteError {
         let mut left = Vec::new();
         for undo in self.done.into_iter().rev() {
-            let (path, shown, result) = match undo {
+            match undo {
                 Undo::Remove { path, shown } => {
-                    let result = remove_file(&path);
-                    (path, shown, result)
+                    if let Err(e) = remove_file(&path) {
+                        left.push(format!("{shown} ({e})"));
+                    }
+                    // Whatever it held, the made file is the one to look at.
+                    let _ = std::fs::remove_file(crate::util::staged_path(&path));
                 }
                 Undo::Restore { path, shown, was } => {
-                    let result = crate::util::write_file(&path, &was);
-                    (path, shown, result)
+                    if let Some(why) = restore(&path, &was) {
+                        left.push(format!("{shown} ({why})"));
+                    }
                 }
-            };
-            // A write that failed part way kept its staged copy, the one
-            // full copy of what it held; once the file is put back that copy
-            // has served, and otherwise it is where the content is.
-            let staged = crate::util::staged_path(&path);
-            match result {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&staged);
-                }
-                Err(e) if staged.exists() => left.push(format!(
-                    "{shown} ({e}; its content is in {})",
-                    staged
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                )),
-                Err(e) => left.push(format!("{shown} ({e})")),
             }
         }
         WriteError::RolledBack {
@@ -522,6 +516,59 @@ impl Changes {
             Err(cause) => Err(changes.roll_back_keeping(cause, kept)),
         }
     }
+}
+
+/// Puts `path` back as it was (`was`); `None` when it is, else what the
+/// answer says of it. A restore whose destination was written in full, only
+/// its staged copy's removal failing, is put back. One that was not leaves
+/// the file as the failed save wrote it, so the original goes to a fresh
+/// file of its own beside it ([`keep_original`]), which no later save
+/// writes over; either way the staged copy is removed, so only that file is
+/// left to point at.
+fn restore(path: &Path, was: &[u8]) -> Option<String> {
+    let result =
+        crate::util::write_file_tracked(path, was, crate::util::WriteMode::CreateOrReplace);
+    let _ = std::fs::remove_file(crate::util::staged_path(path));
+    let failure = match result {
+        Ok(()) => return None,
+        Err(failure) if failure.complete => return None,
+        Err(failure) => failure,
+    };
+    let kept = match keep_original(path, was) {
+        Ok(name) => format!("its original is in {name}"),
+        Err(e) => format!("its original could not be kept either: {e}"),
+    };
+    Some(format!(
+        "{}; it is left as the failed save wrote it, perhaps empty, and {kept}",
+        failure.error
+    ))
+}
+
+/// Writes `was` to a new file beside `path`, `<file>.mtrack-original`, or
+/// `-2`, `-3`… after it when that is taken; its name.
+fn keep_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    for n in 1.. {
+        let candidate = if n == 1 {
+            format!("{name}.mtrack-original")
+        } else {
+            format!("{name}.mtrack-original-{n}")
+        };
+        let file = path.with_file_name(&candidate);
+        match crate::util::write_file_tracked(&file, was, crate::util::WriteMode::CreateNew) {
+            Ok(()) => return Ok(candidate),
+            Err(failure) if failure.complete => return Ok(candidate),
+            Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(failure) => {
+                if failure.touched {
+                    let _ = std::fs::remove_file(&file);
+                }
+                let _ = std::fs::remove_file(crate::util::staged_path(&file));
+                return Err(failure.error);
+            }
+        }
+    }
+    unreachable!("the names run out only with the integers")
 }
 
 /// Writes `content` as `plan` says: the new or rewritten file, then the old
@@ -584,14 +631,14 @@ mod tests {
 
     impl Truncation {
         fn fails() -> Truncation {
-            crate::util::fail_after_truncating(1);
+            crate::util::inject_faults(&[crate::util::Fault::AfterTruncating]);
             Truncation
         }
     }
 
     impl Drop for Truncation {
         fn drop(&mut self) {
-            crate::util::fail_after_truncating(0);
+            crate::util::inject_faults(&[]);
         }
     }
 
@@ -709,7 +756,7 @@ mod tests {
         );
         assert_eq!(
             saved_after_failure(&[], &v(&["X (e)"])),
-            "nothing else was saved, but X (e) could not be put back"
+            "nothing was saved, but X (e) could not be put back"
         );
         assert_eq!(
             saved_after_failure(&v(&["A"]), &v(&["X (e)", "Y (f)"])),
@@ -717,27 +764,123 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_restore_that_fails_leaves_the_staged_copy_and_names_it() {
+    use crate::util::Fault;
+
+    /// A venue rewrite whose write fails after truncating, then the restore
+    /// meets `restore`: the error, the file's text, and every file beside it.
+    fn failed_rewrite(
+        restore: &[Fault],
+        before: &[(&str, &str)],
+    ) -> (String, String, Vec<(String, String)>) {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("club.venue");
         std::fs::write(&file, "was\n").unwrap();
+        for (name, text) in before {
+            std::fs::write(dir.path().join(name), text).unwrap();
+        }
         let rewrite = plan(dir.path(), Write::Rewrite(file.clone()), Some("was\n"));
+        let mut faults = vec![Fault::AfterTruncating];
+        faults.extend_from_slice(restore);
+        crate::util::inject_faults(&faults);
+        let err = write(&rewrite, "new\n").unwrap_err().to_string();
+        crate::util::inject_faults(&[]);
+        let text = std::fs::read_to_string(&file).unwrap();
+        let mut files: Vec<(String, String)> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|p| {
+                (
+                    p.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&p).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        (err, text, files)
+    }
 
-        // The write fails after truncating, and so does putting it back.
-        crate::util::fail_after_truncating(2);
-        let err = write(&rewrite, "new\n").unwrap_err();
-        crate::util::fail_after_truncating(0);
+    #[test]
+    fn a_restore_failing_before_truncating_keeps_the_original_in_a_file_of_its_own() {
+        let (err, text, files) = failed_rewrite(&[Fault::Staging], &[]);
 
-        let staged = crate::util::staged_path(&file);
-        assert!(staged.exists(), "the one full copy stays");
-        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "was\n");
-        let name = staged.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(text, "", "left as the failed save wrote it");
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (
+                    "club.venue.mtrack-original".to_string(),
+                    "was\n".to_string()
+                ),
+            ],
+            "no staged copy is left"
+        );
         assert!(
-            err.to_string().ends_with(&format!(
-                "; nothing else was saved, but club.venue (injected failure after truncating; \
-                 its content is in {name}) could not be put back"
-            )),
+            err.ends_with(
+                "; nothing was saved, but club.venue (injected staging failure; it is left as the \
+                 failed save wrote it, perhaps empty, and its original is in \
+                 club.venue.mtrack-original) could not be put back"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_restore_failing_after_truncating_keeps_the_original_in_a_file_of_its_own() {
+        let (err, text, files) = failed_rewrite(&[Fault::AfterTruncating], &[]);
+
+        assert_eq!(text, "");
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (
+                    "club.venue.mtrack-original".to_string(),
+                    "was\n".to_string()
+                ),
+            ]
+        );
+        assert!(
+            err.contains(
+                "club.venue (injected failure after truncating; it is left as the failed save \
+                 wrote it, perhaps empty, and its original is in club.venue.mtrack-original)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_restore_whose_only_failure_is_its_staged_copy_s_removal_is_put_back() {
+        let (err, text, files) = failed_rewrite(&[Fault::SidecarRemoval], &[]);
+
+        assert_eq!(text, "was\n");
+        assert_eq!(files, [("club.venue".to_string(), "was\n".to_string())]);
+        assert!(err.ends_with("; nothing was saved"), "{err}");
+    }
+
+    #[test]
+    fn a_taken_recovery_name_is_never_written_over() {
+        let (err, _, files) = failed_rewrite(
+            &[Fault::Staging],
+            &[("club.venue.mtrack-original", "an earlier original\n")],
+        );
+
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (
+                    "club.venue.mtrack-original".to_string(),
+                    "an earlier original\n".to_string()
+                ),
+                (
+                    "club.venue.mtrack-original-2".to_string(),
+                    "was\n".to_string()
+                ),
+            ]
+        );
+        assert!(
+            err.contains("its original is in club.venue.mtrack-original-2"),
             "{err}"
         );
     }

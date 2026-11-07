@@ -320,8 +320,9 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// flushed to disk, and only removed once the destination is durable. A sidecar
 /// left behind therefore means the last write to that file may not have
 /// completed (a crash, or a failure after the destination was truncated),
-/// and holds the content it was trying to write; a lighting writer that puts
-/// the file back removes it then ([`crate::lighting::writes::Changes`]).
+/// and holds the content it was trying to write; a lighting writer removes
+/// it once it has put the file back, or kept its original in a file of its
+/// own beside it ([`crate::lighting::writes::Changes`]).
 /// Recovery is otherwise manual: copy the sidecar over the destination. A reader can see
 /// the short file too, while the rewrite is under way, unless it reads
 /// through [`read_file`].
@@ -363,10 +364,21 @@ pub enum WriteMode {
 /// destination before failing: made it (`create_new` succeeded) or began
 /// rewriting it (truncated). One that did not leaves the destination as it
 /// was, or as another writer left it; one that did leaves it to be put back.
+/// `complete`: only the sidecar's removal failed, after the destination was
+/// fully written and synced.
 #[derive(Debug)]
 pub struct WriteFailure {
     pub error: std::io::Error,
     pub touched: bool,
+    pub complete: bool,
+}
+
+/// Whether `path` is a write's staged copy ([`staged_path`]), which no scan
+/// of a directory's files should take for one of them.
+pub fn is_staged(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(STAGED_SUFFIX))
 }
 
 /// [`write_file`], opening the destination as `mode` says and saying on
@@ -381,11 +393,15 @@ pub fn write_file_tracked(
     let untouched = |error| WriteFailure {
         error,
         touched: false,
+        complete: false,
     };
     let touched = |error| WriteFailure {
         error,
         touched: true,
+        complete: false,
     };
+    #[cfg(test)]
+    let fault = next_fault();
     use std::io::Write;
 
     // Take turns from before staging: a writer staging while another
@@ -409,7 +425,7 @@ pub fn write_file_tracked(
         }
         file.write_all(contents)?;
         #[cfg(test)]
-        if FAIL_STAGING.get() {
+        if FAIL_STAGING.get() || fault == Fault::Staging {
             return Err(std::io::Error::other("injected staging failure"));
         }
         file.sync_all()?;
@@ -438,6 +454,7 @@ pub fn write_file_tracked(
         let made = |error| WriteFailure {
             error,
             touched: new,
+            complete: false,
         };
         destination.lock().map_err(made)?;
         if let Some(ownership) = intended {
@@ -459,8 +476,7 @@ pub fn write_file_tracked(
     let mut rewrite = || -> std::io::Result<()> {
         destination.set_len(0)?;
         #[cfg(test)]
-        if FAIL_AFTER_TRUNCATING.get() > 0 {
-            FAIL_AFTER_TRUNCATING.set(FAIL_AFTER_TRUNCATING.get() - 1);
+        if fault == Fault::AfterTruncating {
             return Err(std::io::Error::other("injected failure after truncating"));
         }
         destination.write_all(contents)?;
@@ -474,15 +490,46 @@ pub fn write_file_tracked(
     // The destination is durable, so the staged copy has served its purpose.
     // Leaving it behind would falsely advertise an interrupted write. The
     // lock goes with the file, after.
-    std::fs::remove_file(&staged).map_err(touched)
+    let removed = std::fs::remove_file(&staged);
+    #[cfg(test)]
+    let removed = match fault {
+        Fault::SidecarRemoval => Err(std::io::Error::other("injected sidecar removal failure")),
+        _ => removed,
+    };
+    removed.map_err(|error| WriteFailure {
+        error,
+        touched: true,
+        complete: true,
+    })
 }
 
-/// Makes the next `times` [`write_file`]s and [`write_new_file`]s on this
-/// thread fail just after truncating the destination: a test's stand-in for
-/// a disk that fills mid-write.
+/// A failure a test injects into [`write_file_tracked`] (and so every
+/// [`write_file`] and [`write_new_file`]) on its thread, one per write in
+/// turn ([`inject_faults`]).
 #[cfg(test)]
-pub fn fail_after_truncating(times: u32) {
-    FAIL_AFTER_TRUNCATING.set(times);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// This write goes through.
+    Pass,
+    /// Staging fails, before the destination is touched.
+    Staging,
+    /// The write fails just after truncating the destination, as a disk
+    /// that fills mid-write would.
+    AfterTruncating,
+    /// Only the sidecar's removal fails, the destination fully written.
+    SidecarRemoval,
+}
+
+/// The faults the next writes on this thread meet, in order; after them,
+/// writes go through. Replaces any not yet met.
+#[cfg(test)]
+pub fn inject_faults(faults: &[Fault]) {
+    FAULTS.with(|f| *f.borrow_mut() = faults.iter().copied().collect());
+}
+
+#[cfg(test)]
+fn next_fault() -> Fault {
+    FAULTS.with(|f| f.borrow_mut().pop_front().unwrap_or(Fault::Pass))
 }
 
 #[cfg(test)]
@@ -490,8 +537,9 @@ thread_local! {
     /// Fails [`write_file`]'s staging on this thread once the sidecar holds
     /// the content, as a full disk would fail its flush.
     static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Fails [`write_file`] just after truncating the destination.
-    static FAIL_AFTER_TRUNCATING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The faults [`inject_faults`] queued.
+    static FAULTS: std::cell::RefCell<std::collections::VecDeque<Fault>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Reads all of `path`, as [`write_file`] last wrote it, never the empty or

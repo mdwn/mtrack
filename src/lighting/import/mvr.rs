@@ -60,10 +60,10 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use super::{
-    create_dir, library_file, place_in_library, record_to_write, LibraryCopies, LibraryEntry,
-    RecordWrite,
+    create_dir, place_in_library, record_to_write, LibraryCopies, LibraryEntry, RecordWrite,
 };
 use crate::lighting::gdtf;
+use crate::lighting::library::library_file;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::parse_venues;
 use crate::lighting::types::{fmt_vec3, Fixture, Vec3, Venue, VenueSource};
