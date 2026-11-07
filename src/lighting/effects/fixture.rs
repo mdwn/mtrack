@@ -833,7 +833,7 @@ impl StrobeMap<'_> {
                 crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
             }
             StrobeMap::Ratio { max, offset } => {
-                crate::lighting::channels::lerp(offset, 1.0, (hz / max).min(1.0))
+                crate::lighting::channels::lerp(offset, 1.0, (hz / max).clamp(0.0, 1.0))
             }
         }
     }
