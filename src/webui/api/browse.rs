@@ -195,14 +195,13 @@ pub(super) async fn create_song_in_directory(
     }
     let dir_canonical = dir_safe.as_path().to_path_buf();
 
-    let config_path = songs::song_config_file(&dir_canonical);
-    if songs::has_song_config(&dir_canonical) {
+    let Some(config_path) = songs::song_config_to_write(&dir_canonical) else {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": "a song config already exists in this directory"})),
         )
             .into_response();
-    }
+    };
 
     // Use Song::initialize to scan the directory and build the config with proper
     // channel-aware track splitting (stereo -> L/R, multichannel -> per-channel).
@@ -296,7 +295,19 @@ pub(super) async fn bulk_import(
     // I/O. Off the async worker, or it parks a runtime thread for the duration.
     // codeql[rust/path-injection] dir_canonical is canonicalized and
     // verified via starts_with(root_canonical) above, preventing traversal.
-    let scan = tokio::task::spawn_blocking(move || import_song_dirs(&dir_canonical)).await;
+    // The songs the player has loaded, or failed to, under the songs root:
+    // no new song is named as one of them.
+    let registry = state.player.songs();
+    let taken = registry
+        .list()
+        .iter()
+        .map(|song| song.name().to_string())
+        .chain(registry.failures().iter().map(|f| f.name().to_string()))
+        .collect();
+    let songs_root = state.songs_path();
+    let scan =
+        tokio::task::spawn_blocking(move || import_song_dirs(&dir_canonical, &songs_root, taken))
+            .await;
 
     let (created, skipped, failed) = match scan {
         Ok(Ok(result)) => result,
@@ -334,49 +345,40 @@ pub(super) async fn bulk_import(
         .into_response()
 }
 
-/// Imports each song folder under `root` ([`songs::song_dirs`]): a new
-/// `song.yaml` named for its folder, unless it has a config to keep
-/// ([`songs::keeps_its_config`]), when it is skipped. Each is reported by its
-/// path below `root`. An unreadable `root` is an error.
+/// Imports each song folder under `root` that has no config to keep
+/// ([`songs::new_songs`]), named past the songs in `taken` and those
+/// configured under `songs_root` too; one with a config is skipped. Each is
+/// reported by its path below `root`. An unreadable `root` is an error.
 fn import_song_dirs(
     root: &std::path::Path,
+    songs_root: &std::path::Path,
+    mut taken: std::collections::HashSet<String>,
 ) -> std::io::Result<(Vec<String>, Vec<String>, Vec<ImportFailure>)> {
-    let mut created: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut failed: Vec<ImportFailure> = Vec::new();
-    for dir in songs::song_dirs(root)? {
-        let display_name = dir
-            .strip_prefix(root)
-            .unwrap_or(&dir)
+    match songs::configured_song_names(songs_root) {
+        Ok(names) => taken.extend(names),
+        Err(e) => tracing::warn!(
+            dir = %songs_root.display(),
+            error = %e,
+            "Cannot read the songs folder for its song names"
+        ),
+    }
+    let found = songs::new_songs(root, taken)?;
+    let display_name = |dir: &std::path::Path| {
+        dir.strip_prefix(root)
+            .unwrap_or(dir)
             .to_string_lossy()
-            .to_string();
-        if songs::keeps_its_config(&dir) {
-            skipped.push(display_name);
-            continue;
-        }
-        let dir_name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        match songs::Song::initialize(&dir) {
-            Ok(song) => {
-                let mut config = song.get_config();
-                config.set_name(&dir_name);
-                match config.save(&dir.join("song.yaml")) {
-                    Ok(()) => created.push(display_name),
-                    Err(e) => failed.push(ImportFailure {
-                        name: display_name,
-                        error: format!("Failed to save: {}", e),
-                    }),
-                }
-            }
-            Err(e) => {
-                failed.push(ImportFailure {
-                    name: display_name,
-                    error: format!("{}", e),
-                });
-            }
+            .to_string()
+    };
+    let skipped = found.kept.iter().map(|dir| display_name(dir)).collect();
+    let mut created: Vec<String> = Vec::new();
+    let mut failed: Vec<ImportFailure> = Vec::new();
+    for song in &found.new {
+        match song.write() {
+            Ok(()) => created.push(display_name(&song.dir)),
+            Err(e) => failed.push(ImportFailure {
+                name: display_name(&song.dir),
+                error: format!("{}", e),
+            }),
         }
     }
     Ok((created, skipped, failed))
@@ -964,6 +966,8 @@ mod test {
                 .unwrap()
             }
         };
+        // On main, the import passed over `Locked` silently and answered an
+        // import of `/lib/Locked` with 200 and nothing imported.
         let response = import("/lib").await;
         let status = response.status();
         let body = response_body(response).await;
@@ -975,6 +979,94 @@ mod test {
         assert_eq!(parsed["created"], serde_json::json!(["Foo"]), "{body}");
         assert_eq!(locked, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!parent.join("Locked/Bar/song.yaml").exists());
+    }
+
+    /// POST /browse/bulk-import with `{"path": path}`, answered.
+    async fn bulk_import(
+        state: &crate::webui::server::WebUiState,
+        path: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"path": "{path}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_body(response).await;
+        (status, serde_json::from_str(&body).unwrap())
+    }
+
+    /// The bulk import no longer follows a symlinked folder (it did on
+    /// main), so it writes nothing outside the tree; it looks into a folder
+    /// holding only a `song.yaml` of another kind and leaves that file; and
+    /// a folder named as a song the player has ("Song A") is named past it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bulk_import_symlinks_other_kinds_and_taken_names() {
+        let (state, _dir) = test_state();
+        let parent = _dir.path().join("lib");
+        let outside = _dir.path().join("outside/Song");
+        for dir in [&parent.join("Pl/Inner"), &parent.join("Song A"), &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for dir in [&parent.join("Pl/Inner"), &parent.join("Song A"), &outside] {
+            std::fs::write(dir.join("track.wav"), create_test_wav()).unwrap();
+        }
+        let playlist = "kind: playlist\nsongs: []\n";
+        std::fs::write(parent.join("Pl/song.yaml"), playlist).unwrap();
+        std::os::unix::fs::symlink(&outside, parent.join("Linked")).unwrap();
+
+        let (status, parsed) = bulk_import(&state, "/lib").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(parsed["created"], serde_json::json!(["Pl/Inner", "Song A"]));
+        assert_eq!(parsed["skipped"], serde_json::json!([]));
+        assert!(!outside.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(parent.join("Pl/song.yaml")).unwrap(),
+            playlist
+        );
+        let named = crate::config::Song::deserialize(&parent.join("Song A/song.yaml")).unwrap();
+        assert_eq!(named.name(), "Song A (2)");
+    }
+
+    /// Create-song from a folder answers 409 beside a `song.yaml` of
+    /// another kind, and leaves it (`songs::song_config_to_write`); it wrote
+    /// over it on main.
+    #[tokio::test]
+    async fn create_song_in_directory_keeps_a_song_yaml_of_another_kind() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("Pl");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("track.wav"), create_test_wav()).unwrap();
+        let playlist = "kind: playlist\nsongs: []\n";
+        std::fs::write(dir.join("song.yaml"), playlist).unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/Pl"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("song.yaml")).unwrap(),
+            playlist
+        );
     }
 
     #[tokio::test]

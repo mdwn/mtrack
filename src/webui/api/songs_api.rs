@@ -568,7 +568,8 @@ pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 /// POST /api/songs/:name — creates a new song with the given config YAML.
 ///
 /// Creates the song directory and writes its song config. Returns 409
-/// Conflict if the directory already has one ([`songs::has_song_config`]).
+/// Conflict if the directory already has one, or a `song.yaml` of another
+/// kind ([`songs::song_config_to_write`]).
 pub(super) async fn post_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -596,14 +597,13 @@ pub(super) async fn post_song(
         Err(e) => return e.into_response(),
     };
 
-    let config_path = songs::song_config_file(song_dir.as_path());
-    if songs::has_song_config(song_dir.as_path()) {
+    let Some(config_path) = songs::song_config_to_write(song_dir.as_path()) else {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),
         )
             .into_response();
-    }
+    };
 
     let cp = config_path;
     let body_owned = body;
@@ -929,16 +929,15 @@ fn remove_song_from_playlists(
 }
 
 /// Generates a song config for a song directory if it has none yet
-/// ([`songs::has_song_config`]). One already there (`song.yaml`, `song.yml`)
-/// is left untouched so that manual edits (track names, lighting config,
+/// ([`songs::song_config_to_write`]). One already there (`song.yaml`,
+/// `song.yml`, or one of another kind) is left untouched so that manual edits (track names, lighting config,
 /// etc.) are preserved.
 pub(super) fn ensure_song_config(
     song_dir: &std::path::Path,
 ) -> Result<(), Box<axum::response::Response>> {
-    if songs::has_song_config(song_dir) {
+    let Some(config_path) = songs::song_config_to_write(song_dir) else {
         return Ok(());
-    }
-    let config_path = songs::song_config_file(song_dir);
+    };
 
     let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
         Box::new(
