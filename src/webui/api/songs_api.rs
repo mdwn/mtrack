@@ -921,10 +921,15 @@ pub(crate) fn resolve_song_dir(
         }
     }
 
-    // Fall back to direct join for songs not yet in registry but on disk.
-    if let Ok(safe) = root.resolve(name) {
-        if safe.is_dir() {
-            return Ok(safe);
+    // Fall back to direct join for songs not yet in registry but on disk:
+    // a relative path that stays under the root (no `..`, `\\` or NUL) and
+    // names a folder within it, never the songs root itself, which a name
+    // such as `.` or `Foo/..` would otherwise resolve to.
+    if SafePath::validate_relative_segments(name).is_ok() {
+        if let Ok(safe) = root.resolve(name) {
+            if safe.is_dir() && safe.as_path() != root.as_path() {
+                return Ok(safe);
+            }
         }
     }
 
@@ -1370,6 +1375,37 @@ mod test {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
         assert!(body.starts_with("name: FlatSong"), "{body}");
+    }
+
+    /// A name that resolves to the songs root itself (`Foo/..`) is no song:
+    /// the save is refused and no `song.yaml` is written in the root.
+    #[tokio::test]
+    async fn put_song_refuses_a_name_resolving_to_the_songs_root() {
+        let (state, _dir) = test_state();
+        std::fs::create_dir(state.songs_path().join("Foo")).unwrap();
+        let root_yaml = state.songs_path().join("song.yaml");
+        for uri in ["/songs/Foo%2F..", "/songs/."] {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri(uri)
+                        .body(Body::from("name: Root\ntracks: []\n"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                !response.status().is_success(),
+                "{uri}: {}",
+                response.status()
+            );
+            assert!(
+                !root_yaml.exists(),
+                "{uri} wrote the songs root's song.yaml"
+            );
+        }
     }
 
     #[tokio::test]

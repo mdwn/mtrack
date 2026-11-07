@@ -756,6 +756,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     another song is Bar is now refused (`a song named "Bar" already exists; choose another
     name`), as `write_song` already was. Both now also run the song editor's validation, whose
     messages they now give.
+  - A song name that resolves to the songs folder itself (`.`, an empty name, `Foo/..`) is
+    refused by `PUT /api/songs/<name>` and `write_song` alike: it named no song, and the save
+    wrote `song.yaml` in the songs folder.
   - Creating a song with a name the config declares that another song holds is now refused by
     `POST /api/songs/<name>` (409, naming it in `taken`) and MCP `write_song` alike, before any
     folder is made: `POST /api/songs/Fresh` with `name: Foo` while Foo exists wrote a second

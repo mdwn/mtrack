@@ -5337,6 +5337,27 @@ profiles:
         );
     }
 
+    /// A name that resolves to the songs root itself (`.`, ``, `Foo/..`)
+    /// is neither saved nor created: nothing is written in the songs root.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_refuses_a_name_resolving_to_the_songs_root() {
+        let (server, fixture) = server(&[("songs/foo/song.yaml", FOO)]).await;
+        for name in [".", "", "foo/.."] {
+            let _ = refusal(
+                server
+                    .write_song(Parameters(WriteSongArgs {
+                        name: name.to_string(),
+                        yaml: "name: Root\ntracks: []\n".to_string(),
+                    }))
+                    .await,
+            );
+            assert!(
+                !fixture.root.join("songs/song.yaml").exists(),
+                "{name:?} wrote the songs root's song.yaml"
+            );
+        }
+    }
+
     /// #675: `patch_song` saves as the song editor does: a patch renaming
     /// the song onto another's name is refused and leaves the file.
     #[tokio::test(flavor = "multi_thread")]
