@@ -553,7 +553,12 @@ pub(super) mod test {
     /// after the factory has been moved into the output thread.
     struct ErrorCapturingState {
         alive: Arc<AtomicBool>,
-        build_count: std::sync::atomic::AtomicU32,
+        /// Builds attempted, counted once each is done: a stream built is
+        /// counted once its error notify is captured, so a fault triggered
+        /// after the count has risen reaches that stream, not the one before.
+        builds: parking_lot::Mutex<u32>,
+        /// Notified on each count.
+        built: parking_lot::Condvar,
         captured_error_notify: parking_lot::Mutex<Option<CondvarNotify>>,
         /// Number of upcoming builds that should fail, simulating a device that is
         /// mid-re-enumeration and not yet openable.
@@ -581,7 +586,25 @@ pub(super) mod test {
         }
 
         pub(in crate::audio::cpal) fn build_count(&self) -> u32 {
-            self.state.build_count.load(Ordering::Relaxed)
+            *self.state.builds.lock()
+        }
+
+        /// Waits for the build count to reach `count`. Bounded only as a
+        /// guard against a test hanging: a build takes no time.
+        pub(in crate::audio::cpal) fn wait_for_builds(&self, count: u32) {
+            let mut builds = self.state.builds.lock();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while *builds < count {
+                assert!(
+                    !self
+                        .state
+                        .built
+                        .wait_until(&mut builds, deadline)
+                        .timed_out(),
+                    "{} builds, never {count}",
+                    *builds
+                );
+            }
         }
 
         pub(in crate::audio::cpal) fn is_alive(&self) -> bool {
@@ -599,7 +622,8 @@ pub(super) mod test {
         pub(in crate::audio::cpal) fn new() -> (Self, ErrorCapturingHandle) {
             let state = Arc::new(ErrorCapturingState {
                 alive: Arc::new(AtomicBool::new(false)),
-                build_count: std::sync::atomic::AtomicU32::new(0),
+                builds: parking_lot::Mutex::new(0),
+                built: parking_lot::Condvar::new(),
                 captured_error_notify: parking_lot::Mutex::new(None),
                 fail_next: std::sync::atomic::AtomicU32::new(0),
             });
@@ -619,20 +643,23 @@ pub(super) mod test {
             error_notify: CondvarNotify,
             _health: Arc<OutputHealth>,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
-            self.state.build_count.fetch_add(1, Ordering::Relaxed);
-            if self
+            let built = if self
                 .state
                 .fail_next
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_ok()
             {
-                return Err("device is not available".into());
-            }
-            *self.state.captured_error_notify.lock() = Some(error_notify);
-            self.state.alive.store(true, Ordering::Relaxed);
-            Ok(Box::new(MockOutputStream {
-                _alive: self.state.alive.clone(),
-            }))
+                Err("device is not available".into())
+            } else {
+                *self.state.captured_error_notify.lock() = Some(error_notify);
+                self.state.alive.store(true, Ordering::Relaxed);
+                Ok(Box::new(MockOutputStream {
+                    _alive: self.state.alive.clone(),
+                }) as Box<dyn OutputStream>)
+            };
+            *self.state.builds.lock() += 1;
+            self.state.built.notify_all();
+            built
         }
     }
 

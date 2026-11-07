@@ -17,6 +17,72 @@ use std::time::{Duration, Instant};
 
 use crate::playsync::CancelHandle;
 
+/// The wall clock: [`Instant::now`], except on a test's thread that has set
+/// its own ([`TestClock`]), or been handed one ([`WallClock`]), and moves it
+/// on by hand, so what is timed on it -- a loop break's fade frames (#654),
+/// how long an audio stream lasted -- takes the times the test chose.
+pub(crate) fn wall_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = TEST_CLOCK.with(|clock| clock.borrow().as_ref().map(|now| *now.lock())) {
+        return now;
+    }
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLOCK: std::cell::RefCell<Option<Arc<parking_lot::Mutex<Instant>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The wall clock a thread reads, to carry onto a thread it spawns: a
+/// test's own, if it has one. Outside tests, there is only [`Instant::now`].
+pub(crate) struct WallClock {
+    #[cfg(test)]
+    test: Option<Arc<parking_lot::Mutex<Instant>>>,
+}
+
+impl WallClock {
+    /// The clock this thread reads.
+    pub(crate) fn current() -> WallClock {
+        WallClock {
+            #[cfg(test)]
+            test: TEST_CLOCK.with(|clock| clock.borrow().clone()),
+        }
+    }
+
+    /// Reads it on this thread from now on.
+    pub(crate) fn install(self) {
+        #[cfg(test)]
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = self.test);
+    }
+}
+
+/// A test's own wall clock, on this thread and those it hands it to, until
+/// it is dropped: it stands still between [`TestClock::advance`]s.
+#[cfg(test)]
+pub(crate) struct TestClock(Arc<parking_lot::Mutex<Instant>>);
+
+#[cfg(test)]
+impl TestClock {
+    pub(crate) fn start() -> TestClock {
+        let now = Arc::new(parking_lot::Mutex::new(Instant::now()));
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = Some(now.clone()));
+        TestClock(now)
+    }
+
+    pub(crate) fn advance(&self, by: Duration) {
+        *self.0.lock() += by;
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestClock {
+    fn drop(&mut self) {
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = None);
+    }
+}
+
 /// A playback clock that provides elapsed time since playback started.
 ///
 /// When an audio device is present, the clock derives time from the audio
