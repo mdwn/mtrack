@@ -717,9 +717,12 @@ export async function fetchLightingFit(): Promise<FitReport> {
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
-export async function fetchVenues(dir?: string): Promise<VenueList> {
+export async function fetchVenues(
+  dir?: string,
+  signal?: AbortSignal,
+): Promise<VenueList> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-  const res = await get(`/lighting/venues${params}`);
+  const res = await get(`/lighting/venues${params}`, signal);
   if (!res.ok) throw await apiError(res, "Failed to fetch venues");
   return res.json();
 }

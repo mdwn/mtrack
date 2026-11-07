@@ -19,6 +19,7 @@
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
   import { fetchVenues } from "../../lib/api/config";
+  import { latestLoad } from "../../lib/util/latest";
 
   interface Props {
     /** One profile's `dmx.lighting`. */
@@ -38,19 +39,31 @@
   let venueDir = $derived(lighting.directories?.venues || "");
   let venueNames = $derived(Object.keys(venues).sort());
 
-  async function loadVenues() {
+  /** How long the field waits for the venue list before it gives up and
+   *  falls back to a text input: a server that never answers would leave
+   *  it disabled for good. */
+  const VENUES_TIMEOUT_MS = 10_000;
+  const venuesLoad = latestLoad();
+
+  async function loadVenues(dir: string) {
+    const current = venuesLoad();
     try {
-      venues = (await fetchVenues(venueDir || undefined)).venues;
+      const list = await fetchVenues(
+        dir || undefined,
+        AbortSignal.timeout(VENUES_TIMEOUT_MS),
+      );
+      // A list for a directory since changed answered late: not this one.
+      if (current()) venues = list.venues;
     } catch {
       // The field falls back to a text input when no venues are listed.
+      if (current()) venues = {};
     } finally {
-      venuesLoaded = true;
+      if (current()) venuesLoaded = true;
     }
   }
 
   $effect(() => {
-    void venueDir;
-    loadVenues();
+    loadVenues(venueDir);
   });
 
   const constraintTooltipKeys: Record<string, string> = {
