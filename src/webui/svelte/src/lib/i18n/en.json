@@ -798,6 +798,7 @@
   "lighting.fixtureTypesDirPlaceholder": "lighting/fixture_types",
   "lighting.venuesDir": "Venues Directory",
   "lighting.venuesDirPlaceholder": "lighting/venues",
+  "lighting.venuesTimedOut": "The venue list did not arrive. Refresh to try again.",
   "lighting.currentVenue": "Current Venue",
   "lighting.noneVenue": "-- None --",
   "lighting.venueHintField": "Venue to use for fixture resolution in this profile.",

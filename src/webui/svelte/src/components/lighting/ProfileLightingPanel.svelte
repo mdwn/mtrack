@@ -18,7 +18,7 @@
   import { t } from "svelte-i18n";
   import Tooltip from "../config/Tooltip.svelte";
   import TagInput from "../config/TagInput.svelte";
-  import { fetchVenues } from "../../lib/api/config";
+  import { fetchVenues, VENUES_TIMEOUT_MS } from "../../lib/api/config";
   import { latestLoad } from "../../lib/util/latest";
 
   interface Props {
@@ -39,10 +39,6 @@
   let venueDir = $derived(lighting.directories?.venues || "");
   let venueNames = $derived(Object.keys(venues).sort());
 
-  /** How long the field waits for the venue list before it gives up and
-   *  falls back to a text input: a server that never answers would leave
-   *  it disabled for good. */
-  const VENUES_TIMEOUT_MS = 10_000;
   const venuesLoad = latestLoad();
 
   async function loadVenues(dir: string) {

@@ -717,6 +717,11 @@ export async function fetchLightingFit(): Promise<FitReport> {
  *  A directory is a set of independent files, so one bad file no longer empties
  *  the list — but it must still be reported, or the only signal is a venue
  *  quietly missing. */
+/** How long a venue list is waited for before the page gives up on it: a
+ *  server that never answers would leave a field disabled, or a spinner
+ *  turning, for good. */
+export const VENUES_TIMEOUT_MS = 10_000;
+
 export async function fetchVenues(
   dir?: string,
   signal?: AbortSignal,

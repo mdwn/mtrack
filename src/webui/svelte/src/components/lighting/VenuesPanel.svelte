@@ -47,6 +47,7 @@
     fetchFixtureTypeGdtf,
     fetchFixtureTypes,
     fetchVenues,
+    VENUES_TIMEOUT_MS,
     saveVenue,
     deleteVenue,
   } from "../../lib/api/config";
@@ -191,14 +192,23 @@
     venueError = "";
     venueFileErrors = [];
     try {
-      const result = await fetchVenues(venueDir || undefined);
+      const result = await fetchVenues(
+        venueDir || undefined,
+        AbortSignal.timeout(VENUES_TIMEOUT_MS),
+      );
       if (!current()) return;
       venues = result.venues;
       venueVersions = result.versions ?? {};
       venueOwners = result.owners ?? {};
       venueFileErrors = result.errors ?? [];
     } catch (e: any) {
-      if (current()) venueError = e.message;
+      // A list that never came reads as one: the spinner stops, and
+      // Refresh asks again.
+      if (current())
+        venueError =
+          e?.name === "TimeoutError"
+            ? get(t)("lighting.venuesTimedOut")
+            : e.message;
     } finally {
       if (current()) venueLoading = false;
     }
