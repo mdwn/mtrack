@@ -16,6 +16,7 @@
 //! light, so the web UI's WebAssembly module compiles them as they are.
 //! Turning one into the bytes sent is `midi`'s.
 
+#[cfg(any(test, feature = "tsify"))]
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,7 @@ pub struct PitchBend {
 /// its lowest, and the range each field takes as the player reads it
 /// (`midi`'s parsing, which a test holds to these). The web UI's event
 /// editor offers what this says, so a new kind reaches it.
+#[cfg(any(test, feature = "tsify"))]
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
 #[cfg_attr(feature = "tsify", tsify(into_wasm_abi, hashmap_as_object))]
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -130,6 +132,7 @@ pub struct MidiEventShapes {
     pub ranges: BTreeMap<String, (u16, u16)>,
 }
 
+#[cfg(any(test, feature = "tsify"))]
 impl MidiEventShapes {
     pub fn new() -> Self {
         let kinds = MidiEvent::kinds();
@@ -150,12 +153,14 @@ impl MidiEventShapes {
     }
 }
 
+#[cfg(any(test, feature = "tsify"))]
 impl Default for MidiEventShapes {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "tsify"))]
 impl MidiEvent {
     /// One event of each kind, in declaration order, every field at its
     /// lowest. A test counts the kinds by a match of its own, so a kind

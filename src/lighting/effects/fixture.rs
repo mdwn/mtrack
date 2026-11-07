@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
+use crate::lighting::channels::CMY_OF_RGB;
 use crate::lighting::engine::{base_channel, is_position_channel};
 use crate::lighting::types::{strobe_function, FunctionStep, PhysicalUnit, StrobeCurve};
 
@@ -507,8 +508,6 @@ pub fn cell_fixture_name(fixture: &str, cell: &str) -> String {
 pub fn cell_name(sub_fixture: &str) -> &str {
     sub_fixture.rsplit('/').next().unwrap_or(sub_fixture)
 }
-
-pub use crate::lighting::channels::CMY_OF_RGB;
 
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
