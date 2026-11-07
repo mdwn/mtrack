@@ -165,43 +165,55 @@ impl MigrationPlan {
     /// every file it would have rewritten (the profiles losing those
     /// fixtures) as it was; then a backup of every file about to be
     /// overwritten, before any is; then the rewrites, the config last; then
-    /// the deletions. A failure after a file is made or backed up names the
-    /// files made and the backups taken, which are left.
+    /// the deletions. A failure after a folder or file is made or backed up
+    /// names the folders and files made and the backups taken, which are
+    /// left.
     fn apply(&self) -> Result<(), Box<dyn Error>> {
-        // Create directories.
-        for dir in &self.dirs_to_create {
-            crate::util::create_dir_all(dir)?;
-        }
-
+        let mut folders = Vec::new();
         let mut made = Vec::new();
         let mut backups = Vec::new();
-        self.apply_files(&mut made, &mut backups).map_err(|e| {
-            let list = |paths: &[PathBuf]| -> String {
-                let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-                names.join(", ")
-            };
-            let mut left = Vec::new();
-            if !made.is_empty() {
-                left.push(format!("files made: {}", list(&made)));
-            }
-            if !backups.is_empty() {
-                left.push(format!("backups taken: {}", list(&backups)));
-            }
-            if left.is_empty() {
-                e
-            } else {
-                format!("{e} ({})", left.join("; ")).into()
-            }
-        })
+        self.apply_steps(&mut folders, &mut made, &mut backups)
+            .map_err(|e| {
+                let list = |paths: &[PathBuf]| -> String {
+                    let names: Vec<String> =
+                        paths.iter().map(|p| p.display().to_string()).collect();
+                    names.join(", ")
+                };
+                let mut left = Vec::new();
+                if !folders.is_empty() {
+                    left.push(format!("folders made: {}", list(&folders)));
+                }
+                if !made.is_empty() {
+                    left.push(format!("files made: {}", list(&made)));
+                }
+                if !backups.is_empty() {
+                    left.push(format!("backups taken: {}", list(&backups)));
+                }
+                if left.is_empty() {
+                    e
+                } else {
+                    format!("{e} ({})", left.join("; ")).into()
+                }
+            })
     }
 
-    /// [`MigrationPlan::apply`] from the new files on, each file made
-    /// pushed to `made` and each backup taken to `backups`.
-    fn apply_files(
+    /// [`MigrationPlan::apply`]'s steps, each folder made (one not there
+    /// before) pushed to `folders`, each file made to `made` and each
+    /// backup taken to `backups`.
+    fn apply_steps(
         &self,
+        folders: &mut Vec<PathBuf>,
         made: &mut Vec<PathBuf>,
         backups: &mut Vec<PathBuf>,
     ) -> Result<(), Box<dyn Error>> {
+        for dir in &self.dirs_to_create {
+            let there = dir.exists();
+            crate::util::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            if !there {
+                folders.push(dir.clone());
+            }
+        }
+
         // The new files, before anything is rewritten.
         for write in self.files_to_write.iter().filter(|w| w.new) {
             write.write()?;
@@ -1002,8 +1014,10 @@ dmx:
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("pi.yaml");
         std::fs::write(&profile, "old\n").unwrap();
-        let venue = dir.path().join("inline_migrated.venue");
+        let venues = dir.path().join("venues");
+        let venue = venues.join("inline_migrated.venue");
         let mut plan = MigrationPlan::new();
+        plan.dirs_to_create.push(venues.clone());
         plan.create(venue.clone(), "venue\n".into());
         plan.overwrite("Profiles", profile.clone(), Content::Text("new\n".into()));
         // Copied from a file that is not there: the rewrite fails.
@@ -1017,7 +1031,8 @@ dmx:
         let backup = dir.path().join("pi.yaml.bak");
         assert!(
             error.contains(&format!(
-                "(files made: {}; backups taken: {})",
+                "(folders made: {}; files made: {}; backups taken: {})",
+                venues.display(),
                 venue.display(),
                 backup.display()
             )),
