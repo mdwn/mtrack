@@ -215,6 +215,7 @@ export const STATUS: Status = {
     init_done: true,
     hostname: "test-host",
     profile: "test-host",
+    profile_file: "test-host.yaml",
     audio: { status: "connected", name: "Default Audio Device" },
     audio_output: {
       status: "healthy",
@@ -312,6 +313,7 @@ export const PROFILE_FILES = [
     file: "test-host.yaml",
     filename: "test-host",
     addressable: true,
+    error: null,
     hostname: "test-host",
     has_audio: true,
     has_midi: false,

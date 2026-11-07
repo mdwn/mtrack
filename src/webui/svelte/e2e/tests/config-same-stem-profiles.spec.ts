@@ -18,8 +18,10 @@
 // full file name (a key on the stem threw `each_key_duplicate`), and each
 // row opens its own file. An old link by stem opens the file the server's
 // rule gives it (`.yaml`, else `.yml`), in the editor and on the lighting
-// groups page. A new profile, once saved, is selected by the file the save
-// made, so nothing re-selects it and clears the "Saved" notice.
+// groups page; a link naming no file says so and opens none, not even the
+// running profile. A new profile is saved as a create (`If-None-Match: *`),
+// is a draft under the name typed, and once saved is selected by the file
+// the save made, so nothing re-selects it and clears the "Saved" notice.
 
 import { test, expect, type Page } from "@playwright/test";
 import type {
@@ -36,6 +38,7 @@ const info = (file: string, hostname: string | null): ProfileFileInfo => ({
   file,
   filename: file.replace(/\.(yaml|yml)$/, ""),
   addressable: true,
+  error: null,
   hostname,
   has_audio: true,
   has_midi: false,
@@ -90,7 +93,7 @@ async function serveProfiles(
 }
 
 const THREE = [
-  info("stage.yaml", "pi-a"),
+  info("stage.yaml", "test-host"),
   info("stage.yaml.yaml", "pi-b"),
   info("stage.yml", null),
 ];
@@ -109,9 +112,7 @@ test.describe("Profile files by full file name", () => {
       // for another file.
       await expect(rows.nth(i).locator(".pf-name")).toHaveText(file);
       await rows.nth(i).click();
-      await expect(page).toHaveURL(
-        new RegExp(`#/config/${file.replace(/\./g, "\\.")}$`),
-      );
+      await expect(page).toHaveURL((url) => url.hash === `#/config/${file}`);
       await expect.poll(() => reads.at(-1)).toBe(file);
       await page.getByRole("button", { name: "Back" }).click();
       await expect(rows).toHaveCount(3);
@@ -138,6 +139,65 @@ test.describe("Profile files by full file name", () => {
     expect(reads).not.toContain("stage.yml");
   });
 
+  test("a typed full name beside a same-stem file stays its own draft", async ({
+    page,
+  }) => {
+    const listed = [info("stage.yaml", "pi-a")];
+    const reads = await serveProfiles(page, () => listed);
+    const puts: string[] = [];
+    await page.route("**/api/profiles/stage.yml", async (route) => {
+      if (route.request().method() !== "PUT") {
+        await route.fallback();
+        return;
+      }
+      puts.push(route.request().headers()["if-none-match"] ?? "");
+      listed.push(info("stage.yml", "pi-y"));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "saved", version: "v1" }),
+      });
+    });
+
+    await page.goto("/#/config");
+    await page.getByRole("button", { name: "Add Profile" }).click();
+    const dialog = page.locator('[role="dialog"]');
+    await dialog.locator("input").fill("stage.yml");
+    await dialog.getByRole("button", { name: "Confirm" }).click();
+    await expect(page).toHaveURL((url) => url.hash === "#/config/stage.yml");
+    await page.locator("#profile-hostname").fill("pi-y");
+    // Still the draft: `stage.yaml` was not opened over it.
+    await expect(page.locator("#profile-hostname")).toHaveValue("pi-y");
+    expect(reads).toEqual([]);
+
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => puts).toEqual(["*"]);
+    await expect(page).toHaveURL((url) => url.hash === "#/config/stage.yml");
+    await expect(page.locator(".save-msg")).toHaveText("Saved");
+    expect(reads).toEqual([]);
+  });
+
+  test("a link naming no profile file says so and opens none", async ({
+    page,
+  }) => {
+    const reads = await serveProfiles(page, () => THREE);
+    await page.goto("/#/config/gone.yaml");
+    await expect(page.locator(".route-missing")).toHaveText(
+      'Profile file "gone.yaml" not found.',
+    );
+    await page.goto("/#/config/Stage.yml");
+    await expect(page.locator(".route-missing")).toHaveText(
+      'Profile file "Stage.yml" not found; "stage.yml" differs from it only in case.',
+    );
+    await page.goto("/#/lighting/groups?profile=gone");
+    await expect(page.locator(".param-missing")).toHaveText(
+      'Profile file "gone" not found.',
+    );
+    // The running profile (`stage.yaml`, for test-host) is not opened in
+    // the missing one's place.
+    expect(reads).toEqual([]);
+  });
+
   test("a new profile stays selected, with its Saved notice", async ({
     page,
   }) => {
@@ -149,7 +209,7 @@ test.describe("Profile files by full file name", () => {
         await route.fallback();
         return;
       }
-      puts.push("newhost");
+      puts.push(route.request().headers()["if-none-match"] ?? "");
       listed = [info("newhost.yaml", "newhost")];
       await route.fulfill({
         status: 200,
@@ -166,9 +226,10 @@ test.describe("Profile files by full file name", () => {
     await page.locator("#profile-hostname").fill("newhost");
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
-    await expect.poll(() => puts).toEqual(["newhost"]);
+    // Sent as a create: never merged into a file already there.
+    await expect.poll(() => puts).toEqual(["*"]);
     // The listed file is selected, so the route names it ...
-    await expect(page).toHaveURL(/#\/config\/newhost\.yaml$/);
+    await expect(page).toHaveURL((url) => url.hash === "#/config/newhost.yaml");
     // ... the notice stays, and the file is not opened again over it.
     await expect(page.locator(".save-msg")).toHaveText("Saved");
     expect(reads).toEqual([]);

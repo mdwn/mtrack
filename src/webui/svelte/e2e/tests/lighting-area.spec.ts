@@ -275,6 +275,7 @@ test.describe("Lighting area: Groups", () => {
             file: "test-host.yaml",
             filename: "test-host",
             addressable: true,
+            error: null,
             hostname: "test-host",
             has_audio: false,
             has_midi: false,

@@ -136,7 +136,13 @@
       (w) => w.kind !== "olad_unreachable" && w.kind !== "universe_unpatched",
     ),
   );
-  const profileName = $derived($statusStore?.hardware.profile ?? null);
+  // The running profile's address in the config editor: its file
+  // (`stage.yml`), or, for an inline profile, its hostname as before.
+  const profileName = $derived(
+    $statusStore?.hardware.profile_file ??
+      $statusStore?.hardware.profile ??
+      null,
+  );
 
   // --- Loading the options when the section opens, or the type changes.
   let loadedFor = "";

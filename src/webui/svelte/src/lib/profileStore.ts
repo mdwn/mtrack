@@ -40,6 +40,7 @@ import {
 import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
 import { get } from "./api/rest";
 import { reloadNotice, type ReloadNotice } from "./configReload";
+import type { Translate } from "./i18n";
 
 /** Where one profile is stored: a file by its full file name
  *  (`stage.yml`), or an inline profile by its index. */
@@ -114,6 +115,34 @@ export function fileProfileLabel(
       f.file !== file && (fileProfileName(f.file) === stem || f.file === stem),
   );
   return taken ? file : stem;
+}
+
+/** Why a route or link names no profile among `names`: a name differing
+ *  only in case from one there (`clash`, with that name), else `missing`.
+ *  The page says so, and never falls back to another profile. */
+export function profileRouteProblem(
+  route: string,
+  names: string[],
+): { kind: "missing" } | { kind: "clash"; name: string } {
+  const wanted = [route, `${route}.yaml`, `${route}.yml`].map((n) =>
+    n.toLowerCase(),
+  );
+  const name = names.find((n) => wanted.includes(n.toLowerCase()));
+  return name ? { kind: "clash", name } : { kind: "missing" };
+}
+
+/** What a page shows for a route naming no profile (`profileRouteProblem`). */
+export function profileRouteMessage(
+  route: string,
+  names: string[],
+  t: Translate,
+): string {
+  const problem = profileRouteProblem(route, names);
+  return problem.kind === "clash"
+    ? t("config.profileFileCaseClash", {
+        values: { file: route, other: problem.name },
+      })
+    : t("config.profileFileNotFound", { values: { file: route } });
 }
 
 /** The profile a route or link names, among `names` (each file's full file
@@ -229,6 +258,7 @@ export async function writeProfile(
       ref.filename,
       profile,
       version ?? undefined,
+      isNew,
     );
     return { snapshot: null, version: saved.version, reload: saved.reload };
   }
@@ -242,13 +272,15 @@ export async function writeProfile(
  *  `/api/status` reports as `hardware.profile`. There is no fallback: when
  *  the status cannot be read or no profile names this host, the answer is
  *  null, and the caller has the user choose. Falling back to the first
- *  profile let one machine's editor write another machine's profile. */
+ *  profile let one machine's editor write another machine's profile. Only
+ *  an `editable` entry is picked: one the API cannot address is never read
+ *  or written for the running profile (lighting, `addUniverseToRunningProfile`). */
 export function pickRunningProfile(
   entries: ProfileEntry[],
   running: string | null | undefined,
 ): ProfileEntry | null {
   if (!running) return null;
-  return entries.find((e) => e.hostname === running) ?? null;
+  return entries.find((e) => e.editable && e.hostname === running) ?? null;
 }
 
 /** The running profile's name as `/api/status` reports it, or null when the

@@ -186,17 +186,23 @@ export async function fetchProfileFile(filename: string): Promise<ProfileFile> {
 }
 
 /** Saves a profile file. `version` is the one the file was read at; a file
- *  that has changed since is refused with a `ConflictError`. Returns the
- *  file's new version, and what became of the hardware reload. */
+ *  that has changed since is refused with a `ConflictError`. With `create`,
+ *  the save is only a create (`If-None-Match: *`): a name that reaches a
+ *  file already there is refused, never merged into it. Returns the file's
+ *  new version, and what became of the hardware reload. */
 export async function saveProfileFile(
   filename: string,
   profile: ProfileDraft,
   version?: string,
+  create = false,
 ): Promise<{ version: string | null; reload: Partial<ConfigReload> }> {
+  const headers: Record<string, string> = {};
+  if (version) headers["If-Match"] = version;
+  if (create) headers["If-None-Match"] = "*";
   const res = await put(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
-    version ? { "If-Match": version } : undefined,
+    Object.keys(headers).length ? headers : undefined,
   );
   if (!res.ok) throw await versionedError(res, "Failed to save profile");
   const body: Partial<FileSaved> = await res.json().catch(() => ({}));

@@ -41,8 +41,8 @@
   import { registerDirtyGuard } from "../lib/dirtyGuard";
   import {
     fileProfileLabel,
-    fileProfileName,
     inlineProfileName,
+    profileRouteMessage,
     resolveProfileRoute,
     loadProfileFileList,
     readProfileVersioned,
@@ -235,6 +235,24 @@
     profileFiles = await loadProfileFileList();
   }
 
+  /** What the list says when the route names a profile file that is not
+   *  there (deleted, or differing only in case): it is not opened, and no
+   *  other file is opened in its place. */
+  const routeMissing = $derived(
+    profilesDir &&
+      routeProfile &&
+      !loading &&
+      !isNew &&
+      selectedFilename === null &&
+      !resolveProfileRoute(routeProfile, addressable(profileFiles))
+      ? profileRouteMessage(
+          routeProfile,
+          profileFiles.map((f) => f.file),
+          $t,
+        )
+      : null,
+  );
+
   /** The full file names of the profile files the API can address. */
   function addressable(files: ProfileFileInfo[]): string[] {
     return files.filter((f) => f.addressable).map((f) => f.file);
@@ -332,7 +350,9 @@
     selectedIndex = 0;
     selectedFilename = name;
     fileVersion = null;
-    startDraft(fileProfileName(name));
+    // The draft is addressed by what was typed (`stage.yml`), not its
+    // stem, which would resolve to another file (`stage.yaml`).
+    startDraft(name);
   }
 
   async function saveFileProfile() {
@@ -346,11 +366,13 @@
     saveNotice = null;
     saveOk = false;
     try {
+      // A new profile's save is only a create: one reaching a file already
+      // there is refused rather than merged into it.
       const written = await writeProfile(
         { kind: "file", filename: selectedFilename },
         profiles[selectedIndex],
         checksum,
-        false,
+        isNew,
         fileVersion,
       );
       fileVersion = written.version;
@@ -365,9 +387,9 @@
       const files = await loadProfileFileList();
       const saved = resolveProfileRoute(selectedFilename, addressable(files));
       profileFiles = files;
-      if (saved && saved !== selectedFilename) {
+      if (saved) {
         selectedFilename = saved;
-        updateConfigUrl(saved, routeSection);
+        if (routeProfile !== saved) updateConfigUrl(saved, routeSection);
       }
     } catch (e: any) {
       if (e instanceof ConflictError && selectedFilename) {
@@ -396,8 +418,10 @@
     saveNotice = null;
     try {
       saveNotice = reloadNotice(await deleteProfileFile(selectedFilename));
+      suppressAutoSelect = true;
       selectedIndex = null;
       selectedFilename = null;
+      updateConfigUrl();
       isNew = false;
       dirty = false;
       await loadProfileFiles();
@@ -922,6 +946,9 @@
         </div>
       </div>
 
+      {#if routeMissing}
+        <p class="route-missing" role="alert">{routeMissing}</p>
+      {/if}
       {#if profileFiles.length === 0}
         <div class="empty-state">
           <p>{$t("config.noProfilesDir")}</p>
@@ -1318,6 +1345,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .route-missing {
+    color: var(--text-danger);
+    margin: 0 0 12px;
   }
   .save-msg {
     font-size: 13px;

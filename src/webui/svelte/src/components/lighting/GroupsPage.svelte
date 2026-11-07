@@ -29,6 +29,7 @@
     fetchRunningProfile,
     loadProfileSet,
     pickRunningProfile,
+    profileRouteMessage,
     readProfileVersioned,
     resolveProfileRoute,
     writeProfile,
@@ -93,18 +94,30 @@
   function target(): ProfileEntry | null {
     if (!set) return null;
     const editable = set.entries.filter((e) => e.editable);
-    // A full file name, or an old link's stem as the server reads it.
-    const wanted = profileParam
-      ? resolveProfileRoute(
-          profileParam,
-          editable.map((e) => e.name),
-        )
-      : undefined;
-    return (
-      (wanted ? editable.find((e) => e.name === wanted) : undefined) ??
-      pickRunningProfile(editable, running)
-    );
+    // A full file name, or an old link's stem as the server reads it. One
+    // naming no profile opens none (`paramMissing` says so), never the
+    // running one in its place.
+    if (profileParam) {
+      const wanted = resolveProfileRoute(
+        profileParam,
+        editable.map((e) => e.name),
+      );
+      return editable.find((e) => e.name === wanted) ?? null;
+    }
+    return pickRunningProfile(editable, running);
   }
+
+  /** What the page says when `?profile=` names no profile: deleted, or
+   *  differing only in case. */
+  const paramMissing = $derived(
+    set && profileParam && !selected && !loading
+      ? profileRouteMessage(
+          profileParam,
+          set.entries.map((e) => e.name),
+          $t,
+        )
+      : null,
+  );
 
   async function open(entry: ProfileEntry | null) {
     selected = entry;
@@ -252,6 +265,9 @@
   </div>
 {:else}
   <div class="groups-page">
+    {#if paramMissing}
+      <p class="param-missing" role="alert">{paramMissing}</p>
+    {/if}
     <div class="groups-toolbar">
       <div class="groups-picker">
         <label for="groups-profile">{$t("lighting.groups.profile")}</label>
@@ -403,5 +419,9 @@
   }
   .save-notice {
     color: var(--yellow);
+  }
+  .param-missing {
+    color: var(--text-danger);
+    margin: 0 0 12px;
   }
 </style>
