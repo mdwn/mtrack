@@ -1301,7 +1301,7 @@ impl McpServer {
         // are: a web song delete holds it while it takes the song off every
         // playlist, and a check before it would write the deleted song back.
         self.validate_playlist(&args.yaml).await?;
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let written =
             web(playlists::write_playlist_file(&file, args.yaml.clone(), &project).await).await?;
         // Rebuild the player's playlist set so `list_playlists` /
@@ -1954,7 +1954,7 @@ impl McpServer {
     /// Resolves a caller-supplied project-relative path, refusing anything
     /// that escapes the project directory.
     fn resolve_in_project(&self, relative: &str) -> Result<std::path::PathBuf, McpError> {
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let candidate = project.join(relative);
         let canonical = candidate.canonicalize().map_err(|e| {
             McpError::invalid_params(format!("cannot resolve {relative}: {e}"), None)
@@ -2019,7 +2019,7 @@ impl McpServer {
         Parameters(args): Parameters<ImportGdtfArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let (types_dir, _) = self.project_lighting_dirs().await?;
         // A pinned name writes a fixture type record: taken in turn with the
         // web UI's fixture type and venue saves, as write_fixture_type is.
@@ -2076,7 +2076,7 @@ impl McpServer {
         Parameters(args): Parameters<ImportMvrArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let options = self.mvr_options(&args).await?;
         let plan = tokio::task::spawn_blocking(move || {
             crate::lighting::import::inspect_mvr(&path, &options, &project)
@@ -2105,7 +2105,7 @@ impl McpServer {
         Parameters(args): Parameters<ImportMvrArgs>,
     ) -> Result<CallToolResult, McpError> {
         let path = self.resolve_in_project(&args.path)?;
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let options = self.mvr_options(&args).await?;
         // A re-import merges into the venue file it reads, so it holds the
         // lock from that read to its write, as patch_venue does.
@@ -2133,7 +2133,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ExportMvrArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let (fixture_types_dir, venues_dir) = self.project_lighting_dirs().await?;
         let options = crate::lighting::export::MvrExportOptions {
             output: args.output.clone(),
@@ -2689,7 +2689,7 @@ impl McpServer {
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
         self.validate_playlist(&updated).await?;
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         web(playlists::write_playlist_file(&file, updated.clone(), &project).await).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
@@ -3829,6 +3829,12 @@ impl McpServer {
         })
     }
 
+    /// The project directory: the one holding the config file
+    /// ([`crate::util::project_dir_of`]).
+    fn project_dir(&self) -> Result<std::path::PathBuf, McpError> {
+        Ok(crate::util::project_dir_of(self.config_store()?.path()))
+    }
+
     /// Resolves the songs root path from the live config and returns it as a
     /// `VerifiedRoot` (canonicalized, used for traversal-safe path joins).
     pub(crate) async fn songs_root_verified(
@@ -3870,14 +3876,14 @@ impl McpServer {
             Kind::Venue => venues,
             Kind::FixtureType => fixture_types,
         };
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         let root = VerifiedRoot::new(&project).map_err(safepath_err)?;
         SafePath::validate_relative(&rel, &root).map_err(safepath_err)
     }
 
     /// The project root, canonical, as the web UI's lighting writes take it.
     fn project_root(&self) -> Result<std::path::PathBuf, McpError> {
-        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let project = self.project_dir()?;
         project.canonicalize().map_err(|e| {
             McpError::internal_error(
                 format!("cannot resolve the project {}: {e}", project.display()),
