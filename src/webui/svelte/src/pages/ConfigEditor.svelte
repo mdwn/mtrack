@@ -43,6 +43,7 @@
     fileProfileLabel,
     fileProfileName,
     inlineProfileName,
+    resolveProfileRoute,
     loadProfileFileList,
     readProfileVersioned,
     writeProfile,
@@ -234,6 +235,11 @@
     profileFiles = await loadProfileFileList();
   }
 
+  /** The full file names of the profile files the API can address. */
+  function addressable(files: ProfileFileInfo[]): string[] {
+    return files.filter((f) => f.addressable).map((f) => f.file);
+  }
+
   async function loadDevices() {
     const [audioResult, midiResult] = await Promise.allSettled([
       fetchAudioDevices(),
@@ -312,7 +318,7 @@
       selectedIndex = 0;
       profiles = [profile];
 
-      updateConfigUrl(fileProfileLabel(filename, profileFiles), section);
+      updateConfigUrl(filename, section);
     } catch (e: any) {
       error = e.message;
     }
@@ -352,7 +358,17 @@
       isNew = false;
       dirty = false;
       showSaved(reloadNotice(written.reload));
-      await loadProfileFiles();
+      // Select the file the save went to, as listed (a new `stage` is
+      // `stage.yaml`), in the same step as the list arrives, so the route
+      // names that file and nothing re-selects it, which would clear the
+      // saved notice.
+      const files = await loadProfileFileList();
+      const saved = resolveProfileRoute(selectedFilename, addressable(files));
+      profileFiles = files;
+      if (saved && saved !== selectedFilename) {
+        selectedFilename = saved;
+        updateConfigUrl(saved, routeSection);
+      }
     } catch (e: any) {
       if (e instanceof ConflictError && selectedFilename) {
         // The profile file changed since it was opened: reload it and leave
@@ -730,14 +746,15 @@
       return;
     }
     if (profilesDir) {
-      // File-based: match by the file's label (its stem, or its full file
-      // name when another file shares the stem), else its full file name.
-      const match =
-        profileFiles.find(
-          (f) => fileProfileLabel(f.file, profileFiles) === routeProfile,
-        ) ?? profileFiles.find((f) => f.file === routeProfile);
-      if (match && selectedFilename !== match.file) {
-        selectFileProfile(match.file, routeSection);
+      // File-based: the route names a file by its full file name, or, from
+      // an old link, by a stem the server's rule resolves (`.yaml`, else
+      // `.yml`).
+      const match = resolveProfileRoute(
+        routeProfile,
+        addressable(profileFiles),
+      );
+      if (match && selectedFilename !== match) {
+        selectFileProfile(match, routeSection);
       }
     } else {
       // Inline: match by hostname or index. Skip re-selecting the current
@@ -875,18 +892,11 @@
         {trackNames}
         {sampleNames}
         initialSection={routeSection}
-        profileName={isNew || !selectedFilename
-          ? undefined
-          : fileProfileLabel(selectedFilename, profileFiles)}
+        profileName={isNew || !selectedFilename ? undefined : selectedFilename}
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
-          updateConfigUrl(
-            selectedFilename
-              ? fileProfileLabel(selectedFilename, profileFiles)
-              : undefined,
-            section,
-          )}
+          updateConfigUrl(selectedFilename ?? undefined, section)}
         onnotifbrowse={onNotifBrowse}
         onnotifupload={onNotifUpload}
         {notifUploadMsg}
@@ -922,6 +932,8 @@
           {#each profileFiles as pf (pf.file)}
             <button
               class="profile-file-row"
+              disabled={!pf.addressable}
+              title={pf.addressable ? null : $t("config.profileNotAddressable")}
               onclick={() => selectFileProfile(pf.file)}
             >
               <span class="pf-name"

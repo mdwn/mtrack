@@ -29,8 +29,8 @@
     fetchRunningProfile,
     loadProfileSet,
     pickRunningProfile,
-    profileEntryKey,
     readProfileVersioned,
+    resolveProfileRoute,
     writeProfile,
     parseProfileYaml,
     type ProfileEntry,
@@ -92,10 +92,17 @@
    *  no machine's profile is edited by accident. */
   function target(): ProfileEntry | null {
     if (!set) return null;
+    const editable = set.entries.filter((e) => e.editable);
+    // A full file name, or an old link's stem as the server reads it.
+    const wanted = profileParam
+      ? resolveProfileRoute(
+          profileParam,
+          editable.map((e) => e.name),
+        )
+      : undefined;
     return (
-      (profileParam
-        ? set.entries.find((e) => e.name === profileParam)
-        : undefined) ?? pickRunningProfile(set.entries, running)
+      (wanted ? editable.find((e) => e.name === wanted) : undefined) ??
+      pickRunningProfile(editable, running)
     );
   }
 
@@ -258,9 +265,9 @@
           {#if !selected}
             <option value="" disabled>{$t("lighting.groups.choose")}</option>
           {/if}
-          {#each set.entries as entry (profileEntryKey(entry))}
-            <option value={entry.name}>
-              {entry.name}{entry.hostname && entry.hostname === running
+          {#each set.entries as entry (entry.name)}
+            <option value={entry.name} disabled={!entry.editable}>
+              {entry.label}{entry.hostname && entry.hostname === running
                 ? ` (${$t("lighting.groups.running")})`
                 : ""}
             </option>

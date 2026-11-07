@@ -311,6 +311,7 @@ export const PROFILE_FILES = [
   {
     file: "test-host.yaml",
     filename: "test-host",
+    addressable: true,
     hostname: "test-host",
     has_audio: true,
     has_midi: false,

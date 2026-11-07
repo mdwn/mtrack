@@ -49,9 +49,16 @@ export type ProfileRef =
 
 /** One profile in the listing. */
 export interface ProfileEntry {
-  /** The name used in URLs: a file's label (`fileProfileLabel`), or the
-   *  hostname, or `Profile #<index>` for an inline profile with neither. */
+  /** The name the profile is addressed and linked by: a file's full file
+   *  name (`stage.yml`), or an inline profile's hostname, or
+   *  `Profile #<index>` with neither. */
   name: string;
+  /** What the profile is shown as: a file's `fileProfileLabel`, else
+   *  `name`. Display only, never an address. */
+  label: string;
+  /** False for a file the API cannot address (`addressable`), shown
+   *  read-only. */
+  editable: boolean;
   /** The profile's `hostname`, which decides which machine runs it. */
   hostname: string | null;
   ref: ProfileRef;
@@ -92,22 +99,34 @@ export function fileProfileName(file: string): string {
   return file.replace(/\.(yaml|yml)$/, "");
 }
 
-/** What a profile file is called in lists and URLs: its stem, or its full
- *  file name when another file shares the stem (`stage.yaml` beside
- *  `stage.yml`), so each names one file. */
+/** What a profile file is shown as: its stem, or its full file name when
+ *  the stem could be taken for another file (one sharing it, `stage.yaml`
+ *  beside `stage.yml`, or one named it, `stage.yaml` beside
+ *  `stage.yaml.yaml`). Display text only: a file is addressed, linked and
+ *  matched by its full file name (`ProfileFileInfo.file`). */
 export function fileProfileLabel(
   file: string,
   files: ProfileFileInfo[],
 ): string {
   const stem = fileProfileName(file);
-  const sharing = files.filter((f) => fileProfileName(f.file) === stem);
-  return sharing.length > 1 ? file : stem;
+  const taken = files.some(
+    (f) =>
+      f.file !== file && (fileProfileName(f.file) === stem || f.file === stem),
+  );
+  return taken ? file : stem;
 }
 
-/** The key a profile entry is listed by: a file's full file name, which
- *  no two files share, else the entry's name. */
-export function profileEntryKey(entry: ProfileEntry): string {
-  return entry.ref.kind === "file" ? entry.ref.filename : entry.name;
+/** The profile a route or link names, among `names` (each file's full file
+ *  name, or an inline profile's name): the name itself, else, as the server
+ *  reads a stem, `<route>.yaml`, else `<route>.yml`. So a bookmark from
+ *  before full file names (`#/config/stage`) opens the file it opened. */
+export function resolveProfileRoute(
+  route: string,
+  names: string[],
+): string | undefined {
+  return [route, `${route}.yaml`, `${route}.yml`].find((name) =>
+    names.includes(name),
+  );
 }
 
 function buildEntries(
@@ -117,13 +136,17 @@ function buildEntries(
 ): ProfileEntry[] {
   if (profilesDir) {
     return files.map((f) => ({
-      name: fileProfileLabel(f.file, files),
+      name: f.file,
+      label: fileProfileLabel(f.file, files),
+      editable: f.addressable,
       hostname: f.hostname,
       ref: { kind: "file", filename: f.file },
     }));
   }
   return inline.map((p, index) => ({
     name: inlineProfileName(p, index),
+    label: inlineProfileName(p, index),
+    editable: true,
     hostname: p?.hostname ?? null,
     ref: { kind: "inline", index },
   }));
