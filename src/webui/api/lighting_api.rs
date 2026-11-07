@@ -182,8 +182,9 @@ pub(super) struct GdtfImportQuery {
 /// its modes straight away. Answers the import report
 /// (`already_imported` when the same archive was imported before and
 /// nothing was written; `renamed_from` when the archive's fixture name was
-/// taken). A different archive of the same file name already in the library
-/// is a 409; anything else refused is a 400.
+/// taken). A different archive of the same file name already in the library,
+/// or a record name or file that is taken, is a 409; anything else refused
+/// is a 400.
 pub(super) async fn import_gdtf(
     State(state): State<WebUiState>,
     Query(query): Query<GdtfImportQuery>,
@@ -206,14 +207,7 @@ pub(super) async fn import_gdtf(
                 &project,
                 DEFAULT_FIXTURE_TYPES_DIR,
             )
-            .map_err(|e| {
-                let status = if e.downcast_ref::<lighting::import::LibraryClash>().is_some() {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::BAD_REQUEST
-                };
-                (status, e.to_string())
-            }),
+            .map_err(|e| (lighting_writes::import_status(e.as_ref()), e.to_string())),
         )
     })
     .await?
@@ -521,10 +515,6 @@ pub(super) async fn locate_fixture_type_file(
     })
     .await
 }
-
-/// Venue files: `.venue` (positions, focus points, MVR provenance) and the
-/// v1 `.light`, loaded as peers.
-pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
 
 /// Serialises every read-check-write of a venue file, so two saves cannot
 /// interleave between the version check and the write; and every write of a
@@ -1429,9 +1419,12 @@ fn gdtf_list_summary(
 /// one rule for type files ([`super::lighting_writes`]): a new name is
 /// claimed at `<fixture types dir>/<stem>.fixture`; an existing one is
 /// written only where its file is that type's alone, and refused (409, with
-/// the file and why) otherwise. `?from=<old>` renames, as for venues. A
-/// `.light` whose new text needs a `.fixture` (rich channels, a GDTF
-/// reference, or `?ext=fixture`) moves to `<stem>.fixture`.
+/// the file and why) otherwise. `?from=<old>` renames, as for venues, and,
+/// as the fixture settings' rename does, retypes every venue line naming the
+/// old name in `venues_dir` (refused, nothing written, when any venue file
+/// cannot be; the answer's `rename` says what changed). A `.light` whose new
+/// text needs a `.fixture` (rich channels, a GDTF reference, or
+/// `?ext=fixture`) moves to `<stem>.fixture`.
 pub(super) async fn put_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1512,12 +1505,18 @@ pub(super) async fn put_fixture_type(
             .any(|t| t.uses_rich_channels() || t.source().is_some());
 
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.venues_dir.as_deref(),
+        DEFAULT_VENUES_DIR,
+    )?;
     // The helper the playlists and profiles writes use, so a refusal is
     // reported as the configuration problem it is rather than a server
     // fault. The file goes under the directory that was made.
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let type_name = name.clone();
     let from = query.from.clone();
+    let retyped_in = venues_dir.clone();
     let outcome = super::helpers::spawn_blocking_io("write fixture type", move || {
         let name = type_name;
         // Held from reading the files to writing one, as MCP's patch holds
@@ -1534,7 +1533,7 @@ pub(super) async fn put_fixture_type(
             from: from.as_deref(),
             needs_new_format,
         };
-        let plan = match save.plan() {
+        let plan = match lighting_writes::plan(&save) {
             Ok(plan) => plan,
             Err(r) => return reply(r),
         };
@@ -1587,18 +1586,61 @@ pub(super) async fn put_fixture_type(
                 );
             }
         }
-        if let Err(r) = lighting_writes::write(&plan, &dsl) {
-            return reply(r);
+        // A rename is the fixture settings' rename: every venue line naming
+        // the old name is retyped, planned in full first, and refused (so
+        // nothing is written) when any venue file cannot be.
+        let retype = match from.as_deref().filter(|old| *old != name) {
+            Some(old) => {
+                match super::fixture_settings::plan_venue_retype(
+                    &retyped_in,
+                    old,
+                    Some(&name),
+                    &Default::default(),
+                ) {
+                    Ok(retype) => Some((old.to_string(), retype)),
+                    Err((status, message)) => {
+                        return reply((status, Json(json!({"error": message}))).into_response())
+                    }
+                }
+            }
+            None => None,
+        };
+        match &retype {
+            // The type and its venues are written together, and put back
+            // together if any write fails.
+            Some((_, retype)) => {
+                if let Err((status, message)) =
+                    super::fixture_settings::write_type_save(&dir, &[], &plan, &dsl, retype)
+                {
+                    return reply((status, Json(json!({"error": message}))).into_response());
+                }
+            }
+            None => {
+                if let Err(r) = lighting_writes::write(&plan, &dsl) {
+                    return reply(r);
+                }
+            }
         }
-        Ok(Ok(()))
+        Ok(Ok(retype.map(|(old, retype)| retype.summary(&old, &name))))
     })
     .await?;
-    outcome?;
+    let rename = outcome?;
+    let venue_error = match &rename {
+        Some(_) => {
+            super::fixture_settings::reload_types_and_venues(&state, &name, &venues_dir).await
+        }
+        None => None,
+    };
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "name": name})),
+            Json(crate::webui::wire::fixture_types::FixtureTypeSaved {
+                status: "saved".to_string(),
+                name,
+                rename,
+                venue_error,
+            }),
         )
             .into_response(),
     )
@@ -2393,7 +2435,7 @@ pub(super) async fn put_venue(
             from: from.as_deref(),
             needs_new_format,
         };
-        let plan = match save.plan() {
+        let plan = match lighting_writes::plan(&save) {
             Ok(plan) => plan,
             Err(r) => return reply(r),
         };
@@ -4523,8 +4565,8 @@ show "test" {
             .exists());
         assert!(dir.path().join("lighting/.cache").is_dir());
 
-        // A name another fixture has is the caller's error, not a server
-        // fault.
+        // A name another fixture has is a conflict naming its file, not a
+        // server fault; so is a name whose file another type has.
         let other = crate::lighting::gdtf::build_zip(&[(
             "description.xml",
             crate::lighting::gdtf::SYNTHETIC_DESCRIPTION
@@ -4532,10 +4574,18 @@ show "test" {
                 .as_bytes(),
         )]);
         let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=Brick").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{parsed}");
-        assert!(
-            parsed["error"].as_str().unwrap().contains("already exists"),
-            "{parsed}"
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "fixture type \"Brick\" is already declared in brick.fixture; choose another name"
+        );
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=BRICK%201").await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        let (status, parsed) = import_upload(&app, "other.gdtf", &other, "?name=brick_1").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{parsed}");
+        assert_eq!(
+            parsed["error"],
+            "brick_1.fixture is taken by \"BRICK 1\"; choose another name"
         );
     }
 

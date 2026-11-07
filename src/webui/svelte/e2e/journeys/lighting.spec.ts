@@ -355,11 +355,18 @@ test.describe("The fixture's settings", () => {
     expect(lineOf(file, "B1")).toContain('Brick-Two mode "8: RGBS" @ 1:1');
     expect(lineOf(file, "B1")).toContain("# front left");
     expect(file).toContain("The house rig");
-    // The type keeps its file, under its new name.
-    expect(project.read("lighting/fixture_types/brick.fixture")).toContain(
-      'fixture_type "Brick-Two"',
+    // The record was at its old name's own file, so it moves to the new
+    // name's: the file the server says owns "Brick-Two" holds it, and the
+    // old one is gone.
+    const renamed = await api<{ owner: { file: string } | null }>(
+      project,
+      "/lighting/fixture-types/Brick-Two",
     );
-    await api(project, "/lighting/fixture-types/Brick-Two");
+    expect(renamed.owner?.file).toBe("brick-two.fixture");
+    expect(
+      project.read(`lighting/fixture_types/${renamed.owner!.file}`),
+    ).toContain('fixture_type "Brick-Two"');
+    expect(project.exists("lighting/fixture_types/brick.fixture")).toBe(false);
     const status = await api<{
       hardware: { lighting_venue: { status: string } };
     }>(project, "/status");

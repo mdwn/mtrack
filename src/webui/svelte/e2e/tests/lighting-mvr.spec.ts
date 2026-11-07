@@ -171,6 +171,51 @@ test.describe("MVR import wizard", () => {
     await expect(alert).toHaveCount(0);
   });
 
+  test("a venue name the files refuse keeps the name field, and another name re-inspects", async ({
+    page,
+  }) => {
+    const names: string[] = [];
+    await page.route("**/api/lighting/mvr/inspect", async (route) => {
+      const name = fields(route.request()).name ?? "";
+      names.push(name);
+      if (name === "Kellys") {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error:
+              'cannot import venue "Kellys": Defined in all.venue alongside venue "Annex"; edit that file by hand.',
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MVR_INSPECTION),
+        });
+      }
+    });
+    await page.goto("/#/lighting/import");
+    await chooseFile(page);
+
+    // The reason, and the name field to change: not a dead end.
+    await expect(page.getByTestId("mvr-error")).toContainText(
+      "Defined in all.venue alongside venue",
+    );
+    const name = page.getByTestId("mvr-venue-name");
+    await expect(name).toHaveValue("Kellys");
+    await expect(page.getByTestId("mvr-refused-hint")).toBeVisible();
+    await expect(page.getByTestId("mvr-continue")).toHaveCount(0);
+
+    await name.fill("Kellys 2026");
+    await page.getByTestId("mvr-recheck").click();
+    await expect(page.getByTestId("mvr-count-fixtures")).toHaveText("3");
+    await expect(page.getByTestId("mvr-error")).toHaveCount(0);
+    await expect(page.getByTestId("mvr-refused-hint")).toHaveCount(0);
+    await expect(name).toHaveValue("Kellys 2026");
+    expect(names).toEqual(["Kellys", "Kellys 2026"]);
+  });
+
   test("step 2 marks the deck suggestion, applies it, and takes a click", async ({
     page,
   }) => {

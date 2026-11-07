@@ -254,6 +254,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The harness's files stay editable where they are: `astera_pixelbrick.fixture` (declaring
     "Astera-PixelBrick", whose own file would be `astera-pixelbrick.fixture`), `built-in.venue` and
     `test.venue`.
+- **The importers and fixture settings write venue and fixture type files by the web UI's
+  rules**: a new record or venue is claimed at its own file, an existing one is written only
+  where its file is its alone, and nothing is suffixed. What changes:
+  - A GDTF import that pins a name (`mtrack import-gdtf --name`, `POST /api/lighting/gdtf/import?name=`,
+    MCP `import_gdtf`, an MVR import's `Name (stem)`) writes its record at `<stem>.fixture` only
+    if that file, and every file of its stem in another case, is free: importing "Par" when
+    `par.fixture` holds "Old Par" is refused with "par.fixture is taken by "Old Par"; choose
+    another name", where it wrote `par_2.fixture`; "wash" when `Wash.fixture` is there is refused
+    too, where Linux wrote `wash.fixture` beside it. A name another type declares (in any case)
+    is refused naming its file ("fixture type "Brick" is already declared in brick.fixture"), and
+    the web import answers these with 409, where it answered 400. The record is made with
+    `create_new`, never written over one made meanwhile. The library's own naming of an
+    unrecorded archive ("Synth Brick (v2)", `#2`) is unchanged.
+  - An MVR import (`mtrack import-mvr --write`, `POST /api/lighting/mvr/import`, MCP
+    `import_mvr`) writes its venue by the venue save's rule. A new venue is claimed at
+    `<venues dir>/<stem>.venue`: "Club (Main)" goes to `club_main.venue`, and a name whose file
+    is there in any case is refused ("cannot import venue "kellys": Kellys.venue is taken by
+    "Other"; choose another name"), as is one whose file does not parse ("broken.venue already
+    exists"), where those said the file "exists but does not define" the venue or "does not
+    parse"; `Kellys.venue` was not looked for on Linux. A re-import merges into the venue's file
+    where it lives only when that file is the venue's alone: "kellys" in `all.venue`, which also
+    holds venue "Annex", is refused ("cannot import venue "kellys": Defined in all.venue alongside
+    venue "Annex"; edit that file by hand.") and nothing is written, the library's MVR included,
+    where the import patched kellys' block inside the shared file. The web import answers these
+    with 409 (it answered every refusal with 400), the plan (`write=false`) too. A `.light`
+    venue moves to its own `.venue` beside it when merged (`tour/old.light` to `tour/old.venue`,
+    the `.light` removed), as a web save does, where the provenance was written into the
+    `.light`; refused when that `.venue` is there, in any case. A venue declared twice (in two
+    files, or twice in one) or sharing its file with a show or a fixture type is refused the
+    same way, where the first file's block was patched.
+  - An MVR inspection (`POST /api/lighting/mvr/inspect`, MCP `inspect_mvr`) refuses what the
+    import would: inspecting "kellys" above answers 409 with the same reason, where it answered
+    with a plan (and the web, with 400 for other refusals). The import wizard keeps the venue name
+    field after such a refusal, with "Check again", so another name can be inspected; it showed
+    only the error.
+  - An MVR whose embedded GDTF needs a pinned record whose file is taken is refused as a whole,
+    with what to do, never written beside it as `_2`: "lighting/fixture_types/
+    synth_brick_astera_pb15.fixture holds "Other"; rename or move that file, or import
+    Astera_PB15.gdtf on its own first under a name of your own (`mtrack import-gdtf --name
+    <name>`, or the Fixtures page)". Two of one MVR's GDTFs whose records would be one file
+    ("Synth Brick (X_1)" and "Synth Brick (x 1)" both `synth_brick_x_1.fixture`) are refused
+    when planned, "… would also be the record of "Synth Brick (X_1)", another GDTF in this MVR",
+    where the second's write failed after the first was written. The web answers these with 409.
+  - A GDTF fixture's settings (`POST /api/lighting/fixture-types/<name>/settings`, the fixture
+    page's form) write its record by the same rules. The first change to a library fixture with
+    no record claims `<stem>.fixture` for the name it will hold: "Synth Brick" when
+    `synth_brick.fixture` (or `Synth_Brick.fixture`) holds "Old" answers 409 "synth_brick.fixture
+    is taken by "Old"; choose another name", where it wrote `synth_brick_2.fixture` (and, on
+    Linux, `synth_brick.fixture` beside `Synth_Brick.fixture`); a pin for a fixture sharing its
+    name is claimed alike. A record whose file is not its alone is read-only: changing "Brick"'s
+    limits in `brick.fixture`, which also holds "Old", answers 409 "Defined in brick.fixture
+    alongside fixture type "Old"; edit that file by hand.", where the block was patched inside
+    the shared file; a record declared twice, or beside a venue or show, likewise, where the
+    first file's block was patched. A record in a `.light` file moves to its `.fixture` beside it
+    when its settings are saved (`types/brick.light` to `types/brick.fixture`, the `.light`
+    removed), as a GDTF record needs, where the `.light` was patched.
+  - A rename there moves the record by the editor's rule: "Brick" in `brick.fixture` renamed
+    "PixelBrick" becomes `pixelbrick.fixture`, comments kept, where the file kept its old name;
+    the harness's "Astera-PixelBrick" in `astera_pixelbrick.fixture` (not its own name's file)
+    is renamed in place. A rename onto a name another type declares answers "fixture type "Other"
+    is already declared in other.light; choose another name", where it said "there is already a
+    fixture type named".
+  - A rename retypes every venue line naming the type only if every venue using it is its file's
+    alone; otherwise nothing is written and the 409 names each such venue: renaming "Brick" when
+    venue "arena" in `all.venue`, which also holds venue "annex", uses it answers "fixture type
+    "Brick" cannot be renamed, so nothing was written; venue "arena" in all.venue uses it: Defined
+    in all.venue alongside venue "annex"; edit that file by hand.", where every venue in the
+    shared file was patched. A file that does not parse refuses the rename, as before.
+  - Renaming a fixture type in the type editor (`PUT /api/lighting/fixture-types/<new>?from=<old>`,
+    now with `venues_dir`) is the same rename: the venue lines naming the old name are retyped
+    with it, refused by the same rule, and the answer adds `rename` (`{from, to, venues, lines}`)
+    and `venue_error`; the engine reloads its types and venues once after. Renaming "Par" to
+    "Wash" rewrites `fixture "A" Par @ 1:1` in `club.venue` to `fixture "A" Wash @ 1:1`, where
+    the venues were left naming a type that no longer existed. The editor says so as the
+    settings form does ("Saved. Renamed in 2 venue lines: club (1), arena (1).", or that the
+    current venue no longer loads).
+  - Both renames write the type's new file first, then the venue files, and remove the old type
+    file last. When a venue file cannot be written, the venue files already written and the type
+    are put back and the answer ends "nothing was saved" (or names what could not be put back),
+    where the venues were left renamed and the type not; when the type cannot be written, no
+    venue is. When the old type file cannot be removed, both are left (the type, declared in
+    both, is read-only until one is removed by hand) and the answer says so, where the new file
+    was removed and the venues left renamed.
+  - A file a save claimed that appears before it is written is refused in one wording wherever
+    it happens (a web save, a GDTF record, a settings pin): "<file> appeared after it was claimed
+    and was not written over; move or remove it by hand, then try again". A failed write of a
+    lighting, config or startup file says "could not write <file>: <reason>", where the web said
+    "Failed to write".
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

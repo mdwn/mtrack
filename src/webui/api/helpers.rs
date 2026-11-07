@@ -158,7 +158,7 @@ pub(crate) fn written(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!(
                 "Failed to write {what}: {}",
-                super::super::config_io::write_message(path, &e)
+                crate::util::write_failure_message(crate::util::WriteTarget::File(path), &e)
             )})),
         )
             .into_response()),

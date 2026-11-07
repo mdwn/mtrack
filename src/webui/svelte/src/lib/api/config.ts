@@ -55,6 +55,7 @@ import type {
   SampleDefinition,
   SampleUploaded,
   SettingsSaved,
+  FixtureTypeSaved,
   StoreSnapshot,
   Vec3,
   Venue,
@@ -380,8 +381,21 @@ export async function inspectMvr(
     method: "POST",
     body: mvrForm(file, { name }, dirs),
   });
+  if (res.status === 409) {
+    const error = await apiError(res, "Failed to read the MVR");
+    throw new MvrRefused(error.message);
+  }
   if (!res.ok) throw await apiError(res, "Failed to read the MVR");
   return res.json();
+}
+
+/** An inspection the lighting files' rule refused (409): the venue's name
+ *  is another file's, or its file is not its alone. Another name may do. */
+export class MvrRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MvrRefused";
+  }
 }
 
 /** The import's plan (`write` false) or its report (`write` true). */
@@ -609,31 +623,54 @@ export async function saveFixtureType(
     >,
   dir?: string,
   from?: string | null,
-): Promise<void> {
-  const params = saveParams(dir, from);
+  venuesDir?: string,
+): Promise<FixtureTypeSaved> {
+  const params = saveParams(dir, from, typeRenameParams(from, venuesDir));
   const res = await put(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  typeSaved(from);
+  return res.json();
+}
+
+/** The venues directory a type's rename retypes the venue lines in. */
+function typeRenameParams(
+  from: string | null | undefined,
+  venuesDir: string | undefined,
+): Record<string, string> {
+  return from && venuesDir ? { venues_dir: venuesDir } : {};
+}
+
+/** After a type's save: a rename rewrote the venue lines naming it too. */
+function typeSaved(from: string | null | undefined): void {
   fixtureTypesChanged();
+  if (from) venueChanged(null);
 }
 
 /** Saves a fixture type as raw DSL. `ext: "fixture"` moves a `.light` to a
- *  `.fixture`; a new type is always a `.fixture`. `from` renames. */
+ *  `.fixture`; a new type is always a `.fixture`. `from` renames, and the
+ *  venue lines naming the old name in `venuesDir` are retyped with it. */
 export async function saveFixtureTypeText(
   name: string,
   dsl: string,
   ext: "light" | "fixture",
   dir?: string,
   from?: string | null,
-): Promise<void> {
+  venuesDir?: string,
+): Promise<FixtureTypeSaved> {
+  const params = saveParams(dir, from, {
+    ext,
+    ...typeRenameParams(from, venuesDir),
+  });
   const res = await putText(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${saveParams(dir, from, { ext })}`,
+    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
-  fixtureTypesChanged();
+  typeSaved(from);
+  return res.json();
 }
 
 /** Deletes a fixture type. For a fixture from a GDTF, its archive goes too

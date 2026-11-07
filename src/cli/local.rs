@@ -124,12 +124,7 @@ fn annotate_write(target: crate::util::WriteTarget<'_>, error: std::io::Error) -
     // The path goes in whether or not there is a hint to add. Propagating the
     // bare `io::Error` reached the operator as `Error: Read-only file system
     // (os error 30)` in a restart loop, naming no file at all.
-    let mut message = format!("could not write {}: {error}", target.path().display());
-    if let Some(hint) = crate::util::write_failure_hint(target, &error) {
-        message.push_str("\n\n");
-        message.push_str(&hint);
-    }
-    message.into()
+    crate::util::write_failure_message(target, &error).into()
 }
 
 pub async fn start(
