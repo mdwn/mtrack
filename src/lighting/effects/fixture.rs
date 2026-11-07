@@ -833,7 +833,15 @@ impl StrobeMap<'_> {
                 crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
             }
             StrobeMap::Ratio { max, offset } => {
-                crate::lighting::channels::lerp(offset, 1.0, (hz / max).clamp(0.0, 1.0))
+                // Not a number is full rate, as the map had it before it
+                // clamped below.
+                let fraction = hz / max;
+                let fraction = if fraction.is_nan() {
+                    1.0
+                } else {
+                    fraction.clamp(0.0, 1.0)
+                };
+                crate::lighting::channels::lerp(offset, 1.0, fraction)
             }
         }
     }
@@ -1211,6 +1219,19 @@ mod tests {
         let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
         assert!(result.contains_key("white"));
         assert!((result["white"].value - 200.0 / 255.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn strobe_ratio_map_clamps_its_fraction() {
+        let map = StrobeMap::Ratio {
+            max: 20.0,
+            offset: 0.2,
+        };
+        assert_eq!(map.normalized(-5.0), 0.2);
+        assert!((map.normalized(10.0) - 0.6).abs() < 1e-9);
+        assert_eq!(map.normalized(40.0), 1.0);
+        // Not a number is full rate, as before the fraction was clamped below.
+        assert_eq!(map.normalized(f64::NAN), 1.0);
     }
 
     // ── apply_strobe ─────────────────────────────────────────────────

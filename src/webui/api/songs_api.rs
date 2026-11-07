@@ -962,11 +962,7 @@ pub(super) async fn ensure_song_config(
     // Off the async worker: the names configured under the songs root are
     // a walk of the whole tree, and the new config a scan of the audio.
     super::helpers::spawn_blocking_io("write the song config", move || {
-        // Both as the file system has them, for the folder's path below
-        // the root, which a contested name is given.
-        let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let song = songs::new_song(&canonical(&songs_path), &canonical(&song_dir), taken)
-            .map_err(|e| e.to_string())?;
+        let song = songs::new_song(&songs_path, &song_dir, taken).map_err(|e| e.to_string())?;
         match song {
             Some(song) => song
                 .write()

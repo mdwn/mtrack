@@ -218,33 +218,19 @@ pub(super) async fn create_song_in_directory(
         .map(str::to_string);
     let naming = super::helpers::spawn_blocking_io("read the songs folder", {
         let dir = dir_canonical.clone();
-        let asked = asked.clone();
         move || -> std::io::Result<Result<String, String>> {
-            let root = songs_root.canonicalize().unwrap_or(songs_root);
             match asked {
-                Some(name) => {
-                    let mut taken = taken;
-                    taken.extend(songs::configured_song_names(&root)?);
-                    Ok(if taken.contains(&name) {
+                Some(name) => Ok(
+                    if songs::taken_song_names(&songs_root, taken).contains(&name) {
                         Err(name)
                     } else {
                         Ok(name)
-                    })
-                }
-                None => {
-                    // Below the songs root, the path a contested name is
-                    // given is from there; elsewhere, from the folder's own.
-                    let base = if dir.starts_with(&root) {
-                        root
-                    } else {
-                        dir.parent().unwrap_or(&dir).to_path_buf()
-                    };
-                    let song = songs::new_song(&base, &dir, taken)?;
-                    Ok(Ok(song.map_or_else(
-                        || crate::util::filename_display(&dir).to_string(),
-                        |song| song.name,
-                    )))
-                }
+                    },
+                ),
+                None => Ok(Ok(songs::new_song(&songs_root, &dir, taken)?.map_or_else(
+                    || crate::util::filename_display(&dir).to_string(),
+                    |song| song.name,
+                ))),
             }
         }
     })
@@ -401,17 +387,9 @@ pub(super) async fn bulk_import(
 fn import_song_dirs(
     root: &std::path::Path,
     songs_root: &std::path::Path,
-    mut taken: std::collections::HashSet<String>,
+    taken: std::collections::HashSet<String>,
 ) -> std::io::Result<(Vec<String>, Vec<String>, Vec<ImportFailure>)> {
-    match songs::configured_song_names(songs_root) {
-        Ok(names) => taken.extend(names),
-        Err(e) => tracing::warn!(
-            dir = %songs_root.display(),
-            error = %e,
-            "Cannot read the songs folder for its song names"
-        ),
-    }
-    let found = songs::new_songs(root, taken)?;
+    let found = songs::new_songs(root, songs::taken_song_names(songs_root, taken))?;
     let display_name = |dir: &std::path::Path| {
         dir.strip_prefix(root)
             .unwrap_or(dir)

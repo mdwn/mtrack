@@ -2244,17 +2244,38 @@ pub fn new_songs(root: &Path, taken: HashSet<String>) -> std::io::Result<SongDir
 /// The song folder `dir` under `root`, to give a new config, named by the
 /// rule of [`new_songs`] as the one new song found: its own name, unless a
 /// song configured under `root` or one in `taken` has it. `None` when it
-/// has a config to keep ([`song_config_to_write`]). What a track upload to
-/// a new song writes (#674).
+/// has a config to keep ([`song_config_to_write`]). Both paths are taken as
+/// the file system has them, for the folder's path below `root`, which a
+/// contested name is given. What a track upload to a new song and the
+/// create-song endpoint write (#674).
 pub fn new_song(
     root: &Path,
     dir: &Path,
     taken: HashSet<String>,
 ) -> std::io::Result<Option<NewSong>> {
-    let Some(config_path) = song_config_to_write(dir) else {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (root, dir) = (canonical(root), canonical(dir));
+    let Some(config_path) = song_config_to_write(&dir) else {
         return Ok(None);
     };
-    Ok(name_new_songs(root, vec![(dir.to_path_buf(), config_path)], taken)?.pop())
+    Ok(name_new_songs(&root, vec![(dir, config_path)], taken)?.pop())
+}
+
+/// The names no new song may be given: those in `taken` (the songs the
+/// player has loaded or failed) and those configured under `songs_root`
+/// ([`configured_song_names`]). An unreadable `songs_root` is passed over
+/// with a warning, leaving `taken` as it is: the one rule of the bulk
+/// import and a new song with a name asked for.
+pub fn taken_song_names(songs_root: &Path, mut taken: HashSet<String>) -> HashSet<String> {
+    match configured_song_names(songs_root) {
+        Ok(names) => taken.extend(names),
+        Err(e) => warn!(
+            dir = %songs_root.display(),
+            error = %e,
+            "Cannot read the songs folder for its song names"
+        ),
+    }
+    taken
 }
 
 /// The naming rule of [`new_songs`], for the new song folders `new` (each
@@ -4605,6 +4626,33 @@ sections:
             [(root.join("B"), "B (3)"), (root.join("B (2)"), "B (2)")]
         );
         assert_eq!(found.kept, [root.join("Old")]);
+        Ok(())
+    }
+
+    /// The names no new song may be given are the player's and those
+    /// configured under the songs root; an unreadable root leaves the
+    /// player's alone, with a warning, rather than failing.
+    #[test]
+    fn taken_song_names_adds_configured_names_and_passes_over_a_missing_root(
+    ) -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("Old"))?;
+        crate::testutil::write_wav(root.join("Old/t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        fs::write(
+            root.join("Old/song.yaml"),
+            "name: B\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        let loaded = std::collections::HashSet::from(["Loaded".to_string()]);
+
+        assert_eq!(
+            super::taken_song_names(root, loaded.clone()),
+            std::collections::HashSet::from(["Loaded".to_string(), "B".to_string()])
+        );
+        assert_eq!(
+            super::taken_song_names(&root.join("missing"), loaded.clone()),
+            loaded
+        );
         Ok(())
     }
 

@@ -116,10 +116,16 @@
   // Collapsible Notifications section within Config tab
   let notifSectionOpen = $state(false);
 
+  /** Opens song `name`'s page on the tab this one shows. */
+  function goToSong(name: string) {
+    const base = `#/songs/${encodeURIComponent(name)}`;
+    window.location.hash =
+      activeTab === "tracks" ? base : `${base}/${activeTab}`;
+  }
+
   function setTab(tab: TabKey) {
     activeTab = tab;
-    const base = `#/songs/${encodeURIComponent(songName)}`;
-    window.location.hash = tab === "tracks" ? base : `${base}/${tab}`;
+    goToSong(songName);
   }
 
   const tabs: { key: TabKey; labelKey: string }[] = [
@@ -424,9 +430,7 @@
     if (typeof name !== "string" || name === "" || name === songName) {
       return false;
     }
-    const base = `#/songs/${encodeURIComponent(name)}`;
-    window.location.hash =
-      activeTab === "tracks" ? base : `${base}/${activeTab}`;
+    goToSong(name);
     return true;
   }
 
@@ -655,9 +659,7 @@
       }
 
       if (savedName && savedName !== songName) {
-        const base = `#/songs/${encodeURIComponent(savedName)}`;
-        window.location.hash =
-          activeTab === "tracks" ? base : `${base}/${activeTab}`;
+        goToSong(savedName);
         return;
       }
 
