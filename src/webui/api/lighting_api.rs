@@ -521,7 +521,7 @@ pub(super) fn existing_fixture_type_file(
     if let Some(declared) = lighting::project_files::type_files(dir).get(name) {
         return Some(declared.file.clone());
     }
-    let stem = sanitize_filename(name);
+    let stem = lighting::files::stem(name);
     ["fixture", "light"]
         .iter()
         .map(|extension| dir.join(format!("{stem}.{extension}")))
@@ -581,7 +581,7 @@ pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTE
 /// The file a venue of this name lives in, if one exists: `.venue` first,
 /// then `.light`.
 fn existing_venue_file(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let stem = sanitize_filename(name);
+    let stem = lighting::files::stem(name);
     ["venue", "light"]
         .iter()
         .map(|extension| dir.join(format!("{stem}.{extension}")))
@@ -1689,7 +1689,7 @@ pub(super) async fn put_fixture_type(
         .as_ref()
         .and_then(|(path, _)| path.file_stem().and_then(|s| s.to_str()))
         .map(str::to_string)
-        .unwrap_or_else(|| sanitize_filename(&name));
+        .unwrap_or_else(|| lighting::files::stem(&name));
     let existing_extension = located.as_ref().and_then(|(path, _)| {
         path.extension()
             .and_then(|e| e.to_str())
@@ -2630,7 +2630,7 @@ pub(super) async fn put_venue(
         // `.light`. An existing file keeps its name and extension unless the
         // content outgrows `.light`, in which case it moves to `.venue` and
         // the `.light` original is retired after the durable write.
-        let stem = sanitize_filename(&name);
+        let stem = lighting::files::stem(&name);
         let file_path = match &located {
             Some(l) if !typed || l.path.extension().is_some_and(|e| e == "venue") => l.path.clone(),
             Some(l) => l.path.with_extension("venue"),
@@ -2831,18 +2831,6 @@ pub(super) async fn delete_venue(
 // ---------------------------------------------------------------------------
 // Lighting helpers
 // ---------------------------------------------------------------------------
-
-/// Converts a name to a safe filename (lowercase, spaces to underscores).
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            ' ' => '_',
-            c if c.is_alphanumeric() || c == '_' || c == '-' => c,
-            _ => '_',
-        })
-        .collect::<String>()
-        .to_lowercase()
-}
 
 /// Converts a JSON fixture type definition to DSL format.
 fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
@@ -4059,19 +4047,6 @@ show "test" {
     }
 
     // -----------------------------------------------------------------------
-    // Unit tests: sanitize_filename
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sanitize_filename_removes_special_chars() {
-        assert_eq!(sanitize_filename("hello world"), "hello_world");
-        assert_eq!(sanitize_filename("My-Fixture_01"), "my-fixture_01");
-        assert_eq!(sanitize_filename("a/b\\c.d!e"), "a_b_c_d_e");
-        assert_eq!(sanitize_filename("UPPER"), "upper");
-        assert_eq!(sanitize_filename(""), "");
-    }
-
-    // -----------------------------------------------------------------------
     // Unit tests: validate_lighting_name
     // -----------------------------------------------------------------------
 
@@ -4490,15 +4465,16 @@ show "test" {
     }
 
     /// A fixture types directory holding one file, named as `import-gdtf`
-    /// names it — which is not how this API spells the same name.
+    /// used to name it (the harness's `astera_pixelbrick.fixture`), which is
+    /// not the name's own stem.
     fn imported_fixture_type_dir(
         project: &std::path::Path,
         rel: &str,
         name: &str,
         dsl: String,
     ) -> std::path::PathBuf {
-        let stem = lighting::import::fixture_filename_stem(name);
-        assert_ne!(stem, sanitize_filename(name), "the stems must differ");
+        let stem = lighting::files::stem(name).replace('-', "_");
+        assert_ne!(stem, lighting::files::stem(name), "the stems must differ");
         let dir = project.join(rel);
         std::fs::create_dir(&dir).unwrap();
         let file = dir.join(format!("{stem}.fixture"));
@@ -4663,10 +4639,8 @@ show "test" {
         let rel = "v_del_imported";
         let dir = _dir.path().join(rel);
         std::fs::create_dir(&dir).unwrap();
-        let file = dir.join(format!(
-            "{}.light",
-            lighting::import::fixture_filename_stem("House-Rig")
-        ));
+        // Not the name's stem (`house-rig`).
+        let file = dir.join("house_rig.light");
         std::fs::write(&file, sample_venue_dsl("House-Rig")).unwrap();
 
         let (status, parsed) = fixture_type_request(
@@ -4874,7 +4848,7 @@ show "test" {
         assert_eq!(parsed["renamed_from"], "Synth Brick");
         let pin = std::fs::read_to_string(
             dir.path()
-                .join("lighting/fixture_types/synth_brick_brick_v2.fixture"),
+                .join("lighting/fixture_types/synth_brick_brick-v2.fixture"),
         )
         .unwrap_or_else(|e| panic!("the newcomer's name is pinned: {e}"));
         assert!(

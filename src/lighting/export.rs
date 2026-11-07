@@ -817,6 +817,17 @@ mod tests {
     use crate::lighting::parser::parse_venues;
     use std::path::PathBuf;
 
+    #[test]
+    fn an_export_keeps_its_own_file_naming() {
+        // Not the venue file stem (`built-in`): a kept export is not renamed.
+        assert_eq!(export_file_name(None, "built-in").unwrap(), "built_in.mvr");
+        assert_eq!(
+            export_file_name(None, "Robe-Esprite Rig").unwrap(),
+            "robe_esprite_rig.mvr"
+        );
+        assert_eq!(export_file_name(None, "///").unwrap(), "fixture.mvr");
+    }
+
     /// The scene the tests seed from: two bricks and a mover of the
     /// synthetic GDTF, a focus point, one layer.
     const SCENE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

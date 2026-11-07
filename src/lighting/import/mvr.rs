@@ -59,9 +59,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use super::{
-    create_dir, fixture_filename_stem, place_in_library, write, write_library_entry, LibraryEntry,
-};
+use super::{create_dir, place_in_library, write, write_library_entry, LibraryEntry};
 use crate::lighting::gdtf;
 use crate::lighting::mvr::{self, MvrFixture, Scene};
 use crate::lighting::parser::parse_venues;
@@ -294,7 +292,7 @@ fn plan(
             let file = format!(
                 "{}/{}.venue",
                 options.venues_dir.trim_end_matches('/'),
-                fixture_filename_stem(&venue_name)
+                crate::lighting::files::stem(&venue_name)
             );
             (project.join(&file), file)
         }
@@ -894,7 +892,7 @@ fn find_existing_venue(
     // The file the venue would be written to holds something else: other
     // venues, or text that does not parse (a file that parsed declares its
     // names, whichever rule set them aside).
-    let stem = fixture_filename_stem(venue_name);
+    let stem = crate::lighting::files::stem(venue_name);
     for extension in ["venue", "light"] {
         let path = project.join(venues_dir).join(format!("{stem}.{extension}"));
         if !path.exists() {

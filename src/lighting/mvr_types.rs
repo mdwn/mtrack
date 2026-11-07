@@ -25,8 +25,11 @@ use super::geometry::Vec3;
 /// Where exports land, relative to the project.
 pub const EXPORT_DIR: &str = "lighting/export";
 
-/// A fixture-type (or venue) name reduced to a safe filename stem.
-pub fn fixture_filename_stem(name: &str) -> String {
+/// A venue name reduced to the stem of its MVR export's file name
+/// (`built_in.mvr` for "built-in"): ASCII only, every other run one `_`.
+/// Exports keep this naming, so a kept export is not renamed; venue and
+/// fixture type files are named by `lighting::files::stem`.
+fn export_stem(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -49,7 +52,7 @@ pub fn fixture_filename_stem(name: &str) -> String {
 pub fn export_file_name(output: Option<&str>, venue: &str) -> Result<String, String> {
     let output = match output {
         Some(output) => output.trim().to_string(),
-        None => format!("{}.mvr", fixture_filename_stem(venue)),
+        None => format!("{}.mvr", export_stem(venue)),
     };
     let bare = std::path::Path::new(&output).file_name() == Some(std::ffi::OsStr::new(&output));
     if !bare || output.starts_with('.') || output.contains('\\') || output.contains('\0') {
