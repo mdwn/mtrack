@@ -53,8 +53,8 @@ impl ProbeLimits {
     /// answers rather than how fast.
     #[cfg(test)]
     pub(crate) const PATIENT: ProbeLimits = ProbeLimits {
-        connect: Duration::from_secs(10),
-        deadline: Duration::from_secs(30),
+        connect: crate::testutil::PATIENCE,
+        deadline: crate::testutil::PATIENCE,
     };
 }
 

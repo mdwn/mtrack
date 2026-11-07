@@ -56,9 +56,11 @@ impl BoundAddr {
     #[cfg(test)]
     pub(crate) async fn get(&self) -> SocketAddr {
         let mut bound = self.0.subscribe();
-        // Only as a guard against a test hanging: binding takes no time.
+        // Only as a guard against a test hanging: binding takes no time. A
+        // server binds once those it replaces have stopped, so this outlasts
+        // STOP_WAIT: a controller that gave up on them says so first.
         let addr = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            STOP_WAIT + crate::testutil::PATIENCE,
             bound.wait_for(Option::is_some),
         )
         .await
@@ -196,11 +198,11 @@ impl<E> TransportBindings<E> {
 /// end, and its replacement would wait on it for good while reading "running".
 #[cfg(not(test))]
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-/// In tests, as long as it takes: those replaced always go, if slowly on a
+/// In tests, the test patience: those replaced always go, if slowly on a
 /// loaded runner, and one that gave up waiting on them never started (#622).
 /// Tests of a stuck controller give their own wait to [`Entry::run`].
 #[cfg(test)]
-const STOP_WAIT: std::time::Duration = std::time::Duration::MAX;
+const STOP_WAIT: std::time::Duration = crate::testutil::PATIENCE;
 
 /// Aborts a child task when the owning controller task is cancelled.
 ///
@@ -280,10 +282,13 @@ impl Entry {
             tokio::spawn(async move {
                 if let Some(after) = after {
                     // A stop ends the wait at once: those started after
-                    // this one wait for `after` as well as for its end.
+                    // this one wait for `after` as well as for its end. A
+                    // stop wins over `after` gone at the same time: one
+                    // stopped never starts.
                     let gone = tokio::select! {
-                        gone = tokio::time::timeout(stop_wait, after.cancelled()) => gone.is_ok(),
+                        biased;
                         _ = stop.cancelled() => return Ok(()),
+                        gone = tokio::time::timeout(stop_wait, after.cancelled()) => gone.is_ok(),
                     };
                     // Not started at all: one still holding its port or its
                     // MIDI watch would only have this one fail, or worse,
@@ -1207,21 +1212,70 @@ mod test {
         );
     }
 
-    /// A driver whose listener is slow to let go of its port, and which
-    /// notes a second listener started while the first still holds it.
+    /// What a [`SlowToRelease`] driver has done, and the gate its listeners
+    /// let go of their port through.
+    #[derive(Default)]
+    struct Releases {
+        state: std::sync::Mutex<ReleaseState>,
+        changed: std::sync::Condvar,
+    }
+
+    #[derive(Default)]
+    struct ReleaseState {
+        /// Listeners started.
+        starts: usize,
+        /// A listener is letting go, held at the gate.
+        releasing: bool,
+        /// The gate is open: listeners let go.
+        open: bool,
+    }
+
+    impl Releases {
+        fn update(&self, f: impl FnOnce(&mut ReleaseState)) {
+            f(&mut self.state.lock().expect("releases"));
+            self.changed.notify_all();
+        }
+
+        /// Waits, as long as the test patience, until `done`.
+        fn wait_until(&self, what: &str, done: impl Fn(&ReleaseState) -> bool) {
+            let state = self.state.lock().expect("releases");
+            let (_state, waited) = self
+                .changed
+                .wait_timeout_while(state, crate::testutil::PATIENCE, |s| !done(s))
+                .expect("releases");
+            assert!(!waited.timed_out(), "{what}");
+        }
+    }
+
+    /// A driver whose listener lets go of its port only once the test opens
+    /// the gate, and which notes a second listener started while the first
+    /// still holds it.
     struct SlowToRelease {
         held: Arc<std::sync::atomic::AtomicBool>,
         overlapped: Arc<std::sync::atomic::AtomicBool>,
+        releases: Arc<Releases>,
+    }
+
+    impl SlowToRelease {
+        fn new() -> SlowToRelease {
+            SlowToRelease {
+                held: Arc::default(),
+                overlapped: Arc::default(),
+                releases: Arc::default(),
+            }
+        }
     }
 
     impl Driver for SlowToRelease {
         fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
-            use std::sync::atomic::Ordering;
+            use std::sync::atomic::{AtomicBool, Ordering};
 
-            struct Release(Arc<std::sync::atomic::AtomicBool>);
+            struct Release(Arc<AtomicBool>, Arc<Releases>);
             impl Drop for Release {
                 fn drop(&mut self) {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    self.1.update(|s| s.releasing = true);
+                    self.1
+                        .wait_until("the test never opened the gate", |s| s.open);
                     self.0.store(false, Ordering::SeqCst);
                 }
             }
@@ -1229,7 +1283,8 @@ mod test {
             if self.held.swap(true, Ordering::SeqCst) {
                 self.overlapped.store(true, Ordering::SeqCst);
             }
-            let release = Release(self.held.clone());
+            self.releases.update(|s| s.starts += 1);
+            let release = Release(self.held.clone(), self.releases.clone());
             tokio::spawn(async move {
                 let _release = release;
                 std::future::pending::<()>().await;
@@ -1240,29 +1295,25 @@ mod test {
 
     /// A controller restarted starts once the one it replaces is gone, not
     /// while it may still hold the port they share.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restarted_controller_waits_for_the_old_one_to_let_go() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
 
-        let overlapped = Arc::new(AtomicBool::new(false));
-        let driver = Arc::new(SlowToRelease {
-            held: Arc::new(AtomicBool::new(false)),
-            overlapped: overlapped.clone(),
-        });
+        let driver = Arc::new(SlowToRelease::new());
+        let releases = driver.releases.clone();
         let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        releases.wait_until("the old one never started", |s| s.starts == 1);
         let stopped = super::Entry::stop_all(vec![old]);
         let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // The old listener still holds the port until the gate opens.
+        releases.wait_until("the old one never let go", |s| s.releasing);
+        releases.update(|s| s.open = true);
+        releases.wait_until("the new one never started", |s| s.starts >= 2);
+        super::Entry::stop_all(vec![new]);
         assert!(
-            !overlapped.load(Ordering::SeqCst),
+            !driver.overlapped.load(Ordering::SeqCst),
             "the new listener started while the old one still held the port"
         );
-        assert!(
-            driver.held.load(Ordering::SeqCst),
-            "the new one never started"
-        );
-        super::Entry::stop_all(vec![new]);
     }
 
     /// Two updates in quick succession: the second stopped a controller
@@ -1270,31 +1321,31 @@ mod test {
     /// once, so the second's replacement started while the original
     /// listener still held the port. A stopped wait now ends only once what
     /// it waited for is gone.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_controller_restarted_twice_at_once_waits_for_the_first() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
 
-        let overlapped = Arc::new(AtomicBool::new(false));
-        let driver = Arc::new(SlowToRelease {
-            held: Arc::new(AtomicBool::new(false)),
-            overlapped: overlapped.clone(),
-        });
+        let driver = Arc::new(SlowToRelease::new());
+        let releases = driver.releases.clone();
         let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        releases.wait_until("the original never started", |s| s.starts == 1);
         let stopped = super::Entry::stop_all(vec![old]);
         let waiting =
             super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
         // The second update, before the first's replacement has started.
         let stopped = super::Entry::stop_all(vec![waiting]);
         let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let started = driver.held.load(Ordering::SeqCst);
+        // The original listener still holds the port until the gate opens.
+        releases.wait_until("the original never let go", |s| s.releasing);
+        releases.update(|s| s.open = true);
+        releases.wait_until("the second update's listener never started", |s| {
+            s.starts >= 2
+        });
         super::Entry::stop_all(vec![new]);
         assert!(
-            !overlapped.load(Ordering::SeqCst),
+            !driver.overlapped.load(Ordering::SeqCst),
             "the second update's listener started while the original still held the port"
         );
-        assert!(started, "the second update's listener never started");
     }
 
     /// A driver stuck in blocking code for a while, which an abort cannot

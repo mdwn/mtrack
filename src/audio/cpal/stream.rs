@@ -593,7 +593,7 @@ pub(super) mod test {
         /// guard against a test hanging: a build takes no time.
         pub(in crate::audio::cpal) fn wait_for_builds(&self, count: u32) {
             let mut builds = self.state.builds.lock();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
             while *builds < count {
                 assert!(
                     !self
