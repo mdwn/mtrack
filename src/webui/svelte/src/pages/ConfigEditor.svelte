@@ -40,6 +40,7 @@
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
   import {
+    fileProfileLabel,
     fileProfileName,
     inlineProfileName,
     loadProfileFileList,
@@ -311,7 +312,7 @@
       selectedIndex = 0;
       profiles = [profile];
 
-      updateConfigUrl(fileProfileName(filename), section);
+      updateConfigUrl(fileProfileLabel(filename, profileFiles), section);
     } catch (e: any) {
       error = e.message;
     }
@@ -729,12 +730,14 @@
       return;
     }
     if (profilesDir) {
-      // File-based: match by filename (without extension)
-      const match = profileFiles.find(
-        (f) => fileProfileName(f.filename) === routeProfile,
-      );
-      if (match && selectedFilename !== match.filename) {
-        selectFileProfile(match.filename, routeSection);
+      // File-based: match by the file's label (its stem, or its full file
+      // name when another file shares the stem), else its full file name.
+      const match =
+        profileFiles.find(
+          (f) => fileProfileLabel(f.file, profileFiles) === routeProfile,
+        ) ?? profileFiles.find((f) => f.file === routeProfile);
+      if (match && selectedFilename !== match.file) {
+        selectFileProfile(match.file, routeSection);
       }
     } else {
       // Inline: match by hostname or index. Skip re-selecting the current
@@ -823,7 +826,9 @@
         <span class="detail-title">
           {isNew
             ? $t("config.newProfile")
-            : selectedFilename || "Profile"}{#if dirty}<span
+            : selectedFilename
+              ? fileProfileLabel(selectedFilename, profileFiles)
+              : "Profile"}{#if dirty}<span
               class="dirty-indicator"
               title={$t("config.unsavedChanges", {
                 default: "Unsaved changes",
@@ -872,12 +877,14 @@
         initialSection={routeSection}
         profileName={isNew || !selectedFilename
           ? undefined
-          : fileProfileName(selectedFilename)}
+          : fileProfileLabel(selectedFilename, profileFiles)}
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
         onsectionchange={(section) =>
           updateConfigUrl(
-            selectedFilename ? fileProfileName(selectedFilename) : undefined,
+            selectedFilename
+              ? fileProfileLabel(selectedFilename, profileFiles)
+              : undefined,
             section,
           )}
         onnotifbrowse={onNotifBrowse}
@@ -912,12 +919,14 @@
         </div>
       {:else}
         <div class="profile-list">
-          {#each profileFiles as pf (pf.filename)}
+          {#each profileFiles as pf (pf.file)}
             <button
               class="profile-file-row"
-              onclick={() => selectFileProfile(pf.filename)}
+              onclick={() => selectFileProfile(pf.file)}
             >
-              <span class="pf-name">{pf.filename}</span>
+              <span class="pf-name"
+                >{fileProfileLabel(pf.file, profileFiles)}</span
+              >
               {#if pf.hostname}
                 <span class="pf-hostname">{pf.hostname}</span>
               {/if}

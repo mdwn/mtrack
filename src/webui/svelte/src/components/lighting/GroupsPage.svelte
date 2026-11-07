@@ -29,6 +29,7 @@
     fetchRunningProfile,
     loadProfileSet,
     pickRunningProfile,
+    profileEntryKey,
     readProfileVersioned,
     writeProfile,
     parseProfileYaml,
@@ -257,7 +258,7 @@
           {#if !selected}
             <option value="" disabled>{$t("lighting.groups.choose")}</option>
           {/if}
-          {#each set.entries as entry (entry.name)}
+          {#each set.entries as entry (profileEntryKey(entry))}
             <option value={entry.name}>
               {entry.name}{entry.hostname && entry.hostname === running
                 ? ` (${$t("lighting.groups.running")})`

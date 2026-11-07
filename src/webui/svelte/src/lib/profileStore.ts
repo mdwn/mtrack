@@ -41,14 +41,15 @@ import type { ProfileFileInfo } from "../gen/rules/mtrack_rules";
 import { get } from "./api/rest";
 import { reloadNotice, type ReloadNotice } from "./configReload";
 
-/** Where one profile is stored. */
+/** Where one profile is stored: a file by its full file name
+ *  (`stage.yml`), or an inline profile by its index. */
 export type ProfileRef =
   | { kind: "file"; filename: string }
   | { kind: "inline"; index: number };
 
 /** One profile in the listing. */
 export interface ProfileEntry {
-  /** The name used in URLs: a file's name without extension, or the
+  /** The name used in URLs: a file's label (`fileProfileLabel`), or the
    *  hostname, or `Profile #<index>` for an inline profile with neither. */
   name: string;
   /** The profile's `hostname`, which decides which machine runs it. */
@@ -85,8 +86,28 @@ export function inlineProfileName(
   return profile?.hostname || `Profile #${index}`;
 }
 
-export function fileProfileName(filename: string): string {
-  return filename.replace(/\.\w+$/, "");
+/** A profile file's stem: its full file name (`stage.yml`) without the
+ *  `.yaml` or `.yml`. The one place the stem is taken from a file name. */
+export function fileProfileName(file: string): string {
+  return file.replace(/\.(yaml|yml)$/, "");
+}
+
+/** What a profile file is called in lists and URLs: its stem, or its full
+ *  file name when another file shares the stem (`stage.yaml` beside
+ *  `stage.yml`), so each names one file. */
+export function fileProfileLabel(
+  file: string,
+  files: ProfileFileInfo[],
+): string {
+  const stem = fileProfileName(file);
+  const sharing = files.filter((f) => fileProfileName(f.file) === stem);
+  return sharing.length > 1 ? file : stem;
+}
+
+/** The key a profile entry is listed by: a file's full file name, which
+ *  no two files share, else the entry's name. */
+export function profileEntryKey(entry: ProfileEntry): string {
+  return entry.ref.kind === "file" ? entry.ref.filename : entry.name;
 }
 
 function buildEntries(
@@ -96,9 +117,9 @@ function buildEntries(
 ): ProfileEntry[] {
   if (profilesDir) {
     return files.map((f) => ({
-      name: fileProfileName(f.filename),
+      name: fileProfileLabel(f.file, files),
       hostname: f.hostname,
-      ref: { kind: "file", filename: f.filename },
+      ref: { kind: "file", filename: f.file },
     }));
   }
   return inline.map((p, index) => ({

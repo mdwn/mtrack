@@ -21,6 +21,7 @@ import type {
   MvrInspection,
   PlaylistDetail,
   PlaylistInfo,
+  ProfileFileInfo,
   Profile,
   FixtureMetadata,
   Readiness,
@@ -308,7 +309,8 @@ export const MIDI_DEVICES: MidiDeviceInfo[] = [
 
 export const PROFILE_FILES = [
   {
-    filename: "test-host.yaml",
+    file: "test-host.yaml",
+    filename: "test-host",
     hostname: "test-host",
     has_audio: true,
     has_midi: false,
@@ -316,7 +318,7 @@ export const PROFILE_FILES = [
     has_trigger: false,
     has_controllers: true,
   },
-];
+] satisfies ProfileFileInfo[];
 
 export const PROFILE_FILE_DETAIL = {
   profile: {
