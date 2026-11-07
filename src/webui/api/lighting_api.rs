@@ -6258,6 +6258,36 @@ show "test" {
         assert!(parsed.get("twins_not_retired").is_none(), "{parsed}");
     }
 
+    /// Replacing a candidate off the stem when the stem file holds another
+    /// venue (Arena) writes the venue past it, to `club_2.light`, and leaves
+    /// Arena's file as it was.
+    #[tokio::test]
+    async fn replacing_a_candidate_off_the_stem_names_past_a_taken_stem() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_ideas_taken");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("club.light"), sample_venue_dsl("Arena")).unwrap();
+        std::fs::write(dir.join("ideas.light"), "// ideas for \"Club\"\n").unwrap();
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/venues/Club?dir=v_ideas_taken&replace_broken=ideas.light".to_string(),
+            "text/plain",
+            Body::from(sample_venue_dsl("Club")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club_2.light")).unwrap(),
+            sample_venue_dsl("Club")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.light")).unwrap(),
+            sample_venue_dsl("Arena")
+        );
+        assert!(!dir.join("ideas.light").exists());
+    }
+
     /// A raw-text save that would retire a `.light` twin holding another
     /// venue too is refused, as a fixture type's is: Arena is not lost.
     #[tokio::test]
