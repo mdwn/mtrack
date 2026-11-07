@@ -156,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NFC-normalised and lowercased one character at a time, so "Café Par" typed on a Mac
   (decomposed, `e` and a combining accent) and elsewhere give one stem, `café_par`, and "ΟΔΟΣ"
   gives `οδοσ`; letters, digits and `-` kept, with any combining mark on a kept letter
-  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept); any other run
+  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept), and a mark after
+  a separator a separator, even one that is also a letter ("a \u{93F}b" gives `a_b`); any other run
   of characters one `_`; no `_` at either end; at most 247 bytes, cut before a letter and its
   marks rather than through them (a 300-letter name gives a 247-letter stem); `untitled` when
   nothing is left. It replaces the web UI's rule and the importers' rule, which differed. Files already there load and are found by what they declare, as before; only the

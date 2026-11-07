@@ -103,7 +103,15 @@ pub fn stem(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut after_kept = false;
     for c in fold(name).chars() {
-        if c.is_alphanumeric() || c == '-' || (after_kept && is_combining_mark(c)) {
+        // A mark is asked about first: some (the vowel sign "ि") are also
+        // alphanumeric, and one after a separator is still not a
+        // character of the name.
+        let kept = if is_combining_mark(c) {
+            after_kept
+        } else {
+            c.is_alphanumeric() || c == '-'
+        };
+        if kept {
             out.push(c);
             after_kept = true;
         } else {
@@ -582,6 +590,17 @@ mod tests {
         assert_eq!(stem("Spın\u{308}al Tap"), "spın\u{308}al_tap");
         // A mark after a separator is not a character of the name.
         assert_eq!(stem("a \u{308}b"), "a_b");
+    }
+
+    #[test]
+    fn stem_parts_an_alphanumeric_mark_from_a_separator() {
+        // The vowel sign U+093F is a combining mark that is also
+        // alphanumeric: after a separator it is a separator all the same.
+        assert!('\u{93F}'.is_alphanumeric());
+        assert_eq!(stem("a \u{93F}b"), "a_b");
+        assert_eq!(stem("\u{93F}a"), "a");
+        // After a kept letter it stays with it.
+        assert_eq!(stem("\u{939}\u{93F}"), "\u{939}\u{93F}");
     }
 
     #[test]
