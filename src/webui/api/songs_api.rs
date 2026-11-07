@@ -275,7 +275,7 @@ pub(super) async fn import_file_to_song(
         return e;
     }
 
-    if let Err(e) = ensure_song_config(&song_dir) {
+    if let Err(e) = ensure_song_config(&state.player, &state.songs_path(), &song_dir) {
         return *e;
     }
 
@@ -684,7 +684,7 @@ pub(super) async fn upload_track_single(
     let data = body.to_vec();
     super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
-    ensure_song_config(&song_dir).map_err(|e| *e)?;
+    ensure_song_config(&state.player, &state.songs_path(), &song_dir).map_err(|e| *e)?;
     super::helpers::reload_songs(&state).await?;
 
     Ok::<_, axum::response::Response>((
@@ -755,7 +755,7 @@ pub(super) async fn upload_tracks_multipart(
             .into_response());
     }
 
-    ensure_song_config(&song_dir).map_err(|e| *e)?;
+    ensure_song_config(&state.player, &state.songs_path(), &song_dir).map_err(|e| *e)?;
     super::helpers::reload_songs(&state).await?;
 
     Ok((
@@ -929,35 +929,38 @@ fn remove_song_from_playlists(
 }
 
 /// Generates a song config for a song directory if it has none yet
-/// ([`songs::song_config_to_write`]). One already there (`song.yaml`,
-/// `song.yml`, or one of another kind) is left untouched so that manual edits (track names, lighting config,
-/// etc.) are preserved.
+/// ([`songs::song_config_to_write`]), named by the one rule for a new
+/// song's name ([`songs::new_song`], as the bulk import names them): its
+/// folder's, unless a song loaded, failed or configured under the songs
+/// root has it (#674). One already there (`song.yaml`, `song.yml`, or one
+/// of another kind) is left untouched so that manual edits (track names,
+/// lighting config, etc.) are preserved.
 pub(super) fn ensure_song_config(
+    player: &crate::player::Player,
+    songs_path: &std::path::Path,
     song_dir: &std::path::Path,
 ) -> Result<(), Box<axum::response::Response>> {
-    let Some(config_path) = songs::song_config_to_write(song_dir) else {
-        return Ok(());
+    let failed = |what: &str, e: &dyn std::fmt::Display| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to {what}: {e}")})),
+            )
+                .into_response(),
+        )
     };
-
-    let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to initialize song: {}", e)})),
-            )
-                .into_response(),
-        )
-    })?;
-
-    song.get_config().save(&config_path).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to save song config: {}", e)})),
-            )
-                .into_response(),
-        )
-    })
+    let taken = super::helpers::player_song_names(player);
+    // Both as the file system has them, for the folder's path below the
+    // root, which a contested name is given.
+    let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let song = songs::new_song(&canonical(songs_path), &canonical(song_dir), taken)
+        .map_err(|e| failed("read the songs folder", &e))?;
+    match song {
+        Some(song) => song
+            .write()
+            .map_err(|e| failed("write the song config", &e)),
+        None => Ok(()),
+    }
 }
 
 /// Whether song `name` has a file `filename` already, for
@@ -1551,6 +1554,32 @@ mod test {
 
         assert!(state.songs_path().join("NewSong/track1.wav").exists());
         assert!(state.songs_path().join("NewSong/song.yaml").exists());
+    }
+
+    /// #674: an upload's new song is named by the bulk import's rule: its
+    /// folder's name, unless a song configured under the songs root has it
+    /// (here one written since the last reload), then the first free suffix.
+    #[tokio::test]
+    async fn an_uploads_new_song_is_not_named_as_a_song_already_configured() {
+        let (state, _dir) = test_state();
+        let other = state.songs_path().join("Other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("song.yaml"), "name: Fresh\ntracks: []\n").unwrap();
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Fresh/tracks/track1.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let config =
+            crate::config::Song::deserialize(&state.songs_path().join("Fresh/song.yaml")).unwrap();
+        assert_eq!(config.name(), "Fresh (2)");
     }
 
     /// An extension in capitals is the same audio type: `Bass.WAV` is taken

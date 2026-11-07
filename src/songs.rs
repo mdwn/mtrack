@@ -2226,8 +2226,9 @@ impl NewSong {
 /// (`SongA/stems`), and if that is taken too, the first free ` (2)`,
 /// ` (3)`, …, past the names the other new songs keep. So no two songs are
 /// given one name. The one naming rule of
-/// `songs --init` and the bulk import. An unreadable `root` is an error.
-pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<SongDirs> {
+/// `songs --init`, the bulk import and a track upload's new song
+/// ([`new_song`]). An unreadable `root` is an error.
+pub fn new_songs(root: &Path, taken: HashSet<String>) -> std::io::Result<SongDirs> {
     let mut found = SongDirs::default();
     let mut new = Vec::new();
     for dir in song_dirs(root)? {
@@ -2236,6 +2237,33 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
             None => found.kept.push(dir),
         }
     }
+    found.new = name_new_songs(root, new, taken)?;
+    Ok(found)
+}
+
+/// The song folder `dir` under `root`, to give a new config, named by the
+/// rule of [`new_songs`] as the one new song found: its own name, unless a
+/// song configured under `root` or one in `taken` has it. `None` when it
+/// has a config to keep ([`song_config_to_write`]). What a track upload to
+/// a new song writes (#674).
+pub fn new_song(
+    root: &Path,
+    dir: &Path,
+    taken: HashSet<String>,
+) -> std::io::Result<Option<NewSong>> {
+    let Some(config_path) = song_config_to_write(dir) else {
+        return Ok(None);
+    };
+    Ok(name_new_songs(root, vec![(dir.to_path_buf(), config_path)], taken)?.pop())
+}
+
+/// The naming rule of [`new_songs`], for the new song folders `new` (each
+/// with the file its config goes to) under `root`.
+fn name_new_songs(
+    root: &Path,
+    new: Vec<(PathBuf, PathBuf)>,
+    mut taken: HashSet<String>,
+) -> std::io::Result<Vec<NewSong>> {
     let own_name = |dir: &Path| filename_display(dir).to_string();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for (dir, _) in &new {
@@ -2250,6 +2278,7 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
         .filter(|own| counts[own] == 1 && !taken.contains(own))
         .collect();
     taken.extend(uncontested.iter().cloned());
+    let mut named = Vec::new();
     for (dir, config_path) in new {
         let own = own_name(&dir);
         let name = if !uncontested.contains(&own) {
@@ -2268,13 +2297,13 @@ pub fn new_songs(root: &Path, mut taken: HashSet<String>) -> std::io::Result<Son
             own
         };
         taken.insert(name.clone());
-        found.new.push(NewSong {
+        named.push(NewSong {
             dir,
             name,
             config_path,
         });
     }
-    Ok(found)
+    Ok(named)
 }
 
 /// What a walk of the songs tree does with a folder below its root that it

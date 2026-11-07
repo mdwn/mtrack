@@ -297,13 +297,7 @@ pub(super) async fn bulk_import(
     // verified via starts_with(root_canonical) above, preventing traversal.
     // The songs the player has loaded, or failed to, under the songs root:
     // no new song is named as one of them.
-    let registry = state.player.songs();
-    let taken = registry
-        .list()
-        .iter()
-        .map(|song| song.name().to_string())
-        .chain(registry.failures().iter().map(|f| f.name().to_string()))
-        .collect();
+    let taken = super::helpers::player_song_names(&state.player);
     let songs_root = state.songs_path();
     let scan =
         tokio::task::spawn_blocking(move || import_song_dirs(&dir_canonical, &songs_root, taken))

@@ -745,6 +745,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A track upload's new song is named past the names already taken** (#674): the config a track
+  upload writes for a new song named it after its folder, with no check against the songs already
+  loaded or configured, so it could duplicate one and the loader dropped one with a warning:
+  `PUT /api/songs/Fresh/tracks/kick.wav` with `Other/song.yaml` declaring `name: Fresh` wrote a
+  second `Fresh`. It now takes the bulk import's naming rule (`songs::new_song`, the one rule of
+  `songs --init` and the bulk import): its folder's name, else its path below the songs folder,
+  else the first free ` (2)`, ` (3)`, …; here `Fresh (2)`.
+
 - **The web UI's lighting endpoints default to this host's lighting directories** (#673): an
   endpoint given no directory (`?dir=`, `venues_dir`, `fixture_types_dir`) used the default ones,
   `lighting/fixture_types` and `lighting/venues`, even where this host's profile sets others

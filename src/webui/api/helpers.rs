@@ -239,6 +239,20 @@ where
     }
 }
 
+/// The names of the songs the player has loaded, or failed to: no new song
+/// is given one of them (the bulk import, a track upload's new song).
+pub(crate) fn player_song_names(
+    player: &crate::player::Player,
+) -> std::collections::HashSet<String> {
+    let registry = player.songs();
+    registry
+        .list()
+        .iter()
+        .map(|song| song.name().to_string())
+        .chain(registry.failures().iter().map(|f| f.name().to_string()))
+        .collect()
+}
+
 /// Reloads the player's songs and playlists after a change on disk. A
 /// reload that fails leaves the player with the songs it had, so the change
 /// is answered with a 500 saying so, rather than as made.
