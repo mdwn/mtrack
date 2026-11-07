@@ -383,7 +383,7 @@
   $effect(() => {
     if (loading || !routePlaylist || selected === routePlaylist) return;
     const match = playlists.find((p) => p.name === routePlaylist);
-    if (match && match.name !== "all_songs") {
+    if (match && !match.reserved) {
       applySelection(match.name);
     }
   });
@@ -444,7 +444,7 @@
       <p class="muted">{$t("playlists.noPlaylists")}</p>
     {:else}
       <ul class="playlist-list">
-        {#each playlists.filter((p) => p.name !== "all_songs") as pl (pl.name)}
+        {#each playlists.filter((p) => !p.reserved) as pl (pl.name)}
           <li class:selected={selected === pl.name}>
             <button
               class="playlist-item"

@@ -142,9 +142,9 @@ export const SONGS: SongList = {
 };
 
 export const PLAYLISTS: PlaylistInfo[] = [
-  { name: "all_songs", song_count: 2, is_active: false },
-  { name: "setlist", song_count: 1, is_active: true },
-  { name: "rehearsal", song_count: 2, is_active: false },
+  { name: "all_songs", song_count: 2, is_active: false, reserved: true },
+  { name: "setlist", song_count: 1, is_active: true, reserved: false },
+  { name: "rehearsal", song_count: 2, is_active: false, reserved: false },
 ];
 
 const SONG_TRACKS: Record<string, string[]> = {

@@ -72,6 +72,7 @@ pub(super) async fn get_playlists(State(state): State<WebUiState>) -> impl IntoR
                 name: name.clone(),
                 song_count,
                 is_active: name == &active,
+                reserved: crate::playlist::is_reserved_name(name),
             }
         })
         .collect();
@@ -358,7 +359,13 @@ mod test {
         assert!(parsed.is_array());
         let arr = parsed.as_array().unwrap();
         // Should contain at least the playlist we created.
-        assert!(arr.iter().any(|v| v["name"] == "mylist"));
+        assert!(arr
+            .iter()
+            .any(|v| v["name"] == "mylist" && v["reserved"] == false));
+        // The player's own playlist says it is: the web UI hides it by that.
+        assert!(arr
+            .iter()
+            .any(|v| v["name"] == "all_songs" && v["reserved"] == true));
     }
 
     #[tokio::test]
