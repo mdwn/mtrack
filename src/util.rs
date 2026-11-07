@@ -508,6 +508,16 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
         Ok(destination)
     };
 
+    // Whether this write gives the destination its name: always a new
+    // file's; a create-or-replace's only when nothing had the name before
+    // the claim. Only then is the directory synced after the rewrite.
+    let names_it = match mode {
+        WriteMode::CreateNew => true,
+        WriteMode::CreateOrReplace => {
+            std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }
+        WriteMode::ReplaceExisting => false,
+    };
     // Until the truncation the destination is as it was, so a failure up to
     // then takes the sidecar with it: left, it would claim a write that never
     // touched the destination may not have completed (#578).
@@ -534,8 +544,9 @@ fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), Writ
     // A destination this write made has a name only once its directory is
     // synced: until then a crash may keep the staged copy's removal below
     // and lose the new name, and the content with it. Best effort, as the
-    // destination itself is written: a failure keeps the staged copy.
-    if sync_parent_dir(path).is_err() {
+    // destination itself is written: a failure keeps the staged copy. A
+    // destination already named needs no sync: its rewrite is in place.
+    if names_it && sync_parent_dir(path).is_err() {
         return Ok(());
     }
 
@@ -580,11 +591,16 @@ fn remove_with_staged(path: &Path) -> std::io::Result<()> {
 
 /// Syncs the directory `path` is in, so a name made or removed there
 /// survives a crash: a file's own sync covers its content, not its name.
+/// Unix only: elsewhere a directory cannot be opened to sync, and this
+/// does nothing.
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
-    match parent_of(path) {
-        Some(parent) => std::fs::File::open(parent)?.sync_all(),
-        None => Ok(()),
+    #[cfg(unix)]
+    if let Some(parent) = parent_of(path) {
+        std::fs::File::open(parent)?.sync_all()?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// What [`restore_file`] did.

@@ -812,8 +812,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     needs neither. If even that fails, the answer now says the next save writes over the staged
     copy, so copy it somewhere else first.
   - The directory is now synced after the original is kept and after the staged copy is removed,
-    and after every save before its staged copy goes, so a crash cannot keep the removal and lose
-    the new name.
+    and after a save that makes its file, before its staged copy goes, so a crash cannot keep the
+    removal and lose the new name. A save over a file already there is rewritten in place and
+    needs no directory sync.
   - A GDTF import whose library copy fails part way, and whose cleanup of the partial copy fails
     too, now says so: `...; lighting/library/<file> is left, perhaps partly written, as removing
     it failed too: remove it by hand`.
