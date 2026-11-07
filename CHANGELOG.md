@@ -152,6 +152,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One walk finds the song folders for `songs --init` and the bulk import**
+  (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (not
+  a hidden one, which a new config leaves out) or a song config, found at any depth below
+  directories that hold none, and not looked into. Hidden directories are passed over, and the
+  folder walked is never a song itself. `songs --init` and the web UI's bulk import (`POST
+  /api/browse/bulk-import`) both take it, and both leave a folder that has a song config (or a
+  `song.yaml` of another kind) as it is. The player's song loader is unchanged. What changes:
+  - `mtrack songs --init .` in a project no longer writes a `song.yaml` into `.git/`,
+    `lighting/`, `playlists/`, `profiles/` or any other folder with no audio, MIDI or song config;
+    it wrote one into each folder directly under the path.
+  - `songs --init` finds nested songs: `songs --init /mnt/library` writes
+    `artist/album/Song/song.yaml`, where it wrote an empty `artist/song.yaml`.
+  - `songs --init` leaves a folder that has a song config as it is: `songs/Foo/song.yaml`
+    (hand-edited), `Foo/song.yml` or `Foo/album.yaml` is no longer overwritten, nor a `song.yaml`
+    written beside it, by `songs --init songs`.
+  - The bulk import takes a MIDI-only folder (`Backing/notes.mid`) as a song; it needed audio.
+    It no longer imports a folder whose only audio is hidden (`._Bass.wav`) as a song with no
+    tracks.
+  - The bulk import skips a folder with a `song.yml` or `album.yaml` song config (`Ballad/song.yml`
+    beside `Ballad/Bass.wav`), and does not look below one; it wrote a second config, `song.yaml`,
+    beside it. A folder holding only a `song.yaml` of another kind (`kind: playlist`) and no
+    audio or MIDI is now looked into rather than reported skipped.
+  - A subdirectory that cannot be read is passed over with a warning by both; the bulk import
+    passed over it silently, and `songs --init` failed. A directory to import from that cannot
+    be read is now an error (`500`, "Failed to read directory") from the bulk import; it answered
+    with nothing imported.
+
 - **The auto play gap is shown as the player writes it**: the playlist entry's summary and the
   dashboard's next-up line show the gap unrounded, both by the same rule, as a fade's length is
   shown (`auto_play: 1234ms` reads `1.234s gap`, where it read `1.2s gap`; `auto_play: 1.0005s`
