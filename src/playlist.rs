@@ -20,6 +20,7 @@ use crate::config;
 use crate::songs::{Song, Songs};
 use core::fmt;
 use parking_lot::RwLock;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -550,6 +551,22 @@ pub fn is_reserved_name(name: &str) -> bool {
     name == ALL_SONGS
 }
 
+/// The name asked for is the player's own playlist ([`is_reserved_name`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("'{0}' is the player's own playlist and has no file")]
+pub struct ReservedName(pub String);
+
+/// The file in `dir` that holds the playlist `name` (`util::yaml_file_at`:
+/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`): the loader
+/// reads it, and every write and delete goes to it. The reserved name has
+/// no file. `name` is not checked for path safety here.
+pub fn playlist_file(dir: &Path, name: &str) -> Result<PathBuf, ReservedName> {
+    if is_reserved_name(name) {
+        return Err(ReservedName(name.to_string()));
+    }
+    Ok(crate::util::yaml_file_at(dir, name))
+}
+
 /// Creates an alphabetized playlist from all available songs.
 pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
@@ -574,6 +591,29 @@ mod test {
 
     fn test_registry() -> Arc<Songs> {
         songs::get_all_songs(Path::new("assets/songs")).expect("Parse songs should have succeeded.")
+    }
+
+    /// A playlist's file is the name's YAML file; `all_songs` has none.
+    #[test]
+    fn playlist_file_is_the_names_yaml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(
+            super::playlist_file(dir, "set").unwrap(),
+            dir.join("set.yaml")
+        );
+        std::fs::write(dir.join("set.yml"), "songs: []\n").unwrap();
+        assert_eq!(
+            super::playlist_file(dir, "set").unwrap(),
+            dir.join("set.yml")
+        );
+        std::fs::write(dir.join("all_songs.yaml"), "songs: []\n").unwrap();
+        assert_eq!(
+            super::playlist_file(dir, super::ALL_SONGS),
+            Err(super::ReservedName("all_songs".to_string()))
+        );
+        assert!(super::is_reserved_name("all_songs"));
+        assert!(!super::is_reserved_name("All_Songs"));
     }
 
     fn two_song_playlist(registry: Arc<Songs>) -> Arc<super::Playlist> {

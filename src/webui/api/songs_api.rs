@@ -885,19 +885,11 @@ fn remove_song_from_playlists(
 ) {
     let mut files_to_check: Vec<std::path::PathBuf> = Vec::new();
 
+    // Each playlist's file, as the loader reads it (`util::yaml_files_in`).
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file()
-                        && path
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                    {
-                        files_to_check.push(path);
-                    }
-                }
+            if let Ok(files) = crate::util::yaml_files_in(dir) {
+                files_to_check.extend(files);
             }
         }
     }
@@ -1010,6 +1002,27 @@ mod test {
     use axum::body::Body;
     use axum::http::StatusCode;
     use tower::ServiceExt;
+
+    /// A deleted song comes off each playlist's file as the loader reads
+    /// it: a `.yml` alone is edited, and with both `.yaml` and `.yml` only
+    /// the `.yaml`. `loud.YAML` is no playlist and is left alone.
+    #[test]
+    fn remove_song_from_playlists_edits_each_names_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let both = "songs:\n- Gone\n- Kept\n";
+        for file in ["old.yml", "set.yaml", "set.yml", "loud.YAML"] {
+            std::fs::write(dir.join(file), both).unwrap();
+        }
+        super::remove_song_from_playlists("Gone", Some(dir), None);
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+        for file in ["old.yml", "set.yaml"] {
+            assert!(!read(file).contains("Gone"), "{file}: {}", read(file));
+            assert!(read(file).contains("Kept"), "{file}: {}", read(file));
+        }
+        assert_eq!(read("set.yml"), both);
+        assert_eq!(read("loud.YAML"), both);
+    }
 
     #[tokio::test]
     async fn get_songs_empty_registry() {

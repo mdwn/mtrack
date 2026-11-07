@@ -1516,19 +1516,9 @@ pub fn load_playlists(
     // Load playlists from directory.
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().is_file()
-                        && e.path()
-                            .extension()
-                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in entries {
-                let path = entry.path();
+            // Each name's file (`util::yaml_files_in`): with both
+            // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
+            for path in crate::util::yaml_files_in(dir)? {
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -4294,6 +4284,31 @@ mod test {
         assert!(playlists.contains_key("my_set"));
         assert_eq!(playlists["my_set"].songs().len(), 2);
 
+        Ok(())
+    }
+
+    /// With both `set.yaml` and `set.yml`, the loader takes `set.yaml` (it
+    /// took `set.yml`, the later file name, before); `all_songs.yaml` and
+    /// `loud.YAML` are not playlists.
+    #[test]
+    fn load_playlists_takes_a_names_yaml_over_its_yml() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let temp_dir = tempfile::tempdir()?;
+        let pl_dir = temp_dir.path();
+        fs::write(pl_dir.join("set.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("set.yml"), "songs:\n- Song 1\n- Song 3\n")?;
+        fs::write(pl_dir.join("old.yml"), "songs:\n- Song 3\n")?;
+        fs::write(pl_dir.join("all_songs.yaml"), "songs:\n- Song 1\n")?;
+        fs::write(pl_dir.join("loud.YAML"), "songs:\n- Song 1\n")?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs.clone())?;
+        assert_eq!(playlists["set"].songs(), &vec!["Song 1".to_string()]);
+        assert_eq!(playlists["old"].songs(), &vec!["Song 3".to_string()]);
+        assert_eq!(
+            playlists[playlist::ALL_SONGS].songs().len(),
+            songs.sorted_list().len()
+        );
+        assert!(!playlists.contains_key("loud"));
+        assert_eq!(playlists.len(), 3);
         Ok(())
     }
 

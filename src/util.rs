@@ -82,6 +82,72 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
+/// The files that may hold the YAML config at `base` (`<dir>/<name>`, no
+/// extension): `<base>.yaml`, then `<base>.yml` (`songs::YAML_EXTENSIONS`,
+/// lowercase as written), those that are there.
+fn yaml_files_of(base: &Path) -> Vec<PathBuf> {
+    crate::songs::YAML_EXTENSIONS
+        .iter()
+        .map(|ext| {
+            let mut file = base.as_os_str().to_owned();
+            file.push(".");
+            file.push(ext);
+            PathBuf::from(file)
+        })
+        .filter(|file| file.is_file())
+        .collect()
+}
+
+/// Warns that every file of `files` past the first, the one taken, is not
+/// read.
+fn warn_unread_yaml(files: &[PathBuf]) {
+    if let [file, others @ ..] = files {
+        for other in others {
+            tracing::warn!(
+                "{} and {} hold the same name; {} is read, {} is not",
+                file.display(),
+                other.display(),
+                filename_display(file),
+                filename_display(other)
+            );
+        }
+    }
+}
+
+/// The YAML file in `dir` that holds `name` (a playlist, a profile):
+/// `<name>.yaml`, else `<name>.yml`, else a new `<name>.yaml`. With both
+/// there, `.yaml` is taken and a warning names the other. Every read, write
+/// and delete of the name goes to it, so a `.yml` is saved into itself.
+/// `name` is not checked for path safety here.
+pub fn yaml_file_at(dir: &Path, name: &str) -> PathBuf {
+    let files = yaml_files_of(&dir.join(name));
+    warn_unread_yaml(&files);
+    files
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| dir.join(format!("{name}.{}", crate::songs::YAML_EXTENSIONS[0])))
+}
+
+/// The YAML config files in `dir`, one for each name: the one
+/// [`yaml_file_at`] takes for it (with a warning for a name with both),
+/// sorted by file name. Names stay lowercase (`songs::is_yaml_config`).
+pub fn yaml_files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if !path.is_file() || !crate::songs::is_yaml_config(&path) {
+            continue;
+        }
+        let files = yaml_files_of(&path.with_extension(""));
+        if files.first() == Some(&path) {
+            warn_unread_yaml(&files);
+            found.push(path);
+        }
+    }
+    found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(found)
+}
+
 /// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
 /// emission.
 pub fn to_yaml_string<T: Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
@@ -1249,6 +1315,34 @@ mod ownership_test {
 
 #[cfg(test)]
 mod test {
+
+    /// A name's file is `<name>.yaml`, else `<name>.yml`, else a new
+    /// `<name>.yaml`; the listing has each name once, by that file, and
+    /// leaves out a capital extension.
+    #[test]
+    fn a_names_yaml_file_is_its_yaml_else_its_yml() {
+        use super::{yaml_file_at, yaml_files_in};
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
+        assert!(yaml_files_in(dir).unwrap().is_empty());
+
+        std::fs::write(dir.join("set.yml"), "").unwrap();
+        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yml"));
+        assert_eq!(yaml_files_in(dir).unwrap(), vec![dir.join("set.yml")]);
+
+        std::fs::write(dir.join("set.yaml"), "").unwrap();
+        std::fs::write(dir.join("a.b.yml"), "").unwrap();
+        std::fs::write(dir.join("loud.YAML"), "").unwrap();
+        std::fs::create_dir(dir.join("folder.yaml")).unwrap();
+        assert_eq!(yaml_file_at(dir, "set"), dir.join("set.yaml"));
+        assert_eq!(yaml_file_at(dir, "a.b"), dir.join("a.b.yml"));
+        assert_eq!(yaml_file_at(dir, "folder"), dir.join("folder.yaml"));
+        assert_eq!(
+            yaml_files_in(dir).unwrap(),
+            vec![dir.join("a.b.yml"), dir.join("set.yaml")]
+        );
+    }
 
     #[test]
     fn duration_from_secs_turns_down_what_no_duration_holds() {
