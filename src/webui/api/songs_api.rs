@@ -530,8 +530,8 @@ pub(super) async fn get_song_files(
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            // Skip song config files
-            if filename == "song.yaml" || filename == "song.yml" {
+            // Skip the song's config file
+            if songs::is_song_config_name(&path) {
                 continue;
             }
             files.push(SongFile {
@@ -560,8 +560,8 @@ pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 
 /// POST /api/songs/:name — creates a new song with the given config YAML.
 ///
-/// Creates the song directory and writes song.yaml. Returns 409 Conflict if the
-/// song directory already exists.
+/// Creates the song directory and writes its song config. Returns 409
+/// Conflict if the directory already has one ([`songs::has_song_config`]).
 pub(super) async fn post_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -589,8 +589,8 @@ pub(super) async fn post_song(
         Err(e) => return e.into_response(),
     };
 
-    let config_path = song_dir.join_filename("song.yaml");
-    if config_path.exists() {
+    let config_path = songs::song_config_file(song_dir.as_path());
+    if songs::has_song_config(song_dir.as_path()) {
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),
@@ -806,7 +806,8 @@ fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Respon
 /// direct path join. Returns an error response if the song isn't found.
 /// The YAML file a song is read from and written to: the one it was loaded
 /// from ([`songs::Song::config_path_or_default`], a failed load's likewise),
-/// or `song.yaml` in its folder for one the registry has not seen; within
+/// or its folder's [`songs::song_config_file`] for one the registry has not
+/// seen; within
 /// the verified song folder, which is within the songs root.
 fn song_config_path(
     player: &crate::player::Player,
@@ -818,7 +819,7 @@ fn song_config_path(
         .songs()
         .config_path(name)
         .filter(|path| path.starts_with(song_dir.as_path()))
-        .unwrap_or_else(|| song_dir.join_filename("song.yaml")))
+        .unwrap_or_else(|| songs::song_config_file(song_dir.as_path())))
 }
 
 pub(super) fn resolve_song_dir(
@@ -921,16 +922,17 @@ fn remove_song_from_playlists(
     }
 }
 
-/// Generates song.yaml for a song directory if one doesn't already exist.
-/// If song.yaml already exists, it is left untouched so that manual edits
-/// (track names, lighting config, etc.) are preserved.
+/// Generates a song config for a song directory if it has none yet
+/// ([`songs::has_song_config`]). One already there (`song.yaml`, `song.yml`)
+/// is left untouched so that manual edits (track names, lighting config,
+/// etc.) are preserved.
 pub(super) fn ensure_song_config(
     song_dir: &std::path::Path,
 ) -> Result<(), Box<axum::response::Response>> {
-    let config_path = song_dir.join("song.yaml");
-    if config_path.exists() {
+    if songs::has_song_config(song_dir) {
         return Ok(());
     }
+    let config_path = songs::song_config_file(song_dir);
 
     let song = songs::Song::initialize(&song_dir.to_path_buf()).map_err(|e| {
         Box::new(
@@ -1810,6 +1812,93 @@ mod test {
         assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
+    /// A folder whose config is `song.yml` already has one: a create is
+    /// refused, and no `song.yaml` is written beside it.
+    #[tokio::test]
+    async fn post_song_conflict_if_song_yml_exists() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Existing");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: Existing\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/Existing")
+                    .body(Body::from("name: Existing\ntracks: []\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!song_dir.join("song.yaml").exists());
+    }
+
+    /// A track uploaded to a song whose config is `song.yml` leaves that
+    /// config alone and writes no second `song.yaml` (`ensure_song_config`).
+    #[tokio::test]
+    async fn upload_track_to_a_song_yml_song_writes_no_song_yaml() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("YmlSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        let config = "name: YmlSong\ntracks: []\n";
+        std::fs::write(song_dir.join("song.yml"), config).unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/YmlSong/tracks/guitar.wav")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!song_dir.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config
+        );
+    }
+
+    /// A song folder the registry has not seen (its `song.yml` does not
+    /// read) is saved into that `song.yml`, not a new `song.yaml` beside it.
+    #[tokio::test]
+    async fn put_song_saves_an_unloaded_song_yml_into_itself() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Unloaded");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "{{not yaml").unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let config = "name: Unloaded\ntracks: []\n";
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Unloaded")
+                    .body(Body::from(config))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!song_dir.join("song.yaml").exists());
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("song.yml")).unwrap(),
+            config
+        );
+    }
+
     #[tokio::test]
     async fn post_song_invalid_yaml() {
         let (state, _dir) = test_state();
@@ -2424,6 +2513,40 @@ mod test {
         assert_eq!(find_file("readme.txt")["type"], "other");
         assert_eq!(find_file("Other.MID")["type"], "midi");
         assert_eq!(find_file("Bass.WAV")["type"], "audio");
+    }
+
+    /// The listing hides the song's config by name, `song.yml` as well as
+    /// `song.yaml`.
+    #[tokio::test]
+    async fn get_song_files_hides_a_song_yml_config() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("YmlFiles");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: YmlFiles\ntracks: []\n").unwrap();
+        std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/YmlFiles/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<_> = parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["readme.txt"]);
     }
 
     #[tokio::test]

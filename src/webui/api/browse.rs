@@ -195,11 +195,11 @@ pub(super) async fn create_song_in_directory(
     }
     let dir_canonical = dir_safe.as_path().to_path_buf();
 
-    let config_path = dir_canonical.join("song.yaml");
-    if config_path.exists() {
+    let config_path = songs::song_config_file(&dir_canonical);
+    if songs::has_song_config(&dir_canonical) {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": "song.yaml already exists in this directory"})),
+            Json(json!({"error": "a song config already exists in this directory"})),
         )
             .into_response();
     }
@@ -568,6 +568,32 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// A directory whose config is `song.yml` already has one: create-song
+    /// is refused, and no `song.yaml` is written beside it.
+    #[tokio::test]
+    async fn create_song_in_directory_conflict_with_song_yml() {
+        let (state, dir) = test_state();
+        let song_dir = dir.path().join("songs").join("existing");
+        std::fs::create_dir_all(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: existing\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs/existing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!song_dir.join("song.yaml").exists());
     }
 
     #[tokio::test]
