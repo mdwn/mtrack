@@ -447,6 +447,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     left every profile file unmigrated.
   - The web UI's playlist list (`GET /api/playlists`) gives each playlist `reserved`, true for
     `all_songs`; the playlist editor hides the playlist by it, holding no copy of the name.
+  - A new playlist or profile whose file would differ only in case from one already there is
+    refused, on every filesystem, as a case-insensitive one (macOS) would write into that file,
+    which the player then ignores or reads as another name: `PUT /api/playlists/set` beside
+    `Set.yaml` answers 409 "`Set.yaml` already exists; names differ only in case", and so does
+    MCP `write_playlist` (`name: set`) and `PUT /api/profiles/Stage` beside `stage.yaml`; each
+    created `set.yaml` (`Stage.yaml`) beside it.
+- **Profile files sharing a stem are each shown and edited in the web UI**: with `stage.yaml` and
+  `stage.yml` in `profiles_dir`, the config editor's profile list and the lighting groups page
+  threw (`each_key_duplicate`) and showed nothing, and the `stage.yml` row opened, saved and
+  deleted `stage.yaml`. Each row now names its file (`stage.yaml`, `stage.yml`; a stem no other
+  file shares stays as it was, `pi-a`) and acts on it. `GET /api/profiles` gives each file's full
+  name as `file` beside its stem `filename`, and `/api/profiles/<name>` takes a full file name:
+  `GET /api/profiles/stage.yml` reads `stage.yml` (it read `stage.yml.yaml`, which was not
+  there). A stem still addresses the `.yaml`, else the `.yml`.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need
