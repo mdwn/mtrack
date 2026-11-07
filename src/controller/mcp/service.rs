@@ -2344,7 +2344,8 @@ impl McpServer {
         let store = self.config_store()?;
         let songs_root = self.songs_root_verified().await?;
         let shown = shown_in(songs_root.as_path(), &path);
-        web(lighting_api::check_light_show_delete(
+        // The file to remove: a link itself, not what it leads to.
+        let removed = web(lighting_api::check_light_show_delete(
             store.path(),
             songs_root.as_path(),
             &path,
@@ -2387,11 +2388,11 @@ impl McpServer {
 
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
-        web(lighting_api::remove_light_show(songs_root.as_path(), &path).await).await?;
+        web(lighting_api::remove_light_show(songs_root.as_path(), &removed).await).await?;
         self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
-            "deleted": path.display().to_string(),
+            "deleted": removed.display().to_string(),
             "unregistered": unregistered,
             "reference": reference,
         })))
@@ -4161,7 +4162,8 @@ fn existing_song_lighting_path(
 /// 2. The conventional `<song>/lighting/<file>` subdirectory location.
 /// 3. The song's root directory `<song>/<file>`.
 ///
-/// Returns the first location that exists, or `None` if the file lives
+/// Returns the first location that exists (a link counts, even one leading
+/// nowhere), or `None` if the file lives
 /// nowhere. Used by read/patch (which expect an existing file) and by
 /// write (to preserve an existing layout instead of overwriting it with a
 /// new file in a different place).
@@ -4181,13 +4183,16 @@ pub(crate) fn find_song_lighting_path(
     }
     // (2) The conventional `lighting/` subdirectory (existing draft files
     // an author has written but not yet referenced from song.yaml).
+    // A link there counts, even one leading nowhere, as the web UI's
+    // delete finds it: it can be deleted, and is refused for writing.
+    let there = |path: &std::path::Path| std::fs::symlink_metadata(path).is_ok();
     let lighting_dir = song.base_path().join("lighting").join(file);
-    if lighting_dir.exists() {
+    if there(&lighting_dir) {
         return Some(lighting_dir);
     }
     // (3) Root-level (Esaweg-style flat layout).
     let root_level = song.base_path().join(file);
-    if root_level.exists() {
+    if there(&root_level) {
         return Some(root_level);
     }
     None
@@ -5701,6 +5706,56 @@ profiles:
                 Some(SHOW)
             );
         }
+    }
+
+    /// `write_song_lighting` writes only `.light` files: not through a
+    /// show that is a link to the song's own config.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_lighting_refuses_a_link_to_a_config() {
+        let b = "name: B\ntracks: []\n";
+        let (server, fixture) = server(&[("songs/b/song.yaml", b)]).await;
+        let root = fixture.root.clone();
+        std::fs::create_dir_all(root.join("songs/b/lighting")).unwrap();
+        std::os::unix::fs::symlink("../song.yaml", root.join("songs/b/lighting/show.light"))
+            .unwrap();
+
+        let refused = refusal(
+            server
+                .write_song_lighting(Parameters(write_show_args("B", SHOW)))
+                .await,
+        );
+        assert_eq!(refused, "Can only write .light files");
+        assert_eq!(read(&root, "songs/b/song.yaml").as_deref(), Some(b));
+    }
+
+    /// `delete_song_lighting` removes a link leading into the venues
+    /// directory, or leading nowhere: only the link goes, so where it
+    /// leads does not matter.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_song_lighting_removes_any_link_in_the_songs_root() {
+        let (server, fixture) = light_show_server().await;
+        let root = fixture.root.clone();
+        let lighting = root.join("songs/bar/lighting");
+        std::fs::create_dir_all(&lighting).unwrap();
+        std::os::unix::fs::symlink(root.join("rig/venues/show.light"), lighting.join("v.light"))
+            .unwrap();
+        std::os::unix::fs::symlink("nowhere.light", lighting.join("gone.light")).unwrap();
+
+        for file in ["v.light", "gone.light"] {
+            let _ = answer(
+                server
+                    .delete_song_lighting(Parameters(SongLightingArgs {
+                        song: "Bar".to_string(),
+                        file: file.to_string(),
+                    }))
+                    .await,
+            );
+            assert!(
+                std::fs::symlink_metadata(lighting.join(file)).is_err(),
+                "{file}: link left"
+            );
+        }
+        assert_eq!(read(&root, "rig/venues/show.light").as_deref(), Some(SHOW));
     }
 
     /// `write_song_lighting` does not write through a link leading

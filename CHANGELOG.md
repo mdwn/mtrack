@@ -783,10 +783,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
     the allowed directory`), where they wrote, patched or deleted the file there. So is a show
     that is a link leading nowhere, which a write would have made wherever it pointed, by these
-    tools and `PUT /api/lighting/<path>` alike. A show that is a link is deleted as the link, by
+    tools and `PUT /api/lighting/<path>` alike. Both write only `.light` files, the name written
+    and what a link there leads to: `PUT /api/lighting/b%2Fsong.yaml`, or MCP through
+    `lighting/show.light -> ../song.yaml`, wrote show DSL over the song's config and is now
+    refused (`Can only write .light files`). A show that is a link is deleted as the link, by
     `delete_song_lighting` and `DELETE /api/lighting/<path>` alike: both deleted what it led to
     (another song's show, or with `lighting/show.light -> ../song.yaml`, the song's own config),
-    and checked the `.light` name of the target, not of the link. A show saved through a link has
+    and checked the `.light` name of the target, not of the link. Where the link leads no longer
+    matters to a delete: one leading into the venues directory, or nowhere, is removed (MCP did
+    not find one leading nowhere). A show saved through a link has
     its `include`s checked beside the link, where the song loader reads them, not beside what it
     leads to. The song's
     `lighting:` entry they add or remove is saved as `PUT /api/songs/<name>` saves.
@@ -828,6 +833,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A GDTF import whose library copy fails part way, and whose cleanup of the partial copy fails
     too, now says so: `...; lighting/library/<file> is left, perhaps partly written, as removing
     it failed too: remove it by hand`.
+
+- **A light show's song is found by its resolved folder**: `PUT /api/lighting/<path>` found the
+  show's song, for its tempo, by comparing the resolved show path with the song's folder as
+  spelled. A song whose folder was spelled through a link matched nothing, and a show timed in
+  bars and beats was refused (`Measure-based timing requires a tempo section`). The song loader
+  resolves the folders it loads, so loaded songs were not affected; both sides are now compared
+  resolved.
 
 - **Going from one song's page straight to another's shows the new song** (#632): changing the URL
   from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
