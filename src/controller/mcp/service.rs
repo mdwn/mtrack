@@ -4091,16 +4091,15 @@ fn find_song_lighting_write_path(
     Some(path)
 }
 
-/// Returns true if the song was loaded from `<dir>/song.yaml` (the
-/// directory-layout convention) rather than `<dir>/<name>.yaml` (flat
-/// layout). Used by the lighting writer to decide whether
+/// Returns true if the song was loaded from `<dir>/song.yaml` or
+/// `<dir>/song.yml` (the directory-layout convention,
+/// [`crate::songs::is_song_config_name`]) rather than `<dir>/<name>.yaml`
+/// (flat layout). Used by the lighting writer to decide whether
 /// `song.base_path()` names a per-song directory it can safely create
 /// children under.
 fn is_directory_layout(song: &crate::songs::Song) -> bool {
     song.config_path()
-        .and_then(|p| p.file_name())
-        .map(|n| n == "song.yaml")
-        .unwrap_or(false)
+        .is_some_and(crate::songs::is_song_config_name)
 }
 
 /// Validates that `name` is a single path segment ending in `.light`.
@@ -5017,5 +5016,28 @@ mod bpm_tests {
         // rather than panicking or emitting noise.
         assert!(compute_tempo_segments(&[]).is_empty());
         assert!(compute_tempo_segments(&[0.0, 0.5]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod directory_layout_tests {
+    /// A song loaded from `<dir>/song.yml` is in the directory layout, as
+    /// one from `<dir>/song.yaml` is; one from `<root>/<name>.yaml` is flat.
+    #[test]
+    fn song_yml_is_the_directory_layout() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        for (dir, file) in [("A", "song.yaml"), ("B", "song.yml")] {
+            std::fs::create_dir(root.path().join(dir))?;
+            std::fs::write(
+                root.path().join(dir).join(file),
+                format!("name: {dir}\ntracks: []\n"),
+            )?;
+        }
+        std::fs::write(root.path().join("flat.yaml"), "name: Flat\ntracks: []\n")?;
+        let songs = crate::songs::get_all_songs(root.path())?;
+        assert!(super::is_directory_layout(&*songs.get("A")?));
+        assert!(super::is_directory_layout(&*songs.get("B")?));
+        assert!(!super::is_directory_layout(&*songs.get("Flat")?));
+        Ok(())
     }
 }

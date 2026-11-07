@@ -119,7 +119,7 @@ pub(super) async fn browse_directory(
                     None => continue,
                 };
                 // Skip hidden files
-                if name.starts_with('.') {
+                if songs::is_hidden(&path) {
                     continue;
                 }
                 let is_dir = path.is_dir();
@@ -195,11 +195,11 @@ pub(super) async fn create_song_in_directory(
     }
     let dir_canonical = dir_safe.as_path().to_path_buf();
 
-    let config_path = dir_canonical.join("song.yaml");
-    if config_path.exists() {
+    let config_path = songs::song_config_file(&dir_canonical);
+    if songs::has_song_config(&dir_canonical) {
         return (
             StatusCode::CONFLICT,
-            Json(json!({"error": "song.yaml already exists in this directory"})),
+            Json(json!({"error": "a song config already exists in this directory"})),
         )
             .into_response();
     }
@@ -361,8 +361,7 @@ fn bulk_import_recursive(
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
+            if !songs::is_hidden(&path) {
                 subdirs.push(path);
             }
         } else if FileKind::of(&path) == FileKind::Audio {
@@ -568,6 +567,120 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// A directory whose config is `song.yml` already has one: create-song
+    /// is refused, and no `song.yaml` is written beside it.
+    #[tokio::test]
+    async fn create_song_in_directory_conflict_with_song_yml() {
+        let (state, dir) = test_state();
+        let song_dir = dir.path().join("songs").join("existing");
+        std::fs::create_dir_all(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "name: existing\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs/existing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!song_dir.join("song.yaml").exists());
+    }
+
+    /// Create-song at a songs root holding a flat-layout song
+    /// (`<root>/flat.yaml`) is refused: the root has a song config.
+    #[tokio::test]
+    async fn create_song_in_directory_conflict_with_a_flat_song() {
+        let (state, dir) = test_state();
+        let songs = dir.path().join("songs");
+        std::fs::create_dir_all(&songs).unwrap();
+        std::fs::write(songs.join("flat.yaml"), "name: Flat\ntracks: []\n").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!songs.join("song.yaml").exists());
+    }
+
+    /// The browser leaves hidden entries out: dot-files, AppleDouble files
+    /// and hidden directories.
+    #[tokio::test]
+    async fn browse_directory_hides_hidden_entries() {
+        let (state, dir) = test_state();
+        let subdir = dir.path().join("hiddendir");
+        std::fs::create_dir_all(subdir.join(".git")).unwrap();
+        std::fs::write(subdir.join("track.wav"), create_test_wav()).unwrap();
+        std::fs::write(subdir.join("._track.wav"), "fork").unwrap();
+        std::fs::write(subdir.join(".draft.light"), "draft").unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse?path=/hiddendir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response_body(response).await).unwrap();
+        let names: Vec<_> = parsed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["track.wav"]);
+    }
+
+    /// The bulk import passes over a hidden directory.
+    #[tokio::test]
+    async fn bulk_import_passes_over_hidden_dirs() {
+        let (state, dir) = test_state();
+        let parent = dir.path().join("songs");
+        for song in ["Alpha", ".trash"] {
+            std::fs::create_dir_all(parent.join(song)).unwrap();
+            std::fs::write(parent.join(song).join("track.wav"), create_test_wav()).unwrap();
+        }
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(parent.join("Alpha/song.yaml").exists());
+        assert!(!parent.join(".trash/song.yaml").exists());
     }
 
     #[tokio::test]

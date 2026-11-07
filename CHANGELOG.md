@@ -391,6 +391,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A song folder's config is found by one rule** (`songs::is_song_config_name`,
+  `songs::has_song_config`, `songs::song_config_file`): a song folder's own config is named
+  `song.yaml` or `song.yml`, exactly as written; a folder already has a song config when it holds
+  a file the song loader takes as a song's (`song.yml`, `album.yaml`, the hidden `.song.yaml`),
+  or a `song.yaml`/`song.yml` that does not read; and a song's config is read from and written to
+  its `song.yaml`, else its `song.yml`, else a new `song.yaml`. The song loader, the song files
+  listing, MCP's song lighting tools, a track upload, the web UI's create-song from a folder and
+  `POST /api/songs/<name>` all take it; the loader still loads what it loaded. A `song.yml` that
+  reads as another `kind` (`kind: playlist`) is no song config, as to the loader. What changes:
+  - A track uploaded to a song whose config is `song.yml` (`PUT
+    /api/songs/Ballad/tracks/guitar.wav`, `Ballad/song.yml`) leaves that config as it is; a
+    second config, `song.yaml`, was written beside it, so the folder held two songs' configs.
+    The same holds for a folder whose song config is `album.yaml`, or a `song.yml` that does not
+    read. A track uploaded to a flat-layout song at the songs root (`songs/flat.yaml`, `PUT
+    /api/songs/Flat/tracks/guitar.wav`) no longer writes a stray `songs/song.yaml`.
+  - MCP's song lighting tools take a song loaded from `Ballad/song.yml` as in its own folder:
+    `write_song_lighting` creating a new light show file for it was refused as "in flat layout".
+  - The web UI's create-song from a folder (`POST /api/browse/create-song`, `{"path":
+    "/songs/Ballad"}`) and `POST /api/songs/Ballad` answer 409 for a folder holding `song.yml`
+    (or `album.yaml`, `.song.yaml`); they wrote a `song.yaml` beside it. The create-song error
+    now reads "a song config already exists in this directory" (it said `song.yaml`).
+    Create-song at a songs root that holds flat-layout songs (`{"path": "/songs"}` beside
+    `songs/flat.yaml`) answers 409 too; it wrote a `songs/song.yaml`.
+- **A hidden file is passed over by one rule** (`songs::is_hidden`): a name starting with a dot
+  (`.git`, `.draft.light`), the AppleDouble files macOS writes beside each file (`._Bass.wav`)
+  among them. The songs walk passes over hidden directories and the file browser and bulk import
+  hidden entries, as before; a hidden config is still loaded (`Ballad/.song.yaml`). What changes:
+  - A new song config (`songs --init`, the web UI's create-song from a folder and bulk import,
+    the config a track upload writes) leaves hidden files out. A folder holding `._Bass.wav`
+    beside `Bass.wav` now gets a config with the one track; the init failed, reading the
+    AppleDouble file as audio. A `.click.wav` is no longer taken as a track, nor a `.draft.light`
+    as a light show.
+  - The song files listing (`GET /api/songs/Ballad/files`, the song editor's file list) leaves
+    out hidden files the song's config does not name: `.draft.light` and `._Bass.wav` were
+    listed. One it names (a track's `file: .click.wav`) is still listed.
 - **A trigger hit's velocity is held to 1-127 by one rule, whatever its curve**
   (`config::trigger::TRIGGER_VELOCITY`): the `linear` curve could give 0, which plays nothing (a
   peak of 0.006 over `threshold: 0.005`); it now plays at 1, as the `logarithmic` curve's lowest
