@@ -353,7 +353,7 @@ impl OutputManager {
         if *guard {
             return true;
         }
-        condvar.wait_for(&mut guard, duration);
+        crate::clock::pause(condvar, &mut guard, duration);
         *guard
     }
 }
@@ -505,7 +505,7 @@ mod test {
         /// each fault is triggered once the stream before has been replaced.
         #[test]
         fn a_flapping_stream_is_still_rebuilt_promptly() {
-            let _clock = crate::clock::TestClock::start();
+            let clock = crate::clock::TestClock::start();
             let (factory, handle) = ErrorCapturingFactory::new();
             let mut manager = OutputManager::new(2, 44100).unwrap();
             manager
@@ -518,8 +518,14 @@ mod test {
                 handle.wait_for_builds(1 + fault);
             }
 
-            // One rebuild per fault, none failed and retried after a wait.
+            // One rebuild per fault, none failed and retried after a wait,
+            // and none held back: the output thread asked for no pause.
             assert_eq!(handle.build_count(), 6);
+            assert_eq!(
+                clock.pauses(),
+                Vec::<Duration>::new(),
+                "the rebuild after a flap waited"
+            );
             drop(manager);
         }
 
