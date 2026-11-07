@@ -157,8 +157,11 @@ fn checked_dir(
     requested: Option<&str>,
     which: LightingDir,
 ) -> Result<String, Response> {
-    resolve_lighting_dir(&state.config_path, requested, which)?;
-    lighting_dir(&state.config_path, requested, which)
+    // The config read once: the directory, then proven to stay in the
+    // project as named.
+    let dir = lighting_dir(&state.config_path, requested, which)?;
+    resolve_lighting_dir(&state.config_path, Some(&dir), which)?;
+    Ok(dir)
 }
 
 /// The import options a form asks for, directories checked.

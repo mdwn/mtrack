@@ -356,19 +356,21 @@ async fn refuse_venue_or_type_file(
     let project = crate::util::project_dir_of(&config_path);
     let (path, name) = (path.to_path_buf(), name.to_string());
     let refused = tokio::task::spawn_blocking(move || {
-        // codeql[rust/path-injection] config_path is set at startup, not user input.
-        let dirs = crate::config::Player::lighting_dirs_at(&config_path)
-            .unwrap_or_else(|_| crate::config::lighting::ProjectDirs::of(None));
-        [
-            (Kind::Venue, dirs.venues),
-            (Kind::FixtureType, dirs.fixture_types),
-        ]
-        .into_iter()
-        .find(|(_, dir)| crate::util::is_within_dir(&path, &project.join(dir)))
+        // A config that does not load is a 500, as at every endpoint that
+        // reads these directories: the defaults may not be this host's.
+        let dirs = configured_lighting_dirs(&config_path)?;
+        Ok::<_, String>(
+            [
+                (Kind::Venue, dirs.venues),
+                (Kind::FixtureType, dirs.fixture_types),
+            ]
+            .into_iter()
+            .find(|(_, dir)| crate::util::is_within_dir(&path, &project.join(dir))),
+        )
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(Ok(None))
+    .map_err(|e| lighting_writes::Answer::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     match refused {
         Some((kind, dir)) => Err(lighting_writes::Answer::bad(format!(
             "{name} is in the {noun}s directory ({dir}): a {noun} is saved by name, on the \
@@ -545,6 +547,17 @@ pub(super) enum LightingDir {
     Venues,
 }
 
+/// The lighting directories the engine reads on this host, by the shared
+/// reader; a config that does not load is the error to answer (a 500), the
+/// one rule of the web endpoints for it.
+pub(super) fn configured_lighting_dirs(
+    config_path: &std::path::Path,
+) -> Result<crate::config::lighting::ProjectDirs, String> {
+    // codeql[rust/path-injection] config_path is set at startup, not user input.
+    crate::config::Player::lighting_dirs_at(config_path)
+        .map_err(|e| format!("the config does not load: {e}"))
+}
+
 /// The project-relative directory `which` a request names, else the one
 /// the engine reads on this host. A config that does not load is a 500,
 /// as it is to MCP: the defaults might not be where this host's files are.
@@ -557,13 +570,8 @@ pub(super) fn lighting_dir(
     if let Some(dir) = requested.filter(|d| !d.is_empty()) {
         return Ok(dir.to_string());
     }
-    // codeql[rust/path-injection] config_path is set at startup, not user input.
-    let dirs = crate::config::Player::lighting_dirs_at(config_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("the config does not load: {e}")})),
-        )
-            .into_response()
+    let dirs = configured_lighting_dirs(config_path).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response()
     })?;
     Ok(match which {
         LightingDir::FixtureTypes => dirs.fixture_types,
@@ -3476,6 +3484,17 @@ show "test" {
         assert_eq!(status, StatusCode::OK, "{body}");
         let (status, body) = light_show_call(&app, "PUT", "lighting%2Fvenues%2Fnew.light").await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// A config that does not load is a 500 here as at every endpoint that
+    /// reads the lighting directories, not the defaults, which may not be
+    /// this host's.
+    #[tokio::test]
+    async fn the_light_show_endpoint_answers_a_broken_config_with_a_500() {
+        let (app, _dir) = light_shows_at_the_root("profiles: [\n");
+        let (status, body) = light_show_call(&app, "PUT", "shows%2Fa.light").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.contains("the config does not load"), "{body}");
     }
 
     #[tokio::test]

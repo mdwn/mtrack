@@ -787,7 +787,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directories this host's profile sets, by the same reader as the CLI and MCP: the GDTF import,
   the fixture type and venue endpoints, fixture settings, the fixture test and MVR import and
   export. A directory a request names still wins, and with none configured the defaults are as
-  before. A config that does not load is now a 500 there, as it is to MCP.
+  before. A config that does not load is now a 500 there, as it is to MCP, and at
+  `PUT /api/lighting/<file>`, whose check that a light show is not in the venues or fixture types
+  directory used to take the defaults then.
 
 - **The position reads the start position while a play from part way in starts** (#634): after
   `play_song_from` with `start_time: "95s"` (or any play, seek or resume from a position), the
