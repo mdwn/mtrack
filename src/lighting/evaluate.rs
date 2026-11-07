@@ -356,20 +356,21 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
         .map(|(name, info)| (name.clone(), info.has_dimmer()))
         .collect();
 
-    let mut active_effects: Vec<EvaluatedEffect> = engine
+    let mut active_effects: Vec<(u64, EvaluatedEffect)> = engine
         .get_active_effects()
         .values()
         .map(|effect| {
             let mut fixtures = effect.target_fixtures.clone();
             fixtures.sort();
-            EvaluatedEffect {
+            let evaluated = EvaluatedEffect {
                 id: effect.id.clone(),
                 effect_type: effect.effect_type.name(),
                 layer: effect.layer,
                 elapsed: engine.effect_elapsed(effect),
                 duration: effect.total_duration(),
                 fixtures,
-            }
+            };
+            (effect.start_order, evaluated)
         })
         .collect();
     // Ordered by nothing that depends on the id. Ids come from a
@@ -377,14 +378,20 @@ pub fn snapshot(engine: &EffectEngine, at: Duration) -> Evaluation {
     // `song_effect_10` sorted before `song_effect_9` and the order shifted as
     // the counter advanced -- two evaluations of the same instant in one call
     // could disagree. Elapsed descending puts the earliest-started effect
-    // first; the rest of the key is stable content.
-    active_effects.sort_by(|a, b| {
+    // first; the rest of the key is stable content, then the order the
+    // engine started them in, which is how it stacks them (#669).
+    active_effects.sort_by(|(order_a, a), (order_b, b)| {
         b.elapsed
             .cmp(&a.elapsed)
             .then_with(|| a.layer.cmp(&b.layer))
             .then_with(|| a.effect_type.cmp(b.effect_type))
             .then_with(|| a.fixtures.cmp(&b.fixtures))
+            .then_with(|| order_a.cmp(order_b))
     });
+    let active_effects: Vec<EvaluatedEffect> = active_effects
+        .into_iter()
+        .map(|(_, effect)| effect)
+        .collect();
 
     let registry = engine.get_fixture_registry();
     // What the rig shows: mid-crossfade, the blend going out (#555).

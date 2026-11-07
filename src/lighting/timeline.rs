@@ -24,11 +24,24 @@ use std::time::Duration;
 /// Global atomic counter for generating unique, deterministic effect IDs.
 static EFFECT_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Sets the next effect id's number, so a test can put two cues' ids either
-/// side of a power of ten (#669).
+/// Moves the effect id counter on to `short_by` short of the next power of
+/// ten at least that far above it, and returns that power: a test can put
+/// two cues' ids either side of it (#669). Never back: other tests take ids
+/// from the counter at the same time, and must not be given ones already
+/// out.
 #[cfg(test)]
-pub(crate) fn set_effect_id_counter(next: u64) {
-    EFFECT_ID_COUNTER.store(next, Ordering::Relaxed);
+pub(crate) fn advance_effect_id_counter_short_of_power_of_ten(short_by: u64) -> u64 {
+    let mut boundary = 0;
+    EFFECT_ID_COUNTER
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            boundary = 10;
+            while boundary - short_by < current {
+                boundary = boundary.checked_mul(10)?;
+            }
+            Some(boundary - short_by)
+        })
+        .expect("the effect id counter has passed every power of ten");
+    boundary
 }
 
 /// One thing a cue does, as the engine applies it.
