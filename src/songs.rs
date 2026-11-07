@@ -2044,7 +2044,8 @@ impl Songs {
     /// The light show files the songs' `lighting:` configs name, as the
     /// loader resolves them ([`is_light_show_file`]): a loaded song's, and
     /// a failed song's whose config still reads (one naming a show that is
-    /// not there, so the show can be written again).
+    /// not there, so the show can be written again). A track, MIDI file or
+    /// YAML config a `lighting:` entry names by mistake is not one.
     pub fn light_show_files(&self) -> HashSet<PathBuf> {
         let real = |path: PathBuf| path.canonicalize().unwrap_or(path);
         let loaded = self.list().into_iter().flat_map(|song| {
@@ -2063,7 +2064,17 @@ impl Songs {
                 .map(|show| lighting_show_path(failure.base_path(), show))
                 .collect::<Vec<_>>()
         });
-        loaded.chain(failed).map(real).collect()
+        // A path `lighting:` names that is a track, a MIDI file or a config
+        // is a mistake in the config, not a show: it is not made editable
+        // or deletable as one.
+        let not_a_show = |path: &PathBuf| {
+            matches!(FileKind::of(path), FileKind::Audio | FileKind::Midi) || is_yaml_config(path)
+        };
+        loaded
+            .chain(failed)
+            .filter(|path| !not_a_show(path))
+            .map(real)
+            .collect()
     }
 
     /// Creates a new songs registry.

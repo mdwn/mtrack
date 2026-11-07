@@ -4348,6 +4348,38 @@ show "test" {
         assert!(dir.join("show.dsl").is_file());
     }
 
+    /// A track a song's `lighting:` names by mistake is not a light show:
+    /// neither saved nor deleted as one.
+    #[tokio::test]
+    async fn a_track_a_songs_lighting_names_is_not_a_show() {
+        let (state, _dir) = test_state();
+        let dir = state.songs_path().join("Typo");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::testutil::write_wav(dir.join("bass.wav"), vec![vec![0i32; 4410]], 44100).unwrap();
+        std::fs::write(
+            dir.join("song.yaml"),
+            "name: Typo\ntracks:\n  - name: bass\n    file: bass.wav\nlighting:\n  - file: bass.wav\n",
+        )
+        .unwrap();
+        let _ = state.player.reload_songs().await;
+        assert!(state.player.songs().light_show_files().is_empty());
+        for method in ["PUT", "DELETE"] {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method(method)
+                        .uri("/lighting/Typo%2Fbass.wav")
+                        .body(Body::from("show \"x\" {\n}\n"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method}");
+        }
+        assert!(dir.join("bass.wav").is_file());
+    }
+
     /// A hidden show a song's `lighting:` names (`.draft.light`) is found by
     /// being named: listed, validated, saved and deleted. The hidden rule is
     /// for finding files.
