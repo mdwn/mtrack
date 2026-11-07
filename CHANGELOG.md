@@ -769,7 +769,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     said `Invalid playlist name`), a new name the file system takes
     for an existing file's is refused, and a new playlist's file is made new (``a playlist file
     `x.yaml` already exists`` when one appeared since). Their checks of the songs and
-    transitions are the web UI's.
+    transitions are the web UI's. A save that is refused no longer leaves behind a playlists
+    directory (or the top-level playlist's directory) it made: the directory is made only once
+    the save is checked, by `PUT /api/playlists/<name>` and these tools alike.
   - `write_song_lighting`, `patch_song_lighting` and `delete_song_lighting` refuse a file in this
     host's venues or fixture types directory, as `PUT` and `DELETE /api/lighting/<path>` do
     (`foo/lighting/show.light is in the venues directory (rig/venues): ...`), before anything is

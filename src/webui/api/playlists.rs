@@ -165,12 +165,10 @@ pub(super) async fn put_playlist_by_name(
     Path(name): Path<String>,
     Json(body): Json<PlaylistBody>,
 ) -> impl IntoResponse {
-    validate_playlist_name(&name)?;
     let _writing = PLAYLIST_WRITES.lock().await;
     let playlists_dir =
         require_configured_dir(&state.playlists_dir(), "playlists", StatusCode::NOT_FOUND)?;
-    let file =
-        playlist_file_to_write(&playlists_dir, &super::helpers::project_dir(&state), &name).await?;
+    let file = playlist_file_to_write(&playlists_dir, &name).await?;
     let file_path = file.path().to_path_buf();
 
     // The editor knows only the songs: an existing playlist keeps its
@@ -247,7 +245,7 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
-    write_playlist_file(&file, yaml).await?;
+    write_playlist_file(&file, yaml, &super::helpers::project_dir(&state)).await?;
 
     // Reload songs to pick up the new playlist.
     super::helpers::reload_songs(&state).await?;
@@ -265,23 +263,31 @@ pub(super) async fn put_playlist_by_name(
 /// directory `dir`, by the one rule of the web UI's save and MCP's
 /// `write_playlist` and `patch_playlist`: the name checked
 /// (`validate_playlist_name`; a new one by the rules for new names); the
-/// directory made if missing, only inside `project`; the playlist's file
-/// as the directory lists it (`playlist_path`).
+/// playlist's file as the directory lists it (`playlist_path`), or a new
+/// `<name>.yaml` when the directory is not there yet. Nothing is made:
+/// [`write_playlist_file`] makes the directory, once the save is checked,
+/// so a refused save leaves none behind.
 pub(crate) async fn playlist_file_to_write(
     dir: &std::path::Path,
-    project: &std::path::Path,
     name: &str,
 ) -> Result<crate::util::NamedFile, axum::response::Response> {
     validate_playlist_name(name)?;
-    // Before `resolve_named_file`, which canonicalizes the directory and
-    // fails if it is missing -- a creation after that call can never run.
-    // Created only when it is inside the project: a `playlists_dir:` pointing
-    // elsewhere is the operator's to set up, like `songs` and the rest.
-    let dir = super::helpers::ensure_dir_within(dir, project).await?;
-
+    let dir_exists = tokio::fs::try_exists(dir).await.unwrap_or(false);
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in playlist_path.
-    let file = playlist_path(&dir, name)?;
+    // verified via canonicalize + starts_with containment in playlist_path, and
+    // a missing directory's by `ensure_dir_within` when it is made.
+    let file = if dir_exists {
+        playlist_path(dir, name)?
+    } else {
+        // No directory, no files: a new `<name>.yaml`.
+        crate::playlist::playlist_file(dir, name).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        })?
+    };
     validate_resource_name_to_write(name, "playlist", file.exists())?;
     Ok(file)
 }
@@ -306,22 +312,35 @@ pub(crate) fn check_playlist(
 }
 
 /// Writes a playlist's `yaml` to its `file`, atomically, off the async
-/// runtime: the web UI's and MCP's playlist saves. A new playlist is
-/// created as new (`config_io::write`): a file made since the lookup, or
-/// one the filesystem takes for this name, is refused (409), never written
-/// over.
+/// runtime: the web UI's and MCP's playlist saves, once checked. The
+/// file's directory is made first if missing, only inside `project`: a
+/// `playlists_dir:` (or `playlist:`) pointing elsewhere is the operator's
+/// to set up, like `songs` and the rest. The file is written under the
+/// directory as made, not as spelled -- those differ when the setting
+/// holds a `..`. A new playlist is created as new (`config_io::write`): a
+/// file made since the lookup, or one the filesystem takes for this name,
+/// is refused (409), never written over. Answers the path written.
 pub(crate) async fn write_playlist_file(
     file: &crate::util::NamedFile,
     yaml: String,
-) -> Result<(), axum::response::Response> {
-    let file_path = file.path().to_path_buf();
+    project: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let file_path = match (file.path().parent(), file.path().file_name()) {
+        (Some(parent), Some(file_name)) if !parent.as_os_str().is_empty() => {
+            super::helpers::ensure_dir_within(parent, project)
+                .await?
+                .join(file_name)
+        }
+        _ => file.path().to_path_buf(),
+    };
     let fp = file_path.clone();
     let new = !file.exists();
     let result = super::helpers::spawn_blocking_io("write playlist", move || {
         Ok::<_, String>(config_io::write(&fp, &yaml, new))
     })
     .await?;
-    super::helpers::written(result, &file_path, "playlist")
+    super::helpers::written(result, &file_path, "playlist")?;
+    Ok(file_path)
 }
 
 /// DELETE /api/playlists/:name — delete a playlist.

@@ -1301,12 +1301,14 @@ impl McpServer {
         // are: a web song delete holds it while it takes the song off every
         // playlist, and a check before it would write the deleted song back.
         self.validate_playlist(&args.yaml).await?;
-        web(playlists::write_playlist_file(&file, args.yaml.clone()).await).await?;
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        let written =
+            web(playlists::write_playlist_file(&file, args.yaml.clone(), &project).await).await?;
         // Rebuild the player's playlist set so `list_playlists` /
         // `switch_playlist` see the new file without requiring a restart.
         self.reload_player_songs().await?;
         Ok(ok_json(json!({
-            "path": file.path().display().to_string(),
+            "path": written.display().to_string(),
             "bytes": args.yaml.len(),
         })))
     }
@@ -2688,7 +2690,8 @@ impl McpServer {
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
         )?;
         self.validate_playlist(&updated).await?;
-        web(playlists::write_playlist_file(&file, updated.clone()).await).await?;
+        let project = crate::util::project_dir_of(self.config_store()?.path());
+        web(playlists::write_playlist_file(&file, updated.clone(), &project).await).await?;
         self.reload_player_songs().await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -3927,37 +3930,27 @@ impl McpServer {
 
     /// The file a playlist save writes. With a `name`, the web UI's rule
     /// ([`playlists::playlist_file_to_write`]) in the playlists directory
-    /// the loader reads; with none, the top-level `playlist:` file, its
-    /// directory made if missing, inside the project.
+    /// the loader reads; with none, the top-level `playlist:` file. Nothing
+    /// is made: [`playlists::write_playlist_file`] makes the directory,
+    /// inside the project, once the save is checked.
     async fn playlist_file_to_write(
         &self,
         name: Option<&str>,
     ) -> Result<crate::util::NamedFile, McpError> {
-        let project = crate::util::project_dir_of(self.config_store()?.path());
         let sources = self.playlist_sources().await?;
         match name {
             Some(name) => {
                 let dir = sources.playlists_dir.ok_or_else(|| {
                     McpError::invalid_params("no playlists directory configured", None)
                 })?;
-                web(playlists::playlist_file_to_write(&dir, &project, name).await).await
+                web(playlists::playlist_file_to_write(&dir, name).await).await
             }
             None => {
                 let path = sources.legacy_playlist.ok_or_else(|| {
                     McpError::invalid_params("no top-level playlist file configured", None)
                 })?;
-                // Written under the directory that was made, not the
-                // spelling it was configured as -- those differ when the
-                // setting holds a `..`.
-                let path = match (path.parent(), path.file_name()) {
-                    (Some(parent), Some(file)) => {
-                        web(crate::webui::api::helpers::ensure_dir_within(parent, &project).await)
-                            .await?
-                            .join(file)
-                    }
-                    _ => path,
-                };
-                // Written whether or not it is there yet, as the config names it.
+                // Written whether or not it is there yet, as the config
+                // names it; its directory made by `write_playlist_file`.
                 Ok(crate::util::NamedFile::Found(path))
             }
         }
@@ -5420,6 +5413,34 @@ profiles:
         let _ = answer(write("set", &written).await);
         assert_eq!(read(&fixture.root, "playlists/set.yml"), Some(written));
         assert_eq!(read(&fixture.root, "playlists/set.yaml"), None);
+    }
+
+    /// A refused playlist save makes no playlists directory: the directory
+    /// is made only once the save is checked, as a venue save's is.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_playlist_save_makes_no_directory() {
+        let (server, fixture) = server(&[]).await;
+        let dir = fixture.root.join("playlists");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        let write = |name: &str, yaml: &str| {
+            server.write_playlist(Parameters(WritePlaylistArgs {
+                name: Some(name.to_string()),
+                yaml: yaml.to_string(),
+            }))
+        };
+
+        let _ = refusal(write("new", "kind: playlist\nsongs:\n- Nope\n").await);
+        let _ = refusal(write("all_songs", SET).await);
+        let _ = refusal(write(".hidden", SET).await);
+        assert!(!dir.exists(), "a refused save made the playlists directory");
+
+        let _ = answer(write("new", SET).await);
+        assert_eq!(
+            read(&fixture.root, "playlists/new.yaml").as_deref(),
+            Some(SET)
+        );
     }
 
     /// #675: `patch_playlist` checks and writes as `write_playlist` does.
