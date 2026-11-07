@@ -25,6 +25,7 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import ReadOnlyNote, { readOnly } from "./ReadOnlyNote.svelte";
   import FixtureTest from "./FixtureTest.svelte";
   import FixtureTypeDetails from "./FixtureTypeDetails.svelte";
   import { trimNumber } from "../../lib/lighting/fixtureFacts";
@@ -143,10 +144,23 @@
    *  the server refuses a save where the two disagree. So the Name field
    *  reads it out rather than being a second, conflicting source. */
   let editFtDslName = $derived(rules.fixture_type_name(editFtDsl) ?? "");
-  /** A rich or referential type cannot go back to `.light`: the loader
-   *  skips v2 syntax there. Anything else may be saved in either form. */
+  /** A plain type in a `.light` may stay one or move to a `.fixture`. A
+   *  rich or referential type cannot be a `.light` (the loader skips v2
+   *  syntax there), a `.fixture` is never written back as one, and a new
+   *  type is always a `.fixture`. */
   let ftExtChoosable = $derived(
-    ftMode === "text" && !editFtReferential && !editFtRich,
+    ftMode === "text" &&
+      !isNewFt &&
+      !editFtReferential &&
+      !editFtRich &&
+      !!editingFt &&
+      fixtureTypes[editingFt]?.extension === "light",
+  );
+  /** The open type's owner when it may not be written; null otherwise. A
+   *  type whose file is not its alone is shown read-only, with the file
+   *  and why. */
+  let ftReadOnly = $derived(
+    editingFt && !isNewFt ? readOnly(fixtureTypes[editingFt]?.owner) : null,
   );
   /** Whether the "which form?" chooser is open ahead of a new type. */
   let newFtChoice = $state(false);
@@ -255,7 +269,10 @@ fixture_type "Name" {
 
     // A fixture from a GDTF is its page: no file, no text.
     if (entry.referential) return;
-    if (editFtExt === "fixture" || entry.rich) {
+    // Only a type the channel map can say all of opens in it (the
+    // player's own rule, `form_editable`); anything more opens as text,
+    // so a form save never drops a comment, a curve or a limit.
+    if (!entry.form_editable) {
       await openFtAsText(name);
       return;
     }
@@ -500,10 +517,10 @@ fixture_type "Name" {
             : null,
         },
         ftDir || undefined,
+        // A rename is one save: the server moves the type's file, or
+        // renames it in place, by the one rule for type files.
+        isRename ? oldName : null,
       );
-      if (isRename) {
-        await deleteFixtureType(oldName, ftDir || undefined);
-      }
       await loadFixtureTypes();
       editingFt = null;
       toList();
@@ -536,10 +553,8 @@ fixture_type "Name" {
         editFtDsl,
         editFtExt,
         ftDir || undefined,
+        isRename ? oldName : null,
       );
-      if (isRename) {
-        await deleteFixtureType(oldName, ftDir || undefined);
-      }
       await loadFixtureTypes();
       editingFt = null;
       toList();
@@ -632,7 +647,7 @@ fixture_type "Name" {
             <button
               class="btn btn-primary"
               onclick={saveFt}
-              disabled={ftSaving}
+              disabled={ftSaving || !!ftReadOnly}
             >
               {ftSaving ? $t("common.saving") : $t("common.save")}
             </button>
@@ -657,6 +672,10 @@ fixture_type "Name" {
         />
       {/if}
 
+      {#if !showFtDetails && ftReadOnly}
+        <ReadOnlyNote owner={ftReadOnly} prefix="ft" />
+      {/if}
+
       {#if !showFtDetails}
         <div class="field">
           <label for="ft-name">{$t("lighting.name")}</label>
@@ -678,6 +697,7 @@ fixture_type "Name" {
               id="ft-name"
               class="input"
               bind:value={editFtName}
+              disabled={!!ftReadOnly}
               placeholder="e.g. RGBW_Par"
             />
           {/if}
@@ -958,7 +978,7 @@ fixture_type "Name" {
                 {:else}
                   <span class="card-spacer"></span>
                 {/if}
-                {#if entry.extension === "light"}
+                {#if entry.form_editable}
                   <!-- The channel map is the default way in; this is the
                            way out of it, and the only path from v1 to the
                            rich form. -->
@@ -973,6 +993,9 @@ fixture_type "Name" {
                 {/if}
                 <button
                   class="btn btn-danger btn-sm"
+                  data-testid="ft-delete"
+                  disabled={!!readOnly(entry.owner)}
+                  title={readOnly(entry.owner)?.reason ?? undefined}
                   onclick={(e) => {
                     e.stopPropagation();
                     removeFt(name);

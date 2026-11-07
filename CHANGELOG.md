@@ -156,11 +156,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NFC-normalised and lowercased one character at a time, so "Café Par" typed on a Mac
   (decomposed, `e` and a combining accent) and elsewhere give one stem, `café_par`, and "ΟΔΟΣ"
   gives `οδοσ`; letters, digits and `-` kept, with any combining mark on a kept letter
-  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept); any other run
+  ("Spın̈al Tap" gives `spın̈al_tap`, "İstanbul" gives `i̇stanbul`, the dot kept), and a mark after
+  a separator a separator, even one that is also a letter ("a \u{93F}b" gives `a_b`); any other run
   of characters one `_`; no `_` at either end; at most 247 bytes, cut before a letter and its
   marks rather than through them (a 300-letter name gives a 247-letter stem); `untitled` when
   nothing is left. It replaces the web UI's rule and the importers' rule, which differed. Files already there load and are found by what they declare, as before; only the
-  name a new file is given, and the file looked at for a name no file declares, change:
+  name a new file is given changes:
   - A new fixture type saved in the web UI (`PUT /api/lighting/fixture-types/<name>`) and a new
     venue (`PUT /api/lighting/venues/<name>`) collapse and trim the runs: "Wash (Front)" is
     written as `wash_front.light` (or `.fixture`, `.venue`), where it was `wash__front_.light`.
@@ -179,13 +180,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `import_mvr`) is written as `built-in.venue` for "built-in", where it was `built_in.venue`.
     A re-import that finds no venue of that name checks `built-in.venue` and `built-in.light`
     for another venue in the way, where it checked `built_in.venue` and `built_in.light`.
-  - The web UI's venue and fixture type pages, for a name no file declares, look at the file
-    of the new stem: the fixture type "Wash (Front)" finds a `wash_front.fixture` or
-    `wash_front.light` that does not declare it (and says so), and no longer
-    `wash__front_.light`; the venue "Club (Main)" likewise `club_main.venue` or
-    `club_main.light`.
   - An MVR export keeps its own file name: the venue "built-in" still exports as
     `lighting/export/built_in.mvr`.
+- **The web UI writes only venue and fixture type files it can prove are one thing's**
+  (`PUT`/`DELETE /api/lighting/venues/<name>`, `PUT`/`DELETE /api/lighting/fixture-types/<name>`,
+  the Venues and Fixtures pages): a name's file is the one the loader read it from, and it is
+  written only when it parses and holds that one venue or type and nothing else. What changes:
+  - A venue or type whose file holds anything else (another venue or type, a show, a fixture type
+    beside a venue) or whose name is declared twice is read-only. A save, rename or delete answers
+    409 with `read_only: true`, the `file`, the reason, and the file's `others` or the name's
+    `files`, and writes nothing. Saving "Club" from `tour/all.light`, which also holds venue
+    "Arena", answers "Defined in tour/all.light alongside venue "Arena"; edit that file by hand.",
+    where a form save patched Club's block inside the file and a text save replaced the whole
+    file. A type in both `mover.light` and `mover.fixture` is read-only, where a text save kept
+    one and removed the other.
+  - The venue and fixture editors show a read-only venue or type with its file and that reason,
+    and its Save, Name (rename) and Delete are disabled.
+  - A new venue is written as `<stem>.venue` and a new type as `<stem>.fixture`, whatever they
+    hold: "Club (Main)" goes to `lighting/venues/club_main.venue` and the channel map's "Wash Par"
+    to `lighting/fixture_types/wash_par.fixture`, where both were `.light`. `?ext=light` no
+    longer makes a new `.light`. A `.fixture` is not written back as `.light`: `?ext=light` on
+    one answers 400, where it moved the type to a `.light`.
+  - The channel map edits only a type it can say all of: a file holding that one type and only
+    `channels`, `channel_map` and the strobe frequencies and offset, with no comment. The listing
+    says which, `form_editable`; any other type opens as text, and a form save of it answers 400
+    ("edit this type as text"), where it answered 409 (for a `.fixture`). The count, if
+    given, must be the map's, and no field or channel may be given twice. A data-loss fix: a `.light` type with a comment, a
+    `strobe_curve`, `special_cases` or `movement` limits opened in the channel map, and its save
+    regenerated the file without them. A plain `.fixture` (as a new type from the channel map
+    is) opens in the channel map, where every `.fixture` opened as text.
+  - A new name whose file is taken is refused with 409: "club main" when `club_main.venue` holds
+    "Club Main" answers "club_main.venue is taken by "Club Main"; choose another name", and a new
+    type at a `<stem>.light` or `<stem>.fixture` declaring another type is refused, where that
+    file was overwritten. A new type may not take the name of a GDTF in the library with no
+    record.
+  - A text body must declare this one venue or type and nothing else, or the save answers 400:
+    `venue "House" { … }` followed by `venue "Annex" { … }`, or by a `show`, where the file
+    became whatever the text declared.
+  - A `.light` whose edit needs the newer format moves to a `.venue` or `.fixture` of its own
+    name beside it, as before ("Big Room" in `tour/old.light` gaining a GDTF mode is written to
+    `tour/old.venue`); a `.light` type saved with rich channels now moves too, where it was
+    refused with 400. It is refused with 409, nothing written, when that file or one of the same
+    stem in another case (`tour/OLD.venue`) is there; a case variant was not looked for. If the
+    `.light` cannot be removed after, the new file is removed again and the save fails, where the
+    two were left declaring the name twice.
+  - A rename in either editor is one save, `PUT …/<new name>?from=<old name>` at the old file's
+    version, where it saved the new name to a new file and then deleted the old one (and a venue's
+    comments went with it). A file at the old name's own place (`<dir>/<stem>.venue`, `.light` or
+    `.fixture`) moves to the new name's: "House" in `house.venue` renamed "Big Room" becomes
+    `big_room.venue`, comments kept, refused when `big_room.venue` is taken. Any other file keeps
+    its name and the block is renamed in it: "House" in `tour/2024.venue` renamed "Arena" stays in
+    `tour/2024.venue`. A new name declared anywhere, or a library GDTF's, is refused.
+  - A file that does not parse is never searched for a name, and a file at a name's stem that
+    does not declare it is not that name's. A venue only `rig.venue`, which does not parse,
+    mentions is not found: GET answers 404 (was 500), DELETE 404 (was: `rig.venue` deleted), and
+    a save writes a new `house.venue` (was 409); a broken `house.venue` itself refuses that save
+    (409), untouched. DELETE and the fixture settings of a type named only by a stem file that
+    does not declare it answer 404, where DELETE deleted that file and the settings read it;
+    `GET /api/lighting/fixture-types/<name>` and `…/<name>/gdtf` for a name whose stem file does
+    not parse answer 404, or the library's GDTF of that name, where they answered 500.
+  - A data-loss fix: DELETE of a venue whose file also holds a fixture type or a show, or of a
+    type whose file also holds a venue, answers 409 and deletes nothing, where it deleted the
+    whole file and everything else in it (only other venues, or other types, were checked for).
+  - Adding aim points to a venue (`POST /api/lighting/venues/<name>/aim-points`, the MVR export
+    dialog) writes by the same rule: a venue whose file is not its alone answers the same 409 and
+    the dialog does not offer it, saying why, where the points were patched into the shared,
+    mixed or first duplicate file; and a `.light` venue moves to its `.venue`, which focus points
+    need, where they were written into the `.light`.
+  - The listings say who owns each name: `GET /api/lighting/venues` adds `owners`, and
+    `GET /api/lighting/fixture-types` and `GET /api/lighting/fixture-types/<name>` add each type's
+    `owner` (`null` for a library GDTF with no record), as `{file, editable, reason}`. A file that
+    does not parse is in `errors`, with no name.
+  - The harness's files stay editable where they are: `astera_pixelbrick.fixture` (declaring
+    "Astera-PixelBrick", whose own file would be `astera-pixelbrick.fixture`), `built-in.venue` and
+    `test.venue`.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

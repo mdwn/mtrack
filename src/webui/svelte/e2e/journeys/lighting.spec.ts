@@ -15,6 +15,7 @@
 import * as fs from "node:fs";
 import { type Page } from "@playwright/test";
 import { card } from "../support/locators";
+import type { VenueList } from "../../src/gen/rules/mtrack_rules";
 import { api, expect, synthGdtf, synthMvr, test } from "./harness";
 
 // The Lighting area against the real binary: each journey does what a user
@@ -221,7 +222,15 @@ test.describe("A new venue", () => {
       ["Fixture 2", 1, 4],
       ["Fixture 3", 1, 7],
     ]);
-    const file = project.read("lighting/venues/club.light");
+    // The file the save created, as the listing reports it: a new venue
+    // is a `.venue` by the one rule for new files.
+    const listed = await api<VenueList>(project, "/lighting/venues");
+    expect(listed.owners.club).toEqual({
+      file: "club.venue",
+      editable: true,
+      reason: null,
+    });
+    const file = project.read(`lighting/venues/${listed.owners.club.file}`);
     expect(file).toContain('fixture "Fixture 3" Par @ 1:7');
   });
 });

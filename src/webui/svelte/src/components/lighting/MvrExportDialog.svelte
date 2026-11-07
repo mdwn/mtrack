@@ -13,7 +13,10 @@
      *
      * -->
 <script lang="ts">
-  import type { MvrExportSummary } from "../../gen/rules/mtrack_rules";
+  import type {
+    LightingOwner,
+    MvrExportSummary,
+  } from "../../gen/rules/mtrack_rules";
   import { onMount, untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -35,6 +38,9 @@
     onclose: () => void;
     /** Called after aim points were added to the venue file. */
     onchanged?: () => void;
+    /** The venue's owner when its file is not its alone: aim points, which
+     *  write that file, are not offered, and why is said instead. */
+    readOnly?: LightingOwner | null;
   }
 
   let {
@@ -43,6 +49,7 @@
     venuesDir = "",
     onclose,
     onchanged,
+    readOnly = null,
   }: Props = $props();
   let dirs = $derived({
     fixtureTypesDir: fixtureTypesDir || undefined,
@@ -295,14 +302,20 @@
           {unlinked.map((f) => f.name).join(", ")}
         </p>
         <div class="warn__actions">
-          <button
-            class="btn btn-primary"
-            onclick={addAim}
-            disabled={working}
-            data-testid="mvr-export-add-aim"
-          >
-            {$t("lighting.mvr.export.addAim")}
-          </button>
+          {#if readOnly}
+            <p class="hint" data-testid="mvr-export-read-only">
+              {readOnly.reason}
+            </p>
+          {:else}
+            <button
+              class="btn btn-primary"
+              onclick={addAim}
+              disabled={working}
+              data-testid="mvr-export-add-aim"
+            >
+              {$t("lighting.mvr.export.addAim")}
+            </button>
+          {/if}
           <button
             class="btn"
             onclick={download}

@@ -18,6 +18,7 @@
     FixtureTypeEntry,
     FixtureTypeGdtf,
     LightingFileError,
+    LightingOwner,
     RowProblem,
     RowProblems,
     Vec3,
@@ -29,6 +30,7 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "../config/Tooltip.svelte";
+  import ReadOnlyNote, { readOnly } from "./ReadOnlyNote.svelte";
   import TagInput from "../config/TagInput.svelte";
   import MvrExportDialog from "./MvrExportDialog.svelte";
   import { venueStore } from "../../lib/ws/stores";
@@ -109,6 +111,9 @@
   /** Each venue file's version as listed; the editor saves against the one
    *  it was opened at, so a file changed elsewhere is not overwritten. */
   let venueVersions = $state<Record<string, string>>({});
+  /** Each venue's file, and whether the UI may write it: a venue whose
+   *  file is not its alone is shown read-only, with the file and why. */
+  let venueOwners = $state<Record<string, LightingOwner>>({});
   let editVersion = $state<string | undefined>(undefined);
   let venueLoading = $state(false);
   let venueError = $state("");
@@ -119,6 +124,12 @@
   let venueSaving = $state(false);
   let venueMsg = $state("");
   let editingVenue = $state<string | null>(null);
+  /** The open venue's owner when it may not be written; null otherwise. */
+  let readOnlyOwner = $derived(
+    editingVenue && editingVenue !== "__new__"
+      ? readOnly(venueOwners[editingVenue])
+      : null,
+  );
   let editVenueName = $state("");
   let editVenueFixtures = $state<
     {
@@ -177,6 +188,7 @@
       const result = await fetchVenues(venueDir || undefined);
       venues = result.venues;
       venueVersions = result.versions ?? {};
+      venueOwners = result.owners ?? {};
       venueFileErrors = result.errors ?? [];
     } catch (e: any) {
       venueError = e.message;
@@ -552,13 +564,13 @@
           source: editVenueSource,
         },
         venueDir || undefined,
-        // A new or renamed venue is a new file; an existing one is saved
-        // against the version this form was opened at.
-        isNewVenue || isRename ? undefined : editVersion,
+        // An existing venue, renamed or not, is saved against the version
+        // this form was opened at; a new one has none.
+        isNewVenue ? undefined : editVersion,
+        // A rename is one save: the server moves the venue's file, or
+        // renames it in place, by the one rule for venue files.
+        isRename ? oldName : null,
       );
-      if (isRename) {
-        await deleteVenue(oldName, venueDir || undefined);
-      }
       await loadVenues();
       editingVenue = null;
       select(newName);
@@ -630,12 +642,16 @@
           <button
             class="btn btn-primary"
             onclick={saveVenueData}
-            disabled={venueSaving}
+            disabled={venueSaving || !!readOnlyOwner}
           >
             {venueSaving ? $t("common.saving") : $t("common.save")}
           </button>
         </div>
       </div>
+
+      {#if readOnlyOwner}
+        <ReadOnlyNote owner={readOnlyOwner} prefix="venue" />
+      {/if}
 
       <div class="field">
         <label for="venue-name">{$t("lighting.name")}</label>
@@ -643,6 +659,7 @@
           id="venue-name"
           class="input"
           bind:value={editVenueName}
+          disabled={!!readOnlyOwner}
           placeholder="e.g. main_stage"
         />
       </div>
@@ -908,6 +925,9 @@
                 >
                 <button
                   class="btn btn-danger btn-sm"
+                  data-testid="venue-delete-{name}"
+                  disabled={!!readOnly(venueOwners[name])}
+                  title={readOnly(venueOwners[name])?.reason ?? undefined}
                   onclick={(e) => {
                     e.stopPropagation();
                     removeVenue(name);
@@ -940,6 +960,7 @@
     venuesDir={venueDir}
     onclose={() => (exportingVenue = null)}
     onchanged={loadVenues}
+    readOnly={readOnly(venueOwners[exportingVenue])}
   />
 {/if}
 

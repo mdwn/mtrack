@@ -112,6 +112,38 @@ pub fn patch_venue(content: &str, name: &str, desired: &Venue) -> Result<String,
     patch_venue_with(content, name, desired, &PatchNotes::default())
 }
 
+/// The line that opens venue `name`'s block: the first that starts (after
+/// its indent) with `venue "<name>"` and holds its `{`. With it, the
+/// length of that `venue "<name>"`.
+fn header_line(lines: &[&str], name: &str) -> Option<(usize, usize)> {
+    let header = format!("venue \"{name}\"");
+    lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&header) && l.contains('{'))
+        .map(|at| (at, header.len()))
+}
+
+/// Renames the venue `old` in `content` to `new`: the name in its opening
+/// line, as [`patch_venue`] finds it ([`header_line`]); everything else is
+/// kept.
+pub fn rename_venue(content: &str, old: &str, new: &str) -> Result<String, String> {
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let (at, header) = header_line(&lines, old)
+        .ok_or_else(|| format!("cannot find the block of venue \"{old}\" to rename"))?;
+    let line = lines[at];
+    let indent = line.len() - line.trim_start().len();
+    let rest = &line[indent + header..];
+    let mut out = String::with_capacity(content.len() + new.len());
+    for (i, l) in lines.iter().enumerate() {
+        if i == at {
+            out.push_str(&format!("{}venue \"{new}\"{rest}", &line[..indent]));
+        } else {
+            out.push_str(l);
+        }
+    }
+    Ok(out)
+}
+
 /// [`patch_venue`] that also writes `notes` alongside what it adds.
 pub fn patch_venue_with(
     content: &str,
@@ -120,10 +152,7 @@ pub fn patch_venue_with(
     notes: &PatchNotes,
 ) -> Result<String, String> {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
-    let header = format!("venue \"{name}\"");
-    let open = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with(&header) && l.contains('{'))
+    let (open, _) = header_line(&lines, name)
         .ok_or_else(|| format!("cannot find the block of venue \"{name}\" to patch"))?;
     let close = lines[open + 1..]
         .iter()
@@ -522,5 +551,16 @@ venue "house" {
         let v = venue(FILE);
         assert!(patch_venue(&bad, "house", &v).is_err());
         assert!(patch_venue(FILE, "other", &v).is_err());
+    }
+
+    #[test]
+    fn rename_venue_changes_only_the_opening_line() {
+        let renamed = rename_venue(FILE, "house", "Club (Main)").unwrap();
+        assert_eq!(
+            renamed,
+            FILE.replacen("venue \"house\" {", "venue \"Club (Main)\" {", 1)
+        );
+        assert!(parse_venues(&renamed).unwrap().contains_key("Club (Main)"));
+        assert!(rename_venue(FILE, "nowhere", "x").is_err());
     }
 }

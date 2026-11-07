@@ -877,6 +877,28 @@ fn comment_spans(gap: &str) -> Vec<(usize, usize)> {
         .unwrap_or_default()
 }
 
+/// Whether `source`, parsed as `pairs`, holds a comment: one in the text
+/// between its tokens (the leaf pairs), where the grammar's implicit
+/// whitespace lets one be, found by the `gap` rule ([`comment_spans`]). A
+/// `#` inside a quoted string, on one line or several, is in a token and
+/// is not one.
+pub(crate) fn has_comment(source: &str, pairs: pest::iterators::Pairs<Rule>) -> bool {
+    let mut at = 0;
+    for leaf in pairs
+        .flatten()
+        .filter(|p| p.clone().into_inner().next().is_none())
+    {
+        let span = leaf.as_span();
+        if span.start() >= at {
+            if !comment_spans(&source[at..span.start()]).is_empty() {
+                return true;
+            }
+            at = span.end();
+        }
+    }
+    !comment_spans(&source[at..]).is_empty()
+}
+
 /// `gap`'s text with its comments (by the grammar's `gap` rule) left
 /// out: its whitespace and punctuation.
 fn outside_comments(gap: &str) -> String {
