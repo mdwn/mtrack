@@ -133,6 +133,12 @@ pub struct SongSaved {
     /// Always `saved`.
     pub status: String,
     pub name: String,
+    /// The light show files the save removed (`?remove_lighting=`), each
+    /// set aside rather than deleted: where it was kept, by its path below
+    /// the songs root.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub kept: Vec<String>,
 }
 
 /// `POST /api/browse/bulk-import`: the songs made, by directory.

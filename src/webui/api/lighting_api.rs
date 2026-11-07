@@ -410,47 +410,73 @@ pub(super) async fn put_lighting_file(
     }
 }
 
-/// DELETE /api/lighting/:name — deletes a .light file from disk.
+/// The light show files `names` (paths below the songs root, as the lighting
+/// API names them) as they are now, to remove: each a light show by the one
+/// rule (`light_show_path`, against the songs' configs as they are now, so a
+/// show only a song's `lighting:` names qualifies), and there. A song save
+/// removing shows asks this before it writes, so a refusal removes nothing.
+#[allow(clippy::result_large_err)]
+pub(super) fn light_shows_to_remove(
+    state: &WebUiState,
+    names: &[String],
+) -> Result<Vec<std::path::PathBuf>, axum::response::Response> {
+    names
+        .iter()
+        .map(|name| {
+            let path = light_show_path(state, name)?;
+            if path.symlink_metadata().is_err() {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": format!("Lighting file not found: {name}")})),
+                )
+                    .into_response());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+/// Removes light show files by setting each aside beside itself
+/// (`project_files::set_aside_all`: `<file>.replaced-<time>`, which no
+/// loader reads), as every remove does; all or none. Each kept file is
+/// named by its path below the songs root.
+pub(super) fn set_aside_light_shows(
+    songs_root: &std::path::Path,
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<String>, String> {
+    let root = songs_root
+        .canonicalize()
+        .unwrap_or_else(|_| songs_root.to_path_buf());
+    Ok(set_aside_all(paths)?
+        .iter()
+        .map(|(_, backup)| lighting::project_files::display_in(&root, backup))
+        .collect())
+}
+
+/// DELETE /api/lighting/:name — removes a light show file, setting it aside
+/// (`set_aside_light_shows`), and names where it was kept.
 pub(super) async fn delete_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    use super::super::safe_path::{SafePath, VerifiedRoot};
-
-    let root = match VerifiedRoot::new(&state.songs_path()) {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
+    let paths = match light_shows_to_remove(&state, std::slice::from_ref(&name)) {
+        Ok(paths) => paths,
+        Err(e) => return e,
     };
-    let safe = match SafePath::resolve(&state.songs_path().join(&name), &root) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lighting file not found: {}", name)})),
-            )
-                .into_response();
-        }
-    };
-
-    if !crate::songs::is_light_show_file(safe.as_path(), &state.player.songs().light_show_files()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Can only delete light show files"})),
-        )
-            .into_response();
-    }
-
-    // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
-    let path = safe.as_path().to_path_buf();
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
+    let songs_root = state.songs_path();
     match super::helpers::spawn_blocking_io("delete lighting file", move || {
-        std::fs::remove_file(&path)
+        set_aside_light_shows(&songs_root, &paths)
     })
     .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
+        Ok(kept) => (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "kept": kept})),
+        )
+            .into_response(),
         Err(e) => e,
     }
 }

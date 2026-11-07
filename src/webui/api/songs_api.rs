@@ -640,11 +640,25 @@ pub(super) async fn post_song(
 pub(super) async fn put_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
+    axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
     body: String,
 ) -> impl IntoResponse {
     // Held from the lookup: a song deleted before the lock was taken is
     // not written back.
     let _writing = SONG_WRITES.lock().await;
+    // The light shows the save removes, one `?remove_lighting=<path>` each
+    // (paths below the songs root): light shows by the songs' configs as
+    // they are before the save, so a `show.dsl` only `lighting:` names is
+    // one. Asked first: a refusal writes and removes nothing.
+    let to_remove: Vec<String> =
+        form_urlencoded::parse(raw_query.as_deref().unwrap_or("").as_bytes())
+            .filter(|(key, _)| key == "remove_lighting")
+            .map(|(_, file)| file.into_owned())
+            .collect();
+    let to_remove = match super::lighting_api::light_shows_to_remove(&state, &to_remove) {
+        Ok(paths) => paths,
+        Err(e) => return e,
+    };
     // Look up the song in the registry to get its actual YAML (handles
     // nested folders and flat `<name>.yaml` songs).
     // The YAML is validated before writing to disk; the song it names, if
@@ -664,15 +678,23 @@ pub(super) async fn put_song(
         Err(e) => return e,
     };
 
+    // The config first; only once it is written are the removed shows set
+    // aside (kept, not deleted): a failed write removes nothing, and the
+    // config never names a show that is gone.
     let cp = config_path;
     let body_owned = body;
-    if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
-        config_io::staged_write(&cp, &body_owned)
+    let songs_root = state.songs_path();
+    let kept = match super::helpers::spawn_blocking_io("write song config", move || {
+        config_io::staged_write(&cp, &body_owned).map_err(|e| e.to_string())?;
+        super::lighting_api::set_aside_light_shows(&songs_root, &to_remove).map_err(|e| {
+            format!("the song was saved, but its removed light shows could not be set aside: {e}")
+        })
     })
     .await
     {
-        return e;
-    }
+        Ok(kept) => kept,
+        Err(e) => return e,
+    };
 
     if let Err(resp) = super::helpers::reload_songs(&state).await {
         return resp;
@@ -683,6 +705,7 @@ pub(super) async fn put_song(
         Json(crate::webui::wire::songs::SongSaved {
             status: "saved".to_string(),
             name: saved.name().to_string(),
+            kept,
         }),
     )
         .into_response()
@@ -1466,6 +1489,90 @@ mod test {
         );
         // Text naming a third song is still refused there.
         assert_eq!(put(config("Baz")).await, StatusCode::CONFLICT);
+    }
+
+    /// A save that removes a light show (`?remove_lighting=`) writes the
+    /// config first and only then sets the show aside, kept: a save that
+    /// fails removes nothing, and the show a song only names by another
+    /// extension (`show.dsl`) qualifies.
+    #[tokio::test]
+    async fn a_save_removing_a_show_sets_it_aside_only_once_saved() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Lit");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let show =
+            "show \"s\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}\n";
+        std::fs::write(song_dir.join("show.dsl"), show).unwrap();
+        let config = "name: Lit\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            format!("{config}lighting:\n  - file: show.dsl\n"),
+        )
+        .unwrap();
+        state.player.reload_songs().await.unwrap();
+        let app = router().with_state(state);
+        let put = |body: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    http::Request::builder()
+                        .method("PUT")
+                        .uri("/songs/Lit?remove_lighting=Lit%2Fshow.dsl")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // A config that does not save removes nothing.
+        let response = put("name: Lit\ntracks: [\n".to_string()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(song_dir.join("show.dsl")).unwrap(),
+            show
+        );
+        let response = put(config.replace("name: Lit", "name: Other")).await;
+        assert_eq!(response.status(), StatusCode::OK, "a rename saves");
+        // (Saved: the show is set aside, kept, and named.)
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let kept = parsed["kept"][0].as_str().unwrap();
+        assert!(kept.starts_with("Lit/show.dsl.replaced-"), "{body}");
+        assert!(!song_dir.join("show.dsl").exists());
+    }
+
+    /// A save refused (another song's config in the folder) removes no
+    /// show, whatever it was asked to remove.
+    #[tokio::test]
+    async fn a_refused_save_removes_no_show() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Foo");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("show.light"), "show \"s\" {\n}\n").unwrap();
+        std::fs::write(
+            song_dir.join("song.yml"),
+            "name: Bar\ntracks:\n  - name: t\n    file: t.wav\n",
+        )
+        .unwrap();
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Foo?remove_lighting=Foo%2Fshow.light")
+                    .body(Body::from(
+                        "name: Foo\ntracks:\n  - name: t\n    file: t.wav\n",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(song_dir.join("show.light").is_file());
     }
 
     /// A folder config that does not read cannot say whose it is: a delete
