@@ -16,6 +16,7 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import type {
     FixtureTypeEntry,
+    FixtureTypeSaved,
     GdtfImport,
     GdtfSummary,
     LightingFileError,
@@ -32,6 +33,7 @@
   import { lightingHref } from "../../lib/lightingRoute";
   import { guardUnsaved } from "../../lib/dirtyGuard";
   import { untrack } from "svelte";
+  import { typeSavedMessage } from "../../lib/lighting/typeSaved";
   import { rules } from "../../lib/rules";
   import {
     fetchFixtureTypeGdtf,
@@ -81,6 +83,21 @@
   let ftError = $state("");
   let ftSaving = $state(false);
   let ftMsg = $state("");
+  /** The last save's message, when all went well: not shown as an error. */
+  let ftSavedMsg = $state("");
+
+  /** What a save says: saved, the venue lines a rename retyped, or that
+   *  the current venue no longer loads (kept until the next message). */
+  function showSaved(done: FixtureTypeSaved) {
+    const said = typeSavedMessage(done);
+    ftMsg = said.text;
+    if (!said.ok) return;
+    ftSavedMsg = said.text;
+    setTimeout(() => {
+      if (ftMsg === said.text) ftMsg = "";
+    }, 4000);
+  }
+
   let editingFt = $state<string | null>(null);
   let editFtName = $state("");
   let editFtChannels = $state<{ name: string; offset: number }[]>([]);
@@ -502,7 +519,7 @@ fixture_type "Name" {
     ftSaving = true;
     ftMsg = "";
     try {
-      await saveFixtureType(
+      const done = await saveFixtureType(
         newName,
         {
           channels,
@@ -518,14 +535,15 @@ fixture_type "Name" {
         },
         ftDir || undefined,
         // A rename is one save: the server moves the type's file, or
-        // renames it in place, by the one rule for type files.
+        // renames it in place, by the one rule for type files, and retypes
+        // the venue lines naming it.
         isRename ? oldName : null,
+        venuesDir || undefined,
       );
       await loadFixtureTypes();
       editingFt = null;
       toList();
-      ftMsg = get(t)("common.saved");
-      setTimeout(() => (ftMsg = ""), 2000);
+      showSaved(done);
     } catch (e: any) {
       ftMsg = e.message;
     } finally {
@@ -548,18 +566,18 @@ fixture_type "Name" {
     ftSaving = true;
     ftMsg = "";
     try {
-      await saveFixtureTypeText(
+      const done = await saveFixtureTypeText(
         newName,
         editFtDsl,
         editFtExt,
         ftDir || undefined,
         isRename ? oldName : null,
+        venuesDir || undefined,
       );
       await loadFixtureTypes();
       editingFt = null;
       toList();
-      ftMsg = get(t)("common.saved");
-      setTimeout(() => (ftMsg = ""), 2000);
+      showSaved(done);
       return true;
     } catch (e: any) {
       ftMsg = e.message;
@@ -635,7 +653,8 @@ fixture_type "Name" {
           {#if ftMsg}
             <span
               class="save-msg"
-              class:save-error={ftMsg !== get(t)("common.saved")}>{ftMsg}</span
+              class:save-error={ftMsg !== get(t)("common.saved") &&
+                ftMsg !== ftSavedMsg}>{ftMsg}</span
             >
           {/if}
           <button class="btn" onclick={cancelEditFt}
@@ -869,7 +888,8 @@ fixture_type "Name" {
         {#if ftMsg}
           <span
             class="save-msg"
-            class:save-error={ftMsg !== get(t)("common.saved")}>{ftMsg}</span
+            class:save-error={ftMsg !== get(t)("common.saved") &&
+              ftMsg !== ftSavedMsg}>{ftMsg}</span
           >
         {/if}
         <button class="btn" onclick={loadFixtureTypes} disabled={ftLoading}

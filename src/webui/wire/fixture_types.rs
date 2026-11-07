@@ -287,6 +287,19 @@ pub struct SettingsSaved {
     pub venue_error: Option<VenueError>,
 }
 
+/// What a fixture type's save in the type editor answers
+/// (`PUT /api/lighting/fixture-types/<name>`): a rename (`?from=`) says the
+/// venue lines it retyped, and whether the current venue still loads.
+#[cfg_attr(feature = "tsify", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "tsify", tsify(missing_as_null))]
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FixtureTypeSaved {
+    pub status: String,
+    pub name: String,
+    pub rename: Option<Rename>,
+    pub venue_error: Option<VenueError>,
+}
+
 /// A fixture type renamed, and the venue lines that follow it.
 #[cfg_attr(feature = "tsify", derive(tsify_next::Tsify), tsify(missing_as_null))]
 #[derive(Serialize, Clone, Debug, PartialEq)]

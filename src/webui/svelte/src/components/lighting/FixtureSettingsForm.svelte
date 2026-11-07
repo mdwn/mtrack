@@ -33,6 +33,7 @@
   import { get } from "svelte/store";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { guardUnsaved } from "../../lib/dirtyGuard";
+  import { typeSavedMessage } from "../../lib/lighting/typeSaved";
   import {
     ConflictError,
     fetchFixtureSettings,
@@ -198,29 +199,7 @@
         dirs,
         saved.version,
       );
-      const said: string[] = [tr("common.saved")];
-      if (done.rename && done.rename.lines > 0) {
-        said.push(
-          tr("lighting.settings.renamed", {
-            values: {
-              count: done.rename.lines,
-              venues: done.rename.venues
-                .map((v) => `${v.venue} (${v.lines})`)
-                .join(", "),
-            },
-          }),
-        );
-      }
-      if (done.venue_error) {
-        message = {
-          ok: false,
-          text: tr("lighting.venueError.saved", {
-            values: { ...done.venue_error },
-          }),
-        };
-      } else {
-        message = { ok: true, text: said.join(" ") };
-      }
+      message = typeSavedMessage(done);
       const next = done.rename?.to ?? typeName.trim();
       // Saved: the form is clean before anything navigates (a rename moves
       // the page to the new name's address, which must not ask).

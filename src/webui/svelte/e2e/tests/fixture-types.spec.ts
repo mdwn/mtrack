@@ -311,6 +311,11 @@ test.describe("Fixture Types Management", () => {
       .click();
     const put = await putPromise;
     expect(new URL(put.url()).searchParams.get("from")).toBe("mover");
+    // The rename retyped the venue lines naming it, and says so, as the
+    // fixture settings' rename does.
+    await expect(page.locator(".save-msg").first()).toContainText(
+      "Renamed in 3 venue lines: built-in (2), club (1).",
+    );
     await page.waitForTimeout(300);
     expect(deletes).toHaveLength(0);
   });

@@ -14,6 +14,7 @@
 
 import type { saveVenue } from "../../src/lib/api/config";
 import type {
+  FixtureTypeSaved,
   AimPoints,
   Browse,
   BulkImport,
@@ -405,8 +406,26 @@ app.get("/api/lighting/fixture-types/:name", (req, res) => {
   res.json(entry);
 });
 
-app.put("/api/lighting/fixture-types/:name", (_req, res) => {
-  res.json({ status: "saved" });
+app.put("/api/lighting/fixture-types/:name", (req, res) => {
+  // A rename (`?from=`) retypes the venue lines naming the old name.
+  const from = typeof req.query.from === "string" ? req.query.from : null;
+  res.json({
+    status: "saved",
+    name: req.params.name,
+    rename:
+      from && from !== req.params.name
+        ? {
+            from,
+            to: req.params.name,
+            lines: 3,
+            venues: [
+              { venue: "built-in", file: "built_in.venue", lines: 2 },
+              { venue: "club", file: "club.venue", lines: 1 },
+            ],
+          }
+        : null,
+    venue_error: null,
+  } satisfies FixtureTypeSaved);
 });
 
 app.delete("/api/lighting/fixture-types/:name", (req, res) => {

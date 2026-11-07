@@ -1484,6 +1484,8 @@
   "lighting.mvr.file.reading": "Reading the file...",
   "lighting.mvr.file.name": "Venue name",
   "lighting.mvr.file.nameHint": "Defaults to the file's name. An existing venue of this name that came from this MVR is merged into.",
+  "lighting.mvr.file.refusedHint": "Choose another venue name, then check the file again.",
+  "lighting.mvr.file.recheck": "Check again",
   "lighting.mvr.file.holds": "This file holds",
   "lighting.mvr.file.fixtures": "Fixtures",
   "lighting.mvr.file.typesWithMode": "Fixture types (one per GDTF)",

@@ -558,6 +558,9 @@ pub enum Refusal {
     Library { name: String, archive: String },
     /// The name's file, or one with its stem in any case, is there.
     Taken { file: String, by: Vec<String> },
+    /// The same write already claimed the name's file for another name
+    /// ([`Claimed`]).
+    ClaimedFor { file: String, by: String },
     /// The directory could not be read, so nothing can be said to be free.
     Unreadable { dir: PathBuf, error: std::io::Error },
 }
@@ -584,6 +587,10 @@ impl std::fmt::Display for Refusal {
                     .map(|n| format!("\"{n}\""))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Refusal::ClaimedFor { file, by } => write!(
+                f,
+                "{file} is already this write's record of \"{by}\"; choose another name"
             ),
             Refusal::Unreadable { dir, error } => {
                 write!(f, "{} cannot be read: {error}", dir.display())
@@ -644,6 +651,38 @@ pub fn claim_record_for(
     library: &[LibraryType],
 ) -> Result<Claim, Refusal> {
     claim(Kind::FixtureType, dir, name, library, Some(archive))
+}
+
+/// The record files one write has claimed so far (an MVR's embedded GDTFs,
+/// a settings save's record and pins), so no two of its records claim one
+/// file: each is checked against the directory, which none of them is in
+/// yet, and against the others.
+#[derive(Debug, Default)]
+pub struct Claimed {
+    records: Vec<(PathBuf, String)>,
+}
+
+impl Claimed {
+    /// [`claim_record_for`], refused too ([`Refusal::ClaimedFor`]) when this write
+    /// already claimed that file for another name: "Brick (x 1)" and
+    /// "Brick (X_1)" both want `brick_x_1.fixture`.
+    pub fn record_for(
+        &mut self,
+        dir: &Path,
+        archive: &str,
+        name: &str,
+        library: &[LibraryType],
+    ) -> Result<Claim, Refusal> {
+        let claim = claim_record_for(dir, archive, name, library)?;
+        if let Some((_, first)) = self.records.iter().find(|(path, _)| *path == claim.path) {
+            return Err(Refusal::ClaimedFor {
+                file: display_in(dir, &claim.path),
+                by: first.clone(),
+            });
+        }
+        self.records.push((claim.path.clone(), name.to_string()));
+        Ok(claim)
+    }
 }
 
 /// `names` without repeats, in first-seen order.

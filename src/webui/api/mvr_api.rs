@@ -194,7 +194,9 @@ fn import_options(state: &WebUiState, form: &MvrForm) -> Result<MvrImportOptions
 /// fixture's and focus point's position in the file's millimeters, the
 /// scenery and, when the scenery carries a stage floor, its bounds
 /// (`scene.deck_mm`, else null). Writes nothing. A file the importer
-/// refuses (not an MVR, over the caps) is a 400 with the parser's reason.
+/// refuses (not an MVR, over the caps) is a 400 with the parser's reason; a
+/// venue name (or an embedded GDTF's record) the one rule for lighting
+/// files refuses is a 409 with the reason, as the import answers it.
 pub(super) async fn inspect_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -211,14 +213,14 @@ pub(super) async fn inspect_mvr(
                 &options,
                 &project,
             )
-            .map_err(|e| e.to_string())?;
-            let scene =
-                lighting::import::scene_view::scene_view(&form.bytes).map_err(|e| e.to_string())?;
-            Ok::<_, String>((report, scene))
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref()))?;
+            let scene = lighting::import::scene_view::scene_view(&form.bytes)
+                .map_err(|e| (StatusCode::BAD_REQUEST, json!({"error": e.to_string()})))?;
+            Ok::<_, (StatusCode, serde_json::Value)>((report, scene))
         })())
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     let (report, scene) = outcome;
     Ok::<_, Response>(
         (
@@ -242,7 +244,9 @@ pub(super) async fn inspect_mvr(
 /// `{write: false, plan}` (what `import-mvr` prints without `--write`);
 /// `write=true` performs the import and answers `{write: true, report,
 /// reloaded}`, `reloaded` saying whether the running engine re-read the
-/// venue it is playing. Importing never makes the venue current.
+/// venue it is playing. Importing never makes the venue current. A venue
+/// whose file is not its alone, or whose new file is taken, is a 409 (the
+/// venue save's rule); anything else refused is a 400.
 pub(super) async fn import_mvr(
     State(state): State<WebUiState>,
     mut multipart: axum::extract::Multipart,
@@ -284,11 +288,11 @@ pub(super) async fn import_mvr(
                 )
                 .map(Imported::Plan)
             }
-            .map_err(|e| e.to_string()),
+            .map_err(|e| super::lighting_writes::import_error(e.as_ref())),
         )
     })
     .await?
-    .map_err(bad_request)?;
+    .map_err(|(status, body)| (status, Json(body)).into_response())?;
     let report = match outcome {
         Imported::Plan(plan) => {
             let answer = MvrImportAnswer {
@@ -636,7 +640,7 @@ fn add_aim_points_blocking(
         from: None,
         needs_new_format: true,
     };
-    let plan = save.plan().map_err(AimError::Refused)?;
+    let plan = super::lighting_writes::plan(&save).map_err(AimError::Refused)?;
     let content = plan
         .current
         .as_deref()
@@ -1006,6 +1010,124 @@ mod test {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_re_import_into_a_shared_venue_file_is_a_conflict_and_writes_nothing() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        imported(&app).await;
+        let venues = dir.path().join("lighting/venues");
+        let mut shared = std::fs::read_to_string(venues.join("kellys.venue")).unwrap();
+        shared.push_str("venue \"Annex\" {\n}\n");
+        std::fs::remove_file(venues.join("kellys.venue")).unwrap();
+        std::fs::write(venues.join("all.venue"), &shared).unwrap();
+
+        for write in ["false", "true"] {
+            let (status, body) = post(
+                &app,
+                "/lighting/mvr/import",
+                "Kellys.mvr",
+                &synthetic_mvr(true),
+                &[("name", "kellys"), ("write", write)],
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["kind"], "venue", "{body}");
+            assert_eq!(
+                body["error"],
+                "cannot import venue \"kellys\": Defined in all.venue alongside venue \
+                 \"Annex\"; edit that file by hand."
+            );
+        }
+        // The inspection says so too, so the wizard can ask for another name.
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "venue", "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("alongside venue \"Annex\""),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(venues.join("all.venue")).unwrap(),
+            shared
+        );
+        assert!(!venues.join("kellys.venue").exists());
+    }
+
+    #[tokio::test]
+    async fn an_embedded_gdtf_s_taken_record_is_a_record_conflict_not_a_venue_one() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let types = dir.path().join("lighting/fixture_types");
+        std::fs::create_dir_all(&types).unwrap();
+        let par = |name: &str| {
+            format!(
+                "fixture_type \"{name}\" {{\n  channels: 1\n  channel_map: {{\"dimmer\": 1}}\n}}\n"
+            )
+        };
+        std::fs::write(types.join("synth_brick.light"), par("Synth Brick")).unwrap();
+        std::fs::write(types.join("synth_brick_astera_pb15.fixture"), par("Other")).unwrap();
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["kind"], "record", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with(
+                "lighting/fixture_types/synth_brick_astera_pb15.fixture holds \"Other\""
+            ),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_venues_directory_that_cannot_be_read_is_not_a_venue_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+        let venues = dir.path().join("lighting/venues");
+        std::fs::create_dir_all(&venues).unwrap();
+        // Written to and walked through, never listed.
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o300)).unwrap();
+        if std::fs::read_dir(&venues).is_ok() {
+            std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root
+        }
+
+        let (status, body) = post(
+            &app,
+            "/lighting/mvr/inspect",
+            "Kellys.mvr",
+            &synthetic_mvr(true),
+            &[("name", "kellys")],
+        )
+        .await;
+        std::fs::set_permissions(&venues, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["kind"], "unreadable", "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("cannot be read"),
+            "{body}"
+        );
     }
 
     async fn post_empty(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
