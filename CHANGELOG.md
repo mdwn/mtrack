@@ -775,9 +775,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `write_song_lighting`, `patch_song_lighting` and `delete_song_lighting` refuse a file in this
     host's venues or fixture types directory, as `PUT` and `DELETE /api/lighting/<path>` do
     (`foo/lighting/show.light is in the venues directory (rig/venues): ...`), before anything is
-    written. A show that does not parse is refused with the parser's message alone, without the
-    `invalid .light source:` or `patched .light is invalid:` prefix. The song's `lighting:` entry
-    they add or remove is saved as `PUT /api/songs/<name>` saves.
+    written. A show that does not parse is refused with `Invalid light show DSL: <the parser's
+    message>`, as the venue and fixture type tools say theirs, where it said `invalid .light
+    source:` or `patched .light is invalid:`; `PUT /api/lighting/<path>` now gives each of its
+    `errors` the same prefix. They also hold the show to the songs folder, as the web UI's
+    lighting endpoints do: a song whose `lighting/` folder is a link out of the songs folder, or
+    whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
+    the allowed directory`), where they wrote, patched or deleted the file there. The song's
+    `lighting:` entry they add or remove is saved as `PUT /api/songs/<name>` saves.
   - None of these set an old file aside, as the web UI's saves do not.
 
 - **`mtrack migrate` backs up every file it overwrites, and writes none beside one** (#671):

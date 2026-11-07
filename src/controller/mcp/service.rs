@@ -2348,7 +2348,14 @@ impl McpServer {
         let store = self.config_store()?;
         let songs_root = self.songs_root_verified().await?;
         let shown = shown_in(songs_root.as_path(), &path);
-        web(lighting_api::check_light_show_delete(store.path(), &path, &shown).await).await?;
+        web(lighting_api::check_light_show_delete(
+            store.path(),
+            songs_root.as_path(),
+            &path,
+            &shown,
+        )
+        .await)
+        .await?;
 
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
@@ -2384,7 +2391,7 @@ impl McpServer {
 
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
-        web(lighting_api::remove_light_show(&path).await).await?;
+        web(lighting_api::remove_light_show(songs_root.as_path(), &path).await).await?;
         self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
@@ -3957,8 +3964,9 @@ impl McpServer {
     }
 
     /// Writes a song's light show `source` to `path` by the web UI's rule
-    /// ([`lighting_api::save_light_show`]): against the tempo `song` loads
-    /// it with, its `include`s kept inside the songs root.
+    /// ([`lighting_api::save_light_show`]): inside the songs root, against
+    /// the tempo `song` loads it with, its `include`s kept inside the songs
+    /// root.
     async fn save_light_show(
         &self,
         song: &crate::songs::Song,
@@ -3966,7 +3974,7 @@ impl McpServer {
         source: String,
     ) -> Result<(), McpError> {
         let store = self.config_store()?;
-        let root = self.include_root(song).await;
+        let root = self.songs_root_verified().await?.as_path().to_path_buf();
         let shown = shown_in(&root, path);
         web(lighting_api::save_light_show(
             store.path(),
@@ -5597,6 +5605,67 @@ profiles:
         assert!(!read(&root, "songs/bar/song.yaml")
             .unwrap()
             .contains("show.light"));
+    }
+
+    /// The light show tools hold a song's show to the songs root, as the
+    /// web UI's lighting endpoints do: a song whose `lighting/` is a link
+    /// out of the songs root is not written through it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_lighting_stays_inside_the_songs_root() {
+        let baz = "name: Baz\ntracks: []\n";
+        let (server, fixture) =
+            server(&[("songs/baz/song.yaml", baz), ("elsewhere/keep", "")]).await;
+        let root = fixture.root.clone();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("songs/baz/lighting"))
+            .unwrap();
+
+        let refused = refusal(
+            server
+                .write_song_lighting(Parameters(write_show_args("Baz", SHOW)))
+                .await,
+        );
+        assert_eq!(refused, "Path is outside the allowed directory");
+        assert!(
+            !root.join("elsewhere/show.light").exists(),
+            "written outside"
+        );
+        assert_eq!(read(&root, "songs/baz/song.yaml").as_deref(), Some(baz));
+    }
+
+    /// A song whose `lighting:` names a show outside the songs root
+    /// (`../../x/show.light`) loads it, but neither `patch_song_lighting`
+    /// nor `delete_song_lighting` writes or deletes it, as the web UI's
+    /// lighting endpoints would not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn song_lighting_outside_the_songs_root_is_not_patched_or_deleted() {
+        let qux = "name: Qux\ntracks: []\nlighting:\n  - file: ../../x/show.light\n";
+        let (server, fixture) =
+            server(&[("songs/qux/song.yaml", qux), ("x/show.light", SHOW)]).await;
+        let root = fixture.root.clone();
+
+        let patched = refusal(
+            server
+                .patch_song_lighting(Parameters(PatchSongLightingArgs {
+                    song: "Qux".to_string(),
+                    file: "show.light".to_string(),
+                    old_string: "blue".to_string(),
+                    new_string: "red".to_string(),
+                    replace_all: false,
+                }))
+                .await,
+        );
+        assert_eq!(patched, "Path is outside the allowed directory");
+        let deleted = refusal(
+            server
+                .delete_song_lighting(Parameters(SongLightingArgs {
+                    song: "Qux".to_string(),
+                    file: "show.light".to_string(),
+                }))
+                .await,
+        );
+        assert_eq!(deleted, "Path is outside the allowed directory");
+        assert_eq!(read(&root, "x/show.light").as_deref(), Some(SHOW));
+        assert_eq!(read(&root, "songs/qux/song.yaml").as_deref(), Some(qux));
     }
 
     #[tokio::test(flavor = "multi_thread")]

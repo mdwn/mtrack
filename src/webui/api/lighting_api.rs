@@ -341,6 +341,45 @@ fn resolve_lighting_path(
     }
 }
 
+/// The one songs-root rule for a song's light show, written or deleted, by
+/// the web UI and MCP alike: `path` inside the songs root `songs_root`,
+/// canonically, as [`SafePath::resolve`](super::super::safe_path::SafePath::resolve)
+/// holds every path the lighting endpoints take. A path not there yet is
+/// held to it by its nearest part that is there, canonicalized (a
+/// symlinked `lighting/` pointing outside is outside), the rest of it
+/// plain names (no `..`). Answers the path resolved: the one to write or
+/// delete. 403 outside the root.
+#[allow(clippy::result_large_err)]
+pub(crate) fn light_show_in_songs_root(
+    songs_root: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
+
+    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match SafePath::resolve(existing, &root) {
+            Ok(safe) => {
+                let mut resolved = safe.as_path().to_path_buf();
+                resolved.extend(missing.iter().rev());
+                return Ok(resolved);
+            }
+            Err(SafePathError::NotFound) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name.to_os_string());
+                    existing = parent;
+                }
+                // A `..` past a part that is not there, or nothing there
+                // at all: nowhere that can be shown to be inside.
+                _ => return Err(SafePathError::OutsideRoot.into_response()),
+            },
+            Err(e) => return Err(e.into_response()),
+        }
+    }
+}
+
 /// Refuses a light show path, resolved as the handler resolves it, that is
 /// inside the venues or fixture types directory the engine reads on this
 /// host: those files are written by name, by the one rule for them
@@ -414,9 +453,11 @@ pub(super) async fn put_lighting_file(
 
 /// Writes a song's light show `body` to `path` (shown as `name`), by the
 /// one rule of the web UI's light show save and MCP's
-/// `write_song_lighting` and `patch_song_lighting`: never a file in the
-/// venues or fixture types directory ([`refuse_venue_or_type_file`]);
-/// parsed first (400 with its `errors`) against `tempo`, the tempo its
+/// `write_song_lighting` and `patch_song_lighting`: inside `songs_root`
+/// ([`light_show_in_songs_root`]); never a file in the venues or fixture
+/// types directory ([`refuse_venue_or_type_file`]); parsed first (400 with
+/// its `errors`, each `Invalid light show DSL: ...`, as the venue and
+/// fixture type saves say it) against `tempo`, the tempo its
 /// song loads it with (a show inheriting its song's tempo is valid content
 /// that a tempo-less parse rejects), its `include`s resolved where it is
 /// written and kept inside `songs_root`; its directory made only then. The
@@ -429,11 +470,19 @@ pub(crate) async fn save_light_show(
     body: String,
     tempo: Option<&crate::tempo::TempoMap>,
 ) -> Result<(), axum::response::Response> {
+    // The venues and fixture types refusal first: it says what to do
+    // instead, where the songs-root one, for those directories outside the
+    // songs root, says only no.
     refuse_venue_or_type_file(config_path, path, name)
         .await
         .map_err(IntoResponse::into_response)?;
+    let path = &light_show_in_songs_root(songs_root, path)?;
     if let Err(errors) = config_io::validate_light_show(&body, Some(path), Some(songs_root), tempo)
     {
+        let errors: Vec<String> = errors
+            .into_iter()
+            .map(|e| format!("Invalid light show DSL: {e}"))
+            .collect();
         return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
     }
 
@@ -471,7 +520,14 @@ pub(super) async fn delete_lighting_file(
         }
     };
 
-    if let Err(refused) = check_light_show_delete(&state.config_path, safe.as_path(), &name).await {
+    if let Err(refused) = check_light_show_delete(
+        &state.config_path,
+        &state.songs_path(),
+        safe.as_path(),
+        &name,
+    )
+    .await
+    {
         return refused;
     }
 
@@ -480,7 +536,7 @@ pub(super) async fn delete_lighting_file(
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    match remove_light_show(&path).await {
+    match remove_light_show(&state.songs_path(), &path).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
         Err(e) => e,
     }
@@ -488,10 +544,12 @@ pub(super) async fn delete_lighting_file(
 
 /// Whether the file at `path` (shown as `name`) may be deleted as a song's
 /// light show, by the one rule of the web UI's delete and MCP's
-/// `delete_song_lighting`: a `.light` file (400 otherwise), never one in
-/// the venues or fixture types directory ([`refuse_venue_or_type_file`]).
+/// `delete_song_lighting`: a `.light` file (400 otherwise), inside
+/// `songs_root` ([`light_show_in_songs_root`]), never one in the venues or
+/// fixture types directory ([`refuse_venue_or_type_file`]).
 pub(crate) async fn check_light_show_delete(
     config_path: &std::path::Path,
+    songs_root: &std::path::Path,
     path: &std::path::Path,
     name: &str,
 ) -> Result<(), axum::response::Response> {
@@ -502,17 +560,22 @@ pub(crate) async fn check_light_show_delete(
         )
             .into_response());
     }
+    // As a save: the venues and fixture types refusal, which says what to
+    // do instead, first.
     refuse_venue_or_type_file(config_path, path, name)
         .await
-        .map_err(IntoResponse::into_response)
+        .map_err(IntoResponse::into_response)?;
+    light_show_in_songs_root(songs_root, path).map(drop)
 }
 
 /// Removes a song's light show file, [`check_light_show_delete`] first,
-/// off the async runtime.
+/// off the async runtime; held to `songs_root` again
+/// ([`light_show_in_songs_root`]), as it is checked some time before.
 pub(crate) async fn remove_light_show(
+    songs_root: &std::path::Path,
     path: &std::path::Path,
 ) -> Result<(), axum::response::Response> {
-    let path = path.to_path_buf();
+    let path = light_show_in_songs_root(songs_root, path)?;
     super::helpers::spawn_blocking_io("delete lighting file", move || std::fs::remove_file(&path))
         .await
 }
