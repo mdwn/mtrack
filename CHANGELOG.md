@@ -781,7 +781,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `errors` the same prefix. They also hold the show to the songs folder, as the web UI's
     lighting endpoints do: a song whose `lighting/` folder is a link out of the songs folder, or
     whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
-    the allowed directory`), where they wrote, patched or deleted the file there. The song's
+    the allowed directory`), where they wrote, patched or deleted the file there. So is a show
+    that is a link leading nowhere, which a write would have made wherever it pointed, by these
+    tools and `PUT /api/lighting/<path>` alike. A show that is a link is deleted as the link, by
+    `delete_song_lighting` and `DELETE /api/lighting/<path>` alike: both deleted what it led to
+    (another song's show, or with `lighting/show.light -> ../song.yaml`, the song's own config),
+    and checked the `.light` name of the target, not of the link. A show saved through a link has
+    its `include`s checked beside the link, where the song loader reads them, not beside what it
+    leads to. The song's
     `lighting:` entry they add or remove is saved as `PUT /api/songs/<name>` saves.
   - None of these set an old file aside, as the web UI's saves do not.
 

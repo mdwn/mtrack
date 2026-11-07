@@ -5660,6 +5660,62 @@ profiles:
         assert_eq!(read(&root, "songs/qux/song.yaml").as_deref(), Some(qux));
     }
 
+    /// `delete_song_lighting` deletes a show that is a link as the link:
+    /// one leading to the song's own config, or to another song's show,
+    /// leaves what it leads to.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_song_lighting_removes_a_link_not_its_target() {
+        let b = "name: B\ntracks: []\n";
+        let (server, fixture) = server(&[
+            ("songs/a/song.yaml", "name: A\ntracks: []\n"),
+            ("songs/a/lighting/show.light", SHOW),
+            ("songs/b/song.yaml", b),
+        ])
+        .await;
+        let root = fixture.root.clone();
+        let link = root.join("songs/b/lighting/show.light");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        for target in ["../song.yaml", "../../a/lighting/show.light"] {
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            let _ = answer(
+                server
+                    .delete_song_lighting(Parameters(SongLightingArgs {
+                        song: "B".to_string(),
+                        file: "show.light".to_string(),
+                    }))
+                    .await,
+            );
+            assert!(
+                std::fs::symlink_metadata(&link).is_err(),
+                "{target}: link left"
+            );
+            assert_eq!(read(&root, "songs/b/song.yaml").as_deref(), Some(b));
+            assert_eq!(
+                read(&root, "songs/a/lighting/show.light").as_deref(),
+                Some(SHOW)
+            );
+        }
+    }
+
+    /// `write_song_lighting` does not write through a link leading
+    /// nowhere: the write would make its target, outside the songs root.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_lighting_refuses_a_link_leading_nowhere() {
+        let (server, fixture) = server(&[("songs/baz/song.yaml", "name: Baz\ntracks: []\n")]).await;
+        let root = fixture.root.clone();
+        let target = root.join("elsewhere/x.light");
+        std::fs::create_dir_all(root.join("songs/baz/lighting")).unwrap();
+        std::os::unix::fs::symlink(&target, root.join("songs/baz/lighting/show.light")).unwrap();
+
+        let refused = refusal(
+            server
+                .write_song_lighting(Parameters(write_show_args("Baz", SHOW)))
+                .await,
+        );
+        assert_eq!(refused, "Path is outside the allowed directory");
+        assert!(!target.exists(), "written outside");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_refused_save_makes_no_directory() {
         let (server, fixture) = server(&[]).await;
