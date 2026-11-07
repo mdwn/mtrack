@@ -2169,8 +2169,18 @@ impl InitReport {
 /// ([`named_song_dirs`], [`init_song_dir`]); one that has a `song.yaml`
 /// already is left as it is and reported as skipped.
 pub fn initialize_songs(start_path: &Path) -> Result<InitReport, Box<dyn Error>> {
+    initialize_songs_among(start_path, None)
+}
+
+/// [`initialize_songs`], naming new songs past every song in `songs_root`
+/// too (the player's songs directory, when `start_path` is a folder in it
+/// or beside it), as the bulk import does ([`named_song_dirs`]).
+pub fn initialize_songs_among(
+    start_path: &Path,
+    songs_root: Option<&Path>,
+) -> Result<InitReport, Box<dyn Error>> {
     let mut report = InitReport::default();
-    for (song_directory, name) in named_song_dirs(start_path, None)? {
+    for (song_directory, name) in named_song_dirs(start_path, songs_root)? {
         if init_song_dir(&song_directory, &name)? {
             report.created.push(song_directory);
         } else {
@@ -2268,38 +2278,70 @@ fn is_apple_double(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with("._"))
 }
 
-/// Whether the walk of the songs tree passes `path` over: a hidden
-/// directory (`.git/`, [`is_hidden`]) or an AppleDouble file
-/// ([`is_apple_double`]). Another hidden file is read (`Foo/.song.yaml` is a
-/// song). The one rule for the loader, [`song_dirs`] and
-/// [`has_song_config`], so they agree on what is a song's.
+/// Whether the walk of the songs tree passes `path` over when looking for
+/// song configs and folders: a hidden directory (`.git/`, [`is_hidden`]) or
+/// an AppleDouble file ([`is_apple_double`]). A hidden config is read
+/// (`Foo/.song.yaml` is a song, as the loader has always read it). The one
+/// rule for configs, for the loader, [`song_dirs`] and [`has_song_config`],
+/// so they agree on what is a song's; a track or MIDI file that marks a
+/// folder for init is held to [`is_hidden`] instead, as init leaves hidden
+/// media out of a new config.
 fn walk_passes_over(path: &Path) -> bool {
     is_apple_double(path) || (is_hidden(path) && path.is_dir())
 }
 
-/// The entries of the directory `dir` in the songs tree, for a walk below
-/// the root: one that cannot be read is passed over with a warning, as
-/// having none, so one unreadable folder does not hide every other song.
-fn walk_entries(dir: &Path) -> Vec<PathBuf> {
+/// What a walk of the songs tree does with a folder, or an entry, it cannot
+/// read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreadable {
+    /// The walk fails: the player's loader, whose reload then keeps the
+    /// songs it had (and whose startup fails), rather than losing a
+    /// folder's songs (and the playlists naming them) silently.
+    Fail,
+    /// The folder is passed over with a warning: init and the bulk import,
+    /// which make configs for what they can read.
+    Skip,
+}
+
+/// The entries of the directory `dir` in the songs tree, read as `mode`
+/// says ([`Unreadable`]): a folder or entry that cannot be read fails the
+/// walk, or is passed over with a warning, never dropped silently.
+fn walk_entries(dir: &Path, mode: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    let skip = |e: std::io::Error| {
+        warn!(dir = %dir.display(), error = %e, "Cannot read a directory in the songs tree; passing over it");
+    };
     // codeql[rust/path-injection] dir is the songs directory or one below it.
-    match fs::read_dir(dir) {
-        Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(e) => {
-            warn!(dir = %dir.display(), error = %e, "Cannot read a directory in the songs tree; passing over it");
-            Vec::new()
+    let entries = match (fs::read_dir(dir), mode) {
+        (Ok(entries), _) => entries,
+        (Err(e), Unreadable::Fail) => return Err(e),
+        (Err(e), Unreadable::Skip) => {
+            skip(e);
+            return Ok(Vec::new());
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match (entry, mode) {
+            (Ok(entry), _) => paths.push(entry.path()),
+            (Err(e), Unreadable::Fail) => return Err(e),
+            (Err(e), Unreadable::Skip) => skip(e),
         }
     }
+    Ok(paths)
 }
 
 /// The song directories under `root`, in name order: each directory below
 /// it that holds an audio track, a MIDI file or a song's config, under any
-/// name, or a `song.yaml` that does not read ([`marks_a_song_dir`]). The walk
-/// ([`walk_passes_over`], [`walk_entries`]) leaves out hidden directories
-/// and AppleDouble files and does not descend into a song
-/// directory, so a library laid out as `artist/album/song/` is found at any
-/// depth, and a project's own `lighting/`, `playlists/` and `profiles/`
-/// (none of those files) are not songs. `root` itself is never one. A subdirectory that cannot be
-/// read is passed over.
+/// name, or a `song.yaml` that does not read ([`marks_a_song_dir`]). A
+/// hidden track or MIDI file (`.Bass.wav`, [`is_hidden`]) marks none, as
+/// init leaves it out of a config. The walk ([`walk_passes_over`],
+/// [`walk_entries`] in [`Unreadable::Skip`]) leaves out hidden directories
+/// and AppleDouble files and does not descend into a song directory, so a
+/// library laid out as `artist/album/song/` is found at any depth, and a
+/// project's own `lighting/`, `playlists/` and `profiles/` (none of those
+/// files) are not songs. `root` itself is never one. A subdirectory that
+/// cannot be read is passed over with a warning; an unreadable `root` is an
+/// error.
 pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     /// A directory's visible subdirectories, and whether it is a song's.
     fn read(paths: Vec<PathBuf>) -> (Vec<PathBuf>, bool) {
@@ -2311,7 +2353,8 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
             }
             if path.is_dir() {
                 subdirs.push(path);
-            } else if matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi)
+            } else if (!is_hidden(&path)
+                && matches!(FileKind::of(&path), FileKind::Audio | FileKind::Midi))
                 || marks_a_song_dir(&path)
             {
                 is_song = true;
@@ -2322,7 +2365,8 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     }
     fn walk(dirs: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
         for dir in dirs {
-            let (subdirs, is_song) = read(walk_entries(&dir));
+            let entries = walk_entries(&dir, Unreadable::Skip).unwrap_or_default();
+            let (subdirs, is_song) = read(entries);
             if is_song {
                 found.push(dir);
             } else {
@@ -2331,10 +2375,7 @@ pub fn song_dirs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
         }
     }
     let mut found = Vec::new();
-    // codeql[rust/path-injection] root is the songs directory.
-    let top = fs::read_dir(root)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
+    let top = root_entries(root, Unreadable::Skip)?;
     walk(read(top).0, &mut found);
     Ok(found)
 }
@@ -2513,32 +2554,42 @@ fn insert_song(songs: &mut HashMap<String, Arc<Song>>, song: Arc<Song>) {
     }
 }
 
+/// The entries of the walk's `root`, which must be read: an unreadable
+/// root is an error in either mode; an entry in it that cannot be read is
+/// taken as `mode` says.
+fn root_entries(root: &Path, mode: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    // codeql[rust/path-injection] root is the songs directory configured at startup.
+    fs::read_dir(root)?;
+    walk_entries(root, mode)
+}
+
 /// Every file under `root` the song loader takes up as a song config
 /// ([`song_yaml`]), in the order it reads them: each directory's entries in
 /// turn, a subdirectory's files where it stands. The walk is
 /// [`song_dirs`]'s ([`walk_passes_over`], [`walk_entries`]): a hidden
-/// directory or an AppleDouble file is passed over, and a subdirectory that
-/// cannot be read is passed over with a warning; only an unreadable `root`
-/// is an error.
-fn song_config_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    fn walk(paths: Vec<PathBuf>, found: &mut Vec<PathBuf>) {
+/// directory or an AppleDouble file is passed over, and a folder or entry
+/// that cannot be read fails the walk or is passed over with a warning, as
+/// `mode` says ([`Unreadable`]); an unreadable `root` is an error.
+fn song_config_files(root: &Path, mode: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+    fn walk(
+        paths: Vec<PathBuf>,
+        mode: Unreadable,
+        found: &mut Vec<PathBuf>,
+    ) -> std::io::Result<()> {
         for path in paths {
             if walk_passes_over(&path) {
                 continue;
             }
             if path.is_dir() {
-                walk(walk_entries(&path), found);
+                walk(walk_entries(&path, mode)?, mode, found)?;
             } else if song_yaml(&path) != SongYaml::NotOne {
                 found.push(path);
             }
         }
+        Ok(())
     }
     let mut found = Vec::new();
-    // codeql[rust/path-injection] root is the songs directory configured at startup.
-    let top = fs::read_dir(root)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    walk(top, &mut found);
+    walk(root_entries(root, mode)?, mode, &mut found)?;
     Ok(found)
 }
 
@@ -2569,9 +2620,11 @@ fn read_song_config(path: &Path) -> Option<Result<config::Song, (String, config:
 
 /// The names the songs configured under `root` have, loaded or not, as the
 /// loader names them ([`read_song_config`]: a failed song's too), without
-/// loading any song: what a new config must not name its song.
+/// loading any song: what a new config must not name its song. A folder
+/// that cannot be read is passed over with a warning
+/// ([`Unreadable::Skip`]), as init and the bulk import pass it over.
 pub fn configured_song_names(root: &Path) -> std::io::Result<HashSet<String>> {
-    Ok(song_config_files(root)?
+    Ok(song_config_files(root, Unreadable::Skip)?
         .iter()
         .filter_map(|path| match read_song_config(path)? {
             Ok(config) => Some(config.name().to_string()),
@@ -2596,7 +2649,10 @@ pub fn get_all_songs_with_defaults(
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
     let mut failures: Vec<SongLoadFailure> = Vec::new();
-    for path in song_config_files(path)? {
+    // A folder that cannot be read fails the load (`Unreadable::Fail`), as
+    // it always has: a reload keeps the songs it had rather than losing
+    // that folder's.
+    for path in song_config_files(path, Unreadable::Fail)? {
         match read_song_config(&path) {
             None => {}
             Some(Ok(song_config)) => match path.parent() {
@@ -4640,15 +4696,23 @@ sections:
         assert_eq!(names, ["Foo"]);
         assert!(super::has_song_config(&root.join("Foo")));
         assert!(!super::has_song_config(&root.join("Bar")));
+        // A folder holding only a hidden track is no song's, as init would
+        // leave the track out of its config.
+        fs::create_dir_all(root.join("Quiet"))?;
+        crate::testutil::write_wav(root.join("Quiet/.Bass.wav"), vec![vec![1_i32, 2]], 44100)?;
+        assert!(!super::song_dirs(root)?.contains(&root.join("Quiet")));
         Ok(())
     }
 
     /// A subdirectory that cannot be read is passed over, with a warning,
-    /// by the loader, `song_dirs` and the names init counts as taken: one
-    /// rule; only an unreadable root is an error.
+    /// by `song_dirs` and the names init counts as taken
+    /// (`Unreadable::Skip`); the player's loader fails on it
+    /// (`Unreadable::Fail`), so a reload keeps the songs it had. An
+    /// unreadable root is an error to all of them. (As root, every folder
+    /// reads: there is nothing to test.)
     #[cfg(unix)]
     #[test]
-    fn the_walk_passes_over_an_unreadable_subdirectory() -> Result<(), Box<dyn Error>> {
+    fn the_walk_takes_an_unreadable_subdirectory_as_its_mode_says() -> Result<(), Box<dyn Error>> {
         use std::os::unix::fs::PermissionsExt;
         let tempdir = tempfile::tempdir()?;
         let root = tempdir.path();
@@ -4661,14 +4725,41 @@ sections:
             )?;
         }
         fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(root.join("Locked")).is_ok() {
+            // Running as root: the folder reads all the same.
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
+            return Ok(());
+        }
         let names = super::configured_song_names(root);
         let dirs = super::song_dirs(root);
         let songs = get_all_songs(root);
         fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755))?;
         assert_eq!(names?, ["Foo".to_string()].into_iter().collect());
         assert_eq!(dirs?, [root.join("Foo")]);
-        assert_eq!(songs?.list().len(), 1);
+        assert!(songs.is_err(), "the loader fails on an unreadable folder");
         assert!(super::configured_song_names(&root.join("missing")).is_err());
+        assert!(super::song_dirs(&root.join("missing")).is_err());
+        Ok(())
+    }
+
+    /// Init on a folder beside the songs directory names past the songs
+    /// there too, as the bulk import does (`mtrack songs --init --config`).
+    #[test]
+    fn init_names_past_the_songs_directory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let songs = tempdir.path().join("songs");
+        let incoming = tempdir.path().join("incoming");
+        for dir in [songs.join("Live"), incoming.join("Intro")] {
+            fs::create_dir_all(&dir)?;
+            crate::testutil::write_wav(dir.join("t.wav"), vec![vec![1_i32, 2]], 44100)?;
+        }
+        fs::write(
+            songs.join("Live/song.yaml"),
+            "name: Intro\ntracks:\n  - name: t\n    file: t.wav\n",
+        )?;
+        super::initialize_songs_among(&incoming, Some(&songs))?;
+        let config = crate::config::Song::deserialize(&incoming.join("Intro/song.yaml"))?;
+        assert_eq!(config.name(), "Intro (2)");
         Ok(())
     }
 

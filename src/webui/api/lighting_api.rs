@@ -6165,6 +6165,10 @@ show "test" {
             std::fs::write(dir.join(sub).join("club.light"), "venue \"Club\" {\n").unwrap();
         }
         std::fs::set_permissions(dir.join("b"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(dir.join("b/probe"), "").is_ok() {
+            // Running as root: the folder takes writes all the same.
+            return;
+        }
         let (status, parsed) = fixture_type_request(
             state,
             "DELETE",
