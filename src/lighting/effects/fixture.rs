@@ -751,7 +751,7 @@ impl FixtureInfo {
                 None if max > 0.0 && min > 0.0 && dmx_offset > 0 => {
                     StrobeMap::Period { min, max, offset }
                 }
-                None => StrobeMap::Ratio { max },
+                None => StrobeMap::Ratio { max, offset },
             },
         }
     }
@@ -786,8 +786,9 @@ pub enum StrobeMap<'a> {
     /// `period`: the strobe period (1/Hz) runs linearly over
     /// `offset..=1` of the channel, as many fixtures map it.
     Period { min: f64, max: f64, offset: f64 },
-    /// No range to speak of: the rate as a fraction of the maximum.
-    Ratio { max: f64 },
+    /// No range to speak of: the rate as a fraction of the maximum, over
+    /// `offset..=1` of the channel (a period curve with no minimum, #633).
+    Ratio { max: f64, offset: f64 },
 }
 
 impl StrobeMap<'_> {
@@ -831,7 +832,9 @@ impl StrobeMap<'_> {
                 };
                 crate::lighting::channels::lerp(offset, 1.0, period_fraction).clamp(0.0, 1.0)
             }
-            StrobeMap::Ratio { max } => (hz / max).min(1.0),
+            StrobeMap::Ratio { max, offset } => {
+                crate::lighting::channels::lerp(offset, 1.0, (hz / max).min(1.0))
+            }
         }
     }
 
@@ -870,7 +873,7 @@ impl StrobeMap<'_> {
                 let period = max_period - from_fraction(offset)? * (max_period - min_period);
                 Some(1.0 / period)
             }
-            StrobeMap::Ratio { max } => (byte > 0.0).then(|| (byte / 255.0 * max).min(max)),
+            StrobeMap::Ratio { max, offset } => Some(from_fraction(offset)? * max),
         }
     }
 }

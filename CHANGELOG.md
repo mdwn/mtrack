@@ -745,6 +745,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A strobe's DMX offset holds without a minimum frequency** (#633): on the period curve, a fixture
+  type with `strobe_dmx_offset` but no `min_strobe_frequency` drove its strobe channel to `hz / max`
+  of the whole channel, so a slow strobe landed below the offset, where the fixture does not
+  strobe: with `max_strobe_frequency: 20` and `strobe_dmx_offset: 64`, 0.3 to 5 Hz wrote bytes of
+  64 and under, and the state stream read most of them back as no strobe. Any rate over 0 now writes a
+  byte from the offset to 255 (5 Hz: 112), and the state stream reads it back through the same
+  map. A type with no offset writes what it wrote.
+
 - **A `#` or `//` inside a quoted show, sequence or channel name is part of the name** (#656): the
   grammar skipped comments inside the quotes of a show's or sequence's name, a fixture type's
   `channel_map` key and a `special_cases` entry, so `show "Truss #3" { … }` read the name as

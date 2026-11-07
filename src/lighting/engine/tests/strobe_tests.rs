@@ -1233,3 +1233,29 @@ fn the_state_stream_reports_the_rate_a_fixture_strobes_at() {
     assert_eq!(rate(&engine, "Brick"), None);
     assert_eq!(rate(&engine, "Par"), None);
 }
+
+/// #633: a period curve with a DMX offset and no minimum frequency wrote
+/// `hz / max` of the whole channel, so a slow strobe landed below the
+/// offset, where the fixture does not strobe, and read back as none. The
+/// offset holds there as everywhere: any rate over 0 writes a byte in
+/// `offset..=255`, and that byte reads back to about the rate.
+#[test]
+fn a_dmx_offset_holds_without_a_minimum_frequency() {
+    for hz in [0.3, 1.0, 2.0, 5.0] {
+        let fixture = create_fixture_with_strobe_offset("Brick", 1, 1, 20.0, 0.0, 64);
+        let byte = strobe_byte(fixture.clone(), hz);
+        assert!(byte >= 64, "{hz} Hz wrote {byte}, below the offset");
+        let back = fixture
+            .strobe_hz(byte)
+            .unwrap_or_else(|| panic!("{hz} Hz: byte {byte} reads back as no strobe"));
+        // One byte of the 191 above the offset is 20/191 Hz.
+        assert!(
+            (back - hz).abs() <= 20.0 / 191.0 / 2.0 + 1e-9,
+            "{hz} Hz: byte {byte} reads back as {back} Hz"
+        );
+    }
+    // Under the offset is not a strobe rate.
+    let fixture = create_fixture_with_strobe_offset("Brick", 1, 1, 20.0, 0.0, 64);
+    assert_eq!(fixture.strobe_hz(63), None);
+    assert_eq!(fixture.strobe_hz(255), Some(20.0));
+}
