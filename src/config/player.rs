@@ -38,12 +38,9 @@ fn default_active_playlist() -> String {
 /// profile is matched by the `hostname` inside it, not by its file name.
 /// Shared by config load, gain persistence and the web UI's list so all
 /// agree on which file owns the active profile.
-pub(crate) fn list_profile_files(
-    dir: &Path,
-    unreadable: crate::util::Unreadable,
-) -> Result<Vec<PathBuf>, ConfigError> {
+pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
     // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-    crate::util::yaml_config_files(dir, unreadable).map_err(|source| ConfigError::Io {
+    crate::util::yaml_config_files(dir).map_err(|source| ConfigError::Io {
         path: dir.to_path_buf(),
         source,
     })
@@ -369,7 +366,7 @@ impl Player {
             None => return Ok(()),
         };
 
-        let yaml_paths = list_profile_files(&dir_path, crate::util::Unreadable::Warn)?;
+        let yaml_paths = list_profile_files(&dir_path)?;
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {

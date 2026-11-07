@@ -888,7 +888,7 @@ fn remove_song_from_playlists(
     // Each playlist's file, as the loader reads it (`playlist::playlist_files`).
     if let Some(dir) = playlists_dir {
         if dir.is_dir() {
-            match crate::playlist::playlist_files(dir, crate::util::Unreadable::Skip) {
+            match crate::playlist::playlist_files(dir) {
                 Ok(files) => files_to_check.extend(files.into_iter().map(|file| file.path)),
                 Err(e) => tracing::warn!(
                     "{}: the playlists could not be listed, so \"{song_name}\" stays on them: {e}",

@@ -135,6 +135,36 @@ pub(crate) fn resolve_named_file(
     }
 }
 
+/// The answer to a write of `path` (`config_io::write`): a create beaten to
+/// the file by one already there (`AlreadyExists`) is `exists`, a 409;
+/// another failure a 500.
+#[allow(clippy::result_large_err)]
+pub(crate) fn written(
+    result: std::io::Result<()>,
+    path: &std::path::Path,
+    what: &str,
+) -> Result<(), axum::response::Response> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err((
+            StatusCode::CONFLICT,
+            Json(json!({"error": format!(
+                "a {what} file `{}` already exists",
+                crate::util::filename_display(path)
+            )})),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!(
+                "Failed to write {what}: {}",
+                super::super::config_io::write_message(path, &e)
+            )})),
+        )
+            .into_response()),
+    }
+}
+
 /// Creates a configured directory, before anything canonicalizes it.
 ///
 /// Ordering matters: [`resolve_named_file`] verifies the root by

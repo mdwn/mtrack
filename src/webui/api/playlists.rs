@@ -264,29 +264,11 @@ pub(super) async fn put_playlist_by_name(
     let fp = file_path.clone();
     let yaml_owned = yaml;
     let new = !file.exists();
-    let created = super::helpers::spawn_blocking_io("write playlist", move || {
-        if !new {
-            return config_io::staged_write(&fp, &yaml_owned).map(|()| true);
-        }
-        match config_io::staged_create(&fp, &yaml_owned) {
-            Ok(()) => Ok(true),
-            Err(config_io::CreateFailure::Exists) => Ok(false),
-            Err(config_io::CreateFailure::Write(e)) => Err(e),
-        }
+    let result = super::helpers::spawn_blocking_io("write playlist", move || {
+        Ok::<_, String>(config_io::write(&fp, &yaml_owned, new))
     })
     .await?;
-    if !created {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": format!(
-                    "a playlist file `{}` already exists",
-                    crate::util::filename_display(&file_path)
-                )
-            })),
-        )
-            .into_response());
-    }
+    super::helpers::written(result, &file_path, "playlist")?;
 
     // Reload songs to pick up the new playlist.
     super::helpers::reload_songs(&state).await?;

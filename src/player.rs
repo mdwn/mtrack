@@ -1522,9 +1522,7 @@ pub fn load_playlists(
         if dir.is_dir() {
             // Each name's file (`playlist::playlist_files`): with both
             // `<name>.yaml` and `<name>.yml`, the `.yaml`, with a warning.
-            for playlist::PlaylistFile { name, path, unread } in
-                playlist::playlist_files(dir, crate::util::Unreadable::Warn)?
-            {
+            for playlist::PlaylistFile { name, path, unread } in playlist::playlist_files(dir)? {
                 if let Some(unread) = unread {
                     warn!(
                         name = %name,
@@ -4290,6 +4288,45 @@ mod test {
         assert!(playlists.contains_key("my_set"));
         assert_eq!(playlists["my_set"].songs().len(), 2);
 
+        Ok(())
+    }
+
+    /// The running profile's file (`hardware.profile_file`, which the web UI
+    /// links it by) is the one it was loaded from, and stays so after the
+    /// profile is updated by index, as MCP, the web UI and gRPC do.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_running_profiles_file_survives_a_profile_update() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("profiles"))?;
+        std::fs::create_dir(dir.path().join("songs"))?;
+        std::fs::write(
+            dir.path().join("profiles/rig.yml"),
+            "kind: hardware_profile\n",
+        )?;
+        let path = dir.path().join("mtrack.yaml");
+        std::fs::write(&path, "songs: songs\nprofiles_dir: profiles\n")?;
+        let config = config::Player::deserialize(&path)?;
+        let songs = songs::get_all_songs(&dir.path().join("songs"))?;
+        let playlists = super::load_playlists(None, None, songs)?;
+        let player = Player::new(playlists, "playlist".to_string(), &config, Some(dir.path()))?;
+        let store = Arc::new(config::store::ConfigStore::new(config, path.clone()));
+        player.set_config_store(store.clone());
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
+
+        let snap = store.read().await?;
+        let updated = config::Profile::new(None, None, None, None);
+        let snap = store.update_profile(0, updated, &snap.checksum).await?;
+        assert_eq!(snap.config.all_profiles()[0].source_file(), Some("rig.yml"));
+        let _ = player.apply_config_change().await;
+        player.await_hardware_ready().await;
+        assert_eq!(
+            player.hardware_status().profile_file.as_deref(),
+            Some("rig.yml")
+        );
         Ok(())
     }
 

@@ -82,48 +82,35 @@ pub fn to_kebab_case(s: &str) -> String {
     result
 }
 
-/// What a listing does with a directory entry it cannot read: it is passed
-/// over either way, with a warning only where the files are loaded (the
-/// config's profiles, the playlists), so a per-request lookup or listing
-/// stays quiet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unreadable {
-    Warn,
-    Skip,
-}
-
 /// The regular files in `dir`, as it lists them, sorted by file name: the
 /// one listing every lookup and list of named files below works from. Names
 /// are kept as the filesystem has them, UTF-8 or not. An entry that cannot
-/// be read is passed over ([`Unreadable`]).
-pub fn files_in(dir: &Path, unreadable: Unreadable) -> std::io::Result<Vec<PathBuf>> {
+/// be read is passed over with a warning.
+pub fn files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         match entry {
             Ok(entry) if entry.path().is_file() => found.push(entry.path()),
             Ok(_) => {}
-            Err(e) if unreadable == Unreadable::Warn => {
-                tracing::warn!("{}: an entry could not be read: {e}", dir.display())
-            }
-            Err(_) => {}
+            Err(e) => tracing::warn!("{}: unreadable entry: {e}", dir.display()),
         }
     }
     found.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     Ok(found)
 }
 
-/// [`files_in`] for a lookup by name, quiet as every per-request lookup
-/// is: a directory that is not there, or cannot be listed, lists nothing
-/// (the name's file is new; its write then fails if the directory does).
+/// [`files_in`] for a lookup by name: a directory that is not there, or
+/// cannot be listed, lists nothing (the name's file is new; its write then
+/// fails if the directory does).
 pub fn files_to_look_up(dir: &Path) -> Vec<PathBuf> {
-    files_in(dir, Unreadable::Skip).unwrap_or_default()
+    files_in(dir).unwrap_or_default()
 }
 
 /// The YAML config files in `dir` ([`files_in`]): every file whose name
 /// ends in `.yaml` or `.yml`, lowercase as written (`songs::is_yaml_config`),
 /// sorted by file name.
-pub fn yaml_config_files(dir: &Path, unreadable: Unreadable) -> std::io::Result<Vec<PathBuf>> {
-    Ok(files_in(dir, unreadable)?
+pub fn yaml_config_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(files_in(dir)?
         .into_iter()
         .filter(|path| crate::songs::is_yaml_config(path))
         .collect())
@@ -230,11 +217,8 @@ pub fn yaml_file_at(dir: &Path, name: &str) -> Result<NamedFile, CaseClash> {
 /// [`yaml_file_at`] takes for it ([`yaml_files_named`]), with the other a
 /// name has (its `.yml` beside its `.yaml`), which is not read. Sorted by
 /// file name.
-pub fn yaml_files_by_name(
-    dir: &Path,
-    unreadable: Unreadable,
-) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
-    let files = files_in(dir, unreadable)?;
+pub fn yaml_files_by_name(dir: &Path) -> std::io::Result<Vec<(PathBuf, Option<PathBuf>)>> {
+    let files = files_in(dir)?;
     Ok(files
         .iter()
         .filter(|file| crate::songs::is_yaml_config(file))
@@ -1507,12 +1491,9 @@ mod test {
         let dir = dir.path();
         let name = std::ffi::OsStr::from_bytes(b"caf\xe9.yaml");
         std::fs::write(dir.join(name), "").unwrap();
+        assert_eq!(super::files_in(dir).unwrap(), vec![dir.join(name)]);
         assert_eq!(
-            super::files_in(dir, super::Unreadable::Skip).unwrap(),
-            vec![dir.join(name)]
-        );
-        assert_eq!(
-            super::yaml_files_by_name(dir, super::Unreadable::Skip).unwrap(),
+            super::yaml_files_by_name(dir).unwrap(),
             vec![(dir.join(name), None)]
         );
     }
@@ -1568,14 +1549,14 @@ mod test {
             Ok(NamedFile::New(dir.join("folder.yaml")))
         );
         assert_eq!(
-            yaml_files_by_name(dir, super::Unreadable::Skip).unwrap(),
+            yaml_files_by_name(dir).unwrap(),
             vec![
                 (dir.join("a.b.yml"), None),
                 (dir.join("set.yaml"), Some(dir.join("set.yml")))
             ]
         );
         assert_eq!(
-            yaml_config_files(dir, super::Unreadable::Skip).unwrap(),
+            yaml_config_files(dir).unwrap(),
             vec![
                 dir.join("a.b.yml"),
                 dir.join("set.yaml"),

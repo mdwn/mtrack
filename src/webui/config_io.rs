@@ -21,39 +21,28 @@ use crate::util;
 /// recoverable copy if the write is interrupted. See [`crate::util::write_file`],
 /// which this wraps for callers that report errors as strings.
 pub fn staged_write(path: &Path, content: &str) -> Result<(), String> {
-    util::write_file(path, content.as_bytes()).map_err(|e| {
-        let mut message = format!("Failed to write {}: {}", path.display(), e);
-        if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), &e) {
-            message.push_str("\n\n");
-            message.push_str(&hint);
-        }
-        message
-    })
+    write(path, content, false).map_err(|e| write_message(path, &e))
 }
 
-/// Why [`staged_create`] did not create a file.
-#[derive(Debug)]
-pub enum CreateFailure {
-    /// A file is there already (`util::write_new_file`): nothing was written.
-    Exists,
-    /// The write failed, with what [`staged_write`] would say.
-    Write(String),
+/// Writes `path` as [`staged_write`] does; with `new`, only creates it
+/// (`util::write_new_file`): a file already there fails with
+/// `ErrorKind::AlreadyExists` and is left as it was.
+pub fn write(path: &Path, content: &str, new: bool) -> std::io::Result<()> {
+    if new {
+        util::write_new_file(path, content.as_bytes())
+    } else {
+        util::write_file(path, content.as_bytes())
+    }
 }
 
-/// Creates `path` with `content` (`util::write_new_file`), refusing a file
-/// already there, as [`staged_write`] writes one.
-pub fn staged_create(path: &Path, content: &str) -> Result<(), CreateFailure> {
-    util::write_new_file(path, content.as_bytes()).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            return CreateFailure::Exists;
-        }
-        let mut message = format!("Failed to write {}: {}", path.display(), e);
-        if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), &e) {
-            message.push_str("\n\n");
-            message.push_str(&hint);
-        }
-        CreateFailure::Write(message)
-    })
+/// What a failed write of `path` says, with the hint for fixing it.
+pub fn write_message(path: &Path, e: &std::io::Error) -> String {
+    let mut message = format!("Failed to write {}: {}", path.display(), e);
+    if let Some(hint) = util::write_failure_hint(util::WriteTarget::File(path), e) {
+        message.push_str("\n\n");
+        message.push_str(&hint);
+    }
+    message
 }
 
 /// Validates a player config YAML string by attempting to deserialize it.

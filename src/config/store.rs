@@ -397,7 +397,7 @@ impl ConfigStore {
         // `00-new.yaml` sorts first and displaces the whole list -- so a
         // mismatched count means the mapping cannot be trusted and the write
         // would land in some other machine's profile.
-        let files = super::player::list_profile_files(&dir, crate::util::Unreadable::Skip)?;
+        let files = super::player::list_profile_files(&dir)?;
         if files.len() != profiles_after.len() {
             return Err(ConfigError::Validation(format!(
                 "'{}' now holds {} profile file(s) but {} were loaded; the directory changed \
@@ -471,7 +471,7 @@ impl ConfigStore {
     /// the main config and nothing would be left to load.
     fn directory_profiles(&self, config: &Player) -> Option<PathBuf> {
         let dir = config.resolved_profiles_dir(&self.path)?;
-        match super::player::list_profile_files(&dir, crate::util::Unreadable::Skip) {
+        match super::player::list_profile_files(&dir) {
             Ok(files) if !files.is_empty() => Some(dir),
             _ => None,
         }
@@ -668,6 +668,10 @@ impl ConfigStore {
                     "profile update removes populated section(s)"
                 );
             }
+            // The file it was loaded from stays its own: the status links
+            // the running profile by it (`hardware.profile_file`).
+            let mut profile = profile;
+            profile.set_source_file(list[index].source_file().map(String::from));
             list[index] = profile;
             Ok(())
         })
@@ -867,7 +871,7 @@ fn persist_gains_to_profile_file(
     hostname: &str,
     gains: &indexmap::IndexMap<String, f32>,
 ) -> Result<(), ConfigError> {
-    let yaml_paths = super::player::list_profile_files(dir, crate::util::Unreadable::Skip)?;
+    let yaml_paths = super::player::list_profile_files(dir)?;
 
     // Held from reading the file to writing it back, as the web UI's profile
     // saves hold it, or a save between the two would be lost (#578).

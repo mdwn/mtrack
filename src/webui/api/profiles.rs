@@ -110,18 +110,19 @@ fn profile_path(
     )
 }
 
-/// The answer to a create of a profile file that is there already.
-fn profile_exists(file: &crate::util::NamedFile) -> axum::response::Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
-            "error": format!(
-                "a profile file `{}` already exists",
-                crate::util::filename_display(file.path())
-            )
-        })),
-    )
-        .into_response()
+/// A file a test makes at its path between a save's lookup and its write,
+/// as another writer racing the save would.
+#[cfg(test)]
+static RACE: std::sync::Mutex<Option<(std::path::PathBuf, &'static str)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn race_before_write(path: &std::path::Path) {
+    let mut race = RACE.lock().unwrap();
+    if race.as_ref().is_some_and(|(at, _)| at == path) {
+        let (at, text) = race.take().unwrap();
+        std::fs::write(at, text).unwrap();
+    }
 }
 
 /// The profile currently in `filename`, if there is one and it parses.
@@ -183,8 +184,7 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
     let result = spawn_blocking_io("read profiles dir", move || {
         // The profile files the config loads, as it lists them.
         let mut items: Vec<ProfileFileInfo> = Vec::new();
-        for path in crate::config::list_profile_files(&profiles_dir, crate::util::Unreadable::Skip)?
-        {
+        for path in crate::config::list_profile_files(&profiles_dir)? {
             // A name the API cannot take back as written is listed, but
             // not as one to act on: a lossy name would reach another file.
             let name = path.file_name().unwrap_or_default();
@@ -352,7 +352,8 @@ pub(super) async fn put_profile(
         .get(axum::http::header::IF_NONE_MATCH)
         .is_some_and(|value| value == "*");
     if creating && file.exists() {
-        return Err(profile_exists(&file));
+        let exists = std::io::ErrorKind::AlreadyExists.into();
+        super::helpers::written(Err(exists), file.path(), "profile")?;
     }
     let new = !file.exists();
     let file_path = file.path().to_path_buf();
@@ -373,7 +374,7 @@ pub(super) async fn put_profile(
         if let Some(expected) = &expected {
             let current = old.as_deref().map(content_version);
             if current.as_deref() != Some(expected.as_str()) {
-                return Ok::<_, String>(Err(Some(current)));
+                return Ok::<_, String>(Err(current));
             }
         }
         let mut merged = new_json;
@@ -381,22 +382,18 @@ pub(super) async fn put_profile(
             carry_unknown_keys(old, &mut merged);
         }
         let yaml = crate::util::to_yaml_string(&merged).map_err(|e| e.to_string())?;
-        if new {
-            match config_io::staged_create(&fp, &yaml) {
-                Ok(()) => {}
-                Err(config_io::CreateFailure::Exists) => return Ok(Err(None)),
-                Err(config_io::CreateFailure::Write(e)) => return Err(e),
-            }
-        } else {
-            config_io::staged_write(&fp, &yaml)?;
-        }
-        Ok(Ok(content_version(yaml.as_bytes())))
+        #[cfg(test)]
+        race_before_write(&fp);
+        let written = config_io::write(&fp, &yaml, new);
+        Ok(Ok((written, content_version(yaml.as_bytes()))))
     })
     .await?;
     let version = match outcome {
-        Ok(version) => version,
-        Err(None) => return Err(profile_exists(&file)),
-        Err(Some(current)) => {
+        Ok((written, version)) => {
+            super::helpers::written(written, file.path(), "profile")?;
+            version
+        }
+        Err(current) => {
             return Err((
                 StatusCode::CONFLICT,
                 Json(json!({
@@ -973,8 +970,7 @@ mod test {
         };
 
         assert_eq!(
-            crate::config::list_profile_files(&profiles_dir, crate::util::Unreadable::Skip)
-                .unwrap(),
+            crate::config::list_profile_files(&profiles_dir).unwrap(),
             vec![
                 profiles_dir.join("host-a.yaml"),
                 profiles_dir.join("host-a.yml")
@@ -1238,6 +1234,40 @@ mod test {
             .expect("the broken file is listed");
         assert!(broken["error"].is_string(), "{broken}");
         assert_eq!(broken["has_audio"], false, "{broken}");
+    }
+
+    /// A file made between a new profile's lookup and its write (another
+    /// writer racing the save) is refused by the filesystem: 409, and left
+    /// as that writer made it.
+    #[tokio::test]
+    async fn a_create_beaten_to_its_file_is_a_conflict() {
+        let (mut state, dir) = test_state();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        state.profiles_dir = Some(profiles_dir.clone());
+        let racing = profiles_dir.canonicalize().unwrap().join("raced.yaml");
+        *super::RACE.lock().unwrap() = Some((racing.clone(), "theirs\n"));
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/profiles/raced")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"audio": {"device": "dev", "track_mappings": {"drums": [1]}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_body(response).await;
+        assert!(
+            body.contains("a profile file `raced.yaml` already exists"),
+            "{body}"
+        );
+        assert_eq!(std::fs::read_to_string(&racing).unwrap(), "theirs\n");
     }
 
     #[tokio::test]
