@@ -31,13 +31,11 @@ use crate::config;
 use crate::proto::player;
 use crate::util::{filename_display, FileStamp};
 
-/// Returns true if the extension is a supported audio (non-MIDI) format.
-pub fn is_supported_audio_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        "wav" | "flac" | "mp3" | "ogg" | "aac" | "m4a" | "mp4" | "aiff" | "aif"
-    )
-}
+mod file_kind;
+pub use file_kind::{
+    extension_of, has_exact_extension, has_extension, is_yaml_config, FileKind, AUDIO_EXTENSIONS,
+    LIGHTING_EXTENSIONS, MIDI_EXTENSIONS, YAML_EXTENSIONS,
+};
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 ///
@@ -604,13 +602,8 @@ impl Song {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Unreadable file stem");
-            let extension = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("Unreadable file extension");
-
-            match extension {
-                "mid" => {
+            match FileKind::of(&path) {
+                FileKind::Midi => {
                     if stem.starts_with("dmx_") {
                         light_shows.push(LightShow {
                             universe_name: "default universe".to_string(),
@@ -624,18 +617,19 @@ impl Song {
                         })
                     }
                 }
-                "light" => {
+                FileKind::Lighting => {
                     // Collected, not parsed: musical timing resolves at parse
                     // time, and the beat grid that supplies it needs the tracks
                     // this scan has not finished reading yet.
                     light_paths.push(path);
                 }
-                ext if is_supported_audio_extension(ext) => {
+                FileKind::Audio => {
                     let mut new_tracks = Track::load_tracks(&path)?;
                     tracks.append(&mut new_tracks);
                 }
-                unknown_extension => {
-                    info!("Unknown extension: {unknown_extension}. Ignoring file.");
+                FileKind::Directory | FileKind::Other => {
+                    let extension = path.extension().unwrap_or_default().to_string_lossy();
+                    info!("Unknown extension: {extension}. Ignoring file.");
                 }
             }
         }
@@ -1816,12 +1810,11 @@ impl Track {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("Unreadable file stem");
-        let extension = track_path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("Unreadable file extension");
-
-        if !is_supported_audio_extension(extension) {
+        if FileKind::of(track_path) != FileKind::Audio {
+            let extension = track_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("Unreadable file extension");
             return Err(format!(
                 "Unsupported audio format '.{}' for file '{}'",
                 extension,
@@ -2159,11 +2152,7 @@ pub fn get_all_songs_with_defaults(
         }
 
         // Only attempt to deserialize YAML files as song configs.
-        let is_yaml = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext == "yaml" || ext == "yml");
-        if is_yaml {
+        if is_yaml_config(&path) {
             // Peek at the `kind` field to decide how to handle this file:
             //   kind: song     → deserialize, record failure on error
             //   kind absent    → deserialize (backward compat), skip silently on error
@@ -4644,24 +4633,96 @@ pilot:
         Ok(())
     }
 
+    /// `songs --init` reads a file's kind by its extension in any case
+    /// (`FileKind::of`): `Bass.WAV` is a track, `Song.MID` the MIDI
+    /// playback, `dmx_Lights.MID` a MIDI DMX light show and `Show.LIGHT` a
+    /// DSL light show, as the file listing and the upload call them.
     #[test]
-    fn is_supported_audio_extension_accepted() {
-        for ext in &["wav", "mp3", "flac", "ogg", "aac", "m4a", "aiff"] {
-            assert!(
-                super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to be a supported audio extension"
-            );
-        }
+    fn initialize_reads_extensions_in_any_case() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("loud");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("Bass.WAV"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("Song.MID"), &midi_bytes)?;
+        fs::write(song_dir.join("dmx_Lights.MID"), &midi_bytes)?;
+        fs::write(
+            song_dir.join("Show.LIGHT"),
+            "show \"loud\" {\n    @00:00.000\n    front: static color: \"blue\", duration: 5s\n}",
+        )?;
+
+        let song = super::Song::initialize(&song_dir)?;
+
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "bass");
+        assert!(song.midi_playback().is_some());
+        assert_eq!(song.light_shows().len(), 1);
+        assert_eq!(song.dsl_lighting_shows().len(), 1);
+        Ok(())
     }
 
+    /// With every case counted, the last MIDI file by name is the playback:
+    /// `notes.mid` and `old.MID` give `old.MID` (main passed it over and
+    /// took `notes.mid`). A corrupt `Bad.WAV` now fails the song's init, as
+    /// a corrupt `bad.wav` already did.
     #[test]
-    fn is_supported_audio_extension_rejected() {
-        for ext in &["txt", "yaml", "mid", "light", ""] {
-            assert!(
-                !super::is_supported_audio_extension(ext),
-                "Expected '{ext}' to NOT be a supported audio extension"
-            );
-        }
+    fn initialize_counts_every_case_when_picking_and_reading() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pick");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("notes.mid"), &midi_bytes)?;
+        fs::write(song_dir.join("old.MID"), &midi_bytes)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        let playback = song.midi_playback().expect("MIDI playback");
+        assert!(
+            playback.file_path().ends_with("old.MID"),
+            "{}",
+            playback.file_path().display()
+        );
+
+        fs::write(song_dir.join("Bad.WAV"), "")?;
+        assert!(super::Song::initialize(&song_dir).is_err());
+        Ok(())
+    }
+
+    /// `load_tracks` takes an audio file whatever its extension's case.
+    #[test]
+    fn track_load_tracks_uppercase_extension() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("Bass.WAV");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name(), "bass");
+        Ok(())
+    }
+
+    /// A song config's name stays lowercase (`is_yaml_config`): the loader
+    /// passes over a `song.YAML`, as on main.
+    #[test]
+    fn get_all_songs_passes_over_uppercase_yaml() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("shouty");
+        fs::create_dir(&song_dir)?;
+        fs::write(
+            song_dir.join("song.YAML"),
+            "kind: song\nname: Shouty\ntracks: []\n",
+        )?;
+
+        let songs = super::get_all_songs(tempdir.path())?;
+
+        assert!(songs.list().is_empty());
+        assert!(songs.failures().is_empty());
+        Ok(())
     }
 
     #[test]

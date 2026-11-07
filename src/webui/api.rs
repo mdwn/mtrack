@@ -262,11 +262,9 @@ fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Re
         ));
     }
 
-    let ext = std::path::Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if !songs_crate::is_supported_audio_extension(ext) {
+    let path = std::path::Path::new(filename);
+    if songs_crate::FileKind::of(path) != songs_crate::FileKind::Audio {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -584,6 +582,28 @@ mod test {
         // Verify file was created in samples/ directory next to config.
         let samples_dir = state.config_path.parent().unwrap().join("samples");
         assert!(samples_dir.join("kick.wav").exists());
+    }
+
+    /// A sample's extension is read in any case: `Kick.WAV` is audio.
+    #[tokio::test]
+    async fn upload_sample_file_uppercase_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/samples/upload/Kick.WAV")
+                    .body(Body::from(create_test_wav()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let samples_dir = state.config_path.parent().unwrap().join("samples");
+        assert!(samples_dir.join("Kick.WAV").exists());
     }
 
     #[tokio::test]

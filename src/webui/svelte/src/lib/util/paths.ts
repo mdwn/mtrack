@@ -14,6 +14,8 @@
 
 // Paths as the file browsers show them.
 
+import { rules } from "../rules";
+
 /** The directory above `path`; the root is its own. */
 export function parentPath(path: string): string {
   const parts = path.replace(/\/+$/, "").split("/");
@@ -36,4 +38,35 @@ export function breadcrumbs(path: string): { name: string; path: string }[] {
 /** A file's name without its extension: a track's default name. */
 export function withoutExtension(file: string): string {
   return file.replace(/\.[^.]+$/, "");
+}
+
+/** A file picker's `accept=` for `extensions`, which browsers match in any case. */
+function accept(extensions: string[]): string {
+  return extensions.map((ext) => "." + ext).join(",");
+}
+
+/**
+ * What a file picker for audio accepts (`accept=`): the player's audio
+ * extensions (`songs::AUDIO_EXTENSIONS`).
+ */
+export function audioAccept(): string {
+  return accept(rules.audio_extensions());
+}
+
+/**
+ * What a file picker for MIDI accepts (`accept=`): the player's MIDI
+ * extensions (`songs::MIDI_EXTENSIONS`).
+ */
+export function midiAccept(): string {
+  return accept(rules.midi_extensions());
+}
+
+/** Whether `name` is a MIDI file to the player (`songs::FileKind::of`), in any case. */
+export function isMidiFile(name: string): boolean {
+  return rules.file_kind(name) === "midi";
+}
+
+/** Whether `name` is a light show file to the player (`songs::FileKind::of`), in any case. */
+export function isLightShowFile(name: string): boolean {
+  return rules.file_kind(name) === "lighting";
 }

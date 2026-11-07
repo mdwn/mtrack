@@ -127,6 +127,11 @@ mod ambient_source;
 #[path = "../../../src/state/pose.rs"]
 mod pose;
 
+/// What a file in a song directory is, by its extension
+/// (`src/songs/file_kind.rs`).
+#[path = "../../../src/songs/file_kind.rs"]
+mod file_kind;
+
 // What the web UI reads from the player (`src/webui/wire`), whose
 // TypeScript types are generated here and nowhere else.
 
@@ -193,6 +198,13 @@ pub mod playlist {
 
 pub mod state {
     pub use crate::pose::PoseSnapshot;
+}
+
+pub mod songs {
+    pub use crate::file_kind::{
+        extension_of, has_exact_extension, has_extension, is_yaml_config, FileKind,
+        AUDIO_EXTENSIONS, LIGHTING_EXTENSIONS, MIDI_EXTENSIONS, YAML_EXTENSIONS,
+    };
 }
 
 pub mod webui {
@@ -1078,6 +1090,34 @@ pub struct BuiltinSounds(pub metronome_config::MetronomeSounds);
 #[wasm_bindgen]
 pub fn metronome_sounds() -> BuiltinSounds {
     BuiltinSounds(metronome_config::MetronomeSounds::builtin())
+}
+
+/// The extensions of the audio files the player reads as tracks, in any
+/// case (`songs::AUDIO_EXTENSIONS`): what a file picker for audio accepts.
+#[wasm_bindgen]
+pub fn audio_extensions() -> Vec<String> {
+    songs::AUDIO_EXTENSIONS
+        .iter()
+        .map(|ext| ext.to_string())
+        .collect()
+}
+
+/// The extensions of the MIDI files the player finds in a song directory,
+/// in any case (`songs::MIDI_EXTENSIONS`): what a file picker for MIDI
+/// accepts.
+#[wasm_bindgen]
+pub fn midi_extensions() -> Vec<String> {
+    songs::MIDI_EXTENSIONS
+        .iter()
+        .map(|ext| ext.to_string())
+        .collect()
+}
+
+/// What the file `name` is to the player, by its extension in any case
+/// (`songs::FileKind::of`). Never `directory`.
+#[wasm_bindgen]
+pub fn file_kind(name: &str) -> songs::FileKind {
+    songs::FileKind::of(std::path::Path::new(name))
 }
 
 /// The samples of a synthesized click at `freq` Hz and `volume`, at

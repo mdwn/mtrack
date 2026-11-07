@@ -391,6 +391,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A trigger hit's velocity is held to 1-127 by one rule, whatever its curve**
+  (`config::trigger::TRIGGER_VELOCITY`): the `linear` curve could give 0, which plays nothing (a
+  peak of 0.006 over `threshold: 0.005`); it now plays at 1, as the `logarithmic` curve's lowest
+  already did. A `fixed_velocity: 0` plays at 1 and `fixed_velocity: 200` at 127, where they were
+  sent as written. The web UI's trigger editor takes the range from the same rule: its fixed
+  velocity field and tooltip said 0-127, and a typed 0 or 200 was saved as typed; it is now held to
+  1-127 (0 becomes 1, 200 becomes 127) and a blank field to the default.
+- **A file's kind is read by one rule, in any case** (`songs::FileKind`): an audio, MIDI or
+  `.light` file's extension now counts whatever its case everywhere on the song side, as the
+  song file listing and the file browser already read it. `songs --init`, a web song create or
+  bulk import, and the song config an upload writes take `Bass.WAV` as a track, `Song.MID` as
+  the MIDI playback, `dmx_Lights.MID` as a MIDI DMX light show and `Show.LIGHT` as a light show;
+  each was passed over as an unknown extension. A track upload or server import of `Bass.WAV`,
+  `Notes.MID` or `Show.LIGHT`, a MIDI DMX upload or server import of `Show.MID` (named
+  `dmx_Show.MID`), and a sample upload of `Kick.WAV` are taken; each was refused (400) as an
+  unsupported file type. The web UI's lighting file list shows `Show.LIGHT`, its delete removes
+  it (it was refused, "Can only delete .light files"), a new light file named `Show.LIGHT` keeps
+  that name (it became `Show.LIGHT.light`), and MCP's song lighting tools take its name (they
+  refused it: "lighting filename must end with .light"). Two consequences of
+  counting every case in `--init`: a corrupt or empty `X.WAV`, or a `.LIGHT` that does not parse,
+  now fails that song's init, as a lowercase one already did, where it was passed over; and the
+  MIDI playback, the last MIDI file by name, may change (`notes.mid` with `old.MID` now gives
+  `old.MID`, where it gave `notes.mid`). A song, playlist or profile config's `.yaml`/`.yml`
+  stays lowercase: `song.YAML` is not a song config, as before. The web UI's file pickers take
+  their lists from the same rule: the notification sound picker now offers `.mp4`, which the
+  upload always took, and the light show's MIDI DMX picker no longer offers `.midi`, which the
+  upload refuses and `--init` passes over.
 - **The MCP lighting DSL reference is written from the parser**: `lighting_dsl_reference` left
   out the `move` effect, called a `dimmer`'s `start_level`, `end_level` and `duration` required
   (each has a default: 0%, 100%, 1s), said every effect must state a `duration` (a `dimmer` need

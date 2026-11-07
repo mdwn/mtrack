@@ -237,7 +237,8 @@ pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl 
     (StatusCode::OK, Json(LightFiles { files: light_files })).into_response()
 }
 
-/// Recursively finds .light files under a directory.
+/// Recursively finds light show files (`.light`, in any case:
+/// `songs::FileKind::of`) under a directory.
 pub(crate) fn find_light_files(
     base: &std::path::Path,
     dir: &std::path::Path,
@@ -253,7 +254,7 @@ pub(crate) fn find_light_files(
         let path = entry.path();
         if path.is_dir() {
             find_light_files(base, &path, results)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("light") {
+        } else if crate::songs::FileKind::of(&path) == crate::songs::FileKind::Lighting {
             let relative = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
@@ -402,7 +403,7 @@ pub(super) async fn delete_lighting_file(
         }
     };
 
-    if safe.as_path().extension().and_then(|e| e.to_str()) != Some("light") {
+    if crate::songs::FileKind::of(safe.as_path()) != crate::songs::FileKind::Lighting {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Can only delete .light files"})),
@@ -3735,6 +3736,53 @@ show "test" {
         let paths: Vec<&str> = results.iter().map(|r| r.path.as_str()).collect();
         assert!(paths.contains(&"song1/show.light"));
         assert!(paths.contains(&"top.light"));
+    }
+
+    /// A light show's extension is read in any case: `Show.LIGHT` is listed,
+    /// as `songs --init` registers it.
+    #[test]
+    fn find_light_files_reads_extensions_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Show.LIGHT"), "content").unwrap();
+        std::fs::write(dir.path().join("show.lights"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(dir.path(), dir.path(), &mut results).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "Show.LIGHT");
+        assert_eq!(results[0].name, "Show");
+    }
+
+    /// The editor deletes a `Show.LIGHT` as it does a `show.light`; a file
+    /// that is no light show is still refused.
+    #[tokio::test]
+    async fn delete_lighting_file_reads_extensions_in_any_case() {
+        let (state, _dir) = test_state();
+        let show = state.songs_path().join("Show.LIGHT");
+        std::fs::write(&show, "content").unwrap();
+        let notes = state.songs_path().join("notes.txt");
+        std::fs::write(&notes, "content").unwrap();
+
+        for (uri, expected) in [
+            ("/lighting/Show.LIGHT", StatusCode::OK),
+            ("/lighting/notes.txt", StatusCode::BAD_REQUEST),
+        ] {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    http::Request::builder()
+                        .method("DELETE")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{uri}");
+        }
+        assert!(!show.exists());
+        assert!(notes.exists());
     }
 
     #[test]

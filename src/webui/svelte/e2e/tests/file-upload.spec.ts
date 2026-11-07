@@ -47,6 +47,8 @@ test.describe("File Upload - Track Upload", () => {
     expect(accept).toContain(".wav");
     expect(accept).toContain(".flac");
     expect(accept).toContain(".mp3");
+    expect(accept).toContain(".mp4");
+    expect(accept).toContain(".aif");
   });
 });
 
@@ -62,8 +64,7 @@ test.describe("File Upload - MIDI Upload", () => {
     const fileInput = page.locator(
       '.collapsible-body .drop-zone input[type="file"]',
     );
-    const accept = await fileInput.getAttribute("accept");
-    expect(accept).toContain(".mid");
+    await expect(fileInput).toHaveAttribute("accept", ".mid");
   });
 });
 

@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import { get } from "svelte/store";
   import { uploadTrack, type SongFile } from "../../lib/api/songs";
   import FilePicker from "./FilePicker.svelte";
@@ -94,7 +95,7 @@
     {/if}
   </div>
   <FileUpload
-    accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+    accept={audioAccept()}
     label={uploading ? $t("common.uploading") : $t("samples.dropAudio")}
     onupload={handleUpload}
   />

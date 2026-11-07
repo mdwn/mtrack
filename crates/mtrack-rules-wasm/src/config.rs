@@ -94,6 +94,9 @@ pub struct ConfigChoices {
     pub strobe_curves: Vec<crate::lighting::fixture_data::StrobeCurve>,
     /// The velocity a `fixed` curve plays when the config names none.
     pub fixed_velocity: u8,
+    /// The lowest and highest velocity a trigger hit plays at
+    /// (`trigger::TRIGGER_VELOCITY`).
+    pub trigger_velocity: [u8; 2],
 }
 
 impl Default for ConfigChoices {
@@ -115,6 +118,10 @@ impl Default for ConfigChoices {
             hint_aligns: pilot::HintAlign::VARIANTS.to_vec(),
             strobe_curves: crate::lighting::fixture_data::StrobeCurve::VARIANTS.to_vec(),
             fixed_velocity: trigger::default_fixed_velocity(),
+            trigger_velocity: [
+                *trigger::TRIGGER_VELOCITY.start(),
+                *trigger::TRIGGER_VELOCITY.end(),
+            ],
         }
     }
 }

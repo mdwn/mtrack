@@ -15,6 +15,7 @@
 <script lang="ts">
   import type { MetronomeSounds } from "../../gen/rules/mtrack_rules";
   import { t } from "svelte-i18n";
+  import { audioAccept } from "../../lib/util/paths";
   import { get } from "svelte/store";
   import { uploadSampleFile } from "../../lib/api/config";
   import SliderStepper from "../SliderStepper.svelte";
@@ -231,7 +232,7 @@
               >
             </div>
             <FileUpload
-              accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+              accept={audioAccept()}
               label={uploading
                 ? $t("common.uploading")
                 : $t("samples.dropAudio")}
