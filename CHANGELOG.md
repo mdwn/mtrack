@@ -745,6 +745,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
+  fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
+  red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state
+  still reported `red`, `green` and `blue`, so whether it was lit and the colour drawn for it went
+  by those raw values. A dimmer-and-CMY wash at open white (`static dimmer: 100%, cyan: 0%,
+  magenta: 0%, yellow: 0%`) then `static red: 0%` was reported dark by MCP `evaluate_show`
+  (`dark: true`) and drawn dark in the web UI's stage views, while the head passes green and blue.
+  The fixture's state (the live stream, MCP `evaluate_show` and `get_fixture_state`, the web UI and
+  TUI views) now holds what the head is sent: `cyan: 255, magenta: 0, yellow: 0` and no `red`,
+  `green` or `blue`, so it is lit and drawn cyan. One conversion (`FixtureState::cmy_flags`) feeds
+  both the DMX output, unchanged, and the state. A fixture with both red, green and blue and cyan,
+  magenta and yellow mixes additively, as before: each channel is its own emitter.
+
 - **Going from one song's page straight to another's shows the new song** (#632): changing the URL
   from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
   `#/songs/Rime/lighting`, as the browser's Back and Forward or a pasted link do) changed the

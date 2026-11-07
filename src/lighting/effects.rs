@@ -31,7 +31,7 @@ pub use error::EffectError;
 #[cfg(test)]
 pub(crate) use fixture::declared_dmx;
 pub use fixture::{
-    cell_fixture_name, cell_name, has_dimmer_channel, multiplier_key, FixtureCapabilities,
+    cell_fixture_name, cell_name, has_cmy, has_dimmer_channel, multiplier_key, FixtureCapabilities,
     FixtureInfo, FixtureProfile, StrobeMap, StrobeStrategy, MULTIPLIER_PREFIXES,
 };
 pub(crate) use instance::fade_progress;

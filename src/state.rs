@@ -489,11 +489,46 @@ pub(crate) fn fixture_snapshots_with_cells(
 ) -> Vec<FixtureSnapshot> {
     let mut fixtures = compute_fixture_snapshots(states, has_dimmer_map);
     fixtures.retain(|s| registry.get(&s.name).is_none_or(|f| f.parent.is_none()));
+    attach_cmy_flags(&mut fixtures, states, registry);
     attach_cell_snapshots(&mut fixtures, states, registry);
     attach_pointing(&mut fixtures, states, registry);
     attach_mirrors(&mut fixtures, registry);
     attach_strobe_rates(&mut fixtures, registry, rates);
     fixtures
+}
+
+/// A CMY fixture's colour as the head is sent it (#661): the engine keeps
+/// colour in red, green and blue, which such a fixture has no channels
+/// for, and sends each driven primary as the flag that removes it
+/// ([`FixtureState::cmy_flags`], the one conversion). The snapshot says
+/// the same: the flags at what the head is sent, written over any a
+/// `static` named directly, and no red, green or blue. So every reading of
+/// the snapshot -- whether the rig is dark, the colour a stage view draws
+/// -- judges the fixture by what it emits.
+fn attach_cmy_flags(
+    snapshots: &mut [FixtureSnapshot],
+    states: &HashMap<String, FixtureState>,
+    registry: &HashMap<String, crate::lighting::effects::FixtureInfo>,
+) {
+    for snapshot in snapshots.iter_mut() {
+        let Some(info) = registry.get(&snapshot.name) else {
+            continue;
+        };
+        if !crate::lighting::effects::has_cmy(&info.channel_defs) {
+            continue;
+        }
+        for (rgb, _) in crate::lighting::channels::CMY_OF_RGB {
+            snapshot.channels.remove(rgb);
+        }
+        let Some(state) = states.get(&snapshot.name) else {
+            continue;
+        };
+        for (cmy, value) in state.cmy_flags(&info.channel_defs, info.has_dimmer()) {
+            snapshot
+                .channels
+                .insert(cmy.to_string(), dmx_byte(value * 255.0));
+        }
+    }
 }
 
 /// Reads each fixture's strobe byte back into the rate it means through
@@ -1457,5 +1492,69 @@ mod tests {
         );
         assert!(is_level_channel("red#2") && !is_level_channel("pan#2"));
         assert!(!is_level_channel("zoom#2") && !is_level_channel("gobo"));
+    }
+
+    /// A CMY fixture's snapshot is the bytes the head is sent (#661): its
+    /// colour driven through red, green and blue reads as the flags the
+    /// engine writes, over a `static` naming a flag directly, and the
+    /// stage views and `is_dark` judge it by those.
+    #[test]
+    fn a_cmy_snapshot_is_what_the_head_is_sent() {
+        use crate::lighting::effects::{EffectInstance, EffectType};
+        let channels: HashMap<String, u16> =
+            [("dimmer", 1), ("cyan", 2), ("magenta", 3), ("yellow", 4)]
+                .into_iter()
+                .map(|(n, o)| (n.to_string(), o))
+                .collect();
+        let mut engine = EffectEngine::new();
+        engine.register_fixture(FixtureInfo::new(
+            "f".to_string(),
+            1,
+            1,
+            "T".to_string(),
+            channels,
+            None,
+        ));
+        let stat = |id: &str, parameters: &[(&str, f64)]| {
+            EffectInstance::new(
+                id.to_string(),
+                EffectType::Static {
+                    parameters: parameters
+                        .iter()
+                        .map(|&(n, v)| (n.to_string(), v))
+                        .collect(),
+                    duration: std::time::Duration::from_secs(5),
+                },
+                vec!["f".to_string()],
+                None,
+                None,
+                None,
+            )
+        };
+        engine
+            .start_effect(stat(
+                "white",
+                &[
+                    ("dimmer", 1.0),
+                    ("cyan", 0.0),
+                    ("magenta", 0.0),
+                    ("yellow", 0.0),
+                ],
+            ))
+            .unwrap();
+        engine.start_effect(stat("red", &[("red", 0.25)])).unwrap();
+        let sent: HashMap<u16, u8> = engine
+            .update(std::time::Duration::from_millis(10), None)
+            .unwrap()
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        let snapshot = engine_snapshot(&engine, None, &HashMap::from([("f".to_string(), true)]));
+        let f = &snapshot.fixtures[0];
+        for (name, address) in [("dimmer", 1), ("cyan", 2), ("magenta", 3), ("yellow", 4)] {
+            assert_eq!(f.channels.get(name), sent.get(&address), "{name}");
+        }
+        assert_eq!(f.channels["cyan"], 191, "red at a quarter: cyan at three");
+        assert!(!f.channels.contains_key("red"), "{:?}", f.channels);
     }
 }
