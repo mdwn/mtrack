@@ -177,6 +177,56 @@ test.describe("Profile files by full file name", () => {
     expect(reads).toEqual([]);
   });
 
+  test("a new profile whose name reaches a file stays a draft and is refused", async ({
+    page,
+  }) => {
+    const reads = await serveProfiles(page, () => [info("stage.yml", "pi-a")]);
+    const puts: string[] = [];
+    await page.route("**/api/profiles/stage", async (route) => {
+      if (route.request().method() !== "PUT") {
+        await route.fallback();
+        return;
+      }
+      puts.push(route.request().headers()["if-none-match"] ?? "");
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "a profile file `stage.yml` already exists",
+        }),
+      });
+    });
+
+    await page.goto("/#/config");
+    await page.getByRole("button", { name: "Add Profile" }).click();
+    const dialog = page.locator('[role="dialog"]');
+    await dialog.locator("input").fill("stage");
+    await dialog.getByRole("button", { name: "Confirm" }).click();
+    await page.locator("#profile-hostname").fill("pi-z");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    await expect.poll(() => puts).toEqual(["*"]);
+    await expect(page.locator(".save-error")).toContainText(
+      "a profile file `stage.yml` already exists",
+    );
+    // `stage.yml` was never opened over the draft.
+    await expect(page.locator("#profile-hostname")).toHaveValue("pi-z");
+    expect(reads).toEqual([]);
+  });
+
+  test("a file that does not parse is shown with why, and not opened", async ({
+    page,
+  }) => {
+    const reads = await serveProfiles(page, () => [
+      { ...info("broken.yaml", null), error: "invalid type: sequence" },
+    ]);
+    await page.goto("/#/config");
+    const row = page.locator(".profile-file-row");
+    await expect(row.locator(".pf-error")).toHaveText("invalid type: sequence");
+    await expect(row).toBeDisabled();
+    expect(reads).toEqual([]);
+  });
+
   test("a link naming no profile file says so and opens none", async ({
     page,
   }) => {
@@ -189,13 +239,18 @@ test.describe("Profile files by full file name", () => {
     await expect(page.locator(".route-missing")).toHaveText(
       'Profile file "Stage.yml" not found; "stage.yml" differs from it only in case.',
     );
+    // The editor opened no file for either.
+    expect(reads).toEqual([]);
+
+    // The groups page picks no profile in the missing one's place: not the
+    // running one (`stage.yaml`, for test-host). The lighting area reads
+    // that one's lighting block for itself, so reads are not the measure;
+    // the picker's selection is.
     await page.goto("/#/lighting/groups?profile=gone");
     await expect(page.locator(".param-missing")).toHaveText(
       'Profile file "gone" not found.',
     );
-    // The running profile (`stage.yaml`, for test-host) is not opened in
-    // the missing one's place.
-    expect(reads).toEqual([]);
+    await expect(page.locator("#groups-profile")).toHaveValue("");
   });
 
   test("a new profile stays selected, with its Saved notice", async ({

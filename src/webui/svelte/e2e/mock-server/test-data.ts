@@ -204,7 +204,7 @@ export const CONFIG_STORE: StoreSnapshot = {
   checksum: "abc123def456",
 };
 
-export const STATUS: Status = {
+export const STATUS = {
   build: {
     version: "0.1.0-test",
     git_hash: "deadbeef",
@@ -238,7 +238,7 @@ export const STATUS: Status = {
     { kind: "osc", status: "running", detail: "0.0.0.0:9000", error: null },
   ],
   locked: false,
-};
+} satisfies Status;
 
 export const AUDIO_DEVICES: AudioDeviceInfo[] = [
   {

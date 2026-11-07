@@ -164,13 +164,16 @@ function buildEntries(
   files: ProfileFileInfo[],
 ): ProfileEntry[] {
   if (profilesDir) {
-    return files.map((f) => ({
-      name: f.file,
-      label: fileProfileLabel(f.file, files),
-      editable: f.addressable,
-      hostname: f.hostname,
-      ref: { kind: "file", filename: f.file },
-    }));
+    // A file that does not parse has no profile to pick or edit.
+    return files
+      .filter((f) => !f.error)
+      .map((f) => ({
+        name: f.file,
+        label: fileProfileLabel(f.file, files),
+        editable: f.addressable,
+        hostname: f.hostname,
+        ref: { kind: "file", filename: f.file },
+      }));
   }
   return inline.map((p, index) => ({
     name: inlineProfileName(p, index),

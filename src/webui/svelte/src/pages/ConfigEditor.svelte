@@ -770,6 +770,10 @@
       return;
     }
     if (profilesDir) {
+      // A draft is never swapped for a file its name reaches (`stage` with
+      // `stage.yml` there): its save goes out as a create, which the
+      // server refuses, and says so.
+      if (isNew) return;
       // File-based: the route names a file by its full file name, or, from
       // an old link, by a stem the server's rule resolves (`.yaml`, else
       // `.yml`).
@@ -959,13 +963,16 @@
           {#each profileFiles as pf (pf.file)}
             <button
               class="profile-file-row"
-              disabled={!pf.addressable}
+              disabled={!pf.addressable || !!pf.error}
               title={pf.addressable ? null : $t("config.profileNotAddressable")}
               onclick={() => selectFileProfile(pf.file)}
             >
               <span class="pf-name"
                 >{fileProfileLabel(pf.file, profileFiles)}</span
               >
+              {#if pf.error}
+                <span class="pf-error">{pf.error}</span>
+              {/if}
               {#if pf.hostname}
                 <span class="pf-hostname">{pf.hostname}</span>
               {/if}
@@ -1345,6 +1352,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .pf-error {
+    color: var(--text-danger);
+    font-size: 0.85em;
   }
   .route-missing {
     color: var(--text-danger);
