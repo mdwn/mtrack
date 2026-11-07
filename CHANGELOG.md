@@ -745,6 +745,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A near-flat tempo ramp is timed to the nanosecond** (#638): the time a ramp takes to cover some
+  beats was solved in a form that cancels when the ramp is nearly flat, so `{bpm: 60.000001,
+  transition: 16}` after 60 BPM placed its beats tens of nanoseconds off (and up to microseconds
+  for flatter ramps). The solve now uses the numerically stable form of the same root.
+
 - **Same-time cues stack in the order they start, past every power of ten** (#669): two effects on
   one layer at one priority, cued at the same time, were ordered last by their ids compared as
   strings, and the ids come from a counter that runs all night. Where the two ids straddled 10, 100,

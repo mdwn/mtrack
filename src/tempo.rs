@@ -190,7 +190,18 @@ impl TransitionCurve {
                     }
                 } else {
                     let discriminant = b * b - 4.0 * a * c;
-                    (discriminant >= 0.0).then(|| (-b + discriminant.sqrt()) / (2.0 * a))
+                    (discriminant >= 0.0).then(|| {
+                        // The root that starts at dt = 0 and grows with
+                        // `beats`. With b > 0, `-b + sqrt` cancels when `a`
+                        // is tiny (a near-flat ramp, #638), so take the same
+                        // root as 2c / (-b - sqrt), which doesn't.
+                        let root = discriminant.sqrt();
+                        if b > 0.0 {
+                            2.0 * c / (-b - root)
+                        } else {
+                            (-b + root) / (2.0 * a)
+                        }
+                    })
                 }
             }
         }
@@ -1836,6 +1847,24 @@ mod tests {
             let dt_output = ramp.secs_for_beats(beats, 160.0);
             assert!((3.0 - dt_output).abs() < 1e-6, "{elapsed} in: {dt_output}");
         }
+    }
+
+    /// A near-flat ramp's `a` is tiny but over the linear cut-off; the
+    /// solve keeps its precision there rather than cancelling (#638).
+    #[test]
+    fn a_near_flat_ramp_solves_without_cancelling() {
+        let (old, new, beats) = (60.000001, 60.0, 16.0);
+        let curve = TransitionCurve::Linear;
+        let total = curve.duration_for_beats(old, new, beats);
+        let solved = curve
+            .solve_duration_for_beats(old, new, total, 0.0, beats)
+            .unwrap();
+        assert!((solved - total).abs() < 1e-9, "{solved} vs {total}");
+        // Part way in, too.
+        let part = ramp(old, new, total, 4.0).secs_for_beats(6.0, new);
+        let back = ramp(old, new, total, 4.0).beats_in_secs(part, new);
+        assert!((back - 6.0).abs() < 1e-9, "{back}");
+        assert!((part - 6.0).abs() < 1e-6, "{part}");
     }
 
     #[test]
