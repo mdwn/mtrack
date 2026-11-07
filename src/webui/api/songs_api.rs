@@ -2515,6 +2515,32 @@ mod test {
         assert_eq!(find_file("Bass.WAV")["type"], "audio");
     }
 
+    /// A song folder the registry has not seen (its `song.yml` does not
+    /// read) is deleted by its `song.yml`.
+    #[tokio::test]
+    async fn delete_song_removes_an_unloaded_song_yml() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path().join("Unloaded");
+        std::fs::create_dir(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yml"), "{{not yaml").unwrap();
+        state.player.reload_songs().await.unwrap();
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/songs/Unloaded")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!song_dir.join("song.yml").exists());
+    }
+
     /// The listing hides the song's config by name, `song.yml` as well as
     /// `song.yaml`, and hidden files.
     #[tokio::test]
