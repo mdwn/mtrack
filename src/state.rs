@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::lighting::channels::{dmx_byte, fine_name, mirror_name, CMY_OF_RGB};
+use crate::lighting::channels::{fine_name, mirror_name, CMY_OF_RGB};
 use crate::lighting::effects::{is_multiplier_channel, FixtureState};
 use crate::lighting::EffectEngine;
 
@@ -504,16 +504,16 @@ pub(crate) fn fixture_snapshots_with_cells(
 /// The byte a snapshot shows for `channel` at `value` (0 to 1): the
 /// coarse byte it goes out as on the fixture's channel (a 16-bit
 /// channel's high byte, [`coarse_byte`](crate::lighting::effects::coarse_byte)),
-/// or [`dmx_byte`] of it for a name the fixture has no channel by.
+/// or an 8-bit channel's byte for a name the fixture has no channel by.
 fn wire_byte(
     info: Option<&crate::lighting::effects::FixtureInfo>,
     channel: &str,
     value: f64,
 ) -> u8 {
-    match info.and_then(|info| info.channel_defs.get(channel)) {
-        Some(def) => crate::lighting::effects::coarse_byte(def, value),
-        None => dmx_byte(value * 255.0),
-    }
+    crate::lighting::effects::coarse_byte(
+        info.and_then(|info| info.channel_defs.get(channel)),
+        value,
+    )
 }
 
 /// A CMY fixture's colour as the head is sent it (#661): the engine keeps
@@ -714,7 +714,8 @@ pub(crate) fn attach_cell_snapshots(
                 .cell_values(cell, own)
                 .into_iter()
                 .map(|(name, value)| {
-                    let byte = crate::lighting::effects::coarse_byte(&cell.channels[&name], value);
+                    let byte =
+                        crate::lighting::effects::coarse_byte(Some(&cell.channels[&name]), value);
                     (name, byte)
                 })
                 .collect();

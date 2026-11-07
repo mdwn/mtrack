@@ -143,27 +143,34 @@ pub fn fanout(def: &ChannelDef, value16: u16) -> impl Iterator<Item = (u16, u8)>
     spread(def, high, Some(low))
 }
 
-/// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets
-/// [`dmx_byte`] of it; a 16-bit channel gets the value rounded on the
-/// 16-bit scale, coarse and fine.
-pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = (u16, u8)> + '_ {
-    match def.fine {
-        None => spread(def, dmx_byte(value * 255.0), None),
-        Some(_) => {
-            let [high, low] = dmx_word(value * FULL_SCALE_16).to_be_bytes();
-            spread(def, high, Some(low))
-        }
+/// The bytes a normalized 0..1 value goes out as on a channel, 16-bit
+/// (`sixteen_bit`) or not: an 8-bit channel's [`dmx_byte`] of it, and no
+/// fine byte; a 16-bit channel's value rounded on the 16-bit scale, its
+/// high byte coarse and its low byte fine. The one rule for both.
+fn normalized_bytes(sixteen_bit: bool, value: f64) -> (u8, Option<u8>) {
+    if sixteen_bit {
+        let [high, low] = dmx_word(value * FULL_SCALE_16).to_be_bytes();
+        (high, Some(low))
+    } else {
+        (dmx_byte(value * 255.0), None)
     }
 }
 
+/// Resolves a normalized 0..1 value onto a channel. An 8-bit channel gets
+/// [`dmx_byte`] of it; a 16-bit channel gets the value rounded on the
+/// 16-bit scale, coarse and fine ([`normalized_bytes`]).
+pub fn resolve_normalized(def: &ChannelDef, value: f64) -> impl Iterator<Item = (u16, u8)> + '_ {
+    let (high, low) = normalized_bytes(def.fine.is_some(), value);
+    spread(def, high, low)
+}
+
 /// The coarse byte a normalized 0..1 value goes out as on `def`
-/// ([`resolve_normalized`]'s first): an 8-bit channel's byte, a 16-bit
-/// channel's high byte. What a snapshot shows for the channel, so it is
-/// the byte on the wire.
-pub fn coarse_byte(def: &ChannelDef, value: f64) -> u8 {
-    resolve_normalized(def, value)
-        .next()
-        .map_or(0, |(_, byte)| byte)
+/// ([`resolve_normalized`]'s, by [`normalized_bytes`]): an 8-bit
+/// channel's byte, a 16-bit channel's high byte; with no channel (`None`),
+/// an 8-bit one's. What a snapshot shows for the channel, so it is the
+/// byte on the wire.
+pub fn coarse_byte(def: Option<&ChannelDef>, value: f64) -> u8 {
+    normalized_bytes(def.is_some_and(|def| def.fine.is_some()), value).0
 }
 
 /// The degree span a channel resolves over, and the DMX sub-range it maps
