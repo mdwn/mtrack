@@ -609,31 +609,52 @@ export async function saveFixtureType(
     >,
   dir?: string,
   from?: string | null,
+  venuesDir?: string,
 ): Promise<void> {
-  const params = saveParams(dir, from);
+  const params = saveParams(dir, from, typeRenameParams(from, venuesDir));
   const res = await put(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
+  typeSaved(from);
+}
+
+/** The venues directory a type's rename retypes the venue lines in. */
+function typeRenameParams(
+  from: string | null | undefined,
+  venuesDir: string | undefined,
+): Record<string, string> {
+  return from && venuesDir ? { venues_dir: venuesDir } : {};
+}
+
+/** After a type's save: a rename rewrote the venue lines naming it too. */
+function typeSaved(from: string | null | undefined): void {
   fixtureTypesChanged();
+  if (from) venueChanged(null);
 }
 
 /** Saves a fixture type as raw DSL. `ext: "fixture"` moves a `.light` to a
- *  `.fixture`; a new type is always a `.fixture`. `from` renames. */
+ *  `.fixture`; a new type is always a `.fixture`. `from` renames, and the
+ *  venue lines naming the old name in `venuesDir` are retyped with it. */
 export async function saveFixtureTypeText(
   name: string,
   dsl: string,
   ext: "light" | "fixture",
   dir?: string,
   from?: string | null,
+  venuesDir?: string,
 ): Promise<void> {
+  const params = saveParams(dir, from, {
+    ext,
+    ...typeRenameParams(from, venuesDir),
+  });
   const res = await putText(
-    `/lighting/fixture-types/${encodeURIComponent(name)}${saveParams(dir, from, { ext })}`,
+    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     dsl,
   );
   if (!res.ok) throw await apiError(res, "Failed to save fixture type");
-  fixtureTypesChanged();
+  typeSaved(from);
 }
 
 /** Deletes a fixture type. For a fixture from a GDTF, its archive goes too

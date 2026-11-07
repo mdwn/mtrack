@@ -526,10 +526,6 @@ pub(super) async fn locate_fixture_type_file(
     .await
 }
 
-/// Venue files: `.venue` (positions, focus points, MVR provenance) and the
-/// v1 `.light`, loaded as peers.
-pub(super) const VENUE_EXTENSIONS: &[&str] = lighting::project_files::VENUE_EXTENSIONS;
-
 /// Serialises every read-check-write of a venue file, so two saves cannot
 /// interleave between the version check and the write; and every write of a
 /// fixture type file, which a fixture's settings save rewrites with its
@@ -1433,9 +1429,12 @@ fn gdtf_list_summary(
 /// one rule for type files ([`super::lighting_writes`]): a new name is
 /// claimed at `<fixture types dir>/<stem>.fixture`; an existing one is
 /// written only where its file is that type's alone, and refused (409, with
-/// the file and why) otherwise. `?from=<old>` renames, as for venues. A
-/// `.light` whose new text needs a `.fixture` (rich channels, a GDTF
-/// reference, or `?ext=fixture`) moves to `<stem>.fixture`.
+/// the file and why) otherwise. `?from=<old>` renames, as for venues, and,
+/// as the fixture settings' rename does, retypes every venue line naming the
+/// old name in `venues_dir` (refused, nothing written, when any venue file
+/// cannot be; the answer's `rename` says what changed). A `.light` whose new
+/// text needs a `.fixture` (rich channels, a GDTF reference, or
+/// `?ext=fixture`) moves to `<stem>.fixture`.
 pub(super) async fn put_fixture_type(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
@@ -1516,12 +1515,18 @@ pub(super) async fn put_fixture_type(
             .any(|t| t.uses_rich_channels() || t.source().is_some());
 
     let root = canonical_project_root(&project_root(&state.config_path)?)?;
+    let venues_dir = resolve_lighting_dir(
+        &state.config_path,
+        query.venues_dir.as_deref(),
+        DEFAULT_VENUES_DIR,
+    )?;
     // The helper the playlists and profiles writes use, so a refusal is
     // reported as the configuration problem it is rather than a server
     // fault. The file goes under the directory that was made.
     let dir = super::helpers::ensure_configured_dir(&dir, &state).await?;
     let type_name = name.clone();
     let from = query.from.clone();
+    let retyped_in = venues_dir.clone();
     let outcome = super::helpers::spawn_blocking_io("write fixture type", move || {
         let name = type_name;
         // Held from reading the files to writing one, as MCP's patch holds
@@ -1591,18 +1596,51 @@ pub(super) async fn put_fixture_type(
                 );
             }
         }
+        // A rename is the fixture settings' rename: every venue line naming
+        // the old name is retyped, planned in full first, and refused (so
+        // nothing is written) when any venue file cannot be.
+        let retype = match from.as_deref().filter(|old| *old != name) {
+            Some(old) => {
+                match super::fixture_settings::plan_venue_retype(
+                    &retyped_in,
+                    old,
+                    Some(&name),
+                    &Default::default(),
+                ) {
+                    Ok(retype) => Some((old.to_string(), retype)),
+                    Err((status, message)) => {
+                        return reply((status, Json(json!({"error": message}))).into_response())
+                    }
+                }
+            }
+            None => None,
+        };
+        if let Some((_, retype)) = &retype {
+            retype.write()?;
+        }
         if let Err(r) = lighting_writes::write(&plan, &dsl) {
             return reply(r);
         }
-        Ok(Ok(()))
+        Ok(Ok(retype.map(|(old, retype)| retype.summary(&old, &name))))
     })
     .await?;
-    outcome?;
+    let rename = outcome?;
+    let venue_error = match &rename {
+        Some(_) => {
+            super::fixture_settings::reload_types_and_venues(&state, &name, &venues_dir).await
+        }
+        None => None,
+    };
 
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
-            Json(json!({"status": "saved", "name": name})),
+            Json(json!({
+                "status": "saved",
+                "name": name,
+                "rename": rename,
+                "venue_error": venue_error,
+            })),
         )
             .into_response(),
     )

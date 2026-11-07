@@ -282,6 +282,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     venue moves to its own `.venue` beside it when merged (`tour/old.light` to `tour/old.venue`,
     the `.light` removed), as a web save does, where the provenance was written into the
     `.light`; refused when that `.venue` is there, in any case.
+  - A GDTF fixture's settings (`POST /api/lighting/fixture-types/<name>/settings`, the fixture
+    page's form) write its record by the same rules. The first change to a library fixture with
+    no record claims `<stem>.fixture` for the name it will hold: "Synth Brick" when
+    `synth_brick.fixture` (or `Synth_Brick.fixture`) holds "Old" answers 409 "synth_brick.fixture
+    is taken by "Old"; choose another name", where it wrote `synth_brick_2.fixture` (and, on
+    Linux, `synth_brick.fixture` beside `Synth_Brick.fixture`); a pin for a fixture sharing its
+    name is claimed alike. A record whose file is not its alone is read-only: changing "Brick"'s
+    limits in `brick.fixture`, which also holds "Old", answers 409 "Defined in brick.fixture
+    alongside fixture type "Old"; edit that file by hand.", where the block was patched inside
+    the shared file.
+  - A rename there moves the record by the editor's rule: "Brick" in `brick.fixture` renamed
+    "PixelBrick" becomes `pixelbrick.fixture`, comments kept, where the file kept its old name;
+    the harness's "Astera-PixelBrick" in `astera_pixelbrick.fixture` (not its own name's file)
+    is renamed in place. A rename onto a name another type declares answers "fixture type "Other"
+    is already declared in other.light; choose another name", where it said "there is already a
+    fixture type named".
+  - A rename retypes every venue line naming the type only if every venue using it is its file's
+    alone; otherwise nothing is written and the 409 names each such venue: renaming "Brick" when
+    venue "arena" in `all.venue`, which also holds venue "annex", uses it answers "fixture type
+    "Brick" cannot be renamed, so nothing was written; venue "arena" in all.venue uses it: Defined
+    in all.venue alongside venue "annex"; edit that file by hand.", where every venue in the
+    shared file was patched. A file that does not parse refuses the rename, as before.
+  - Renaming a fixture type in the type editor (`PUT /api/lighting/fixture-types/<new>?from=<old>`,
+    now with `venues_dir`) is the same rename: the venue lines naming the old name are retyped
+    with it, refused by the same rule, and the answer adds `rename` (`{from, to, venues, lines}`)
+    and `venue_error`; the engine reloads its types and venues once after. Renaming "Par" to
+    "Wash" rewrites `fixture "A" Par @ 1:1` in `club.venue` to `fixture "A" Wash @ 1:1`, where
+    the venues were left naming a type that no longer existed.
 - **One walk finds the song folders for `songs --init` and the bulk import**
   (`songs::song_dirs`): a song folder is a directory holding an audio track or a MIDI file (a
   regular file, not a hidden one or a symlink, which a new config leaves out) or a song config,

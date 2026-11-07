@@ -518,8 +518,10 @@ fixture_type "Name" {
         },
         ftDir || undefined,
         // A rename is one save: the server moves the type's file, or
-        // renames it in place, by the one rule for type files.
+        // renames it in place, by the one rule for type files, and retypes
+        // the venue lines naming it.
         isRename ? oldName : null,
+        venuesDir || undefined,
       );
       await loadFixtureTypes();
       editingFt = null;
@@ -554,6 +556,7 @@ fixture_type "Name" {
         editFtExt,
         ftDir || undefined,
         isRename ? oldName : null,
+        venuesDir || undefined,
       );
       await loadFixtureTypes();
       editingFt = null;

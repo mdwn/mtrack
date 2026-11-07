@@ -1156,4 +1156,83 @@ mod tests {
             ]
         );
     }
+
+    // --- A type's rename in the editor is the fixture settings' rename.
+
+    #[tokio::test]
+    async fn an_editor_rename_of_a_type_retypes_every_venue_using_it() {
+        let (app, dir, d) = project(T, &[("par.fixture", &par("Par"))]);
+        let venues = dir.path().join(V);
+        std::fs::create_dir_all(venues.join("tour")).unwrap();
+        std::fs::write(venues.join("club.venue"), venue("club")).unwrap();
+        std::fs::write(venues.join("tour/2024.venue"), venue("arena")).unwrap();
+
+        let (status, body) = call(
+            &app,
+            "PUT",
+            &type_uri("Wash", &format!("&from=Par&venues_dir={V}")),
+            "text/plain",
+            par("Wash"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(snapshot(&d), [("wash.fixture".to_string(), par("Wash"))]);
+        let retyped = venue("club").replace("Par @", "Wash @");
+        assert_eq!(
+            std::fs::read_to_string(venues.join("club.venue")).unwrap(),
+            retyped
+        );
+        assert!(std::fs::read_to_string(venues.join("tour/2024.venue"))
+            .unwrap()
+            .contains("\"A\" Wash @ 1:1"));
+        assert_eq!(body["rename"]["lines"], 2, "{body}");
+        assert_eq!(
+            body["rename"]["venues"],
+            json!([
+                {"venue": "club", "file": "club.venue", "lines": 1},
+                {"venue": "arena", "file": "tour/2024.venue", "lines": 1},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_editor_rename_is_refused_when_a_venue_using_it_is_read_only() {
+        let (app, dir, d) = project(T, &[("par.fixture", &par("Par"))]);
+        let venues = dir.path().join(V);
+        std::fs::create_dir_all(&venues).unwrap();
+        std::fs::write(venues.join("club.venue"), venue("club")).unwrap();
+        std::fs::write(
+            venues.join("all.venue"),
+            format!("{}{}", venue("arena"), venue("annex")),
+        )
+        .unwrap();
+        let (types_before, venues_before) = (snapshot(&d), snapshot(&venues));
+
+        let (status, body) = call(
+            &app,
+            "PUT",
+            &type_uri("Wash", &format!("&from=Par&venues_dir={V}")),
+            "text/plain",
+            par("Wash"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(
+            error.starts_with("fixture type \"Par\" cannot be renamed, so nothing was written;"),
+            "{error}"
+        );
+        assert!(
+            error.contains("venue \"annex\" in all.venue uses it"),
+            "{error}"
+        );
+        assert!(
+            error.contains("venue \"arena\" in all.venue uses it"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&d), types_before);
+        assert_eq!(snapshot(&venues), venues_before);
+    }
 }
