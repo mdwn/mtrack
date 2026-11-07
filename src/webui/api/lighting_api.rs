@@ -2139,23 +2139,29 @@ pub(super) async fn put_fixture_type(
         if let Err(e) = config_io::staged_write(&fp, &dsl_owned) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
-        let retired = lighting::project_files::retire_twins(&stale_twins);
-        Ok::<_, String>(
+        let (retired, left) = lighting::project_files::retire_twins(&stale_twins);
+        let shown =
+            |path: &std::path::PathBuf| lighting::project_files::display_in(&kept_root, path);
+        Ok::<_, String>((
             set_aside
                 .iter()
                 .map(|(_, backup)| backup)
                 .chain(&retired)
-                .map(|backup| lighting::project_files::display_in(&kept_root, backup))
+                .map(shown)
                 .collect::<Vec<String>>(),
-        )
+            left.iter().map(shown).collect::<Vec<String>>(),
+        ))
     })
     .await?;
+    let (kept, twins_not_retired) = kept;
 
-    // The reply names any broken file kept aside, for the editor to say so.
+    // The reply names any file kept aside, and any twin left declaring the
+    // type, for the editor to say so.
     let reply = crate::webui::wire::fixture_types::FixtureTypeSaved {
         status: "saved".to_string(),
         name,
         kept,
+        twins_not_retired,
     };
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(reply)).into_response())
 }
@@ -3145,10 +3151,26 @@ pub(super) async fn put_venue(
             return reply(r);
         }
         let broken = broken_among(&pairs);
+        // The venue's file in the other form, which the save retires: the
+        // file found, when the save moves it to `.venue`, or a `.light`
+        // beside the `.venue` it saves that still declares the venue (one a
+        // save could not retire last time).
         let stale_twin = located
             .as_ref()
             .map(|l| l.path.clone())
-            .filter(|path| path != &file_path && !broken.contains(path));
+            .filter(|path| path != &file_path && !broken.contains(path))
+            .or_else(|| {
+                let stem = file_path.file_stem()?.to_str()?;
+                let parent = file_path.parent()?;
+                (crate::songs::extension_of(&file_path).as_deref() == Some("venue"))
+                    .then(|| crate::util::files_at_stem(parent, stem, &["light"]))?
+                    .into_iter()
+                    .find(|path| {
+                        path != &file_path
+                            && !broken.contains(path)
+                            && venues_declared(path).is_ok_and(|names| names.contains(&name))
+                    })
+            });
         // A twin that also declares a venue the saved text does not is not
         // retired, which would lose that venue: the save is refused, by the
         // rule fixture types take (`lost_by_retiring`).
@@ -3167,7 +3189,18 @@ pub(super) async fn put_venue(
             }
         }
         // The file the venue moves to is taken unless it is a broken one the
-        // person chose to replace, set aside below.
+        // person chose to replace, or the venue's own twin there (a `.venue`
+        // a save could not retire last time, still declaring it): both are
+        // set aside below, and the save completes.
+        let mut broken = broken;
+        let target_twin = stale_twin.is_some()
+            && located.as_ref().is_some_and(|l| l.path != file_path)
+            && file_path.exists()
+            && !broken.contains(&file_path)
+            && venues_declared(&file_path).is_ok_and(|names| names.contains(&name));
+        if target_twin {
+            broken.push(file_path.clone());
+        }
         if stale_twin.is_some() && file_path.exists() && !broken.contains(&file_path) {
             return reply(
                 (
@@ -3194,17 +3227,19 @@ pub(super) async fn put_venue(
         if let Err(e) = config_io::staged_write(&file_path, &dsl) {
             return Err(format!("{e}{}", put_back(&set_aside)));
         }
-        let retired = lighting::project_files::retire_twins(&Vec::from_iter(stale_twin));
+        let (retired, left) = lighting::project_files::retire_twins(&Vec::from_iter(stale_twin));
+        let shown = |path: &std::path::PathBuf| lighting::project_files::display_in(&dir, path);
         let kept: Vec<String> = set_aside
             .iter()
             .map(|(_, backup)| backup)
             .chain(&retired)
-            .map(|backup| lighting::project_files::display_in(&dir, backup))
+            .map(shown)
             .collect();
-        Ok::<_, String>(Ok((content_version(dsl.as_bytes()), kept)))
+        let left: Vec<String> = left.iter().map(shown).collect();
+        Ok::<_, String>(Ok((content_version(dsl.as_bytes()), kept, left)))
     })
     .await?;
-    let (version, kept) = outcome?;
+    let (version, kept, twins_not_retired) = outcome?;
 
     let reloaded = reload_if_current_venue(&state, &name).await;
     let venue_error = venue_error_after_save(&state, &name, &saved_in).await;
@@ -3219,6 +3254,7 @@ pub(super) async fn put_venue(
                 version,
                 venue_error,
                 kept,
+                twins_not_retired,
             }),
         )
             .into_response(),
@@ -6175,6 +6211,51 @@ show "test" {
             assert!(kept.starts_with("ideas.light.replaced-"), "{kind}: {kept}");
             assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), ideas);
         }
+    }
+
+    /// A `.venue` twin a save could not retire last time, still declaring
+    /// the venue beside its `.light`, does not dead-end the next save: it is
+    /// set aside (kept), written over, and the `.light` retired.
+    #[tokio::test]
+    async fn a_venue_save_completes_over_its_own_leftover_twin() {
+        let (state, _dir) = test_state();
+        let dir = _dir.path().join("v_leftover");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
+        let old_twin = "venue \"Club\" {\n  focus \"Old\" (0, 0, 0)\n}\n";
+        std::fs::write(dir.join("club.venue"), old_twin).unwrap();
+        // Whichever of the two the venue is found in, the save ends with one.
+        let typed = "venue \"Club\" {\n  focus \"DS\" (0, 0, 0)\n}\n";
+        let (status, parsed) = fixture_type_request(
+            state,
+            "PUT",
+            "/lighting/venues/Club?dir=v_leftover".to_string(),
+            "text/plain",
+            Body::from(typed),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("club.venue")).unwrap(),
+            typed
+        );
+        assert!(!dir.join("club.light").exists());
+        // The retired `.light` is kept, and so is the old `.venue` when it
+        // was written over rather than found.
+        let kept: Vec<&str> = parsed["kept"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        assert!(
+            kept.iter().any(|k| k.starts_with("club.light.replaced-")),
+            "{parsed}"
+        );
+        if let Some(old) = kept.iter().find(|k| k.starts_with("club.venue.")) {
+            assert_eq!(std::fs::read_to_string(dir.join(old)).unwrap(), old_twin);
+        }
+        assert!(parsed.get("twins_not_retired").is_none(), "{parsed}");
     }
 
     /// A raw-text save that would retire a `.light` twin holding another

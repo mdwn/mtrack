@@ -393,19 +393,22 @@ pub fn is_broken(declares: &Declares) -> bool {
 /// Sets aside each twin a save retired (the name's file in its other form),
 /// once the save is written, so the name always has a file: before the
 /// write, a reader (the engine's reload, a test) could find neither. Best
-/// effort: a twin left behind surfaces as a duplicate name at load. Returns
-/// where each one set aside went.
-pub fn retire_twins(twins: &[PathBuf]) -> Vec<PathBuf> {
-    twins
-        .iter()
-        .filter_map(|twin| match set_aside_broken(twin) {
-            Ok(backup) => Some(backup),
+/// effort: the save stands. Returns where each one set aside went, and each
+/// twin that could not be (still declaring the name, which the reply says,
+/// and which the next save, finding both, retires).
+pub fn retire_twins(twins: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut retired = Vec::new();
+    let mut left = Vec::new();
+    for twin in twins {
+        match set_aside_broken(twin) {
+            Ok(backup) => retired.push(backup),
             Err(e) => {
                 warn!(file = %twin.display(), error = %e, "could not set the retired twin aside");
-                None
+                left.push(twin.clone());
             }
-        })
-        .collect()
+        }
+    }
+    (retired, left)
 }
 
 /// Sets a file aside before a save replaces it or a delete removes it (a
@@ -1095,6 +1098,21 @@ mod tests {
             3,
             "the empty, comment-only and club files"
         );
+    }
+
+    /// A twin that cannot be set aside is given back, still where it was,
+    /// for the reply to name; the rest are set aside.
+    #[test]
+    fn retire_twins_names_the_twin_it_could_not_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        write(d, "club.light", "venue \"Club\" {\n}\n");
+        let gone = d.join("gone.light");
+        let (retired, left) = retire_twins(&[d.join("club.light"), gone.clone()]);
+        assert_eq!(left, [gone]);
+        assert_eq!(retired.len(), 1);
+        assert!(!d.join("club.light").exists());
+        assert!(retired[0].is_file());
     }
 
     /// A link to nothing at the stem takes the name: a new file is named

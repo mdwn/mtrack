@@ -92,15 +92,27 @@ export async function offeringToReplaceBroken(
  *  even on a first try): says where, so nothing it held is a surprise to
  *  find gone. */
 async function sayWhatWasKept(res: Response): Promise<void> {
-  const answer: { kept?: string[] } = await res
+  const answer: { kept?: string[]; twins_not_retired?: string[] } = await res
     .clone()
     .json()
     .catch(() => ({}));
+  const tr = get(t);
+  const said: string[] = [];
   if (answer.kept && answer.kept.length > 0) {
-    void showAlert(
-      get(t)("lighting.brokenFileKept", {
+    said.push(
+      tr("lighting.brokenFileKept", {
         values: { files: answer.kept.join(", ") },
       }),
     );
   }
+  // A twin the save could not set aside still holds the name: say so, as
+  // the loader finds the name twice until the next save retires it.
+  if (answer.twins_not_retired && answer.twins_not_retired.length > 0) {
+    said.push(
+      tr("lighting.twinNotRetired", {
+        values: { files: answer.twins_not_retired.join(", ") },
+      }),
+    );
+  }
+  if (said.length > 0) void showAlert(said.join(" "));
 }

@@ -248,6 +248,12 @@ pub struct FixtureTypeSaved {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub kept: Vec<String>,
+    /// Each twin in the other form the save could not set aside: it
+    /// still declares the name, so the loader finds it twice until the
+    /// next save, which retires it. By its path in the directory.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub twins_not_retired: Vec<String>,
 }
 
 /// A deleted fixture type, and what became of its archive.

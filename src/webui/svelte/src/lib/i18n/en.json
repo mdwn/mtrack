@@ -729,6 +729,7 @@
   "lighting.brokenFilesReplace": "These files don't read: {files}. {also}Replace them?",
   "lighting.brokenFileAlso": "It may also hold: {blocks}. The old file is kept as a backup either way. ",
   "lighting.brokenFileKept": "The old file was kept as {files}.",
+  "lighting.twinNotRetired": "{files} could not be set aside and still holds this name; save again to retire it.",
   "lighting.brokenFileReplaceLabel": "Replace it",
   "lighting.brokenFileRemoveLabel": "Remove it",
   "lighting.channelMap": "Channel Map",
