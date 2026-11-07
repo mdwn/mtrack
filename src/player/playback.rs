@@ -1039,7 +1039,13 @@ impl Player {
             Some(song) => song,
             None => {
                 info!("Playlist is empty, nothing to stop.");
-                play_handles.cancel.cancel();
+                // No position either: cancelled under the lock, as below, so
+                // a playback still starting cannot stamp one after (#634).
+                {
+                    let mut play_start_time = self.play_start_time.lock().await;
+                    play_handles.cancel.cancel();
+                    *play_start_time = None;
+                }
                 drop(play_handles.join);
                 return (None, false);
             }
