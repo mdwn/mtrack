@@ -1355,7 +1355,9 @@ impl McpServer {
                 let path = match args.file.as_deref() {
                     Some(file) => {
                         validate_lighting_filename(file)?;
-                        song_lighting_target(&song, file)
+                        let target = song_lighting_target(&song, file);
+                        require_light_show(&self.player.songs(), &target)?;
+                        target
                     }
                     None => song.lighting_draft_path(),
                 };
@@ -2174,6 +2176,7 @@ impl McpServer {
         let song = self.song(&args.song)?;
         validate_lighting_filename(&args.file)?;
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
+        require_light_show(&self.player.songs(), &path)?;
         let body = read_text(&path).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
@@ -2286,8 +2289,11 @@ impl McpServer {
             .resolve_lighting_file_to_delete(LightingDirKind::Venues, &args.file)
             .await?;
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        remove_lighting_file(&path).await?;
-        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+        let kept = remove_lighting_file(&path).await?;
+        Ok(ok_json(json!({
+            "deleted": path.display().to_string(),
+            "kept": kept.display().to_string(),
+        })))
     }
 
     #[tool(description = "Delete a fixture-type `.light` file from the \
@@ -2300,8 +2306,11 @@ impl McpServer {
             .resolve_lighting_file_to_delete(LightingDirKind::FixtureTypes, &args.file)
             .await?;
         let _writing = crate::webui::api::lighting_api::VENUE_WRITES.lock().await;
-        remove_lighting_file(&path).await?;
-        Ok(ok_json(json!({"deleted": path.display().to_string()})))
+        let kept = remove_lighting_file(&path).await?;
+        Ok(ok_json(json!({
+            "deleted": path.display().to_string(),
+            "kept": kept.display().to_string(),
+        })))
     }
 
     #[tool(description = "Delete a lighting `.light` file belonging to a song, \
@@ -2321,6 +2330,7 @@ impl McpServer {
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
+        require_light_show(&self.player.songs(), &path)?;
 
         let config_path = song.config_path_or_default();
         let reference = path
@@ -2360,11 +2370,12 @@ impl McpServer {
 
         // The file goes last. If removal fails, the only thing that happened is
         // the config edit, and the song still loads.
-        remove_lighting_file(&path).await?;
+        let kept = remove_lighting_file(&path).await?;
         self.reload_player_songs().await?;
 
         Ok(ok_json(json!({
             "deleted": path.display().to_string(),
+            "kept": kept.display().to_string(),
             "unregistered": unregistered,
             "reference": reference,
         })))
@@ -2505,6 +2516,7 @@ impl McpServer {
                 lighting_dir.join(&args.file)
             }
         };
+        require_light_show(&self.player.songs(), &path)?;
         staged_write_string(&path, &args.source).await?;
 
         // Writing the file is not enough: without a `lighting:` entry pointing
@@ -2625,6 +2637,7 @@ impl McpServer {
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
+        require_light_show(&self.player.songs(), &path)?;
         let original = read_text(&path).await?;
         let updated = apply_patch(
             &original,
@@ -2949,10 +2962,18 @@ struct Registration {
 
 /// Removes the file, mapping a missing path to a clear error rather than an
 /// opaque io message.
-async fn remove_lighting_file(path: &std::path::Path) -> Result<(), McpError> {
-    tokio::fs::remove_file(path).await.map_err(|e| {
-        McpError::internal_error(format!("failed to delete {}: {e}", path.display()), None)
-    })
+/// Removes a lighting file by setting it aside beside itself
+/// (`project_files::set_aside_broken`: `<file>.replaced-<time>`, which no
+/// loader reads), as every remove in the web UI does: nothing a delete took
+/// is lost. Returns where it went.
+async fn remove_lighting_file(path: &std::path::Path) -> Result<std::path::PathBuf, McpError> {
+    let owned = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::lighting::project_files::set_aside_broken(&owned))
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to delete {}: {e}", path.display()), None)
+        })
 }
 
 /// The `lighting:` block's location in a song's YAML: the key line, the item
@@ -4172,15 +4193,27 @@ fn refuse_rich_channels_in_light<'a>(
     Ok(())
 }
 
+/// A song lighting file's name: a bare, safe file name. Whether the file is
+/// a light show is [`require_light_show`]'s, once it is resolved.
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
-    crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    if crate::songs::FileKind::of(std::path::Path::new(name)) != crate::songs::FileKind::Lighting {
-        return Err(McpError::invalid_params(
-            "lighting filename must end with .light",
-            None,
-        ));
+    crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)
+}
+
+/// The one rule for a song's light show file, as the web UI's lighting API
+/// takes it (`songs::is_light_show_file`): a `.light` file in any case, or
+/// one a song's `lighting:` names (`show.dsl`).
+fn require_light_show(songs: &crate::songs::Songs, path: &std::path::Path) -> Result<(), McpError> {
+    if crate::songs::is_light_show_file(path, &songs.light_show_files()) {
+        return Ok(());
     }
-    Ok(())
+    Err(McpError::invalid_params(
+        format!(
+            "{} is not a light show file: a lighting file ends with .light, or is one a song's \
+             `lighting:` names",
+            crate::util::filename_display(path)
+        ),
+        None,
+    ))
 }
 
 /// Snapshot taken under an immutable lock of the lighting system so the

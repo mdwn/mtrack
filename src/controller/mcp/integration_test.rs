@@ -3750,6 +3750,81 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A show a song's `lighting:` names by another extension (`show.dsl`) is a
+/// light show to the MCP tools as to the web UI (`songs::is_light_show_file`):
+/// read and deleted, the delete setting it aside rather than removing it.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_song_lighting_tools_take_a_named_show() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n}\n",
+    )?;
+    let song_dir = fixture.root.join("songs/dsl-named-song");
+    std::fs::create_dir_all(&song_dir)?;
+    let track_src = fixture.root.join("songs/dsl-light-show-song/song.mp3");
+    let show =
+        "show \"Dsl\" {\n  @00:00.000\n  all_lights: static color: \"blue\", duration: 5s\n}\n";
+    std::fs::write(song_dir.join("show.dsl"), show)?;
+    std::fs::write(
+        song_dir.join("song.yaml"),
+        format!(
+            "kind: song\nname: Dsl Named Song\nlighting:\n  - file: show.dsl\ntracks:\n  - name: main\n    file: \"{}\"\n    file_channel: 1\n",
+            track_src.display()
+        ),
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let read = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1,
+            "read_song_lighting",
+            json!({"song": "Dsl Named Song", "file": "show.dsl"}),
+        )
+        .await,
+    );
+    assert_eq!(read["source"].as_str(), Some(show), "{read}");
+    let deleted = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            2,
+            "delete_song_lighting",
+            json!({"song": "Dsl Named Song", "file": "show.dsl"}),
+        )
+        .await,
+    );
+    assert_eq!(deleted["unregistered"], true, "{deleted}");
+    let kept = std::path::PathBuf::from(deleted["kept"].as_str().unwrap_or_default());
+    assert_eq!(std::fs::read_to_string(&kept)?, show, "{deleted}");
+    assert!(!song_dir.join("show.dsl").exists());
+
+    controller.shutdown();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test 3m: lighting tools resolve root-level files (Esaweg-style layout)
 // ---------------------------------------------------------------------------
