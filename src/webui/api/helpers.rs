@@ -253,6 +253,17 @@ pub(crate) fn player_song_names(
         .collect()
 }
 
+/// The 409 for a song name another song holds
+/// ([`crate::songs::check_song_name_free`]), naming it in `taken`:
+/// create-song's and a rename's (#674, #689).
+pub(crate) fn name_taken_response(taken: &crate::songs::SongNameTaken) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error": taken.to_string(), "taken": taken.0})),
+    )
+        .into_response()
+}
+
 /// Reloads the player's songs and playlists after a change on disk. A
 /// reload that fails leaves the player with the songs it had, so the change
 /// is answered with a 500 saying so, rather than as made.

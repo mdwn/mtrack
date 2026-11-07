@@ -649,8 +649,29 @@ pub(super) async fn put_song(
         Ok(p) => p,
         Err(e) => return *e,
     };
-    if let Err(e) = parsed {
-        return e;
+    let declared = match parsed {
+        Ok(config) => config.name().to_string(),
+        Err(e) => return e,
+    };
+    // Not renamed onto a name another song holds (#689).
+    let taken = super::helpers::player_song_names(&state.player);
+    let songs_root = state.songs_path();
+    let free = super::helpers::spawn_blocking_io("read the songs folder", {
+        let config_path = config_path.clone();
+        move || -> std::io::Result<_> {
+            Ok(songs::check_song_name_free(
+                &config_path,
+                &declared,
+                &songs_root,
+                taken,
+            ))
+        }
+    })
+    .await;
+    match free {
+        Ok(Ok(())) => {}
+        Ok(Err(taken)) => return super::helpers::name_taken_response(&taken),
+        Err(e) => return e,
     }
 
     let cp = config_path;
@@ -1351,6 +1372,52 @@ mod test {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// #689: a save that renames a song onto a name another song holds is
+    /// refused with create-song's `taken` 409, the file left as it is; one
+    /// that keeps the name, or renames onto a free one, is saved.
+    #[tokio::test]
+    async fn a_rename_onto_another_songs_name_is_refused() {
+        let (state, _dir) = test_state();
+        for name in ["Foo", "Bar"] {
+            let dir = state.songs_path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("song.yaml"), format!("name: {name}\ntracks: []\n")).unwrap();
+        }
+        let foo = state.songs_path().join("Foo/song.yaml");
+        let app = router().with_state(state);
+        let put = |body: &'static str| {
+            app.clone().oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/Foo")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+
+        let response = put("name: Bar\ntracks: []\n").await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+        assert_eq!(body["taken"], "Bar");
+        assert!(
+            body["error"].as_str().unwrap().contains("already exists"),
+            "{body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&foo).unwrap(),
+            "name: Foo\ntracks: []\n"
+        );
+
+        for yaml in [
+            "name: Foo\ntracks: []\nloop_playback: true\n",
+            "name: Baz\ntracks: []\n",
+        ] {
+            let response = put(yaml).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{yaml}");
+            assert_eq!(std::fs::read_to_string(&foo).unwrap(), yaml);
+        }
     }
 
     /// #680: a folder named as the song whose `song.yaml` declares another

@@ -2467,6 +2467,53 @@ pub fn check_song_config_for(
     }
 }
 
+/// A song name another song holds, refused to a new song or a rename
+/// (#674, #689).
+#[derive(Debug)]
+pub struct SongNameTaken(pub String);
+
+impl std::fmt::Display for SongNameTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a song named \"{}\" already exists; choose another name",
+            self.0
+        )
+    }
+}
+
+impl Error for SongNameTaken {}
+
+/// Whether the config at `path` may be written declaring song `writing`:
+/// not when that gives it a name another song holds, one in `taken` or
+/// configured under `songs_root` ([`taken_song_names`]). A config that
+/// already declares `writing` (a save that keeps the name) is the song's
+/// own; one that declares another, or none there yet, takes the name anew.
+/// The one rule of a new song with a name asked for and a rename, in the
+/// web UI and over MCP.
+pub fn check_song_name_free(
+    path: &Path,
+    writing: &str,
+    songs_root: &Path,
+    taken: HashSet<String>,
+) -> Result<(), SongNameTaken> {
+    let declares = path
+        .is_file()
+        .then(|| read_song_config(path))
+        .flatten()
+        .map(|config| match config {
+            Ok(config) => config.name().to_string(),
+            Err((name, _)) => name,
+        });
+    if declares.as_deref() == Some(writing)
+        || !taken_song_names(songs_root, taken).contains(writing)
+    {
+        Ok(())
+    } else {
+        Err(SongNameTaken(writing.to_string()))
+    }
+}
+
 /// The names the songs configured under `root` have, loaded or failed, as
 /// the loader names them ([`read_song_config`]), read from their configs
 /// without loading the songs. A folder that cannot be read is passed over

@@ -218,15 +218,15 @@ pub(super) async fn create_song_in_directory(
         .map(str::to_string);
     let naming = super::helpers::spawn_blocking_io("read the songs folder", {
         let dir = dir_canonical.clone();
-        move || -> std::io::Result<Result<String, String>> {
+        let config_path = config_path.clone();
+        move || -> std::io::Result<Result<String, songs::SongNameTaken>> {
             match asked {
-                Some(name) => Ok(
-                    if songs::taken_song_names(&songs_root, taken).contains(&name) {
-                        Err(name)
-                    } else {
-                        Ok(name)
-                    },
-                ),
+                Some(name) => {
+                    Ok(
+                        songs::check_song_name_free(&config_path, &name, &songs_root, taken)
+                            .map(|()| name),
+                    )
+                }
                 None => Ok(Ok(songs::new_song(&songs_root, &dir, taken)?.map_or_else(
                     || crate::util::filename_display(&dir).to_string(),
                     |song| song.name,
@@ -237,16 +237,7 @@ pub(super) async fn create_song_in_directory(
     .await;
     let name = match naming {
         Ok(Ok(name)) => name,
-        Ok(Err(taken)) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": format!("a song named \"{taken}\" already exists; choose another name"),
-                    "taken": taken,
-                })),
-            )
-                .into_response();
-        }
+        Ok(Err(taken)) => return super::helpers::name_taken_response(&taken),
         Err(e) => return e,
     };
 

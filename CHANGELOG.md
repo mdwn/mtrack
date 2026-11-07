@@ -764,6 +764,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page after a save that renames the song, so its next save or delete goes there. Writing a song
   that has its own config, renaming one in it, and writing a new song are as before.
 
+- **A rename onto a name another song holds is refused** (#689): saving `Foo/song.yaml` as
+  `name: Bar` while another song is Bar, through `PUT /api/songs/Foo` or MCP `write_song`, was
+  written, leaving two configs that declare Bar (the loader kept one), and the song page then went
+  to Bar's. Each is now refused, the web UI's with create-song's 409 naming the song in `taken`
+  and MCP's with an error, and the file is left as it is. One rule
+  (`songs::check_song_name_free`) for both and for create-song with a name. A save that keeps the
+  name, or renames onto a free one, is as before.
+
 - **A track upload's new song is named past the names already taken** (#674): the config a track
   upload writes for a new song named it after its folder, with no check against the songs already
   loaded or configured, so it could duplicate one and the loader dropped one with a warning:

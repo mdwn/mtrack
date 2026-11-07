@@ -1258,6 +1258,17 @@ impl McpServer {
         // `song.yaml` declares another (#680), by the web UI's rule.
         crate::songs::check_song_config_for(&yaml_path, &args.name, Some(written.name()))
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        // Nor renamed onto a name another song holds, by the web UI's rule
+        // (#689).
+        let taken = crate::webui::api::helpers::player_song_names(&self.player);
+        let free = tokio::task::spawn_blocking({
+            let (yaml_path, root) = (yaml_path.clone(), songs_root.as_path().to_path_buf());
+            let declared = written.name().to_string();
+            move || crate::songs::check_song_name_free(&yaml_path, &declared, &root, taken)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        free.map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         staged_write_string(&yaml_path, &args.yaml, false).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
@@ -5289,6 +5300,34 @@ profiles:
                 }))
                 .await,
         );
+        drop(fixture);
+    }
+
+    /// #689: `write_song` refuses a rename onto a name another song holds,
+    /// by the web UI's rule, and leaves the file; a save that keeps the
+    /// name, or renames onto a free one, is written.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_song_refuses_a_rename_onto_another_songs_name() {
+        let foo_yaml = "name: Foo\ntracks: []\n";
+        let (server, fixture) = server(&[("songs/foo/song.yaml", foo_yaml)]).await;
+        let foo = fixture.root.join("songs/foo/song.yaml");
+        let write = |yaml: &str| {
+            server.write_song(Parameters(WriteSongArgs {
+                name: "Foo".to_string(),
+                yaml: yaml.to_string(),
+            }))
+        };
+
+        let refused = refusal(write("name: DSL Light Show Song\ntracks: []\n").await);
+        assert!(refused.contains("already exists"), "{refused}");
+        assert_eq!(std::fs::read_to_string(&foo).unwrap(), foo_yaml);
+
+        let kept = "name: Foo\ntracks: []\nloop_playback: true\n";
+        let _ = answer(write(kept).await);
+        assert_eq!(std::fs::read_to_string(&foo).unwrap(), kept);
+        let renamed = "name: Baz\ntracks: []\n";
+        let _ = answer(write(renamed).await);
+        assert_eq!(std::fs::read_to_string(&foo).unwrap(), renamed);
         drop(fixture);
     }
 
