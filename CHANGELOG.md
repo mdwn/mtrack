@@ -745,6 +745,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Going from one song's page straight to another's shows the new song** (#632): changing the URL
+  from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
+  `#/songs/Rime/lighting`, as the browser's Back and Forward or a pasted link do) changed the
+  heading and title but kept everything else on the first song: its duration, tracks, beat grid,
+  lighting timeline and config. The song page now loads afresh for each song.
+
 - **Saving or deleting a song does not touch another song's config** (#680): with `Foo/song.yaml`
   declaring `name: Bar`, so that the player loads it as Bar, `PUT /api/songs/Foo` and MCP
   `write_song{name: "Foo"}` found no song named Foo, fell back to the folder `Foo/` and overwrote
