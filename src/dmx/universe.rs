@@ -68,17 +68,32 @@ pub(crate) fn dim_step(current: f64, target: f64, rate: f64) -> f64 {
 }
 
 /// Where a channel written at `from`, moving `rate` a tick toward `target`,
-/// is `ticks` ticks on: [`dim_step`] that many times, in closed form.
+/// is `ticks` ticks on: [`dim_step`] that many times, as the store and the
+/// universe thread take it a tick at a time, then the part of a step a
+/// part tick makes. Stepped, not `from + rate × ticks`: the sum of the
+/// steps rounds otherwise, so a seek's replay landed a byte off what the
+/// live run sent (#646: 0 → 35 over 44 ticks, tick 22, 18 for 17).
 pub(crate) fn dimmed_at(from: f64, target: f64, rate: f64, ticks: f64) -> f64 {
     if rate == 0.0 {
         return target;
     }
-    let value = from + rate * ticks;
-    if rate > 0.0 {
-        value.min(target)
-    } else {
-        value.max(target)
+    let whole = ticks.floor();
+    let mut value = from;
+    let mut n = 0.0;
+    while n < whole && value != target {
+        let next = dim_step(value, target, rate);
+        if next == value {
+            // A rate too small to move it; it never will.
+            return value;
+        }
+        value = next;
+        n += 1.0;
     }
+    let part = rate * (ticks - whole);
+    if part != 0.0 && value != target {
+        value = dim_step(value, target, part);
+    }
+    value
 }
 
 /// A fixture test's channels as a universe holds them: 0-based index and
@@ -381,9 +396,9 @@ mod dimming_test {
         assert_eq!(dmx_byte(f64::NAN), 0);
     }
 
-    /// A tick at a time lands where the closed form says, whatever the
-    /// rate: the store and the universe thread step, a replay jumps. (At
-    /// the write itself the closed form has an instant write landed
+    /// A tick at a time lands exactly where [`dimmed_at`] says, whatever
+    /// the rate: the store and the universe thread step, a replay jumps
+    /// there. (At the write itself `dimmed_at` has an instant write landed
     /// already; the step lands it a tick on.)
     #[test]
     fn stepping_a_dim_tick_by_tick_agrees_with_its_closed_form() {
@@ -409,12 +424,31 @@ mod dimming_test {
             for n in 1..=steps {
                 current = dim_step(current, target, rate);
                 let closed = dimmed_at(from, target, rate, f64::from(n));
-                assert!(
-                    (current - closed).abs() < 1e-9,
-                    "from {from} to {target} over {ticks}: tick {n} at {current}, closed form {closed}"
+                assert_eq!(
+                    current, closed,
+                    "from {from} to {target} over {ticks}: tick {n}"
                 );
             }
         }
+    }
+
+    /// #646: 0 → 35 over 44 ticks, stepped, is 17.499999999999996 at tick
+    /// 22, which goes out as 17; `from + rate × ticks` made it 17.5, 18.
+    /// The replay and the live run send the same byte at every tick, and a
+    /// part tick lies between its two.
+    #[test]
+    fn a_replayed_dim_sends_the_bytes_the_live_run_sent() {
+        let rate = dim_rate(0.0, 35.0, 44.0);
+        let mut current = 0.0;
+        for n in 1..=50 {
+            current = dim_step(current, 35.0, rate);
+            let replayed = dimmed_at(0.0, 35.0, rate, f64::from(n));
+            assert_eq!(dmx_byte(replayed), dmx_byte(current), "tick {n}");
+        }
+        assert_eq!(dmx_byte(dimmed_at(0.0, 35.0, rate, 22.0)), 17);
+        let half = dimmed_at(0.0, 35.0, rate, 21.5);
+        assert!(dimmed_at(0.0, 35.0, rate, 21.0) < half && half < dimmed_at(0.0, 35.0, rate, 22.0));
+        assert_eq!(dimmed_at(0.0, 35.0, rate, 1e6), 35.0);
     }
 
     #[test]

@@ -745,6 +745,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
+  MIDI-written channel a tick at a time, while a seek's replay worked the level out as
+  `from + rate × ticks`, which rounds differently: a dim from 0 to 35 over 44 ticks was 17 live at
+  tick 22 but 18 after a seek there (some 15,000 of 12 million dims and ticks differed by a byte).
+  The replay now takes the same steps, so at every tick it lands on the live run's level exactly;
+  between ticks it goes part of the next step.
+
 - **A strobe's DMX offset holds without a minimum frequency** (#633): on the period curve, a fixture
   type with `strobe_dmx_offset` but no `min_strobe_frequency` drove its strobe channel to `hz / max`
   of the whole channel, so a slow strobe landed below the offset, where the fixture does not
