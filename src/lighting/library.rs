@@ -45,6 +45,17 @@ use super::gdtf;
 /// directory override does not move it.
 pub const LIBRARY_DIR: &str = "lighting/library";
 
+/// Whether `path` is a GDTF archive in the library: a file whose
+/// extension is `.gdtf` in any case. The one rule every scan of the library
+/// takes, so a write's staged copy (`x.gdtf.<pid>.mtrack-new`) is never one.
+pub fn is_archive(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("gdtf"))
+}
+
 /// The library file `file_name`: where it is in `project`, and the
 /// project-relative name records and venues refer to it by
 /// (`lighting/library/<file_name>`). The one place a library path is built.
@@ -228,12 +239,7 @@ pub fn unrecorded_types_given(
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("gdtf"))
-        })
+        .filter(|p| is_archive(p))
         .collect();
     files.sort();
     if files.is_empty() {

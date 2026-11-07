@@ -248,9 +248,7 @@ fn library_copy_of(project: &Path, bytes: &[u8]) -> Option<String> {
         .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
-            // A write's staged copy is not a library file.
-            !crate::util::is_staged(p)
-                && p.is_file()
+            super::library::is_archive(p)
                 && std::fs::metadata(p).is_ok_and(|m| m.len() == bytes.len() as u64)
         })
         .collect();
@@ -464,10 +462,9 @@ pub struct LibraryCopies {
 
 impl LibraryCopies {
     /// Writes the new library file `file_name`.
-    /// Writes the new library file `file_name`: made with `create_new`
-    /// (its name was checked free), and, when the write fails after making
-    /// it, removed again with its staged copy, so no partial copy is left
-    /// for a later import to take for one.
+    /// Writes the new library file `file_name`, made with `create_new` (its
+    /// name was checked free): a write that fails leaves no partial copy
+    /// for a later import to take for one ([`crate::util::write_file_tracked`]).
     pub fn write(
         &mut self,
         project: &Path,
@@ -476,23 +473,14 @@ impl LibraryCopies {
     ) -> Result<(), Box<dyn Error>> {
         let (path, rel) = super::library::library_file(project, file_name);
         create_dir(path.parent().unwrap_or(project)).map_err(|e| self.failed(e))?;
-        if let Err(failure) =
-            crate::util::write_file_tracked(&path, bytes, crate::util::WriteMode::CreateNew)
-        {
-            if failure.complete {
-                // Written in full; only the staged copy stayed.
-                let _ = std::fs::remove_file(crate::util::staged_path(&path));
-            } else {
-                if failure.touched {
-                    let _ = std::fs::remove_file(&path);
-                    let _ = std::fs::remove_file(crate::util::staged_path(&path));
-                }
-                return Err(self.failed(annotate(
+        crate::util::write_file_tracked(&path, bytes, crate::util::WriteMode::CreateNew).map_err(
+            |failure| {
+                self.failed(annotate(
                     crate::util::WriteTarget::File(&path),
                     failure.error,
-                )));
-            }
-        }
+                ))
+            },
+        )?;
         self.written.push(rel);
         Ok(())
     }

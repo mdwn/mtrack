@@ -317,12 +317,13 @@ fn writer_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// The cost is that an in-place rewrite is not atomic — it truncates and then
 /// writes, so losing power midway leaves a short file. To bound that, the
 /// complete new content is first staged in a sidecar (see [`staged_path`]) and
-/// flushed to disk, and only removed once the destination is durable. A sidecar
-/// left behind therefore means the last write to that file may not have
-/// completed (a crash, or a failure after the destination was truncated),
-/// and holds the content it was trying to write; a lighting writer removes
-/// it once it has put the file back, or kept its original in a file of its
-/// own beside it ([`crate::lighting::writes::Changes`]).
+/// flushed to disk, and removed once the destination is durable. A sidecar
+/// left behind holds the content a write was writing: after a crash, or a
+/// failure past the destination's truncation, the content the destination
+/// may be missing; a lighting writer that puts the file back, or keeps its
+/// original beside it, removes it then ([`restore_file`]). One can also
+/// stay, rarely, beside a file written in full, when even a second try at
+/// removing it fails.
 /// Recovery is otherwise manual: copy the sidecar over the destination. A reader can see
 /// the short file too, while the rewrite is under way, unless it reads
 /// through [`read_file`].
@@ -360,55 +361,71 @@ pub enum WriteMode {
     ReplaceExisting,
 }
 
-/// A failed [`write_file`] or [`write_new_file`], and whether it changed the
-/// destination before failing: made it (`create_new` succeeded) or began
-/// rewriting it (truncated). One that did not leaves the destination as it
-/// was, or as another writer left it; one that did leaves it to be put back.
-/// `complete`: only the sidecar's removal failed, after the destination was
-/// fully written and synced.
+/// A failed [`write_file_tracked`], and whether it left the destination
+/// changed: rewritten part way, past its truncation (its staged copy,
+/// [`staged_path`], is kept beside it, holding the full content). One that
+/// did not leaves the destination as it was, or as another writer left it.
+/// A file a [`WriteMode::CreateNew`] write made is removed again, with its
+/// staged copy, and is untouched; touched only if that removal failed.
 #[derive(Debug)]
 pub struct WriteFailure {
     pub error: std::io::Error,
     pub touched: bool,
-    pub complete: bool,
-}
-
-/// Whether `path` is a write's staged copy ([`staged_path`]), which no scan
-/// of a directory's files should take for one of them.
-pub fn is_staged(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.ends_with(STAGED_SUFFIX))
 }
 
 /// [`write_file`], opening the destination as `mode` says and saying on
-/// failure whether it was changed ([`WriteFailure`]), so a writer undoing
-/// its changes undoes this one's only when there is one.
+/// failure whether it was left changed ([`WriteFailure`]), so a writer
+/// undoing its changes undoes this one's only when there is one. Every
+/// decision about the staged copy is made here, under the file's writer
+/// lock: a write whose only failure is the staged copy's removal, after the
+/// destination is fully written, retries it once and is written (the copy
+/// may stay, holding what the destination holds).
 pub fn write_file_tracked(
     path: &Path,
     contents: &[u8],
     mode: WriteMode,
 ) -> Result<(), WriteFailure> {
-    let new = mode == WriteMode::CreateNew;
-    let untouched = |error| WriteFailure {
-        error,
-        touched: false,
-        complete: false,
-    };
-    let touched = |error| WriteFailure {
-        error,
-        touched: true,
-        complete: false,
-    };
-    #[cfg(test)]
-    let fault = next_fault();
-    use std::io::Write;
-
     // Take turns from before staging: a writer staging while another
     // rewrites would overwrite its sidecar, and whichever removed it first
     // left the other's removal to fail (#578).
     let writer_lock = writer_lock(path);
     let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    write_locked(path, contents, mode)
+}
+
+/// [`write_file_tracked`] with `path`'s writer lock held.
+fn write_locked(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let result = write_steps(path, contents, mode);
+    match result {
+        // A file this write made is taken away again, with its staged copy.
+        Err(failure) if mode == WriteMode::CreateNew && failure.touched => {
+            let gone = match std::fs::remove_file(path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+            let _ = std::fs::remove_file(staged_path(path));
+            Err(WriteFailure {
+                error: failure.error,
+                touched: !gone,
+            })
+        }
+        other => other,
+    }
+}
+
+fn write_steps(path: &Path, contents: &[u8], mode: WriteMode) -> Result<(), WriteFailure> {
+    let new = mode == WriteMode::CreateNew;
+    let untouched = |error| WriteFailure {
+        error,
+        touched: false,
+    };
+    let touched = |error| WriteFailure {
+        error,
+        touched: true,
+    };
+    #[cfg(test)]
+    let fault = next_fault();
+    use std::io::Write;
 
     // Read the ownership we are aiming for before creating anything, since
     // creating the destination would otherwise answer the question with the
@@ -425,7 +442,7 @@ pub fn write_file_tracked(
         }
         file.write_all(contents)?;
         #[cfg(test)]
-        if FAIL_STAGING.get() || fault == Fault::Staging {
+        if fault == Fault::Staging {
             return Err(std::io::Error::other("injected staging failure"));
         }
         file.sync_all()?;
@@ -454,7 +471,6 @@ pub fn write_file_tracked(
         let made = |error| WriteFailure {
             error,
             touched: new,
-            complete: false,
         };
         destination.lock().map_err(made)?;
         if let Some(ownership) = intended {
@@ -483,45 +499,166 @@ pub fn write_file_tracked(
         destination.sync_all()
     };
     // Past the truncation the sidecar is the one full copy of the content:
-    // it stays, for whoever puts the destination back (and removes it once
-    // that is done) or for a person to recover from.
+    // it stays, for whoever puts the destination back or for a person to
+    // recover from.
     rewrite().map_err(touched)?;
 
     // The destination is durable, so the staged copy has served its purpose.
-    // Leaving it behind would falsely advertise an interrupted write. The
-    // lock goes with the file, after.
+    // It is removed (a second try if the first fails); one that stays even
+    // so holds what the destination holds.
     let removed = std::fs::remove_file(&staged);
     #[cfg(test)]
     let removed = match fault {
         Fault::SidecarRemoval => Err(std::io::Error::other("injected sidecar removal failure")),
         _ => removed,
     };
-    removed.map_err(|error| WriteFailure {
-        error,
-        touched: true,
-        complete: true,
+    if removed.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    Ok(())
+}
+
+/// Removes `path`, a file a write made, and its staged copy, taking turns
+/// with the file's writers.
+pub fn remove_written(path: &Path) -> std::io::Result<()> {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let removed = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(staged_path(path));
+    removed
+}
+
+/// What [`restore_file`] did.
+#[derive(Debug)]
+pub enum Restored {
+    /// The file holds what it held again.
+    Yes,
+    /// It could not be put back (`error`): it is left as the failed write
+    /// left it, and its original content is where `original` says.
+    No {
+        error: std::io::Error,
+        original: Original,
+    },
+}
+
+/// Where a file's original content is after a restore that failed.
+#[derive(Debug)]
+pub enum Original {
+    /// In a new file of its own beside it (named), which no later write
+    /// writes over: `<file>.mtrack-original`, `-2`, `-3`….
+    Kept(String),
+    /// Only in the restore's staged copy (named), which is left.
+    Staged(String),
+    /// Nowhere: it could not be written (why).
+    Lost(std::io::Error),
+}
+
+/// Puts `path` back as it held `was`, as a writer undoing its change does,
+/// under the file's writer lock. When that fails, the original is kept
+/// before anything holding it is let go: the restore's staged copy (which
+/// holds `was`, synced, once the restore got past truncating) is linked
+/// to a new `<file>.mtrack-original`, taking no space; failing that, `was`
+/// is written to one; and only once one holds it is the staged copy
+/// removed. If neither can be made, the staged copy stays, named.
+pub fn restore_file(path: &Path, was: &[u8]) -> Restored {
+    let writer_lock = writer_lock(path);
+    let _turn = writer_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let failure = match write_locked(path, was, WriteMode::CreateOrReplace) {
+        Ok(()) => return Restored::Yes,
+        Err(failure) => failure,
+    };
+    let staged = staged_path(path);
+    // Past its truncation the restore kept its staged copy, holding `was`.
+    let original = if failure.touched {
+        match link_original(path, &staged).or_else(|_| write_original(path, was)) {
+            Ok(name) => {
+                let _ = std::fs::remove_file(&staged);
+                Original::Kept(name)
+            }
+            Err(_) => Original::Staged(
+                staged
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+        }
+    } else {
+        match write_original(path, was) {
+            Ok(name) => Original::Kept(name),
+            Err(e) => Original::Lost(e),
+        }
+    };
+    Restored::No {
+        error: failure.error,
+        original,
+    }
+}
+
+/// The names a file's kept original may take, in turn.
+fn original_names(path: &Path) -> impl Iterator<Item = (String, PathBuf)> + '_ {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    (1u32..).map(move |n| {
+        let candidate = if n == 1 {
+            format!("{name}.mtrack-original")
+        } else {
+            format!("{name}.mtrack-original-{n}")
+        };
+        let file = path.with_file_name(&candidate);
+        (candidate, file)
     })
 }
 
+/// Links `staged` to the first free original name of `path`; its name.
+fn link_original(path: &Path, staged: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    if next_fault() == Fault::Link {
+        return Err(std::io::Error::other("injected link failure"));
+    }
+    for (name, file) in original_names(path) {
+        match std::fs::hard_link(staged, &file) {
+            Ok(()) => return Ok(name),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only with the integers")
+}
+
+/// Writes `was` to the first free original name of `path`, made new; its
+/// name.
+fn write_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
+    for (name, file) in original_names(path) {
+        match write_file_tracked(&file, was, WriteMode::CreateNew) {
+            Ok(()) => return Ok(name),
+            Err(f) if f.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(f) => return Err(f.error),
+        }
+    }
+    unreachable!("the names run out only with the integers")
+}
+
 /// A failure a test injects into [`write_file_tracked`] (and so every
-/// [`write_file`] and [`write_new_file`]) on its thread, one per write in
-/// turn ([`inject_faults`]).
+/// [`write_file`] and [`write_new_file`]) on its thread, or into
+/// [`restore_file`]'s link of the original, one per step in turn
+/// ([`inject_faults`]).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
-    /// This write goes through.
+    /// This write (or link) goes through.
     Pass,
     /// Staging fails, before the destination is touched.
     Staging,
     /// The write fails just after truncating the destination, as a disk
     /// that fills mid-write would.
     AfterTruncating,
-    /// Only the sidecar's removal fails, the destination fully written.
+    /// Only the sidecar's first removal fails, the destination written.
     SidecarRemoval,
+    /// The link of a kept original fails, as on a filesystem without them.
+    Link,
 }
 
-/// The faults the next writes on this thread meet, in order; after them,
-/// writes go through. Replaces any not yet met.
+/// The faults the next writes (and links) on this thread meet, in order;
+/// after them, everything goes through. Replaces any not yet met.
 #[cfg(test)]
 pub fn inject_faults(faults: &[Fault]) {
     FAULTS.with(|f| *f.borrow_mut() = faults.iter().copied().collect());
@@ -534,9 +671,6 @@ fn next_fault() -> Fault {
 
 #[cfg(test)]
 thread_local! {
-    /// Fails [`write_file`]'s staging on this thread once the sidecar holds
-    /// the content, as a full disk would fail its flush.
-    static FAIL_STAGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The faults [`inject_faults`] queued.
     static FAULTS: std::cell::RefCell<std::collections::VecDeque<Fault>> =
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
@@ -1423,9 +1557,9 @@ mod ownership_test {
         let dest = dir.path().join("config.yaml");
         std::fs::write(&dest, "before").unwrap();
 
-        super::FAIL_STAGING.set(true);
+        super::inject_faults(&[super::Fault::Staging]);
         let result = write_file(&dest, b"after");
-        super::FAIL_STAGING.set(false);
+        super::inject_faults(&[]);
 
         assert!(result.is_err());
         assert!(!staged_path(&dest).exists());

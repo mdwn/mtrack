@@ -356,11 +356,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     library.
   - A file one of these writes cannot put back is left as the failed write left it, and its
     original goes to a new file beside it that no later save writes over,
-    `<file>.mtrack-original` (`-2`, `-3`… when taken): "nothing was saved, but club.venue
-    (<why>; it is left as the failed save wrote it, perhaps empty, and its original is in
-    club.venue.mtrack-original) could not be put back", or that the original could not be kept
-    either. The staged copies (`<file>.<pid>.mtrack-new`) of these writes are removed once put
-    back or not; a write interrupted by a crash still leaves its staged copy.
+    `<file>.mtrack-original` (`-2`, `-3`… when taken), a link to the staged copy that holds it
+    (so a full disk loses nothing), else written out: "nothing was saved, but club.venue (<why>;
+    it is left as the failed save wrote it, perhaps empty, and its original is in
+    club.venue.mtrack-original) could not be put back". When no such file can be made, the
+    staged copy (`<file>.<pid>.mtrack-new`) is kept and named instead ("its original is only in
+    club.venue.1234.mtrack-new; keep that file"), or the answer says the original could not be
+    kept. Otherwise these writes' staged copies are removed once the file is put back or its
+    original kept; a write interrupted by a crash still leaves its staged copy.
   - A web save's file that was removed since it was read is not made again (409): "club.venue
     was removed while saving and was not made again; try again", where the save made it anew
     (or left it empty). MCP's writes still make it again.

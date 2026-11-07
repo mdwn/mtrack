@@ -366,14 +366,7 @@ impl Changes {
         } else {
             crate::util::WriteMode::ReplaceExisting
         };
-        let result = match crate::util::write_file_tracked(path, contents, mode) {
-            // Written in full; only the staged copy's removal failed.
-            Err(failure) if failure.complete => {
-                let _ = std::fs::remove_file(crate::util::staged_path(path));
-                Ok(())
-            }
-            other => other,
-        };
+        let result = crate::util::write_file_tracked(path, contents, mode);
         let touched = match &result {
             Ok(()) => true,
             Err(failure) => failure.touched,
@@ -476,11 +469,9 @@ impl Changes {
         for undo in self.done.into_iter().rev() {
             match undo {
                 Undo::Remove { path, shown } => {
-                    if let Err(e) = remove_file(&path) {
+                    if let Err(e) = crate::util::remove_written(&path) {
                         left.push(format!("{shown} ({e})"));
                     }
-                    // Whatever it held, the made file is the one to look at.
-                    let _ = std::fs::remove_file(crate::util::staged_path(&path));
                 }
                 Undo::Restore { path, shown, was } => {
                     if let Some(why) = restore(&path, &was) {
@@ -518,57 +509,22 @@ impl Changes {
     }
 }
 
-/// Puts `path` back as it was (`was`); `None` when it is, else what the
-/// answer says of it. A restore whose destination was written in full, only
-/// its staged copy's removal failing, is put back. One that was not leaves
-/// the file as the failed save wrote it, so the original goes to a fresh
-/// file of its own beside it ([`keep_original`]), which no later save
-/// writes over; either way the staged copy is removed, so only that file is
-/// left to point at.
+/// Puts `path` back as it was (`was`) ([`crate::util::restore_file`]);
+/// `None` when it is, else what the answer says of it: the file is left as
+/// the failed save wrote it, and where its original is.
 fn restore(path: &Path, was: &[u8]) -> Option<String> {
-    let result =
-        crate::util::write_file_tracked(path, was, crate::util::WriteMode::CreateOrReplace);
-    let _ = std::fs::remove_file(crate::util::staged_path(path));
-    let failure = match result {
-        Ok(()) => return None,
-        Err(failure) if failure.complete => return None,
-        Err(failure) => failure,
+    use crate::util::{Original, Restored};
+    let Restored::No { error, original } = crate::util::restore_file(path, was) else {
+        return None;
     };
-    let kept = match keep_original(path, was) {
-        Ok(name) => format!("its original is in {name}"),
-        Err(e) => format!("its original could not be kept either: {e}"),
+    let original = match original {
+        Original::Kept(name) => format!("its original is in {name}"),
+        Original::Staged(name) => format!("its original is only in {name}; keep that file"),
+        Original::Lost(e) => format!("its original could not be kept either: {e}"),
     };
     Some(format!(
-        "{}; it is left as the failed save wrote it, perhaps empty, and {kept}",
-        failure.error
+        "{error}; it is left as the failed save wrote it, perhaps empty, and {original}"
     ))
-}
-
-/// Writes `was` to a new file beside `path`, `<file>.mtrack-original`, or
-/// `-2`, `-3`… after it when that is taken; its name.
-fn keep_original(path: &Path, was: &[u8]) -> std::io::Result<String> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    for n in 1.. {
-        let candidate = if n == 1 {
-            format!("{name}.mtrack-original")
-        } else {
-            format!("{name}.mtrack-original-{n}")
-        };
-        let file = path.with_file_name(&candidate);
-        match crate::util::write_file_tracked(&file, was, crate::util::WriteMode::CreateNew) {
-            Ok(()) => return Ok(candidate),
-            Err(failure) if failure.complete => return Ok(candidate),
-            Err(failure) if failure.error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(failure) => {
-                if failure.touched {
-                    let _ = std::fs::remove_file(&file);
-                }
-                let _ = std::fs::remove_file(crate::util::staged_path(&file));
-                return Err(failure.error);
-            }
-        }
-    }
-    unreachable!("the names run out only with the integers")
 }
 
 /// Writes `content` as `plan` says: the new or rewritten file, then the old
@@ -883,5 +839,85 @@ mod tests {
             err.contains("its original is in club.venue.mtrack-original-2"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn an_original_that_cannot_be_kept_leaves_the_staged_copy_and_names_it() {
+        let (err, text, files) =
+            failed_rewrite(&[Fault::AfterTruncating, Fault::Link, Fault::Staging], &[]);
+
+        let staged = crate::util::staged_path(Path::new("club.venue"))
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(text, "");
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (staged.clone(), "was\n".to_string()),
+            ],
+            "the staged copy, holding the original, is all that holds it"
+        );
+        assert!(
+            err.contains(&format!(
+                "club.venue (injected failure after truncating; it is left as the failed save \
+                 wrote it, perhaps empty, and its original is only in {staged}; keep that file)"
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_original_whose_link_fails_is_written_out_instead() {
+        let (err, text, files) = failed_rewrite(&[Fault::AfterTruncating, Fault::Link], &[]);
+
+        assert_eq!(text, "");
+        assert_eq!(
+            files,
+            [
+                ("club.venue".to_string(), String::new()),
+                (
+                    "club.venue.mtrack-original".to_string(),
+                    "was\n".to_string()
+                ),
+            ],
+            "written out, and the staged copy gone"
+        );
+        assert!(
+            err.contains("its original is in club.venue.mtrack-original"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_linked_original_is_the_staged_copy_itself() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("club.venue");
+        std::fs::write(&file, "was\n").unwrap();
+        let rewrite = plan(dir.path(), Write::Rewrite(file.clone()), Some("was\n"));
+        // A written-out original would meet the staging failure; the link
+        // needs no write.
+        crate::util::inject_faults(&[
+            Fault::AfterTruncating,
+            Fault::AfterTruncating,
+            Fault::Pass,
+            Fault::Staging,
+        ]);
+        let err = write(&rewrite, "new\n").unwrap_err().to_string();
+        crate::util::inject_faults(&[]);
+        assert!(
+            err.contains("its original is in club.venue.mtrack-original"),
+            "{err}"
+        );
+
+        let original = dir.path().join("club.venue.mtrack-original");
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "was\n");
+        assert_eq!(
+            std::fs::metadata(&original).unwrap().nlink(),
+            1,
+            "the staged copy let go once linked"
+        );
+        assert!(!crate::util::staged_path(&file).exists());
     }
 }
