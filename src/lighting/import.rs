@@ -464,10 +464,10 @@ pub struct LibraryCopies {
 }
 
 impl LibraryCopies {
-    /// Writes the new library file `file_name`.
     /// Writes the new library file `file_name`, made with `create_new` (its
     /// name was checked free): a write that fails leaves no partial copy
-    /// for a later import to take for one ([`crate::util::write_file_tracked`]).
+    /// for a later import to take for one ([`crate::util::write_file_tracked`]),
+    /// unless removing it failed too, which the error then says (#685).
     pub fn write(
         &mut self,
         project: &Path,
@@ -478,10 +478,16 @@ impl LibraryCopies {
         create_dir(path.parent().unwrap_or(project)).map_err(|e| self.failed(e))?;
         crate::util::write_file_tracked(&path, bytes, crate::util::WriteMode::CreateNew).map_err(
             |failure| {
-                self.failed(annotate(
-                    crate::util::WriteTarget::File(&path),
-                    failure.error,
-                ))
+                let error = annotate(crate::util::WriteTarget::File(&path), failure.error);
+                self.failed(if failure.touched {
+                    format!(
+                        "{error}; {rel} is left, perhaps partly written, as removing it failed \
+                         too: remove it by hand"
+                    )
+                    .into()
+                } else {
+                    error
+                })
             },
         )?;
         self.written.push(rel);
@@ -974,6 +980,33 @@ mod tests {
         assert!(!report.already_imported);
         assert_eq!(report.type_name, "Synth Brick");
         assert_eq!(std::fs::read(library.join("synth.gdtf")).unwrap(), bytes);
+    }
+
+    /// #685: a library copy that fails part way and cannot be removed
+    /// either is named in the error as left behind.
+    #[test]
+    fn a_library_copy_left_part_way_is_named_in_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = project(dir.path());
+        let bytes = synthetic_bytes("Synth Brick");
+
+        crate::util::inject_faults(&[
+            crate::util::Fault::AfterTruncating,
+            crate::util::Fault::Removal,
+        ]);
+        let err = import_gdtf_bytes(&bytes, "synth.gdtf", None, &project, TYPES)
+            .unwrap_err()
+            .to_string();
+        crate::util::inject_faults(&[]);
+
+        assert!(
+            err.contains(
+                "; lighting/library/synth.gdtf is left, perhaps partly written, as removing it \
+                 failed too: remove it by hand; nothing was saved"
+            ),
+            "{err}"
+        );
+        assert!(project.join("lighting/library/synth.gdtf").exists());
     }
 
     #[test]

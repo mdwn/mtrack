@@ -24,6 +24,7 @@ pub mod dmx;
 #[cfg(test)]
 mod docs_tests;
 pub mod lighting;
+pub mod logging;
 pub mod midi;
 pub mod notification;
 pub mod player;

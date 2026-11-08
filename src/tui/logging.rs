@@ -86,6 +86,20 @@ impl<S: Subscriber> Layer<S> for TuiLogLayer {
     }
 }
 
+/// A layer that captures log lines into a buffer of its own, for tests that
+/// need to see what was logged.
+#[cfg(test)]
+pub(crate) fn capture_layer(capacity: usize) -> (TuiLogLayer, Arc<Mutex<VecDeque<String>>>) {
+    let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
+    (
+        TuiLogLayer {
+            buffer: buffer.clone(),
+            capacity,
+        },
+        buffer,
+    )
+}
+
 /// Pushes a line into the ring buffer, evicting the oldest entry if at capacity.
 fn push_to_ring_buffer(buffer: &Arc<Mutex<VecDeque<String>>>, capacity: usize, line: String) {
     let mut buffer = buffer.lock();

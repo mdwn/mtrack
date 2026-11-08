@@ -52,6 +52,66 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
         error_notify: CondvarNotify,
         health: Arc<OutputHealth>,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
+
+    /// What the output thread's diagnostics name this output by.
+    fn describe(&self) -> OutputDescription;
+}
+
+/// The device and period an output stream is built for, for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputDescription {
+    /// The device name, as configured.
+    pub(crate) device: String,
+    /// The stream's period in frames, or `None` where the backend chose it.
+    pub(crate) period_frames: Option<u32>,
+    /// The stream's sample rate.
+    pub(crate) sample_rate: u32,
+    /// Which setting chose the period, so advice names the one to change.
+    pub(crate) period_setting: PeriodSetting,
+}
+
+/// Which configuration setting the stream's period came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeriodSetting {
+    /// `stream_buffer_size` unset: the period is `buffer_size`.
+    BufferSize,
+    /// `stream_buffer_size: <n>`.
+    Fixed,
+    /// `stream_buffer_size: default`: the backend chose.
+    BackendDefault,
+    /// `stream_buffer_size: min`, at the device's reported minimum.
+    Min,
+    /// `stream_buffer_size: min`, but the device reported no minimum, so the
+    /// period fell back to `buffer_size`.
+    MinFallback,
+}
+
+impl PeriodSetting {
+    /// What to change for a longer period.
+    pub(crate) fn advice(self) -> &'static str {
+        match self {
+            PeriodSetting::BufferSize => {
+                "raise audio.buffer_size, or set audio.stream_buffer_size to a larger period"
+            }
+            PeriodSetting::Fixed => {
+                "raise audio.stream_buffer_size (audio.buffer_size does not set the period \
+                 while stream_buffer_size is set)"
+            }
+            PeriodSetting::BackendDefault => {
+                "set audio.stream_buffer_size to a frame count above the backend's default \
+                 (audio.buffer_size does not set the period while stream_buffer_size is set)"
+            }
+            PeriodSetting::Min => {
+                "audio.stream_buffer_size is min, the smallest period the device allows; \
+                 set it to a larger frame count"
+            }
+            PeriodSetting::MinFallback => {
+                "audio.stream_buffer_size is min, but the device reports no minimum, so the \
+                 period fell back to audio.buffer_size: raise audio.buffer_size, or set \
+                 stream_buffer_size to a larger frame count"
+            }
+        }
+    }
 }
 
 /// Wraps a `cpal::Stream` so it satisfies `OutputStream`.
@@ -80,6 +140,7 @@ pub(super) struct CpalOutputStreamFactory {
     target_format: TargetFormat,
     config: cpal::StreamConfig,
     max_samples: usize,
+    period_setting: PeriodSetting,
 }
 
 impl CpalOutputStreamFactory {
@@ -88,6 +149,7 @@ impl CpalOutputStreamFactory {
         device_name: String,
         target_format: TargetFormat,
         output_buffer_size: Option<u32>,
+        period_setting: PeriodSetting,
     ) -> Self {
         let buffer_size = match output_buffer_size {
             Some(size) => cpal::BufferSize::Fixed(size),
@@ -110,11 +172,24 @@ impl CpalOutputStreamFactory {
             target_format,
             config,
             max_samples,
+            period_setting,
         }
     }
 }
 
 impl OutputStreamFactory for CpalOutputStreamFactory {
+    fn describe(&self) -> OutputDescription {
+        OutputDescription {
+            device: self.device_name.clone(),
+            period_frames: match self.config.buffer_size {
+                cpal::BufferSize::Fixed(frames) => Some(frames),
+                cpal::BufferSize::Default => None,
+            },
+            sample_rate: self.target_format.sample_rate,
+            period_setting: self.period_setting,
+        }
+    }
+
     /// Builds a stream, re-resolving the device by name if the handle we hold
     /// turns out to be dead.
     ///
@@ -517,7 +592,38 @@ pub(super) mod test {
         }
     }
 
+    /// `buffer_size` is ignored once `stream_buffer_size` is set, so advice
+    /// to raise it is advice to change nothing.
+    #[test]
+    fn underrun_advice_names_the_setting_in_force() {
+        assert!(PeriodSetting::BufferSize
+            .advice()
+            .starts_with("raise audio.buffer_size"));
+        for setting in [PeriodSetting::Fixed, PeriodSetting::BackendDefault] {
+            let advice = setting.advice();
+            assert!(advice.contains("audio.stream_buffer_size"), "{advice}");
+            assert!(!advice.starts_with("raise audio.buffer_size"), "{advice}");
+        }
+        assert!(PeriodSetting::MinFallback
+            .advice()
+            .contains("fell back to audio.buffer_size"));
+    }
+
+    /// What every mock factory describes itself as.
+    fn mock_description() -> OutputDescription {
+        OutputDescription {
+            device: "mock".to_string(),
+            period_frames: Some(512),
+            sample_rate: 44100,
+            period_setting: PeriodSetting::BufferSize,
+        }
+    }
+
     impl OutputStreamFactory for MockOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -537,6 +643,10 @@ pub(super) mod test {
     pub(in crate::audio::cpal) struct FailingOutputStreamFactory;
 
     impl OutputStreamFactory for FailingOutputStreamFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,
@@ -635,6 +745,10 @@ pub(super) mod test {
     }
 
     impl OutputStreamFactory for ErrorCapturingFactory {
+        fn describe(&self) -> OutputDescription {
+            mock_description()
+        }
+
         fn build_stream(
             &self,
             _mixer: AudioMixer,

@@ -27,7 +27,9 @@ pub struct SubsystemStatus {
     /// `connected`, `initializing`, `failed`, or `not_connected`.
     pub status: String,
     pub name: Option<String>,
-    /// Why init gave up, present only for `failed`.
+    /// Why init gave up, for `failed`; for `connected`, a problem found at
+    /// startup that did not stop it (a profile mapping tracks past the audio
+    /// device's channels).
     ///
     /// `failed` without a reason would be no better than the perpetual retry it
     /// replaced: the operator still would not know what to change.

@@ -2265,6 +2265,8 @@ dependencies = [
 name = "mtrack"
 version = "0.17.2"
 dependencies = [
+ "alsa",
+ "alsa-sys",
  "axum",
  "clap",
  "config",
@@ -2279,6 +2281,7 @@ dependencies = [
  "http-body-util",
  "indexmap",
  "jiff",
+ "libc",
  "midir",
  "midly",
  "notify",
@@ -2305,7 +2308,6 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2",
- "shh",
  "spin_sleep",
  "strum",
  "symphonia",
@@ -2346,7 +2348,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "shh",
  "tempfile",
  "tokio",
  "tonic",
@@ -4144,16 +4145,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shh"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5205eb079ac8be8ec77b7470aff4a050610d42c32819deee362ca414c926d3ab"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]

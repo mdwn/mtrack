@@ -72,8 +72,9 @@ Fixtures are patched in venue files, never in the configuration. A profile that 
 an inline `fixtures:` map under `lighting` (`emergency_light: "Emergency @ 1:500"`) is refused
 at load with `dmx.lighting.fixtures is no longer supported: fixtures are patched in venue files
 — run `mtrack migrate --apply` to move these into one`. That command writes them to
-`lighting/venues/inline_migrated.light` and removes the map; make that venue current or copy
-its lines into your own (see the [command-line reference](../reference/cli.md#mtrack-migrate)).
+`lighting/venues/inline_migrated.venue` (`inline_migrated_2`, and so on, when taken) and removes
+the map; make that venue current or copy its lines into your own (see the
+[command-line reference](../reference/cli.md#mtrack-migrate)).
 
 ### The universe must exist in olad
 
