@@ -31,8 +31,62 @@ use super::engine::DmxMessage;
 /// A DMX universe is 512 channels.
 const UNIVERSE_SIZE: usize = 512;
 
-/// The target number of updates per second.
-pub(crate) const TARGET_HZ: f64 = 44.0;
+/// The frames a second the effects loop and the universe threads run at.
+pub(crate) const FRAMES_PER_SECOND: u64 = 44;
+
+/// The target number of updates per second: [`FRAMES_PER_SECOND`].
+pub(crate) const TARGET_HZ: f64 = FRAMES_PER_SECOND as f64;
+
+/// When frame `k` of a run at [`FRAMES_PER_SECOND`] falls, from the run's
+/// start: to the nanosecond below, as a period of 1/44 s is not a whole
+/// number of them, so `k` frames span exactly `k` / 44 s, give or take
+/// that nanosecond, however many there are.
+pub(crate) fn frame_time(k: u64) -> Duration {
+    let nanos = u128::from(k) * 1_000_000_000 / u128::from(FRAMES_PER_SECOND);
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+/// When a loop running at [`FRAMES_PER_SECOND`] runs its next frame: on
+/// deadlines counted from its start, so it keeps the rate on average
+/// whatever each frame takes and however late its sleeps wake. Restarting
+/// the count from each frame's own time made every frame's lateness the
+/// next one's too: the effects loop ran at about 43 Hz, and a dim it steps
+/// took 2 to 4% longer than its time. Fallen more than a frame behind (a
+/// stall), it starts counting again from then, rather than run the missed
+/// frames back to back.
+pub(crate) struct FrameClock {
+    start: Instant,
+    frame: u64,
+}
+
+impl FrameClock {
+    /// A clock whose first frame is due at `start`.
+    pub(crate) fn new(start: Instant) -> Self {
+        Self { start, frame: 0 }
+    }
+
+    /// When the next frame is due.
+    pub(crate) fn due(&self) -> Instant {
+        self.start + frame_time(self.frame)
+    }
+
+    /// Counts the frame due, run at `now`, and says when the next is due.
+    pub(crate) fn ran(&mut self, now: Instant) -> Instant {
+        self.frame += 1;
+        let due = self.due();
+        if now > due + frame_time(1) {
+            // More than a frame behind: the next a frame on from now.
+            self.start = now;
+            self.frame = 1;
+        } else if self.frame >= FRAMES_PER_SECOND * 3_600 {
+            // An hour of frames: counted from the last deadline instead, a
+            // whole second on, so the count never grows without end.
+            self.start += frame_time(self.frame);
+            self.frame = 0;
+        }
+        self.due()
+    }
+}
 
 /// The ticks a full transition takes before any dimming time is set, and
 /// under none: one, so a write lands next tick.
@@ -293,8 +347,7 @@ impl Universe {
         let test_generation = self.test_generation.clone();
 
         thread::spawn(move || {
-            let mut last_time = Instant::now();
-            let tick_duration = Duration::from_secs(1).div_f64(TARGET_HZ);
+            let mut clock = FrameClock::new(Instant::now());
 
             let mut buffer = DmxBuffer::new();
             // `buffer` is always the show's own frame (every channel); an
@@ -329,8 +382,8 @@ impl Universe {
                     }
                 }
 
-                last_time += tick_duration;
-                spin_sleep::sleep(last_time - Instant::now());
+                let due = clock.ran(Instant::now());
+                spin_sleep::sleep(due.saturating_duration_since(Instant::now()));
             }
         })
     }
@@ -373,6 +426,77 @@ impl Universe {
             }
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod frame_clock_test {
+    use super::*;
+
+    /// Frames a loop on `clock` runs in `secs`, each waking `late` after
+    /// it is due (the sleep's overshoot) and taking `work`.
+    fn frames_in(secs: u64, late: impl Fn(u64) -> Duration, work: Duration) -> u64 {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start);
+        let end = start + Duration::from_secs(secs);
+        let mut frames = 0;
+        let mut now = start;
+        loop {
+            now = now.max(clock.due() + late(frames));
+            if now >= end {
+                return frames;
+            }
+            frames += 1;
+            now += work;
+            clock.ran(now);
+        }
+    }
+
+    #[test]
+    fn a_loop_on_the_clock_runs_at_the_rate_whatever_its_frames_take() {
+        // Restarting the count from each frame ran the effects loop at
+        // about 43 Hz: every wake's lateness carried into the next frame.
+        for secs in [1, 10, 600] {
+            for (late, work) in [
+                (Duration::ZERO, Duration::ZERO),
+                (Duration::from_micros(1_100), Duration::from_micros(300)),
+                (Duration::from_millis(5), Duration::from_millis(10)),
+            ] {
+                let frames = frames_in(secs, |_| late, work);
+                assert!(
+                    frames.abs_diff(FRAMES_PER_SECOND * secs) <= 1,
+                    "{frames} frames in {secs} s, {late:?} late, {work:?} work"
+                );
+            }
+            // Jittered wakes too.
+            let frames = frames_in(
+                secs,
+                |k| Duration::from_micros((k * 7_919) % 3_000),
+                Duration::from_micros(200),
+            );
+            assert!(frames.abs_diff(FRAMES_PER_SECOND * secs) <= 1, "{frames}");
+        }
+    }
+
+    #[test]
+    fn a_stalled_loop_goes_on_a_frame_later_rather_than_catch_up() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start);
+        clock.ran(start);
+        let stalled = start + Duration::from_secs(1);
+        let due = clock.ran(stalled);
+        assert_eq!(due, stalled + frame_time(1));
+        // Late by less than a frame, it keeps its deadlines.
+        let late = due + frame_time(1) / 2;
+        assert_eq!(clock.ran(late), stalled + frame_time(2));
+    }
+
+    #[test]
+    fn frame_times_span_whole_seconds_exactly() {
+        assert_eq!(frame_time(0), Duration::ZERO);
+        assert_eq!(frame_time(44), Duration::from_secs(1));
+        assert_eq!(frame_time(44 * 3_600), Duration::from_secs(3_600));
+        assert_eq!(frame_time(1), Duration::from_nanos(22_727_272));
     }
 }
 

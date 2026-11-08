@@ -1036,14 +1036,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until the clock starts, and runs on from there. A start turned down (a lighting show that does
   not validate) leaves no position, as before.
 
-- **A seek into MIDI DMX sends the frame the live run sent, not the next one**: a seek put a dim
-  back at the level the live run had reached by the seek frame, and the first frame then stepped it
-  once more, so for the rest of the dim every frame went out as the live run's next one (up to 24
-  bytes ahead; 126 frames in 13 of 90 seeks into the rig's shows, against their own play-through).
-  A note or CC due in the seek frame itself went out a frame early too. The replay now leaves each
-  channel where the frame before the seek left it, and the first frame dispatches what is due in it
-  as the live run's did, so a seek's frames are the play-through's from the first one. The same
-  holds where a section loop goes back or a crossfading pass joins late.
+- **A seek into MIDI DMX no longer runs a step ahead of the live run**: a seek put a dim back at
+  the level the live run had reached by the seek frame, and the first frame then stepped it once
+  more, so for the rest of the dim every frame went out as the live run's next one (up to 24 bytes
+  ahead; 126 frames in 13 of 90 seeks into the rig's shows, rendered on an exact 44 Hz grid against
+  their own play-through). A note or CC due in the seek frame itself went out a frame early too.
+  The replay now follows the live frame's order -- tick, then dispatch: a channel MIDI DMX holds goes
+  back where the frame before the seek left it, and the first frame dispatches what is due in it.
+  On that grid a seek's frames are the play-through's from the first one; on a rig, where the
+  frames fall where they will against the song's time, a seek is within a step of a play-through.
+  A channel no fixture patches, which the universe dims on its own, goes back at the seek frame's
+  level. The same holds where a section loop goes back or a crossfading pass joins late.
+- **The effects loop runs at 44 Hz**: it waited for a whole frame from the time each frame ran, so
+  every frame's lateness carried into the next: it ran at about 43 Hz, and a MIDI DMX dim on a
+  patched fixture took 2 to 4% longer than its time. It, and each universe's output thread, now
+  runs on deadlines a 44th of a second apart; one fallen more than a frame behind (a stall) goes on
+  a frame later, where the output thread used to send the missed frames back to back.
 
 - **A seek into a MIDI DMX dim sends the byte the live run sent** (#646): the player dims a
   MIDI-written channel a tick at a time, while a seek's replay worked the level out as
