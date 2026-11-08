@@ -845,6 +845,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolves the folders it loads, so loaded songs were not affected; both sides are now compared
   resolved.
 
+- **The current venue picker waits for the venue list** (#622): on the Lighting area's Groups
+  page, the current venue field was a text input until the venue list arrived, and then a
+  dropdown; a venue typed or picked as the list arrived went into the input the dropdown replaced.
+  Until the list arrives the field is now a disabled dropdown showing the current venue, then the
+  dropdown of venues, or the text input when none are listed.
+
+- **gRPC and MCP controllers log the address they listen on**: `Starting gRPC server on
+  0.0.0.0:43234`, and the MCP server's start line, name the address bound, so a controller
+  configured with `port: 0` names the port the system picked. A controller that cannot bind its
+  port fails before logging that it started.
+
+- **A DMX reload asks olad afresh about its patch**: olad's patch report (the readiness hub, the
+  fit view, the fixture test's warnings) was cached for 10 s per port across the whole process; it
+  is now cached per DMX engine, so a profile reload asks again rather than answering from the
+  engine before it.
+
+- **A CMY fixture driven through red, green and blue is judged by what it emits** (#661): on a
+  fixture with cyan, magenta and yellow and no red, green or blue, the engine sends an effect's
+  red, green and blue as the flags that remove them (`cyan = 1 - red`), but the fixture's state
+  still reported `red`, `green` and `blue`, so whether it was lit and the colour drawn for it went
+  by those raw values. A dimmer-and-CMY wash at open white (`static dimmer: 100%, cyan: 0%,
+  magenta: 0%, yellow: 0%`) then `static red: 0%` was reported dark by MCP `evaluate_show`
+  (`dark: true`) and drawn dark in the web UI's stage views, while the head passes green and blue.
+  The fixture's state (the live stream, MCP `evaluate_show` and `get_fixture_state`, the web UI and
+  TUI views) now holds what the head is sent: `cyan: 255, magenta: 0, yellow: 0` and no `red`,
+  `green` or `blue`, so it is lit and drawn cyan. One conversion (`FixtureState::cmy_flags`) feeds
+  both the DMX output, unchanged, and the state. A flag nothing drives is open on the wire, and the
+  state now says so once any flag is in it: `static dimmer: 100%, red: 100%` alone, or
+  `static dimmer: 100%, cyan: 0%` alone, reads as open white (`cyan: 0, magenta: 0, yellow: 0`),
+  not dark. A fixture with both red, green and blue and cyan, magenta and yellow mixes
+  additively, as before: each channel is its own emitter.
+
+- **A 16-bit channel's state shows the coarse byte on the wire**: a fixture's state showed a
+  16-bit channel at its value on the 8-bit scale, while the wire carries the high byte of the
+  16-bit value: a dimmer at 0.3 showed 77 and went out as 76 (0x4CCD). The state now shows the
+  byte the channel goes out as (`physical::coarse_byte`, the DMX output's own rule), a pixel
+  fixture's cells' channels too.
+
 - **Going from one song's page straight to another's shows the new song** (#632): changing the URL
   from one song's page to another's (`#/songs/Battle%20Scarred/lighting` to
   `#/songs/Rime/lighting`, as the browser's Back and Forward or a pasted link do) changed the

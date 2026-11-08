@@ -1256,6 +1256,17 @@ impl Player {
         }
     }
 
+    /// Where the `index`th controller's listener is bound, for a test to
+    /// reach one started on port 0.
+    #[cfg(test)]
+    pub(crate) fn controller_bound_addr(&self, index: usize) -> crate::controller::BoundAddr {
+        self.controller
+            .lock()
+            .as_ref()
+            .expect("controllers started")
+            .bound_addr(index)
+    }
+
     /// The tasks of the running controllers.
     #[cfg(test)]
     pub(crate) fn controller_tasks(&self) -> Vec<tokio::task::AbortHandle> {

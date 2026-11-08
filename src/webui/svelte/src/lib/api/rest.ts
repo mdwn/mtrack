@@ -19,8 +19,9 @@ async function request(
   path: string,
   body?: string,
   headers?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<Response> {
-  const opts: RequestInit = { method };
+  const opts: RequestInit = { method, signal };
   if (body !== undefined) {
     opts.headers = { "Content-Type": "application/json", ...headers };
     opts.body = body;
@@ -30,8 +31,13 @@ async function request(
   return fetch(`${BASE}${path}`, opts);
 }
 
-export async function get(path: string): Promise<Response> {
-  return request("GET", path);
+/** A GET; `signal` aborts it, e.g. `AbortSignal.timeout(ms)` to give up
+ *  on a server that never answers. */
+export async function get(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return request("GET", path, undefined, undefined, signal);
 }
 
 export async function put(

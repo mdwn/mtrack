@@ -16,6 +16,7 @@ pub use crate::player::ControllerStatus;
 use crate::player::Player;
 use std::error::Error;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,52 @@ mod osc;
 
 pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
+
+    /// Where its listener is bound, once it is, for a driver that listens.
+    fn bound_addr(&self) -> Option<BoundAddr> {
+        None
+    }
+}
+
+/// The address a listening driver's socket is bound to, once it is: for a
+/// configured port of 0, the one the OS picked. A test starts its server on
+/// port 0 and reads the port here; one picked free beforehand could be taken
+/// by another test before the server bound it (#668).
+#[derive(Clone)]
+pub struct BoundAddr(Arc<tokio::sync::watch::Sender<Option<SocketAddr>>>);
+
+impl BoundAddr {
+    pub(crate) fn new() -> BoundAddr {
+        BoundAddr(Arc::new(tokio::sync::watch::Sender::new(None)))
+    }
+
+    /// Records the address the listener was bound to.
+    pub(crate) fn set(&self, addr: SocketAddr) {
+        self.0.send_replace(Some(addr));
+    }
+
+    /// The address, once the listener is bound.
+    #[cfg(test)]
+    pub(crate) async fn get(&self) -> SocketAddr {
+        let mut bound = self.0.subscribe();
+        // Only as a guard against a test hanging: binding takes no time. A
+        // server binds once those it replaces have stopped, so this outlasts
+        // STOP_WAIT: a controller that gave up on them says so first.
+        let addr = tokio::time::timeout(
+            STOP_WAIT + crate::testutil::PATIENCE,
+            bound.wait_for(Option::is_some),
+        )
+        .await
+        .expect("the listener was never bound")
+        .expect("the sender is held here");
+        addr.expect("waited for")
+    }
+
+    /// The port, once the listener is bound.
+    #[cfg(test)]
+    pub(crate) async fn port(&self) -> u16 {
+        self.get().await.port()
+    }
 }
 
 /// A transport command a controller's event maps to: what the OSC and MIDI
@@ -151,8 +198,11 @@ impl<E> TransportBindings<E> {
 /// end, and its replacement would wait on it for good while reading "running".
 #[cfg(not(test))]
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// In tests, the test patience: those replaced always go, if slowly on a
+/// loaded runner, and one that gave up waiting on them never started (#622).
+/// Tests of a stuck controller give their own wait to [`Entry::run`].
 #[cfg(test)]
-const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const STOP_WAIT: std::time::Duration = crate::testutil::PATIENCE;
 
 /// Aborts a child task when the owning controller task is cancelled.
 ///
@@ -192,6 +242,10 @@ struct Entry {
     midi_device: Option<Arc<dyn crate::midi::Device>>,
     /// Its task, when it started.
     handle: Option<JoinHandle<Result<(), io::Error>>>,
+    /// Where its listener is bound, for a driver that listens: for a test
+    /// to reach one started on port 0.
+    #[cfg(test)]
+    bound: Option<BoundAddr>,
     /// Stops its task, which ends once the driver's own task is gone.
     stop: CancellationToken,
     /// What its task waited on before running the driver, cancelled once
@@ -207,16 +261,20 @@ struct Entry {
 impl Entry {
     /// Runs `driver` on a task of its own, once `after` is cancelled: the
     /// controllers stopped before it may still hold the port it binds. If
-    /// they are not gone within [`STOP_WAIT`], it does not run, and fails.
+    /// they are not gone within `stop_wait` ([`STOP_WAIT`]), it does not
+    /// run, and fails.
     fn run(
         driver: Arc<dyn Driver>,
         after: Option<CancellationToken>,
         fingerprint: Option<String>,
         midi: bool,
         midi_device: Option<Arc<dyn crate::midi::Device>>,
+        stop_wait: std::time::Duration,
     ) -> Entry {
         let stop = CancellationToken::new();
         let failure = Arc::new(parking_lot::Mutex::new(None));
+        #[cfg(test)]
+        let bound = driver.bound_addr();
         let handle = {
             let stop = stop.clone();
             let failure = failure.clone();
@@ -224,10 +282,13 @@ impl Entry {
             tokio::spawn(async move {
                 if let Some(after) = after {
                     // A stop ends the wait at once: those started after
-                    // this one wait for `after` as well as for its end.
+                    // this one wait for `after` as well as for its end. A
+                    // stop wins over `after` gone at the same time: one
+                    // stopped never starts.
                     let gone = tokio::select! {
-                        gone = tokio::time::timeout(STOP_WAIT, after.cancelled()) => gone.is_ok(),
+                        biased;
                         _ = stop.cancelled() => return Ok(()),
+                        gone = tokio::time::timeout(stop_wait, after.cancelled()) => gone.is_ok(),
                     };
                     // Not started at all: one still holding its port or its
                     // MIDI watch would only have this one fail, or worse,
@@ -235,7 +296,7 @@ impl Entry {
                     if !gone {
                         let e = format!(
                             "not started: the controller it replaces had not stopped after {}s",
-                            STOP_WAIT.as_secs()
+                            stop_wait.as_secs()
                         );
                         tracing::warn!(error = %e, "Controller not started");
                         *failure.lock() = Some(e.clone());
@@ -267,6 +328,8 @@ impl Entry {
             duplicate: false,
             midi_device,
             handle: Some(handle),
+            #[cfg(test)]
+            bound,
             stop,
             after,
             failure,
@@ -502,7 +565,7 @@ impl Controller {
         };
         let (entry, status) = match result {
             Ok(driver) => (
-                Entry::run(driver, after, fingerprint, midi, midi_device),
+                Entry::run(driver, after, fingerprint, midi, midi_device, STOP_WAIT),
                 ControllerStatus {
                     kind,
                     status: "running".to_string(),
@@ -519,6 +582,8 @@ impl Controller {
                         duplicate,
                         midi_device,
                         handle: None,
+                        #[cfg(test)]
+                        bound: None,
                         stop: CancellationToken::new(),
                         // Never waited on, but what it was to wait on is
                         // what its retry must wait on.
@@ -543,7 +608,7 @@ impl Controller {
         Controller {
             entries: drivers
                 .iter()
-                .map(|driver| Entry::run(driver.clone(), None, None, false, None))
+                .map(|driver| Entry::run(driver.clone(), None, None, false, None, STOP_WAIT))
                 .collect(),
             statuses: drivers
                 .iter()
@@ -573,6 +638,16 @@ impl Controller {
                 None => status.clone(),
             })
             .collect()
+    }
+
+    /// Where the `index`th controller's listener is bound, for a test to
+    /// reach one started on port 0.
+    #[cfg(test)]
+    pub(crate) fn bound_addr(&self, index: usize) -> BoundAddr {
+        self.entries[index]
+            .bound
+            .clone()
+            .expect("a controller that listens, started")
     }
 
     /// The tasks of the controllers that started, for a test to tell one
@@ -782,7 +857,7 @@ mod test {
         assert!(controller.update(vec![mcp()], player.clone(), false));
         // Aborted, it finishes when its runtime gets to it: under load, and
         // under coverage on CI, that can be well past a fixed sleep.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + crate::testutil::PATIENCE;
         while !grpc_task.is_finished() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -1005,27 +1080,32 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_changed_controller_binds_the_port_it_had() -> Result<(), Box<dyn Error>> {
         let player = make_controllerless_player().await?;
-        let port = crate::testutil::net::free_tcp_port();
-        let mcp = |token: &str| {
+        let mcp = |port: u16, token: &str| {
             config::Controller::Mcp(config::McpController::with_bearer_token(port, token))
         };
         let mut failures = 0;
         for round in 0..10 {
-            let mut controller = super::Controller::new(vec![mcp("old")], player.clone());
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            // A new token: the same port, a changed config.
-            assert!(controller.update(vec![mcp(&format!("new{round}"))], player.clone(), false));
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if controller.entries[0]
-                .handle
-                .as_ref()
-                .expect("started")
-                .is_finished()
-            {
+            // On port 0, for the port it binds: the one its replacement must
+            // take over.
+            let mut controller = super::Controller::new(vec![mcp(0, "old")], player.clone());
+            let port = controller.bound_addr(0).port().await;
+            // A new token on the port it has: a changed config.
+            assert!(controller.update(
+                vec![mcp(port, &format!("new{round}"))],
+                player.clone(),
+                false
+            ));
+            // The replacement either binds the port or ends, failing to.
+            let bound = controller.bound_addr(0);
+            let task = controller.entries[0].handle.as_mut().expect("started");
+            let took_it = tokio::select! {
+                addr = bound.get() => addr.port() == port,
+                _ = task => false,
+            };
+            if !took_it {
                 failures += 1;
             }
             controller.shutdown();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert_eq!(
             failures, 0,
@@ -1033,6 +1113,9 @@ mod test {
         );
         Ok(())
     }
+
+    /// How long a controller waits on a stuck one in the tests of one.
+    const STUCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
     /// A driver whose first listener is stuck in blocking code holding its
     /// port for a while, and which notes a later one started while it still
@@ -1054,7 +1137,7 @@ mod test {
                 self.held.store(true, Ordering::SeqCst);
                 let held = self.held.clone();
                 tokio::spawn(async move {
-                    std::thread::sleep(super::STOP_WAIT * 3);
+                    std::thread::sleep(STUCK_WAIT * 3);
                     held.store(false, Ordering::SeqCst);
                     Ok(())
                 })
@@ -1076,14 +1159,14 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        let a = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![a]);
-        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let stopped = super::Entry::stop_all(vec![b]);
-        let c = super::Entry::run(driver.clone(), stopped, None, false, None);
-        tokio::time::sleep(super::STOP_WAIT * 2).await;
+        let c = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
+        tokio::time::sleep(STUCK_WAIT * 2).await;
         let c_failure = c.failure.lock().clone();
         super::Entry::stop_all(vec![c]);
         assert!(
@@ -1104,13 +1187,13 @@ mod test {
             held: Arc::new(AtomicBool::new(false)),
             overlapped: overlapped.clone(),
         });
-        let a = super::Entry::run(driver.clone(), None, None, false, None);
+        let a = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![a]);
-        let b = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let b = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         crate::testutil::eventually(|| b.failure.lock().is_some(), "B never gave up");
         let stopped = super::Entry::stop_all(vec![b]);
-        let retry = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let retry = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         crate::testutil::eventually(
             || retry.failure.lock().is_some() || driver.starts.load(Ordering::SeqCst) > 1,
             "the retry neither started nor gave up",
@@ -1129,21 +1212,70 @@ mod test {
         );
     }
 
-    /// A driver whose listener is slow to let go of its port, and which
-    /// notes a second listener started while the first still holds it.
+    /// What a [`SlowToRelease`] driver has done, and the gate its listeners
+    /// let go of their port through.
+    #[derive(Default)]
+    struct Releases {
+        state: std::sync::Mutex<ReleaseState>,
+        changed: std::sync::Condvar,
+    }
+
+    #[derive(Default)]
+    struct ReleaseState {
+        /// Listeners started.
+        starts: usize,
+        /// A listener is letting go, held at the gate.
+        releasing: bool,
+        /// The gate is open: listeners let go.
+        open: bool,
+    }
+
+    impl Releases {
+        fn update(&self, f: impl FnOnce(&mut ReleaseState)) {
+            f(&mut self.state.lock().expect("releases"));
+            self.changed.notify_all();
+        }
+
+        /// Waits, as long as the test patience, until `done`.
+        fn wait_until(&self, what: &str, done: impl Fn(&ReleaseState) -> bool) {
+            let state = self.state.lock().expect("releases");
+            let (_state, waited) = self
+                .changed
+                .wait_timeout_while(state, crate::testutil::PATIENCE, |s| !done(s))
+                .expect("releases");
+            assert!(!waited.timed_out(), "{what}");
+        }
+    }
+
+    /// A driver whose listener lets go of its port only once the test opens
+    /// the gate, and which notes a second listener started while the first
+    /// still holds it.
     struct SlowToRelease {
         held: Arc<std::sync::atomic::AtomicBool>,
         overlapped: Arc<std::sync::atomic::AtomicBool>,
+        releases: Arc<Releases>,
+    }
+
+    impl SlowToRelease {
+        fn new() -> SlowToRelease {
+            SlowToRelease {
+                held: Arc::default(),
+                overlapped: Arc::default(),
+                releases: Arc::default(),
+            }
+        }
     }
 
     impl Driver for SlowToRelease {
         fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
-            use std::sync::atomic::Ordering;
+            use std::sync::atomic::{AtomicBool, Ordering};
 
-            struct Release(Arc<std::sync::atomic::AtomicBool>);
+            struct Release(Arc<AtomicBool>, Arc<Releases>);
             impl Drop for Release {
                 fn drop(&mut self) {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    self.1.update(|s| s.releasing = true);
+                    self.1
+                        .wait_until("the test never opened the gate", |s| s.open);
                     self.0.store(false, Ordering::SeqCst);
                 }
             }
@@ -1151,7 +1283,8 @@ mod test {
             if self.held.swap(true, Ordering::SeqCst) {
                 self.overlapped.store(true, Ordering::SeqCst);
             }
-            let release = Release(self.held.clone());
+            self.releases.update(|s| s.starts += 1);
+            let release = Release(self.held.clone(), self.releases.clone());
             tokio::spawn(async move {
                 let _release = release;
                 std::future::pending::<()>().await;
@@ -1162,29 +1295,25 @@ mod test {
 
     /// A controller restarted starts once the one it replaces is gone, not
     /// while it may still hold the port they share.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restarted_controller_waits_for_the_old_one_to_let_go() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
 
-        let overlapped = Arc::new(AtomicBool::new(false));
-        let driver = Arc::new(SlowToRelease {
-            held: Arc::new(AtomicBool::new(false)),
-            overlapped: overlapped.clone(),
-        });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let driver = Arc::new(SlowToRelease::new());
+        let releases = driver.releases.clone();
+        let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
+        releases.wait_until("the old one never started", |s| s.starts == 1);
         let stopped = super::Entry::stop_all(vec![old]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
+        // The old listener still holds the port until the gate opens.
+        releases.wait_until("the old one never let go", |s| s.releasing);
+        releases.update(|s| s.open = true);
+        releases.wait_until("the new one never started", |s| s.starts >= 2);
+        super::Entry::stop_all(vec![new]);
         assert!(
-            !overlapped.load(Ordering::SeqCst),
+            !driver.overlapped.load(Ordering::SeqCst),
             "the new listener started while the old one still held the port"
         );
-        assert!(
-            driver.held.load(Ordering::SeqCst),
-            "the new one never started"
-        );
-        super::Entry::stop_all(vec![new]);
     }
 
     /// Two updates in quick succession: the second stopped a controller
@@ -1192,30 +1321,31 @@ mod test {
     /// once, so the second's replacement started while the original
     /// listener still held the port. A stopped wait now ends only once what
     /// it waited for is gone.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_controller_restarted_twice_at_once_waits_for_the_first() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
 
-        let overlapped = Arc::new(AtomicBool::new(false));
-        let driver = Arc::new(SlowToRelease {
-            held: Arc::new(AtomicBool::new(false)),
-            overlapped: overlapped.clone(),
-        });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let driver = Arc::new(SlowToRelease::new());
+        let releases = driver.releases.clone();
+        let old = super::Entry::run(driver.clone(), None, None, false, None, super::STOP_WAIT);
+        releases.wait_until("the original never started", |s| s.starts == 1);
         let stopped = super::Entry::stop_all(vec![old]);
-        let waiting = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let waiting =
+            super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
         // The second update, before the first's replacement has started.
         let stopped = super::Entry::stop_all(vec![waiting]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let started = driver.held.load(Ordering::SeqCst);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, super::STOP_WAIT);
+        // The original listener still holds the port until the gate opens.
+        releases.wait_until("the original never let go", |s| s.releasing);
+        releases.update(|s| s.open = true);
+        releases.wait_until("the second update's listener never started", |s| {
+            s.starts >= 2
+        });
         super::Entry::stop_all(vec![new]);
         assert!(
-            !overlapped.load(Ordering::SeqCst),
+            !driver.overlapped.load(Ordering::SeqCst),
             "the second update's listener started while the original still held the port"
         );
-        assert!(started, "the second update's listener never started");
     }
 
     /// A driver stuck in blocking code for a while, which an abort cannot
@@ -1229,7 +1359,7 @@ mod test {
             self.starts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async {
-                std::thread::sleep(super::STOP_WAIT * 3);
+                std::thread::sleep(STUCK_WAIT * 3);
                 Ok(())
             })
         }
@@ -1246,16 +1376,16 @@ mod test {
         let driver = Arc::new(Stuck {
             starts: starts.clone(),
         });
-        let old = super::Entry::run(driver.clone(), None, None, false, None);
+        let old = super::Entry::run(driver.clone(), None, None, false, None, STUCK_WAIT);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stopped = super::Entry::stop_all(vec![old]);
-        let new = super::Entry::run(driver.clone(), stopped, None, false, None);
+        let new = super::Entry::run(driver.clone(), stopped, None, false, None, STUCK_WAIT);
         let waited = std::time::Instant::now();
         crate::testutil::eventually(
             || new.failure.lock().is_some(),
             "the replacement waited on for good",
         );
-        assert!(waited.elapsed() < super::STOP_WAIT * 2);
+        assert!(waited.elapsed() < STUCK_WAIT * 2);
         assert!(new
             .failure
             .lock()

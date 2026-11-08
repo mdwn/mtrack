@@ -206,6 +206,33 @@ impl FixtureState {
             self.channels.get(k).map(|c| c.value).unwrap_or(1.0)
         })
     }
+
+    /// The flags a CMY fixture's colour goes out as: on a fixture mixing
+    /// subtractively (`has_cmy` of its `channels`) each primary an effect
+    /// drives, as the flag that removes it at its complement — cyan
+    /// removes red, so full red is cyan at 0 (each 0 to 1). The engine's
+    /// colour is kept in RGB so layers blend alike everywhere; this is the
+    /// one place it turns into the flags the head is sent, and what the
+    /// fixture's snapshot shows in place of its red, green and blue. A
+    /// primary no effect drives yields nothing (its flag is left alone),
+    /// and a fixture that does not mix subtractively nothing at all.
+    pub fn cmy_flags<V>(
+        &self,
+        channels: &HashMap<String, V>,
+        has_dedicated_dimmer: bool,
+    ) -> impl Iterator<Item = (&'static str, f64)> + '_ {
+        let subtractive = super::fixture::has_cmy(channels);
+        crate::lighting::channels::CMY_OF_RGB
+            .map(|(rgb, cmy)| {
+                let state = self.channels.get(rgb).filter(|_| subtractive)?;
+                Some((
+                    cmy,
+                    1.0 - self.effective_channel_value(rgb, state, has_dedicated_dimmer),
+                ))
+            })
+            .into_iter()
+            .flatten()
+    }
 }
 
 /// [`FixtureState::effective_channel_value`] over any source of multiplier
@@ -342,17 +369,10 @@ impl FixtureState {
         // primary no effect drives is left alone, open, as a colour-less
         // fixture is. Written after the named channels, so an effect's
         // colour wins over a `static` naming the flag directly.
-        if super::fixture::has_cmy(&fixture_info.channel_defs) {
-            for (rgb, cmy) in super::fixture::CMY_OF_RGB {
-                let (Some(state), Some(def)) =
-                    (self.channels.get(rgb), fixture_info.channel_defs.get(cmy))
-                else {
-                    continue;
-                };
-                let value = self.effective_channel_value(rgb, state, has_dedicated_dimmer);
-                commands.extend(
-                    super::physical::resolve_normalized(def, 1.0 - value).filter_map(command),
-                );
+        for (cmy, value) in self.cmy_flags(&fixture_info.channel_defs, has_dedicated_dimmer) {
+            if let Some(def) = fixture_info.channel_defs.get(cmy) {
+                commands
+                    .extend(super::physical::resolve_normalized(def, value).filter_map(command));
             }
         }
         for cell in &fixture_info.cells {

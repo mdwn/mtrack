@@ -295,7 +295,11 @@ Notes:
   a show's colours directly. A mover with CMY flags — `cyan`, `magenta` and
   `yellow`, which is how GDTF's `ColorSub_C/M/Y` import — takes the same
   colours as their complement: `color: "red"` opens cyan fully and closes
-  magenta and yellow. A colour wheel is not driven by `color:`, a colour
+  magenta and yellow. Its state (the stage views, MCP `evaluate_show` and
+  `get_fixture_state`) shows those flags as the head is sent them, not the
+  red, green and blue a show named. A fixture with both red, green and blue
+  and cyan, magenta and yellow mixes additively: each is a colour of its own.
+  A colour wheel is not driven by `color:`, a colour
   cycle or a rainbow: those leave a wheel-only fixture white, lint says so,
   and Stage 3D draws it white. Choose a wheel slot with a `static` naming
   the channel (`color1: 40%`), at a level inside the slot's DMX range from

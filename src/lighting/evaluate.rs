@@ -907,6 +907,7 @@ show "T" {
                 let mut snap = crate::state::compute_fixture_snapshots(
                     &engine.get_fixture_states(),
                     &has_dimmer,
+                    engine.get_fixture_registry(),
                 );
                 fill_dark_fixtures(&mut snap, fixtures.iter());
                 sampled.push((now, snap));
@@ -1127,6 +1128,155 @@ show "T" {
             poses: Vec::new(),
         };
         assert_eq!(evaluation.is_dark(), Some(true));
+    }
+
+    /// A fixture at address 1 with `channels`, one byte each, in order.
+    fn fixture_of(name: &str, channels: &[&str]) -> FixtureInfo {
+        let channels: HashMap<String, u16> = channels
+            .iter()
+            .zip(1u16..)
+            .map(|(n, o)| (n.to_string(), o))
+            .collect();
+        FixtureInfo::new(name.to_string(), 1, 1, "T".to_string(), channels, None)
+    }
+
+    /// Open white on a dimmer and CMY, then each colour param in turn.
+    fn open_white_then(colour: &str) -> String {
+        format!(
+            "show \"T\" {{\n    @00:00.000\n    \
+             wash: static dimmer: 100%, cyan: 0%, magenta: 0%, yellow: 0%, duration: 10s\n    \
+             @00:01.000\n    wash: static {colour}, duration: 5s\n}}\n"
+        )
+    }
+
+    /// A CMY fixture driven through red, green and blue is judged by the
+    /// flags the head is sent (#661): red at 0 closes cyan, and the open
+    /// magenta and yellow still pass green and blue. The snapshot says
+    /// what the head is sent: cyan closed, no red of its own.
+    #[test]
+    fn a_cmy_fixture_driven_through_rgb_is_judged_by_what_it_emits() {
+        let fixtures = [fixture_of("wash", &["dimmer", "cyan", "magenta", "yellow"])];
+        let results = eval(&open_white_then("red: 0%"), &fixtures, &[0.5, 2.0]);
+        assert_eq!(results[0].is_dark(), Some(false), "open white is lit");
+        assert_eq!(results[1].is_dark(), Some(false), "blue and green pass");
+        assert_eq!(channel(&results[1], "wash", "cyan"), 255);
+        assert_eq!(channel(&results[1], "wash", "magenta"), 0);
+        assert_eq!(channel(&results[1], "wash", "yellow"), 0);
+        let wash = &results[1].fixtures[0];
+        assert!(
+            ["red", "green", "blue"]
+                .iter()
+                .all(|c| !wash.channels.contains_key(*c)),
+            "a CMY fixture has no red, green or blue to report: {:?}",
+            wash.channels
+        );
+
+        // All three primaries at 0 close every flag: dark.
+        let results = eval(
+            &open_white_then("red: 0%, green: 0%, blue: 0%"),
+            &fixtures,
+            &[2.0],
+        );
+        assert_eq!(results[0].is_dark(), Some(true));
+        // Full red opens cyan and closes nothing.
+        let results = eval(&open_white_then("red: 100%"), &fixtures, &[2.0]);
+        assert_eq!(results[0].is_dark(), Some(false));
+        assert_eq!(channel(&results[0], "wash", "cyan"), 0);
+    }
+
+    /// On a CMY fixture with nothing opening its flags first: a flag no
+    /// effect drives is open on the wire, so it reads open, and the
+    /// fixture is judged subtractively by the flags the head is sent.
+    #[test]
+    fn a_cmy_fixture_with_flags_left_alone_reads_them_open() {
+        let fixtures = [fixture_of("wash", &["dimmer", "cyan", "magenta", "yellow"])];
+        let at = |params: &str| {
+            let source = format!(
+                "show \"T\" {{\n    @00:00.000\n    \
+                 wash: static dimmer: 100%, {params}, duration: 10s\n}}\n"
+            );
+            let result = eval(&source, &fixtures, &[1.0]).remove(0);
+            let shown = crate::lighting::channels::shown_color(
+                result.fixtures[0]
+                    .channels
+                    .iter()
+                    .map(|(name, &v)| (name.as_str(), f64::from(v))),
+            );
+            (result, shown)
+        };
+        let (red, shown) = at("red: 100%");
+        assert_eq!(red.is_dark(), Some(false), "red alone opens cyan: white");
+        assert_eq!(shown, [1.0, 1.0, 1.0]);
+        let (red_green, shown) = at("red: 100%, green: 100%");
+        assert_eq!(red_green.is_dark(), Some(false));
+        assert_eq!(shown, [1.0, 1.0, 1.0], "white");
+        let (half_green, shown) = at("red: 100%, green: 50%");
+        assert_eq!(half_green.is_dark(), Some(false));
+        assert_eq!(channel(&half_green, "wash", "magenta"), 128);
+        assert_eq!(channel(&half_green, "wash", "yellow"), 0, "blue left open");
+        assert_eq!(
+            shown,
+            [1.0, 127.0 / 255.0, 1.0],
+            "magenta takes half the green"
+        );
+        let (cyan, _) = at("cyan: 0%");
+        assert_eq!(cyan.is_dark(), Some(false), "cyan open alone is open white");
+    }
+
+    /// A CMY fixture driven through its flags directly reads as before.
+    #[test]
+    fn a_cmy_fixture_driven_through_its_flags_is_unchanged() {
+        let fixtures = [fixture_of("wash", &["dimmer", "cyan", "magenta", "yellow"])];
+        let closed = eval(
+            &open_white_then("cyan: 100%, magenta: 100%, yellow: 100%"),
+            &fixtures,
+            &[2.0],
+        );
+        assert_eq!(closed[0].is_dark(), Some(true));
+        assert_eq!(channel(&closed[0], "wash", "cyan"), 255);
+        let one = eval(&open_white_then("cyan: 100%"), &fixtures, &[2.0]);
+        assert_eq!(one[0].is_dark(), Some(false));
+        assert_eq!(channel(&one[0], "wash", "cyan"), 255);
+        assert_eq!(channel(&one[0], "wash", "magenta"), 0);
+    }
+
+    /// An RGB fixture reads its own red, green and blue, as before.
+    #[test]
+    fn an_rgb_fixture_is_unchanged() {
+        let fixtures = [fixture_of("wash", &["dimmer", "red", "green", "blue"])];
+        let source = "show \"T\" {\n    @00:00.000\n    \
+                      wash: static dimmer: 100%, red: 0%, green: 0%, blue: 100%, duration: 10s\n    \
+                      @00:01.000\n    wash: static blue: 0%, duration: 5s\n}\n";
+        let results = eval(source, &fixtures, &[0.5, 2.0]);
+        assert_eq!(results[0].is_dark(), Some(false));
+        assert_eq!(channel(&results[0], "wash", "blue"), 255);
+        assert_eq!(results[1].is_dark(), Some(true));
+        assert!(results[1].fixtures[0].channels.contains_key("red"));
+    }
+
+    /// A fixture with red, green and blue and cyan, magenta and yellow
+    /// mixes additively, as the engine drives it: red drives its own red
+    /// channel, and cyan, magenta and yellow are emitters of their own
+    /// (an RGB+CMY LED wash), not flags. So red at 0 with cyan up is lit,
+    /// and the snapshot keeps every channel by its own name.
+    #[test]
+    fn a_fixture_with_rgb_and_cmy_mixes_additively() {
+        let fixtures = [fixture_of(
+            "wash",
+            &[
+                "dimmer", "red", "green", "blue", "cyan", "magenta", "yellow",
+            ],
+        )];
+        let source = "show \"T\" {\n    @00:00.000\n    \
+                      wash: static dimmer: 100%, red: 0%, green: 0%, blue: 0%, \
+                      cyan: 0%, magenta: 0%, yellow: 0%, duration: 10s\n    \
+                      @00:01.000\n    wash: static cyan: 100%, duration: 5s\n}\n";
+        let results = eval(source, &fixtures, &[0.5, 2.0]);
+        assert_eq!(results[0].is_dark(), Some(true), "every emitter at 0");
+        assert_eq!(results[1].is_dark(), Some(false), "cyan is an emitter");
+        assert_eq!(channel(&results[1], "wash", "cyan"), 255);
+        assert_eq!(channel(&results[1], "wash", "red"), 0);
+        assert!(results[1].fixtures[0].channels.contains_key("red"));
     }
 }
 

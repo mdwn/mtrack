@@ -220,7 +220,7 @@ mod tests {
 
     /// Waits for universe 1's frame to start with `want`.
     fn frame_becomes(sent: &Sent, want: &[u8]) -> Result<(), Box<dyn Error>> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + crate::testutil::PATIENCE;
         loop {
             let last = sent
                 .lock()

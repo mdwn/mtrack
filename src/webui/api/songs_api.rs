@@ -566,7 +566,7 @@ pub(super) async fn get_song_files(
 /// here and over MCP, and by an MCP edit from reading the file to writing
 /// it back, so the edit is not made on a copy a save has replaced since:
 /// that save would be lost (#578).
-pub(crate) static SONG_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static SONG_WRITES: super::write_lock::WriteLock = super::write_lock::WriteLock::new();
 
 /// POST /api/songs/:name — creates a new song with the given config YAML
 /// ([`create_song`]).

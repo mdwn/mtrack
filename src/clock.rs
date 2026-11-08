@@ -17,6 +17,105 @@ use std::time::{Duration, Instant};
 
 use crate::playsync::CancelHandle;
 
+/// The wall clock: [`Instant::now`], except on a test's thread that has set
+/// its own ([`TestClock`]), or been handed one ([`WallClock`]), and moves it
+/// on by hand, so what is timed on it -- a loop break's fade frames (#654),
+/// how long an audio stream lasted -- takes the times the test chose.
+pub(crate) fn wall_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = TEST_CLOCK.with(|clock| clock.borrow().as_ref().map(|c| *c.now.lock())) {
+        return now;
+    }
+    Instant::now()
+}
+
+/// Waits on `condvar` for `duration` to pass, unless it is notified first:
+/// a pause, as a retry's backoff, rather than a wait for what the notify
+/// says. On a test's clock each is noted with the time it asked for
+/// ([`TestClock::pauses`]), for a test of what may or may not pause.
+pub(crate) fn pause<T>(
+    condvar: &parking_lot::Condvar,
+    guard: &mut parking_lot::MutexGuard<'_, T>,
+    duration: Duration,
+) {
+    #[cfg(test)]
+    TEST_CLOCK.with(|clock| {
+        if let Some(clock) = clock.borrow().as_ref() {
+            clock.pauses.lock().push(duration);
+        }
+    });
+    condvar.wait_for(guard, duration);
+}
+
+/// A test's clock: the time it reads, and the pauses asked for on it.
+#[cfg(test)]
+struct TestTime {
+    now: parking_lot::Mutex<Instant>,
+    pauses: parking_lot::Mutex<Vec<Duration>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLOCK: std::cell::RefCell<Option<Arc<TestTime>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The wall clock a thread reads, to carry onto a thread it spawns: a
+/// test's own, if it has one. Outside tests, there is only [`Instant::now`].
+pub(crate) struct WallClock {
+    #[cfg(test)]
+    test: Option<Arc<TestTime>>,
+}
+
+impl WallClock {
+    /// The clock this thread reads.
+    pub(crate) fn current() -> WallClock {
+        WallClock {
+            #[cfg(test)]
+            test: TEST_CLOCK.with(|clock| clock.borrow().clone()),
+        }
+    }
+
+    /// Reads it on this thread from now on.
+    pub(crate) fn install(self) {
+        #[cfg(test)]
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = self.test);
+    }
+}
+
+/// A test's own wall clock, on this thread and those it hands it to, until
+/// it is dropped: it stands still between [`TestClock::advance`]s.
+#[cfg(test)]
+pub(crate) struct TestClock(Arc<TestTime>);
+
+#[cfg(test)]
+impl TestClock {
+    pub(crate) fn start() -> TestClock {
+        let time = Arc::new(TestTime {
+            now: parking_lot::Mutex::new(Instant::now()),
+            pauses: parking_lot::Mutex::new(Vec::new()),
+        });
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = Some(time.clone()));
+        TestClock(time)
+    }
+
+    pub(crate) fn advance(&self, by: Duration) {
+        *self.0.now.lock() += by;
+    }
+
+    /// The pauses asked for on this clock so far ([`pause`]).
+    pub(crate) fn pauses(&self) -> Vec<Duration> {
+        self.0.pauses.lock().clone()
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestClock {
+    fn drop(&mut self) {
+        TEST_CLOCK.with(|clock| *clock.borrow_mut() = None);
+    }
+}
+
 /// A playback clock that provides elapsed time since playback started.
 ///
 /// When an audio device is present, the clock derives time from the audio

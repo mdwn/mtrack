@@ -269,9 +269,11 @@ mod tests {
         }
     }
 
-    /// Returns an address with an OS-assigned ephemeral port that nothing is listening on.
-    fn unused_addr() -> String {
-        format!("127.0.0.1:{}", crate::testutil::net::free_tcp_port())
+    use crate::testutil::net::ClosedPort;
+
+    /// The address of `closed`, where nothing listens.
+    fn addr(closed: &ClosedPort) -> String {
+        format!("127.0.0.1:{}", closed.port())
     }
 
     mod connect_tests {
@@ -279,7 +281,8 @@ mod tests {
 
         #[tokio::test]
         async fn connect_fails_when_no_server() {
-            let result = connect(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = connect(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
     }
@@ -289,73 +292,85 @@ mod tests {
 
         #[tokio::test]
         async fn play_fails_without_server() {
-            let result = play(Some(unused_addr()), None).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), None).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_fails_without_server() {
-            let result = play(Some(unused_addr()), Some("0:30".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("0:30".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_minutes_seconds_format() {
-            let result = play(Some(unused_addr()), Some("1:23.456".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("1:23.456".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_seconds_only_format() {
-            let result = play(Some(unused_addr()), Some("45.5s".to_string())).await;
+            let closed = ClosedPort::bind();
+            let result = play(Some(addr(&closed)), Some("45.5s".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn next_fails_without_server() {
-            let result = next(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = next(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn previous_fails_without_server() {
-            let result = previous(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = previous(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn stop_fails_without_server() {
-            let result = stop(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = stop(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn status_fails_without_server() {
-            let result = status(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = status(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_fails_without_server() {
-            let result = switch_to_playlist(Some(unused_addr()), "all_songs").await;
+            let closed = ClosedPort::bind();
+            let result = switch_to_playlist(Some(addr(&closed)), "all_songs").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_with_different_name() {
-            let result = switch_to_playlist(Some(unused_addr()), "playlist").await;
+            let closed = ClosedPort::bind();
+            let result = switch_to_playlist(Some(addr(&closed)), "playlist").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn active_effects_fails_without_server() {
-            let result = active_effects(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = active_effects(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn cues_fails_without_server() {
-            let result = cues(Some(unused_addr())).await;
+            let closed = ClosedPort::bind();
+            let result = cues(Some(addr(&closed))).await;
             assert!(result.is_err());
         }
     }

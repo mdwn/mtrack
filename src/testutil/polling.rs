@@ -17,7 +17,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-/// Wait for the given predicate to return true or fail.
+/// Wait for the given predicate to return true, or fail after the test
+/// patience ([`super::PATIENCE`]).
 #[inline]
 pub fn eventually<F>(predicate: F, error_msg: &str)
 where
@@ -25,7 +26,7 @@ where
 {
     let start = SystemTime::now();
     let mut tick = Duration::from_millis(5); // Start with shorter interval
-    let timeout = Duration::from_secs(10); // Increased timeout for complex operations
+    let timeout = super::PATIENCE;
     let max_tick = Duration::from_millis(100); // Cap the polling interval
 
     loop {
@@ -48,7 +49,8 @@ where
     }
 }
 
-/// Wait for the given async predicate to return true or fail.
+/// Wait for the given async predicate to return true, or fail after the
+/// test patience ([`super::PATIENCE`]).
 #[inline]
 pub async fn eventually_async<F, Fut>(mut predicate: F, error_msg: &str)
 where
@@ -57,7 +59,7 @@ where
 {
     let start = SystemTime::now();
     let tick = Duration::from_millis(10);
-    let timeout = Duration::from_secs(3);
+    let timeout = super::PATIENCE;
 
     loop {
         let elapsed = start.elapsed();

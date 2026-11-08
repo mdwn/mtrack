@@ -489,7 +489,7 @@ impl FitReport {
             .filter(|u| configured.contains(u))
             .collect();
         if let Some(dmx) = dmx.as_ref().filter(|_| !to_probe.is_empty()) {
-            let probe = crate::dmx::patch_check::probe_universes(dmx.ola_http_port(), &to_probe);
+            let probe = dmx.olad().probe(&to_probe);
             report.output.unpatched = probe.unpatched;
             report.output.reachable = Some(probe.reachable);
         }
