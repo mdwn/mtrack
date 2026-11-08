@@ -98,7 +98,7 @@ impl ConfigSection {
 enum SubsystemUpdate {
     Audio(Option<Audio>),
     Midi(Option<Midi>),
-    Dmx(Option<Dmx>),
+    Dmx(Box<Option<Dmx>>),
     Controllers(Vec<Controller>),
 }
 
@@ -109,7 +109,7 @@ impl SubsystemUpdate {
         match self {
             SubsystemUpdate::Audio(audio) => profile.set_audio(audio),
             SubsystemUpdate::Midi(midi) => profile.set_midi(midi),
-            SubsystemUpdate::Dmx(dmx) => profile.set_dmx(dmx),
+            SubsystemUpdate::Dmx(dmx) => profile.set_dmx(*dmx),
             SubsystemUpdate::Controllers(controllers) => profile.set_controllers(controllers),
         }
     }
@@ -120,7 +120,7 @@ impl SubsystemUpdate {
         match self {
             SubsystemUpdate::Audio(audio) => config.set_audio(audio),
             SubsystemUpdate::Midi(midi) => config.set_midi(midi),
-            SubsystemUpdate::Dmx(dmx) => config.set_dmx(dmx),
+            SubsystemUpdate::Dmx(dmx) => config.set_dmx(*dmx),
             SubsystemUpdate::Controllers(controllers) => config.set_controllers(controllers),
         }
     }
@@ -510,7 +510,7 @@ impl ConfigStore {
         dmx: Option<Dmx>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
-        self.update_subsystem(SubsystemUpdate::Dmx(dmx), checksum)
+        self.update_subsystem(SubsystemUpdate::Dmx(Box::new(dmx)), checksum)
             .await
     }
 
@@ -549,7 +549,7 @@ impl ConfigStore {
                 SubsystemUpdate::Midi(valid(parse(section, body)?, Midi::validate)?)
             }
             ConfigSection::Dmx => {
-                SubsystemUpdate::Dmx(valid(parse(section, body)?, Dmx::validate)?)
+                SubsystemUpdate::Dmx(Box::new(valid(parse(section, body)?, Dmx::validate)?))
             }
             ConfigSection::Controllers => SubsystemUpdate::Controllers(parse(section, body)?),
         };
