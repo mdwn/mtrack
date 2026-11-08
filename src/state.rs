@@ -183,11 +183,7 @@ pub(crate) fn shown_poses_on_wire(
     let wire = engine.wire();
     // A head on a universe with no output was never sent where pose
     // memory has it: its channels read 0, and it is drawn at rest.
-    poses.retain(|name, _| {
-        registry
-            .get(name)
-            .is_none_or(|info| wire.outputs_to(info.universe))
-    });
+    poses.retain(|name, _| registry.get(name).is_none_or(|info| reaches(wire, info)));
     let unposed: Vec<String> = registry
         .iter()
         .filter(|(name, info)| info.parent.is_none() && !poses.contains_key(*name))
@@ -334,22 +330,36 @@ fn attach_wire(
     lay_bytes(
         fixtures,
         registry,
-        // A universe with no output holds nothing: the fixture is dark.
-        |universe, channel| match wire.outputs_to(universe) {
-            true => wire.byte(universe, channel),
-            false => Some(0),
-        },
+        |universe, channel| wire.byte(universe, channel),
         Fill::Fixture,
     );
-    // Nor does it strobe.
+    // A fixture nothing reaches is dark on every channel, and strobes not.
+    let unreached: HashMap<String, crate::lighting::effects::FixtureInfo> = registry
+        .iter()
+        .filter(|(_, info)| !reaches(wire, info))
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect();
+    if unreached.is_empty() {
+        return;
+    }
+    lay_bytes(fixtures, &unreached, |_, _| Some(0), Fill::Fixture);
     for snapshot in fixtures.iter_mut() {
-        if registry
-            .get(&snapshot.name)
-            .is_some_and(|info| !wire.outputs_to(info.universe))
-        {
+        if unreached.contains_key(&snapshot.name) {
             snapshot.strobe_hz = None;
         }
     }
+}
+
+/// Whether `info`'s universe has an output ([`Wire::outputs_to`]): a
+/// fixture patched on one that does not is sent nothing, whatever the
+/// show computes for it.
+///
+/// [`Wire::outputs_to`]: crate::lighting::engine::Wire::outputs_to
+fn reaches(
+    wire: &crate::lighting::engine::Wire,
+    info: &crate::lighting::effects::FixtureInfo,
+) -> bool {
+    wire.outputs_to(info.universe)
 }
 
 /// Adds every fixture of `registry` that `fixtures` has no snapshot of,

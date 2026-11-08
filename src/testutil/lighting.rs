@@ -78,16 +78,19 @@ pub fn generic(name: &str, universe: u16, address: u16, channels: &[&str]) -> Fi
 /// four seconds, each firing one to three statics -- on a random fixture
 /// of `fixtures` (its name and the channels a static may set), random
 /// channels of it at random levels, a random layer, a random length, now
-/// and then fading up and down or blending by `add` or `multiply` -- and
-/// now and then a clear of a layer first. Besides, each cue that can stop
-/// a byte being written: a sequence holding a setting (a gobo, a zoom, a
+/// and then fading or blending by `add` or `multiply` -- and now and then
+/// a clear of a layer first. Besides, each kind of cue that can stop a
+/// byte being written: a sequence holding a setting (a gobo, a zoom, a
 /// focus) far longer than the show (the DSL requires a duration), stopped
-/// by a later cue; a layer's speed
-/// changed, moving when its effects end; and `mover` sent by a `move`, a second `move` taking
-/// it over part way, and then, after it arrives, the whole rig cleared, so
-/// the head holds a pose nothing remembers. Channels that change over time
-/// too: a `cycle` of colours, and a setting fading up and down under an
-/// `add` blend.
+/// by a later cue; a layer's speed changed, moving when its effects end;
+/// and `mover` sent by a `move`, a second `move` taking it over part way,
+/// and then, after it arrives, the whole rig cleared, so the head holds a
+/// pose nothing remembers. Channels that change over time too: a `cycle`
+/// of colours, and a setting fading up under an `add` blend.
+///
+/// A setting fades up only, never down: one fading down to its effect's
+/// end is still moving at the end, which a frame lands on only by chance
+/// live, so what it holds after depends on the frame rate.
 pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> String {
     let mut state = seed;
     let mut next = |n: u64| {
@@ -168,15 +171,27 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> Str
                 }
             }
             if params.is_empty() {
-                params.push("dimmer: 100%".to_string());
+                // Its first channel the sequence does not hold.
+                let name = names
+                    .iter()
+                    .find(|name| held != Some((fixture, **name)))
+                    .unwrap_or(&names[0]);
+                params.push(format!("{name}: 100%"));
             }
             let layer = layers[next(3) as usize];
             let mut length = 200 + next(1500);
             if next(3) == 0 {
-                // Fades of 150 ms or more: a 5 ms frame moves a byte by at
-                // most 8.5 of them.
-                let (up, down) = (150 + next(300), 150 + next(300));
-                params.push(format!("up_time: {up}ms, down_time: {down}ms"));
+                let settings = params.iter().any(|p| {
+                    ["gobo", "zoom", "focus", "strobe"]
+                        .iter()
+                        .any(|s| p.starts_with(s))
+                });
+                let (up, down) = (next(400), next(400));
+                if settings {
+                    params.push(format!("up_time: {up}ms"));
+                } else {
+                    params.push(format!("up_time: {up}ms, down_time: {down}ms"));
+                }
                 length = length.max(up + down + 50);
             }
             match next(8) {
@@ -190,11 +205,11 @@ pub fn made_up_show(seed: u64, fixtures: &[(&str, &[&str])], mover: &str) -> Str
             ));
         }
         if let Some((fixture, channel)) = setting.filter(|_| cue == fade_at) {
-            let (up, down) = (150 + next(350), 150 + next(350));
-            let length = up + down + 100 + next(800);
+            let up = 100 + next(700);
+            let length = up + 100 + next(800);
             let layer = layers[next(3) as usize];
             out.push_str(&format!(
-                "    {fixture}: static, {channel}: {}%, up_time: {up}ms, down_time: {down}ms, \
+                "    {fixture}: static, {channel}: {}%, up_time: {up}ms, \
                  blend_mode: add, layer: {layer}, duration: {length}ms\n",
                 next(101),
             ));

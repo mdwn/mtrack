@@ -32,8 +32,7 @@ fn rig() -> Result<Engine, Box<dyn Error>> {
         &config::Dmx::new(
             None,
             None,
-            // The mock client never connects: the port is never bound.
-            Some(9090),
+            None,
             vec![config::Universe::new(5, "universe1".to_string())],
             None,
         ),

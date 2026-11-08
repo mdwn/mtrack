@@ -865,12 +865,21 @@ show "T" {
     /// Drives the show forward from zero in small steps, the way a playback loop
     /// does, sampling the fixture state at each requested time. This is the
     /// thing `evaluate_show` claims to be a shortcut for.
+    /// The live frame period [`play_through`] plays at.
+    const FRAME: Duration = Duration::from_millis(5);
+
+    /// The show played through as the live output plays it, a frame every
+    /// [`FRAME`], sampled at each of `times` (on that grid). Besides, a
+    /// frame lands at each cue's instant before the cue fires: live, the
+    /// last frame before a cue is anywhere up to a frame period earlier,
+    /// and one landing right on it is the play-through an evaluation reads
+    /// (the limit of a fast enough output). A setting or a head moving
+    /// when a cue cuts it then holds what both say, exactly.
     fn play_through(
         source: &str,
         fixtures: &[FixtureInfo],
         times: &[Duration],
     ) -> Vec<Vec<FixtureSnapshot>> {
-        let step = Duration::from_millis(5);
         let mut timeline = LightingTimeline::new(shows(source));
         let tempo_map = timeline.tempo_map().cloned();
         let mut engine = EffectEngine::new();
@@ -878,17 +887,28 @@ show "T" {
         for fixture in fixtures {
             engine.register_fixture(fixture.clone());
         }
+        let mut cues: Vec<Duration> = timeline.cue_effects().map(|(time, _)| time).collect();
+        cues.sort();
+        cues.dedup();
+        let mut cues = cues.into_iter().peekable();
 
         timeline.start();
         let last = times.iter().copied().max().unwrap_or(Duration::ZERO);
         let mut sampled = Vec::new();
         let mut now = Duration::ZERO;
+        let mut rendered = Duration::ZERO;
 
         loop {
-            let update = timeline.update(now);
-            apply_timeline_update(&mut engine, update, &mut |e| e);
+            // The frame at each cue up to now, before it fires.
+            while let Some(cue) = cues.next_if(|cue| *cue <= now) {
+                engine.render_and_send(cue - rendered, cue);
+                rendered = cue;
+                let update = timeline.update(cue);
+                apply_timeline_update(&mut engine, update, &mut |e| e);
+            }
             // Out to the rig, as the live output sends it.
-            engine.render_and_send(step, now);
+            engine.render_and_send(now - rendered, now);
+            rendered = now;
 
             if times.contains(&now) {
                 sampled.push((now, snapshot(&engine, now).fixtures));
@@ -896,7 +916,7 @@ show "T" {
             if now >= last {
                 break;
             }
-            now += step;
+            now += FRAME;
         }
 
         times
@@ -1095,45 +1115,13 @@ show "T" {
                 |e| e,
             );
             for (i, time) in times.iter().enumerate() {
-                let names = |fixtures: &[FixtureSnapshot]| -> Vec<_> {
-                    fixtures
-                        .iter()
-                        .map(|f| {
-                            let mut channels: Vec<_> = f.channels.keys().cloned().collect();
-                            channels.sort();
-                            (f.name.clone(), channels)
-                        })
-                        .collect()
-                };
-                let fixtures = &evaluated[i].fixtures;
-                assert_eq!(
-                    names(&stepped[i]),
-                    names(fixtures),
-                    "seed {seed} at {time:?}"
-                );
-                for (want, got) in stepped[i].iter().zip(fixtures) {
-                    for (channel, &w) in &want.channels {
-                        let g = got.channels[channel];
-                        // A setting still fading when its effect ends or
-                        // is cut holds what its last frame sent: played, a
-                        // frame (5 ms) before; evaluated, at the end or cut.
-                        // The generated fades take at least 150 ms, so a
-                        // frame moves a byte at most 255 * 5 / 150 = 8.5.
-                        // A fine byte is that motion's remainder: any.
-                        let slack = if channel.ends_with("_fine") {
-                            u8::MAX
-                        } else if crate::lighting::channels::is_level_channel(channel) {
-                            0
-                        } else {
-                            9
-                        };
-                        assert!(
-                            w.abs_diff(g) <= slack,
-                            "seed {seed} at {time:?}: {}.{channel} played {w}, evaluated {g}\n{source}",
-                            want.name
-                        );
-                    }
-                }
+                let want: Vec<_> = stepped[i].iter().map(|f| (&f.name, &f.channels)).collect();
+                let got: Vec<_> = evaluated[i]
+                    .fixtures
+                    .iter()
+                    .map(|f| (&f.name, &f.channels))
+                    .collect();
+                assert_eq!(want, got, "seed {seed} at {time:?}\n{source}");
             }
             // One time asked alone reads as it does among the others: the
             // replay they share carries nothing over from an earlier time.
