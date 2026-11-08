@@ -197,9 +197,10 @@ impl MigrationPlan {
             })
     }
 
-    /// [`MigrationPlan::apply`]'s steps, each folder made (one not there
-    /// before) pushed to `folders`, each file made to `made` and each
-    /// backup taken to `backups`.
+    /// [`MigrationPlan::apply`]'s steps, each folder made (the highest one
+    /// not there before, which holds any made under it) pushed to
+    /// `folders`, each file made to `made` and each backup taken to
+    /// `backups`.
     fn apply_steps(
         &self,
         folders: &mut Vec<PathBuf>,
@@ -207,11 +208,13 @@ impl MigrationPlan {
         backups: &mut Vec<PathBuf>,
     ) -> Result<(), Box<dyn Error>> {
         for dir in &self.dirs_to_create {
-            let there = dir.exists();
+            let highest_missing = dir
+                .ancestors()
+                .take_while(|a| !a.as_os_str().is_empty() && !a.exists())
+                .last()
+                .map(Path::to_path_buf);
             crate::util::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            if !there {
-                folders.push(dir.clone());
-            }
+            folders.extend(highest_missing);
         }
 
         // The new files, before anything is rewritten.
@@ -1008,13 +1011,15 @@ dmx:
     }
 
     /// A failure after the venue is made and the backups are taken names
-    /// them.
+    /// them, and the highest folder made: `lighting/`, not there before,
+    /// made with `lighting/venues/`.
     #[test]
     fn a_failed_rewrite_names_the_files_made_and_backups_taken() {
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("pi.yaml");
         std::fs::write(&profile, "old\n").unwrap();
-        let venues = dir.path().join("venues");
+        let lighting = dir.path().join("lighting");
+        let venues = lighting.join("venues");
         let venue = venues.join("inline_migrated.venue");
         let mut plan = MigrationPlan::new();
         plan.dirs_to_create.push(venues.clone());
@@ -1032,7 +1037,7 @@ dmx:
         assert!(
             error.contains(&format!(
                 "(folders made: {}; files made: {}; backups taken: {})",
-                venues.display(),
+                lighting.display(),
                 venue.display(),
                 backup.display()
             )),

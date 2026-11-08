@@ -783,10 +783,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
     the allowed directory`), where they wrote, patched or deleted the file there. So is a show
     that is a link leading nowhere, which a write would have made wherever it pointed, by these
-    tools and `PUT /api/lighting/<path>` alike. Both write only `.light` files, the name written
+    tools and `PUT /api/lighting/<path>` alike; `read_song_lighting` and `patch_song_lighting`
+    say so (`show.light is a link that leads nowhere; delete it or point it at a show`). Both write only `.light` files, the name written
     and what a link there leads to: `PUT /api/lighting/b%2Fsong.yaml`, or MCP through
     `lighting/show.light -> ../song.yaml`, wrote show DSL over the song's config and is now
-    refused (`Can only write .light files`). A show that is a link is deleted as the link, by
+    refused (`Can only write .light files`). This is a change for any `.light` link whose target
+    is not a `.light` file: it can still be read and deleted, but it can no longer be written,
+    where before it could be. A show that is a link is deleted as the link, by
     `delete_song_lighting` and `DELETE /api/lighting/<path>` alike: both deleted what it led to
     (another song's show, or with `lighting/show.light -> ../song.yaml`, the song's own config),
     and checked the `.light` name of the target, not of the link. Where the link leads no longer

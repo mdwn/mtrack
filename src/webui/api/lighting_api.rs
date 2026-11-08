@@ -254,7 +254,7 @@ pub(crate) fn find_light_files(
         let path = entry.path();
         if path.is_dir() {
             find_light_files(base, &path, results)?;
-        } else if crate::songs::FileKind::of(&path) == crate::songs::FileKind::Lighting {
+        } else if crate::songs::FileKind::is_lighting(&path) {
             let relative = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
@@ -398,9 +398,7 @@ fn light_show_to_write(
         )
             .into_response()
     };
-    let is_show = |path: &std::path::Path| {
-        crate::songs::FileKind::of(path) == crate::songs::FileKind::Lighting
-    };
+    let is_show = crate::songs::FileKind::is_lighting;
     let path = light_show_in_songs_root(root, path)?;
     if !is_show(&path) {
         return Err(not_a_show());
@@ -482,7 +480,7 @@ pub(super) async fn put_lighting_file(
     let tempo = song_tempo_for_path(&state, &verified_path);
     match save_light_show(
         &state.config_path,
-        &songs_root,
+        &root,
         &verified_path,
         &name,
         body,
@@ -504,11 +502,11 @@ pub(super) async fn put_lighting_file(
 /// fixture type saves say it) against `tempo`, the tempo its
 /// song loads it with (a show inheriting its song's tempo is valid content
 /// that a tempo-less parse rejects), its `include`s resolved where it is
-/// written and kept inside `songs_root`; its directory made only then. The
+/// written and kept inside `root`; its directory made only then. The
 /// caller holds [`super::songs_api::SONG_WRITES`].
 pub(crate) async fn save_light_show(
     config_path: &std::path::Path,
-    songs_root: &std::path::Path,
+    root: &VerifiedRoot,
     path: &std::path::Path,
     name: &str,
     body: String,
@@ -520,9 +518,9 @@ pub(crate) async fn save_light_show(
     refuse_venue_or_type_file(config_path, path, name)
         .await
         .map_err(IntoResponse::into_response)?;
-    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
-    let path = &light_show_to_write(&root, path)?;
-    if let Err(errors) = config_io::validate_light_show(&body, Some(path), Some(songs_root), tempo)
+    let path = &light_show_to_write(root, path)?;
+    if let Err(errors) =
+        config_io::validate_light_show(&body, Some(path), Some(root.as_path()), tempo)
     {
         let errors: Vec<String> = errors
             .into_iter()
@@ -550,20 +548,20 @@ pub(super) async fn delete_lighting_file(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let songs_root = state.songs_path();
+    let root = match VerifiedRoot::new(&songs_root) {
+        Ok(root) => root,
+        Err(e) => return e.into_response(),
+    };
     // In turn with the file's writes: an MCP patch reading it before the
     // delete would write it back after.
     let _writing = super::songs_api::SONG_WRITES.lock().await;
-    let path = match check_light_show_delete(
-        &state.config_path,
-        &songs_root,
-        &songs_root.join(&name),
-        &name,
-    )
-    .await
-    {
-        Ok(path) => path,
-        Err(refused) => return refused,
-    };
+    let path =
+        match check_light_show_delete(&state.config_path, &root, &songs_root.join(&name), &name)
+            .await
+        {
+            Ok(path) => path,
+            Err(refused) => return refused,
+        };
     match remove_light_show(&songs_root, &path).await {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
         Err(e) => e,
@@ -579,12 +577,12 @@ pub(super) async fn delete_lighting_file(
 /// what it leads to, whose name is the one checked.
 pub(crate) async fn check_light_show_delete(
     config_path: &std::path::Path,
-    songs_root: &std::path::Path,
+    root: &VerifiedRoot,
     path: &std::path::Path,
     name: &str,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     // The name checked is the one removed: the resolved path keeps it.
-    if crate::songs::FileKind::of(path) != crate::songs::FileKind::Lighting {
+    if !crate::songs::FileKind::is_lighting(path) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Can only delete .light files"})),
@@ -599,8 +597,7 @@ pub(crate) async fn check_light_show_delete(
     refuse_venue_or_type_file(config_path, folder, name)
         .await
         .map_err(IntoResponse::into_response)?;
-    let root = VerifiedRoot::new(songs_root).map_err(SafePathError::into_response)?;
-    let path = light_show_in_songs_root(&root, path)?;
+    let path = light_show_in_songs_root(root, path)?;
     if std::fs::symlink_metadata(&path).is_err() {
         return Err(lighting_file_not_found(name));
     }
@@ -1777,11 +1774,20 @@ fn song_tempo_for_path(
     path: &std::path::Path,
 ) -> Option<crate::tempo::TempoMap> {
     // Both sides resolved: `path` is, and a song's folder need not be (one
-    // built from a path through a linked songs folder).
-    let song = state.player.songs().list().into_iter().find(|song| {
-        let base = song.base_path();
-        path.starts_with(base.canonicalize().as_deref().unwrap_or(base))
-    })?;
+    // built from a path through a linked songs folder). The plain
+    // comparison first, so the folders are canonicalized only when no
+    // song's matches as written.
+    let songs = state.player.songs().list();
+    let song = songs
+        .iter()
+        .find(|song| path.starts_with(song.base_path()))
+        .or_else(|| {
+            songs.iter().find(|song| {
+                song.base_path()
+                    .canonicalize()
+                    .is_ok_and(|base| path.starts_with(base))
+            })
+        })?;
     song.lighting_tempo_map()
 }
 

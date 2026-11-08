@@ -2164,7 +2164,7 @@ impl McpServer {
         let song = self.song(&args.song)?;
         validate_lighting_filename(&args.file)?;
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
-        let body = read_text(&path).await?;
+        let body = read_song_show(&path, &args.file).await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "source": body,
@@ -2345,14 +2345,12 @@ impl McpServer {
         let songs_root = self.songs_root_verified().await?;
         let shown = shown_in(songs_root.as_path(), &path);
         // The file to remove: a link itself, not what it leads to.
-        let removed = web(lighting_api::check_light_show_delete(
-            store.path(),
-            songs_root.as_path(),
-            &path,
-            &shown,
-        )
-        .await)
-        .await?;
+        let removed =
+            web(
+                lighting_api::check_light_show_delete(store.path(), &songs_root, &path, &shown)
+                    .await,
+            )
+            .await?;
 
         let original = read_text(&config_path).await?;
         let referenced = references_lighting_file(&original, &reference);
@@ -2712,7 +2710,7 @@ impl McpServer {
         let _writing = crate::webui::api::songs_api::SONG_WRITES.lock().await;
         let song = self.song(&args.song)?;
         let path = existing_song_lighting_path(&song, &args.song, &args.file)?;
-        let original = read_text(&path).await?;
+        let original = read_song_show(&path, &args.file).await?;
         let updated = apply_patch(
             &original,
             &PatchFields::of(&args.old_string, &args.new_string, args.replace_all),
@@ -3973,8 +3971,8 @@ impl McpServer {
         source: String,
     ) -> Result<(), McpError> {
         let store = self.config_store()?;
-        let root = self.songs_root_verified().await?.as_path().to_path_buf();
-        let shown = shown_in(&root, path);
+        let root = self.songs_root_verified().await?;
+        let shown = shown_in(root.as_path(), path);
         web(lighting_api::save_light_show(
             store.path(),
             &root,
@@ -4236,7 +4234,7 @@ fn is_directory_layout(song: &crate::songs::Song) -> bool {
 /// Validates that `name` is a single path segment ending in `.light`.
 pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
     crate::webui::safe_path::SafePath::validate_name(name).map_err(safepath_err)?;
-    if crate::songs::FileKind::of(std::path::Path::new(name)) != crate::songs::FileKind::Lighting {
+    if !crate::songs::FileKind::is_lighting(std::path::Path::new(name)) {
         return Err(McpError::invalid_params(
             "lighting filename must end with .light",
             None,
@@ -4320,6 +4318,27 @@ pub(crate) fn patch_response(path: &std::path::Path, before: &str, after: &str) 
 /// Read as [`crate::util::read_file`] reads, in turn with the writers: a
 /// save rewrites a file in place, and a plain read midway through it finds
 /// the file empty or short (#578).
+/// Reads a song's light show `path` (named `file`), as `read_song_lighting`
+/// and `patch_song_lighting` both do: a link that leads nowhere, which
+/// the lookup finds so that it can be deleted, is refused as one, not
+/// failed as an unreadable file.
+async fn read_song_show(path: &std::path::Path, file: &str) -> Result<String, McpError> {
+    let owned = path.to_path_buf();
+    let dangling = tokio::task::spawn_blocking(move || {
+        std::fs::symlink_metadata(&owned).is_ok_and(|m| m.file_type().is_symlink())
+            && std::fs::metadata(&owned).is_err()
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?;
+    if dangling {
+        return Err(McpError::invalid_params(
+            format!("{file} is a link that leads nowhere; delete it or point it at a show"),
+            None,
+        ));
+    }
+    read_text(path).await
+}
+
 pub(crate) async fn read_text(path: &std::path::Path) -> Result<String, McpError> {
     let owned = path.to_path_buf();
     tokio::task::spawn_blocking(move || crate::util::read_to_string(&owned))
@@ -5775,6 +5794,42 @@ profiles:
         );
         assert_eq!(refused, "Path is outside the allowed directory");
         assert!(!target.exists(), "written outside");
+    }
+
+    /// `read_song_lighting` and `patch_song_lighting` refuse a show that
+    /// is a link leading nowhere as one, saying what to do about it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn song_lighting_link_leading_nowhere_is_refused_clearly() {
+        let (server, fixture) = server(&[("songs/baz/song.yaml", "name: Baz\ntracks: []\n")]).await;
+        let root = fixture.root.clone();
+        std::fs::create_dir_all(root.join("songs/baz/lighting")).unwrap();
+        std::os::unix::fs::symlink("nowhere.light", root.join("songs/baz/lighting/show.light"))
+            .unwrap();
+        let expected = "show.light is a link that leads nowhere; delete it or point it at a show";
+
+        let read = server
+            .read_song_lighting(Parameters(SongLightingArgs {
+                song: "Baz".to_string(),
+                file: "show.light".to_string(),
+            }))
+            .await
+            .expect_err("a dangling link is refused");
+        assert_eq!(read.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(read.message, expected);
+
+        let patched = server
+            .patch_song_lighting(Parameters(PatchSongLightingArgs {
+                song: "Baz".to_string(),
+                file: "show.light".to_string(),
+                old_string: "blue".to_string(),
+                new_string: "red".to_string(),
+                replace_all: false,
+            }))
+            .await
+            .expect_err("a dangling link is refused");
+        assert_eq!(patched.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(patched.message, expected);
+        assert!(!root.join("songs/baz/lighting/nowhere.light").exists());
     }
 
     #[tokio::test(flavor = "multi_thread")]
