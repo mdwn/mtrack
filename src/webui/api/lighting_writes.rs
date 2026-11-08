@@ -63,9 +63,30 @@ impl Answer {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
-    /// What the answer says.
-    pub(crate) fn message(&self) -> &str {
-        self.body["error"].as_str().unwrap_or_default()
+    /// What the answer says: its `error`, else its `errors` (a validation
+    /// answer's list), one after another.
+    pub(crate) fn message(&self) -> String {
+        match (&self.body["error"], &self.body["errors"]) {
+            (serde_json::Value::String(error), _) => error.clone(),
+            (_, serde_json::Value::Array(errors)) => errors
+                .iter()
+                .map(|e| e.as_str().map_or_else(|| e.to_string(), str::to_string))
+                .collect::<Vec<_>>()
+                .join("; "),
+            _ => String::new(),
+        }
+    }
+
+    /// A web API writer's answer, as its response carries it: for a
+    /// surface that is not HTTP (MCP) to give the same refusal.
+    pub(crate) async fn of_response(response: Response) -> Self {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(serde_json::Value::Null);
+        Answer { status, body }
     }
 }
 

@@ -98,7 +98,7 @@ impl SafePath {
     /// What every relative path under the root is held to: it stays inside
     /// ([`crate::util::escapes_project`], the rule a playlist's paths are held
     /// to as well), with no backslash or NUL in it.
-    fn validate_relative_segments(relative: &str) -> Result<(), SafePathError> {
+    pub(crate) fn validate_relative_segments(relative: &str) -> Result<(), SafePathError> {
         if relative.is_empty()
             || relative.contains('\\')
             || relative.contains('\0')

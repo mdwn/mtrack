@@ -779,6 +779,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error naming the tracks and channels and showing it on the status page beside the connected
   audio device, which it keeps.
 
+- **MCP's song, playlist and song light show tools write by the web UI's rules** (#675):
+  `write_song`, `patch_song`, `write_playlist`, `patch_playlist`, `write_song_lighting`,
+  `patch_song_lighting` and `delete_song_lighting` wrote and deleted files directly, each with
+  checks of its own. Each now goes through the web endpoint's own writer, with its checks,
+  refusals and messages (the error carries the web answer's body as its data):
+  - `write_song` saves a song it finds (loaded, failed, or a folder of that name) as
+    `PUT /api/songs/<name>` does, and creates any other as `POST /api/songs/<name>` does, nested
+    names included. `patch_song` saves as `PUT` does, so a patch renaming `Foo` onto `Bar` while
+    another song is Bar is now refused (`a song named "Bar" already exists; choose another
+    name`), as `write_song` already was. Both now also run the song editor's validation, whose
+    messages they now give.
+  - A song name that resolves to the songs folder itself (`.`, an empty name, `Foo/..`) is
+    refused by `PUT /api/songs/<name>` and `write_song` alike: it named no song, and the save
+    wrote `song.yaml` in the songs folder.
+  - Creating a song with a name the config declares that another song holds is now refused by
+    `POST /api/songs/<name>` (409, naming it in `taken`) and MCP `write_song` alike, before any
+    folder is made: `POST /api/songs/Fresh` with `name: Foo` while Foo exists wrote a second
+    config declaring Foo.
+  - `write_playlist` and `patch_playlist` with a `name` take the web UI's playlist file rules:
+    an unsafe name is `Invalid playlist name`, `all_songs` is `'all_songs' is the player's own
+    playlist and has no file` (now also from `PUT` and `DELETE /api/playlists/all_songs`, which
+    said `Invalid playlist name`), a new name the file system takes
+    for an existing file's is refused, and a new playlist's file is made new (``a playlist file
+    `x.yaml` already exists`` when one appeared since). Their checks of the songs and
+    transitions are the web UI's. A save that is refused no longer leaves behind a playlists
+    directory (or the top-level playlist's directory) it made: the directory is made only once
+    the save is checked, by `PUT /api/playlists/<name>` and these tools alike.
+  - `write_song_lighting`, `patch_song_lighting` and `delete_song_lighting` refuse a file in this
+    host's venues or fixture types directory, as `PUT` and `DELETE /api/lighting/<path>` do
+    (`foo/lighting/show.light is in the venues directory (rig/venues): ...`), before anything is
+    written. A show that does not parse is refused with `Invalid light show DSL: <the parser's
+    message>`, as the venue and fixture type tools say theirs, where it said `invalid .light
+    source:` or `patched .light is invalid:`; `PUT /api/lighting/<path>` now gives each of its
+    `errors` the same prefix. They also hold the show to the songs folder, as the web UI's
+    lighting endpoints do: a song whose `lighting/` folder is a link out of the songs folder, or
+    whose `lighting:` names a file outside it (`../../x/show.light`), is refused (`Path is outside
+    the allowed directory`), where they wrote, patched or deleted the file there. So is a show
+    that is a link leading nowhere, which a write would have made wherever it pointed, by these
+    tools and `PUT /api/lighting/<path>` alike; `read_song_lighting` and `patch_song_lighting`
+    say so (`show.light is a link that leads nowhere; delete it or point it at a show`). Both write only `.light` files, the name written
+    and what a link there leads to: `PUT /api/lighting/b%2Fsong.yaml`, or MCP through
+    `lighting/show.light -> ../song.yaml`, wrote show DSL over the song's config and is now
+    refused (`Can only write .light files`). This is a change for any `.light` link whose target
+    is not a `.light` file: it can still be read and deleted, but it can no longer be written,
+    where before it could be. A show that is a link is deleted as the link, by
+    `delete_song_lighting` and `DELETE /api/lighting/<path>` alike: both deleted what it led to
+    (another song's show, or with `lighting/show.light -> ../song.yaml`, the song's own config),
+    and checked the `.light` name of the target, not of the link. Where the link leads no longer
+    matters to a delete: one leading into the venues directory, or nowhere, is removed (MCP did
+    not find one leading nowhere). A show saved through a link has
+    its `include`s checked beside the link, where the song loader reads them, not beside what it
+    leads to. The song's
+    `lighting:` entry they add or remove is saved as `PUT /api/songs/<name>` saves.
+  - None of these set an old file aside, as the web UI's saves do not.
+
+- **`mtrack migrate` backs up every file it overwrites, and writes none beside one** (#671):
+  only `mtrack.yaml` was backed up. A profile file already in `profiles/` (say `profiles/pi-a.yaml`
+  when an inline profile has `hostname: pi-a`), a playlist already in `playlists/`, and a profile
+  file rewritten without its inline fixtures were written over with no copy kept. Each is now
+  copied first, by one rule: to `<file>.bak`, or `<file>.bak-2` and so on when an earlier backup
+  has that name (an earlier `mtrack.yaml.bak` used to be written over too). A config named
+  `mtrack.yml` is now backed up as `mtrack.yml.bak`, not `mtrack.yaml.bak`.
+  - The legacy playlist goes to the file the playlists directory already has for its name, by
+    the loader's lookup: `playlist: set.yaml` with `playlists/set.yml` there writes `set.yml`
+    (backed up), where it wrote a `set.yaml` beside it that the loader did not read. A profile's
+    file is looked up the same way. A legacy playlist already in the playlists directory is left
+    where it is, where it was copied over itself and deleted.
+  - The retired inline fixtures go to a new venue by the rule for new venue files: `inline_migrated`
+    in `lighting/venues/inline_migrated.venue` (was `inline_migrated.light`), or the first of
+    `inline_migrated_2`, `_3`, ... that no venue file declares and whose file is free, where it
+    wrote over an `inline_migrated.light` already there and could declare a second venue named
+    `inline_migrated`. The venue file is made new, never written over, and before any other file
+    is backed up or rewritten: a venue that cannot be made leaves the profiles with their
+    fixtures. A failure after a folder or the venue is made, or the backups are taken, names them
+    (`... (folders made: ...; files made: lighting/venues/inline_migrated.venue; backups taken:
+    profiles/pi-a.yaml.bak, ...)`).
+
+- **A failed save whose own recovery fails keeps its original safe** (#685): these cases come up
+  only when a save fails and then putting the file back fails too.
+  - When the original could be neither hard-linked nor written out to `<file>.mtrack-original`
+    (a filesystem without hard links that is also full), it stayed only in the save's staged
+    copy, `<file>.<pid>.mtrack-new`, which the next save of that file from the same mtrack wrote
+    over. The staged copy is now renamed to `<file>.mtrack-original` (or `-2`, `-3`, ...), which
+    needs neither. If even that fails, the answer now says the next save writes over the staged
+    copy, so copy it somewhere else first.
+  - The directory is now synced after the original is kept and after the staged copy is removed,
+    and after a save that makes its file, before its staged copy goes, so a crash cannot keep the
+    removal and lose the new name. A save over a file already there is rewritten in place and
+    needs no directory sync.
+  - A GDTF import whose library copy fails part way, and whose cleanup of the partial copy fails
+    too, now says so: `...; lighting/library/<file> is left, perhaps partly written, as removing
+    it failed too: remove it by hand`.
+
+- **A light show's song is found by its resolved folder**: `PUT /api/lighting/<path>` found the
+  show's song, for its tempo, by comparing the resolved show path with the song's folder as
+  spelled. A song whose folder was spelled through a link matched nothing, and a show timed in
+  bars and beats was refused (`Measure-based timing requires a tempo section`). The song loader
+  resolves the folders it loads, so loaded songs were not affected; both sides are now compared
+  resolved.
+
 - **The current venue picker waits for the venue list** (#622): on the Lighting area's Groups
   page, the current venue field was a text input until the venue list arrived, and then a
   dropdown; a venue typed or picked as the list arrived went into the input the dropdown replaced.
