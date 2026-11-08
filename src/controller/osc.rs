@@ -33,7 +33,7 @@ use tokio::{
     },
     task::JoinHandle,
 };
-use tracing::{error, info, span, Level};
+use tracing::{error, info, span, Instrument, Level};
 
 use super::{AbortOnDrop, TransportAction, TransportBindings};
 use crate::{config, player::Player, util};
@@ -183,84 +183,98 @@ impl super::Driver for Driver {
         let osc_events = self.osc_events.clone();
         let bound = self.bound.clone();
 
-        tokio::spawn(async move {
-            let span = span!(Level::INFO, "OSC Driver");
-            let _enter = span.enter();
+        // The span is attached to the task, not entered: an entered guard
+        // held across an await stays on the worker thread while the task is
+        // parked, labelling whatever else runs there (MCP and web UI
+        // actions) "OSC Driver".
+        let span = span!(Level::INFO, "OSC Driver");
+        tokio::spawn(
+            async move {
+                info!("OSC driver started.");
+                let socket = UdpSocket::bind(addr).await?;
 
-            info!("OSC driver started.");
-            let socket = UdpSocket::bind(addr).await?;
-
-            // We're allowed to send broadcast messages.
-            socket.set_broadcast(true)?;
-            for broadcast_addr in broadcast_addresses.iter() {
-                let ip = broadcast_addr.ip();
-                if ip.is_multicast() {
-                    match ip {
-                        std::net::IpAddr::V4(ipv4_addr) => {
-                            socket.join_multicast_v4(ipv4_addr, Ipv4Addr::UNSPECIFIED)?
+                // We're allowed to send broadcast messages.
+                socket.set_broadcast(true)?;
+                for broadcast_addr in broadcast_addresses.iter() {
+                    let ip = broadcast_addr.ip();
+                    if ip.is_multicast() {
+                        match ip {
+                            std::net::IpAddr::V4(ipv4_addr) => {
+                                socket.join_multicast_v4(ipv4_addr, Ipv4Addr::UNSPECIFIED)?
+                            }
+                            std::net::IpAddr::V6(ipv6_addr) => {
+                                socket.join_multicast_v6(&ipv6_addr, 0)?
+                            }
                         }
-                        std::net::IpAddr::V6(ipv6_addr) => {
-                            socket.join_multicast_v6(&ipv6_addr, 0)?
+                    }
+                }
+                // Datagrams queue on the socket from here on.
+                bound.set(socket.local_addr()?);
+                let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
+                let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
+                let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
+                    Arc::new(Mutex::new(HashSet::new()));
+
+                let _udp_task = AbortOnDrop(tokio::spawn(
+                    Self::handle_udp_comms(
+                        socket,
+                        broadcast_addresses,
+                        connected_clients.clone(),
+                        rx_sender,
+                        tx_receiver,
+                    )
+                    .in_current_span(),
+                ));
+
+                // Start the broadcast async task.
+                let _broadcast_task = {
+                    let player = player.clone();
+                    let tx_sender = tx_sender.clone();
+                    let osc_events = osc_events.clone();
+
+                    info!("Starting broadcast loop");
+                    AbortOnDrop(tokio::spawn(
+                        async move {
+                            loop {
+                                if let Err(e) =
+                                    Self::broadcast(&player, &osc_events, &tx_sender).await
+                                {
+                                    error!(err = e, "Error broadcasting player status");
+                                }
+                                tokio::time::sleep(BROADCAST_SLEEP_DURATION).await;
+                            }
+                        }
+                        .in_current_span(),
+                    ))
+                };
+
+                loop {
+                    let packet = rx_receiver.recv().await;
+                    let tx_sender = tx_sender.clone();
+
+                    if let Some(packet) = packet {
+                        // A bad packet (a malformed address, say) is one client's
+                        // mistake, so log it and carry on. Ending here would take
+                        // OSC control away from everyone until a restart.
+                        let recognized =
+                            match Self::handle_packet(&player, &osc_events, &packet).await {
+                                Ok(recognized) => recognized,
+                                Err(e) => {
+                                    error!(err = e, "Error handling OSC packet");
+                                    false
+                                }
+                            };
+                        if recognized {
+                            if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await
+                            {
+                                error!(err = e, "Error broadcasting player status");
+                            };
                         }
                     }
                 }
             }
-            // Datagrams queue on the socket from here on.
-            bound.set(socket.local_addr()?);
-            let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
-            let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
-            let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
-                Arc::new(Mutex::new(HashSet::new()));
-
-            let _udp_task = AbortOnDrop(tokio::spawn(Self::handle_udp_comms(
-                socket,
-                broadcast_addresses,
-                connected_clients.clone(),
-                rx_sender,
-                tx_receiver,
-            )));
-
-            // Start the broadcast async task.
-            let _broadcast_task = {
-                let player = player.clone();
-                let tx_sender = tx_sender.clone();
-                let osc_events = osc_events.clone();
-
-                info!("Starting broadcast loop");
-                AbortOnDrop(tokio::spawn(async move {
-                    loop {
-                        if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
-                            error!(err = e, "Error broadcasting player status");
-                        }
-                        tokio::time::sleep(BROADCAST_SLEEP_DURATION).await;
-                    }
-                }))
-            };
-
-            loop {
-                let packet = rx_receiver.recv().await;
-                let tx_sender = tx_sender.clone();
-
-                if let Some(packet) = packet {
-                    // A bad packet (a malformed address, say) is one client's
-                    // mistake, so log it and carry on. Ending here would take
-                    // OSC control away from everyone until a restart.
-                    let recognized = match Self::handle_packet(&player, &osc_events, &packet).await
-                    {
-                        Ok(recognized) => recognized,
-                        Err(e) => {
-                            error!(err = e, "Error handling OSC packet");
-                            false
-                        }
-                    };
-                    if recognized {
-                        if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
-                            error!(err = e, "Error broadcasting player status");
-                        };
-                    }
-                }
-            }
-        })
+            .instrument(span),
+        )
     }
 }
 
